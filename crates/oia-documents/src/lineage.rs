@@ -490,55 +490,41 @@ pub fn parse_rfc3339_utc_nanos(
         field,
         value: input.to_owned(),
     };
+    let parse_digits_u32 = |s: &str| -> Result<u32, LineageError> {
+        if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(err());
+        }
+        s.parse().map_err(|_| err())
+    };
     if input.len() < 20 {
         return Err(err());
     }
-    let year: i64 = input
-        .get(0..4)
-        .ok_or_else(err)?
-        .parse()
-        .map_err(|_| err())?;
+    let year_slice = input.get(0..4).ok_or_else(err)?;
+    if !year_slice.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(err());
+    }
+    let year: i64 = year_slice.parse().map_err(|_| err())?;
     if input.get(4..5) != Some("-") {
         return Err(err());
     }
-    let month: u32 = input
-        .get(5..7)
-        .ok_or_else(err)?
-        .parse()
-        .map_err(|_| err())?;
+    let month = parse_digits_u32(input.get(5..7).ok_or_else(err)?)?;
     if input.get(7..8) != Some("-") {
         return Err(err());
     }
-    let day: u32 = input
-        .get(8..10)
-        .ok_or_else(err)?
-        .parse()
-        .map_err(|_| err())?;
+    let day = parse_digits_u32(input.get(8..10).ok_or_else(err)?)?;
     let sep = input.get(10..11).ok_or_else(err)?;
     if sep != "T" && sep != "t" {
         return Err(err());
     }
-    let hour: u32 = input
-        .get(11..13)
-        .ok_or_else(err)?
-        .parse()
-        .map_err(|_| err())?;
+    let hour = parse_digits_u32(input.get(11..13).ok_or_else(err)?)?;
     if input.get(13..14) != Some(":") {
         return Err(err());
     }
-    let minute: u32 = input
-        .get(14..16)
-        .ok_or_else(err)?
-        .parse()
-        .map_err(|_| err())?;
+    let minute = parse_digits_u32(input.get(14..16).ok_or_else(err)?)?;
     if input.get(16..17) != Some(":") {
         return Err(err());
     }
-    let second: u32 = input
-        .get(17..19)
-        .ok_or_else(err)?
-        .parse()
-        .map_err(|_| err())?;
+    let second = parse_digits_u32(input.get(17..19).ok_or_else(err)?)?;
 
     let max_day = days_in_month(year, month).ok_or_else(err)?;
     if day == 0 || day > max_day || hour > 23 || minute > 59 || second > 60 {
@@ -575,16 +561,8 @@ pub fn parse_rfc3339_utc_nanos(
         if tz_tail.get(3..4) != Some(":") {
             return Err(err());
         }
-        let off_h: u32 = tz_tail
-            .get(1..3)
-            .ok_or_else(err)?
-            .parse()
-            .map_err(|_| err())?;
-        let off_m: u32 = tz_tail
-            .get(4..6)
-            .ok_or_else(err)?
-            .parse()
-            .map_err(|_| err())?;
+        let off_h = parse_digits_u32(tz_tail.get(1..3).ok_or_else(err)?)?;
+        let off_m = parse_digits_u32(tz_tail.get(4..6).ok_or_else(err)?)?;
         if off_h > 23 || off_m > 59 {
             return Err(err());
         }
@@ -592,10 +570,14 @@ pub fn parse_rfc3339_utc_nanos(
     };
 
     let days = days_from_civil(year, month, day);
-    let local_seconds =
-        days * 86_400 + i64::from(hour) * 3600 + i64::from(minute) * 60 + i64::from(second.min(59));
-    let utc_seconds = local_seconds - offset_seconds;
-    Ok(i128::from(utc_seconds) * 1_000_000_000 + nanos)
+    let base_local_seconds = days * 86_400 + i64::from(hour) * 3600 + i64::from(minute) * 60;
+    let base_utc_seconds = base_local_seconds - offset_seconds;
+    if second == 60 && base_utc_seconds.rem_euclid(86_400) != 86_340 {
+        return Err(err());
+    }
+    let utc_seconds = base_utc_seconds + i64::from(second.min(59));
+    let leap_adjust = if second == 60 { 999_999_999 } else { nanos };
+    Ok(i128::from(utc_seconds) * 1_000_000_000 + leap_adjust)
 }
 
 fn is_leap_year(year: i64) -> bool {
@@ -1499,11 +1481,11 @@ pub fn evaluate_corroboration(
 
     let (adj, graph_report) = compute_lineage_sccs(records, relations, limits, &mut check_control)?;
     let mut cyclic_members = BTreeSet::new();
-    let mut cycle_witness_by_member: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for cycle in &graph_report.detected_cycles {
+    let mut cycle_idx_by_member: BTreeMap<String, usize> = BTreeMap::new();
+    for (idx, cycle) in graph_report.detected_cycles.iter().enumerate() {
         for member in &cycle.members {
             cyclic_members.insert(member.clone());
-            cycle_witness_by_member.insert(member.clone(), cycle.witness_path.clone());
+            cycle_idx_by_member.insert(member.clone(), idx);
         }
     }
 
@@ -1574,14 +1556,16 @@ pub fn evaluate_corroboration(
     circular_only_record_versions.sort();
     let primary_cycle_witness = circular_only_record_versions
         .first()
-        .and_then(|member| cycle_witness_by_member.get(member).cloned());
+        .and_then(|member| cycle_idx_by_member.get(member))
+        .and_then(|&idx| graph_report.detected_cycles.get(idx))
+        .map(|cycle| cycle.witness_path.clone());
 
     // Build version-chain equivalence classes over `{Supersedes, AlternateRedaction, PreprintVersion}`,
     // `predecessor_version_id`, and shared document `id`.
     let version_chain_rep = build_version_chain_representatives(records, relations)?;
 
     // Sort candidate upstream roots by earliest verified publication instant -> retrieval instant -> lexical version_id
-    // before collapsing version chains, shared `source_id`, and shared-hash duplicate groups.
+    // before collapsing transitive equivalence classes over shared hash, version chain, and `source_id`.
     let mut prioritized_roots: Vec<((u8, i128, i128, String), String)> = Vec::new();
     prioritized_roots
         .try_reserve(upstream_roots.len())
@@ -1609,14 +1593,19 @@ pub fn evaluate_corroboration(
     }
     prioritized_roots.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let mut independent_supporting_roots = Vec::new();
-    let mut seen_hashes = BTreeSet::new();
-    let mut seen_version_chains = BTreeSet::new();
-    let mut seen_source_ids = BTreeSet::new();
-    for (_, root_id) in prioritized_roots {
+    let ordered_root_ids: Vec<String> = prioritized_roots.into_iter().map(|(_, id)| id).collect();
+    let mut root_parent: BTreeMap<String, String> = ordered_root_ids
+        .iter()
+        .map(|id| (id.clone(), id.clone()))
+        .collect();
+    let mut first_by_hash: BTreeMap<String, String> = BTreeMap::new();
+    let mut first_by_chain: BTreeMap<String, String> = BTreeMap::new();
+    let mut first_by_source: BTreeMap<String, String> = BTreeMap::new();
+
+    for root_id in &ordered_root_ids {
         check_control().map_err(LineageError::Stopped)?;
         let rec = records
-            .get(&root_id)
+            .get(root_id)
             .ok_or_else(|| LineageError::UnknownReference {
                 context: "upstream root record",
                 target_id: root_id.clone(),
@@ -1642,18 +1631,34 @@ pub fn evaluate_corroboration(
             page_hashes.join("|")
         };
         let chain_key = version_chain_rep
-            .get(&root_id)
+            .get(root_id)
             .cloned()
             .unwrap_or_else(|| root_id.clone());
         let source_key = rec.source_id.clone();
 
-        if !seen_hashes.contains(&hash_key)
-            && !seen_version_chains.contains(&chain_key)
-            && !seen_source_ids.contains(&source_key)
-        {
-            seen_hashes.insert(hash_key);
-            seen_version_chains.insert(chain_key);
-            seen_source_ids.insert(source_key);
+        if let Some(prev) = first_by_hash.get(&hash_key).cloned() {
+            union_str_rep(root_id, &prev, &mut root_parent);
+        } else {
+            first_by_hash.insert(hash_key, root_id.clone());
+        }
+        if let Some(prev) = first_by_chain.get(&chain_key).cloned() {
+            union_str_rep(root_id, &prev, &mut root_parent);
+        } else {
+            first_by_chain.insert(chain_key, root_id.clone());
+        }
+        if let Some(prev) = first_by_source.get(&source_key).cloned() {
+            union_str_rep(root_id, &prev, &mut root_parent);
+        } else {
+            first_by_source.insert(source_key, root_id.clone());
+        }
+    }
+
+    let mut independent_supporting_roots = Vec::new();
+    let mut emitted_classes = BTreeSet::new();
+    for root_id in ordered_root_ids {
+        check_control().map_err(LineageError::Stopped)?;
+        let class_rep = find_str_rep(&root_id, &mut root_parent);
+        if emitted_classes.insert(class_rep) {
             independent_supporting_roots
                 .try_reserve(1)
                 .map_err(|_| LineageError::AllocationFailed)?;
@@ -1727,6 +1732,34 @@ pub fn evaluate_corroboration(
     })
 }
 
+fn find_str_rep(node: &str, parent: &mut BTreeMap<String, String>) -> String {
+    let mut curr = node.to_owned();
+    while let Some(next) = parent.get(&curr).cloned() {
+        if next == curr {
+            break;
+        }
+        if let Some(grand) = parent.get(&next).cloned() {
+            parent.insert(curr.clone(), grand.clone());
+            curr = grand;
+        } else {
+            break;
+        }
+    }
+    curr
+}
+
+fn union_str_rep(a: &str, b: &str, parent: &mut BTreeMap<String, String>) {
+    let ra = find_str_rep(a, parent);
+    let rb = find_str_rep(b, parent);
+    if ra != rb {
+        if ra < rb {
+            parent.insert(rb, ra);
+        } else {
+            parent.insert(ra, rb);
+        }
+    }
+}
+
 fn build_version_chain_representatives(
     records: &BTreeMap<String, SourceRecordDescriptor>,
     relations: &[RecordRelation],
@@ -1734,45 +1767,17 @@ fn build_version_chain_representatives(
     let mut parent: BTreeMap<String, String> =
         records.keys().map(|k| (k.clone(), k.clone())).collect();
 
-    fn find_rep(node: &str, parent: &mut BTreeMap<String, String>) -> String {
-        let mut curr = node.to_owned();
-        while let Some(next) = parent.get(&curr).cloned() {
-            if next == curr {
-                break;
-            }
-            if let Some(grand) = parent.get(&next).cloned() {
-                parent.insert(curr.clone(), grand.clone());
-                curr = grand;
-            } else {
-                break;
-            }
-        }
-        curr
-    }
-
-    fn union_rep(a: &str, b: &str, parent: &mut BTreeMap<String, String>) {
-        let ra = find_rep(a, parent);
-        let rb = find_rep(b, parent);
-        if ra != rb {
-            if ra < rb {
-                parent.insert(rb, ra);
-            } else {
-                parent.insert(ra, rb);
-            }
-        }
-    }
-
     let mut by_doc_id: BTreeMap<String, String> = BTreeMap::new();
     for (ver_id, rec) in records {
         if let Some(existing) = by_doc_id.get(&rec.id).cloned() {
-            union_rep(ver_id, &existing, &mut parent);
+            union_str_rep(ver_id, &existing, &mut parent);
         } else {
             by_doc_id.insert(rec.id.clone(), ver_id.clone());
         }
         if let Some(pred) = rec.predecessor_version_id.as_deref()
             && records.contains_key(pred)
         {
-            union_rep(ver_id, pred, &mut parent);
+            union_str_rep(ver_id, pred, &mut parent);
         }
     }
     for rel in relations {
@@ -1780,14 +1785,14 @@ fn build_version_chain_representatives(
             && records.contains_key(&rel.from)
             && records.contains_key(&rel.to)
         {
-            union_rep(&rel.from, &rel.to, &mut parent);
+            union_str_rep(&rel.from, &rel.to, &mut parent);
         }
     }
 
     let keys: Vec<String> = parent.keys().cloned().collect();
     let mut resolved = BTreeMap::new();
     for key in keys {
-        let rep = find_rep(&key, &mut parent);
+        let rep = find_str_rep(&key, &mut parent);
         resolved.insert(key, rep);
     }
     Ok(resolved)

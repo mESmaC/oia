@@ -937,6 +937,38 @@ fn adversarial_lineage_violations_and_control_stops_are_rejected() -> Result<(),
     );
     assert_eq!(dispatch_corroboration.independent_root_count, 1);
 
+    // N1: Transitive equivalence-class collapse across shared source_id / version chain and shared hash
+    // so a byte-exact copy of a skipped root never counts as independent corroboration regardless of order.
+    if let Some(partner_rec) = records.get("foia-release-partner-v1").cloned() {
+        let mut transitive_records = records.clone();
+        let mut partner_copy = partner_rec;
+        partner_copy.id = "doc-foia-partner-mirror".to_owned();
+        partner_copy.version_id = "foia-partner-byte-copy-v1".to_owned();
+        partner_copy.source_id = "mirror-beta".to_owned();
+        partner_copy.publication_time = Some("2026-10-12T09:00:00Z".to_owned());
+        partner_copy.retrieval_time = "2026-10-12T10:00:00Z".to_owned();
+        transitive_records.insert(partner_copy.version_id.clone(), partner_copy);
+
+        let transitive_corr = evaluate_corroboration(
+            &[
+                "foia-release-2024-v1".to_owned(),
+                "foia-release-partner-v1".to_owned(),
+                "foia-partner-byte-copy-v1".to_owned(),
+            ],
+            &transitive_records,
+            &derivations_map,
+            &relations,
+            &artifacts,
+            limits,
+            || Ok(()),
+        )?;
+        assert_eq!(
+            transitive_corr.independent_supporting_roots,
+            vec!["foia-release-2024-v1"]
+        );
+        assert_eq!(transitive_corr.independent_root_count, 1);
+    }
+
     // 7. B3: Segment-derived hidden cleartext detection even when `forbidden_cleartext_in_left`
     // is empty (`NewlyDisclosedInRight`) or when newly redacted text leaks into the right artifact
     // (`NewlyRedactedInRight`).

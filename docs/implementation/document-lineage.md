@@ -56,8 +56,11 @@ graph algorithms with explicit `LineageLimits`, fallible allocations
    - Rejects hidden cleartext inside redacted artifacts (`HiddenRedactionPayloadRejected`),
      checking both caller-declared `forbidden_cleartext_in_left` and
      segment-derived cleartext (`NewlyDisclosedInRight` text must not appear in
-     the left artifact; `NewlyRedactedInRight` text must not appear in the right
-     artifact).
+     the left page artifact; `NewlyRedactedInRight` text must not appear in the
+     right page artifact). Note: the segment-derived substring scan operates on
+     each segment's corresponding page artifact; multi-page cross-page scans or
+     partial-occurrence exceptions where the same token legitimately remains
+     unredacted elsewhere on the page are outside this kernel's scope.
 3. **Iterative lineage SCC cycle detection, earliest-known-source view, and corroboration independence (`compute_lineage_sccs`, `evaluate_corroboration`, `INTEL-01`, `DOC-05`, `A08`):**
    - Runs deterministic, iterative Tarjan strongly connected components
      decomposition over `{Republishes, Quotes, Cites, Translates}` edges using
@@ -70,16 +73,19 @@ graph algorithms with explicit `LineageLimits`, fallible allocations
    - Computes `CorroborationSummary`: deduplicates `citing_inputs`, separates
      `supporting_record_versions` from `excluded_derivative_runs`
      (`ExtractedClaim` / `AnalyticalInference`), identifies
-     `circular_only_record_versions`, and collapses transitive copy chains,
-     version chains (`{Supersedes, AlternateRedaction, PreprintVersion}`,
+     `circular_only_record_versions`, and builds transitive union-find
+     equivalence classes across version chains
+     (`{Supersedes, AlternateRedaction, PreprintVersion}`,
      `predecessor_version_id`, and shared document `id`), shared `source_id`, and
-     shared-hash duplicate groups into `independent_supporting_roots` after
-     ordering candidate roots by earliest verified UTC `publication_time`
-     instant, then UTC `retrieval_time` instant, then lexical `version_id`.
-   - Parses RFC 3339 timestamps (`parse_rfc3339_utc_nanos`) with explicit timezone
-     offsets into UTC instants while preserving original strings for display;
-     preserves undated upstream roots (`publication_time: None` with mandatory
-     `unknown_time_reason`) without inventing epoch/zero timestamps, reporting
+     shared-hash duplicate groups, emitting one earliest representative per
+     equivalence class (`independent_supporting_roots`) ordered by earliest
+     verified UTC `publication_time` instant, then UTC `retrieval_time` instant,
+     then lexical `version_id`.
+   - Parses RFC 3339 timestamps (`parse_rfc3339_utc_nanos`) requiring strict
+     ASCII digit fields and explicit timezone offsets into UTC instants while
+     preserving original strings for display; preserves undated upstream roots
+     (`publication_time: None` with mandatory `unknown_time_reason`) without
+     inventing epoch/zero timestamps, reporting
      `EarliestSourceResolution::AmbiguousCandidates` whenever undated roots
      coexist with dated roots or when two independent roots tie for the earliest
      publication instant.

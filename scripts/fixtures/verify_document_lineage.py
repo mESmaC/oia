@@ -355,10 +355,25 @@ def evaluate_corroboration_query(
         if rel["kind"] in VERSION_CHAIN_KINDS and rel["from"] in records and rel["to"] in records:
             union_rep(rel["from"], rel["to"])
 
-    deduped_roots: list[str] = []
-    seen_hashes: set[str] = set()
-    seen_chains: set[str] = set()
-    seen_sources: set[str] = set()
+    root_parent: dict[str, str] = {r: r for r in ordered_roots}
+
+    def find_root_rep(x: str) -> str:
+        while root_parent[x] != x:
+            root_parent[x] = root_parent[root_parent[x]]
+            x = root_parent[x]
+        return x
+
+    def union_root_rep(a: str, b: str) -> None:
+        ra, rb = find_root_rep(a), find_root_rep(b)
+        if ra != rb:
+            if ra < rb:
+                root_parent[rb] = ra
+            else:
+                root_parent[ra] = rb
+
+    first_by_hash: dict[str, str] = {}
+    first_by_chain: dict[str, str] = {}
+    first_by_source: dict[str, str] = {}
     for root_id in ordered_roots:
         rec = records[root_id]
         page_hashes = tuple(
@@ -369,14 +384,25 @@ def evaluate_corroboration_query(
         hash_key = "|".join(page_hashes) if page_hashes else f"no-bytes:{root_id}"
         chain_key = find_rep(root_id)
         source_key = rec["source_id"]
-        if (
-            hash_key not in seen_hashes
-            and chain_key not in seen_chains
-            and source_key not in seen_sources
-        ):
-            seen_hashes.add(hash_key)
-            seen_chains.add(chain_key)
-            seen_sources.add(source_key)
+        if hash_key in first_by_hash:
+            union_root_rep(root_id, first_by_hash[hash_key])
+        else:
+            first_by_hash[hash_key] = root_id
+        if chain_key in first_by_chain:
+            union_root_rep(root_id, first_by_chain[chain_key])
+        else:
+            first_by_chain[chain_key] = root_id
+        if source_key in first_by_source:
+            union_root_rep(root_id, first_by_source[source_key])
+        else:
+            first_by_source[source_key] = root_id
+
+    deduped_roots: list[str] = []
+    emitted_classes: set[str] = set()
+    for root_id in ordered_roots:
+        class_rep = find_root_rep(root_id)
+        if class_rep not in emitted_classes:
+            emitted_classes.add(class_rep)
             deduped_roots.append(root_id)
     deduped_roots.sort()
 
@@ -782,6 +808,64 @@ def run_self_test(root: Path) -> None:
     else:
         raise AssertionError("Self-test failed: inflated corroboration root count was not rejected")
 
+    # Case 6: Transitive copy of a skipped version-chain/shared-source root must collapse
+    bad_transitive = copy.deepcopy(manifest)
+    bad_transitive["records"].append(
+        {
+            "id": "doc-foia-partner-mirror",
+            "version_id": "foia-partner-byte-copy-v1",
+            "source_id": "mirror-beta",
+            "origin_class": "simulation",
+            "retrieval_time": "2026-10-12T10:00:00Z",
+            "publication_time": "2026-10-12T09:00:00Z",
+            "event_time": "2026-10-01T00:00:00Z",
+            "unknown_time_reason": None,
+            "retention": "retained",
+            "omission_reason": None,
+            "availability": "reachable",
+            "lifecycle_state": "active",
+            "predecessor_version_id": None,
+            "review_status": "unreviewed",
+            "pages": [
+                {
+                    "number": 1,
+                    "artifact_id": "foia-release-partner-redacted.txt",
+                    "expected_extraction": "text_available",
+                }
+            ],
+        }
+    )
+    bad_transitive["expectations"]["exact_duplicate_groups"] = compute_exact_duplicate_groups(
+        indexed(bad_transitive["records"], "version_id"),
+        indexed(bad_transitive["artifacts"], "id"),
+    )
+    q = bad_transitive["expectations"]["corroboration_queries"][0]
+    q["citing_inputs"] = [
+        "foia-release-2024-v1",
+        "foia-release-partner-v1",
+        "foia-partner-byte-copy-v1",
+    ]
+    q["expected_supporting_record_versions"] = [
+        "foia-partner-byte-copy-v1",
+        "foia-release-2024-v1",
+        "foia-release-partner-v1",
+    ]
+    q["expected_excluded_derivative_runs"] = []
+    q["expected_circular_only_record_versions"] = []
+    q["expected_independent_supporting_roots"] = [
+        "foia-partner-byte-copy-v1",
+        "foia-release-2024-v1",
+    ]
+    q["expected_independent_root_count"] = 2
+    try:
+        verify_manifest_data(bad_transitive, payloads)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(
+            "Self-test failed: byte-exact copy of alternate-redaction root counted as independent"
+        )
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
@@ -805,5 +889,5 @@ if __name__ == "__main__":
         parser.exit(1, f"Document lineage fixture invalid: {error}\n")
     print(f"Document lineage fixture integrity passed: {json.dumps(result, sort_keys=True)}")
     if args.self_test:
-        print("Self-test passed: 5 adversarial contract violations rejected.")
+        print("Self-test passed: 6 adversarial contract violations rejected.")
     print("Runtime Rust ingestion, persistence, and end-to-end A03/A08 acceptance have NOT been tested.")

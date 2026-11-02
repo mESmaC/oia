@@ -30,7 +30,7 @@ Verification claims will be limited to the properties and implementation connect
 
 ## Current status
 
-OIA is at the project-definition stage. This repository currently records the vision; tools, Rust implementations, and Lean proofs have not yet been added.
+OIA is at the project-definition stage. This repository currently records the vision and one standalone Rust package (see [Build and run](#build-and-run)); the OIA application, shared Rust workspace, and Lean proofs have not yet been added.
 
 The version 0.1 specification draft consolidates the product scope and a proposed implementation plan:
 
@@ -43,3 +43,28 @@ The version 0.1 specification draft consolidates the product scope and a propose
 The [earlier exploration draft](docs/spec-draft.md) is retained as design history. The specification describes intended behavior; implementation choices and delivery sequencing remain proposals where identified.
 
 Coding agents should read [AGENTS.md](AGENTS.md) before making changes.
+
+## Build and run
+
+There is no OIA application binary yet. The only runnable code is `inspect-text`, a read-only example that prints the UTF-8 passages, byte ranges, and coverage of a local file using the standalone [`crates/oia-documents`](crates/oia-documents/README.md) extraction kernel. It does not import, store, or detect file types, and it does not parse PDFs or run OCR.
+
+**Requirements:** Rust 1.99.0 via [rustup](https://rustup.rs/) (`rustup toolchain install 1.99.0`). No network access is needed; the package has no third-party dependencies and builds with `--locked --offline`.
+
+The run scripts wrap the package-local Cargo commands. Use `scripts/run.sh` on Linux, macOS, or Git Bash and `scripts\run.ps1` in Windows PowerShell:
+
+| Task | POSIX shell | Windows PowerShell |
+| --- | --- | --- |
+| Build | `scripts/run.sh build` | `.\scripts\run.ps1 build` |
+| Launch (inspects `README.md`) | `scripts/run.sh run` | `.\scripts\run.ps1 run` |
+| Launch on a file | `scripts/run.sh run PATH [MAX_INPUT_BYTES] [MAX_PASSAGES]` | `.\scripts\run.ps1 run PATH [MAX_INPUT_BYTES] [MAX_PASSAGES]` |
+| Format, lint, and test | `scripts/run.sh check` | `.\scripts\run.ps1 check` |
+
+Defaults are 1,048,576 input bytes and 10,000 passages. Exit code `0` means complete or empty, `2` means explicitly partial (passage limit reached), and `1` means an error. Oversized input is refused rather than truncated. Set `OIA_RUST_TOOLCHAIN` to use a different installed toolchain. If PowerShell blocks local scripts, run `powershell -ExecutionPolicy Bypass -File scripts\run.ps1 run`.
+
+The equivalent direct command is:
+
+```text
+cargo +1.99.0 run --manifest-path crates/oia-documents/Cargo.toml --example inspect-text --locked --offline -- README.md
+```
+
+See [document text extraction](docs/implementation/document-text.md) for the full contract, limitations, and verification record. These scripts will change when the shared Rust workspace and application land ([#9](https://github.com/mESmaC/oia/issues/9)).

@@ -33,6 +33,33 @@ GitHub issues and the [implementation Project](https://github.com/users/mESmaC/p
 6. Treat split or partial work explicitly: track remaining scope in open linked issues and preserve requirement and dependency references. Close phase epics only when all required work and integrated acceptance checks are complete.
 7. If GitHub access is unavailable, state that the claim/status update could not be recorded, keep a local handoff with the issue, scope, and intended status, and reconcile it when access returns. Never report a successful claim or status change without verifying it. This fallback does not authorize taking over work already claimed by another session.
 
+### Coordinate concurrent sessions
+
+Several sessions may work at once in separate worktrees under one GitHub account, so the assignee does not identify an owner; the claim comment does.
+
+1. **Claim only what you are starting.** Claim a package when implementation begins, not every package you expect to reach. A claim on a phase epic records coordination of that phase; it does not reserve its child issues. A claim may cover a named slice of an issue: state the slice and what remains unclaimed. Other sessions may claim disjoint slices of the same issue after reading every claim comment on it. The Project item stays **In Progress** while any slice is claimed; the comments, not the status, define who owns what. Release claims you are not actively working on with a comment, and return the item to **Todo** once no slice remains claimed.
+2. **Comment first, then status.** Post the claim comment before moving the Project item to **In Progress**. Post it with `gh issue comment <n> --body-file <file>` (or a single-quoted here-string in PowerShell, which does not expand backtick escapes), then re-read the posted comment and confirm the session, branch, worktree, and scope are intact before changing the status. Treat either signal as ownership if the other is missing, and ask on the issue rather than assume the work is free.
+3. **Recheck before and after claiming,** especially after waiting on user input or a long task. After posting, re-read the issue's comments. If an earlier claim covers overlapping scope, judged by comment creation time rather than edit time, withdraw yours in a comment before doing any work.
+4. **Declare shared files.** List in the claim any shared files you expect to change beyond the package's own module: the workspace manifest, `Cargo.lock`, toolchain pins, `docs/spec.md`, `docs/architecture.md`, `AGENTS.md`, and scripts. Keep those edits in minimal, separate hunks without reordering or reformatting. Rebase onto current `main` before opening a PR. On a `Cargo.lock` conflict, take `main`'s version, then run an ordinary Cargo build or check without `--locked` so that only your manifest changes are added; do not delete the lockfile or run `cargo update` unless the task calls for it, and review the lockfile diff in the PR. ADR numbers in `docs/adr/` are sequential and therefore collide easily. Name the number you intend to use in your claim. If an earlier merge takes that number, renumber your ADR and its references.
+5. **Do not copy unmerged prerequisites.** When a package depends on another session's unmerged branch, say so in the claim. Either base the PR on that branch and state the stack, or wait for it to merge.
+6. **Hand off explicitly.** Request a handoff on the issue. The owning session, or the user, releases the work in a comment before anyone else starts. Inactivity alone does not make a claim stale; if the owning session appears to have ended, ask the user.
+7. **Review sessions stay out of implementation.** A session assigned to review records its role on the relevant epic and comments on issues and PRs. It does not push to another session's branch or claim that session's packages. Because every session uses the same account, GitHub allows only `COMMENT` reviews, not approvals or change requests. Begin each review with the reviewing session's identity and mark each finding blocking or non-blocking. The user decides whether to merge, or authorizes a session to merge.
+8. **Deliver finished work as a PR.** When a claimed issue or slice is complete and its local checks pass, commit on the task branch, push, and open a PR against `main`. If it depends on another unmerged branch, base it on that branch and state the stack. Link the issue in the PR description (`Refs #n`; use `Closes #n` only when the PR completes the issue) and post the PR link on the issue. The issue stays **In Progress** while the PR is open. Then monitor the PR: respond to review comments and requested changes, push fixes to the same branch without force-pushing over reviewed commits, and re-run the checks you reported. Do not merge your own PR unless the user authorizes it. After merge, update the issue and Project (section 1) and clean up the worktree (section 10).
+
+Check active work with these commands (POSIX shell or Git Bash):
+
+```sh
+gh project item-list 4 --owner mESmaC --format json --limit 200 --jq '.items[] | select(.status=="In Progress") | .content.number'
+gh issue view <number> --comments
+gh pr list --state open
+```
+
+Windows PowerShell 5.1 strips embedded double quotes from native-command arguments, so escape them there:
+
+```powershell
+gh project item-list 4 --owner mESmaC --format json --limit 200 --jq '.items[] | select(.status==\"In Progress\") | .content.number'
+```
+
 ## 2. Preserve evidence and analytical quality
 
 OIA's central contract is that a user can inspect how a result follows from its sources. A successful request, attractive visualization, or passing test is not a reason to weaken that contract.
@@ -173,7 +200,7 @@ Update relevant specifications, adapter documentation, compatibility lists, and 
 
 ## 10. Delivery and repository hygiene
 
-Complete the user's authorized task through implementation and relevant verification. Do not stop at a plan, scaffold, or partially functioning path when the task requires a working result. Do not broaden a local authoring task into an unsolicited commit, push, PR, external message, or deployment.
+Complete the user's authorized task through implementation and relevant verification. Do not stop at a plan, scaffold, or partially functioning path when the task requires a working result. Claimed backlog work is delivered as a PR under rule 8 of "Coordinate concurrent sessions" in section 1. Otherwise, do not broaden a local authoring task into an unsolicited commit, push, PR, external message, or deployment; merging, deploying, and publishing still require explicit authorization.
 
 Keep edits focused. Avoid unrelated refactors, formatting churn, generated artifacts, caches, and local credentials. Format changed code without accidentally rewriting unrelated modules; inspect the final diff.
 

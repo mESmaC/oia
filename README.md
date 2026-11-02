@@ -40,7 +40,10 @@ The **P0: Evidence Foundation** workspace is implemented and verified locally:
   - [ADR 0001 (D01): Deployment and UI boundary](docs/adr/0001-d01-deployment-and-ui-boundary.md)
   - [ADR 0002 (D02): Storage and indexing (Proposed)](docs/adr/0002-d02-storage-and-indexing.md)
   - [ADR 0003 (D14): Project licensing and distribution notices (Proposed)](docs/adr/0003-d14-licensing-and-distribution.md)
-  - [ADR 0005 (D13): Initial Lean 4 proof targets and Rust correspondence](docs/adr/0005-d13-lean-correspondence-target.md)
+  - [ADR 0005 (D03): Seed corpus and news sources](docs/adr/0005-d03-seed-corpus-and-news-sources.md)
+  - [ADR 0006 (D05): Report and bundle formats](docs/adr/0006-d05-report-and-bundle-formats.md)
+  - [ADR 0007 (D04): AI execution and grounding](docs/adr/0007-d04-ai-execution-and-grounding.md)
+  - [ADR 0008 (D13): Initial Lean 4 proof targets and Rust correspondence](docs/adr/0008-d13-lean-correspondence-target.md)
 
 Phases P1–P5 (external source adapters, 3D globe/sky renderer, media forensics/hardware adapters, hosted collaboration, and market/analogue forecasting) remain open work packages in the [GitHub implementation backlog](docs/backlog.md):
 

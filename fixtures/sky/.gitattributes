@@ -1,0 +1,2 @@
+# Retained provider bytes are hashed; never convert line endings.
+originals/** -text

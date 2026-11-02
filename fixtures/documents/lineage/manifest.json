@@ -1,0 +1,992 @@
+{
+  "fixture_schema_version": 1,
+  "fixture_id": "oia-p1-document-lineage-v1",
+  "classification": "simulation",
+  "requirements": [
+    "DOC-02",
+    "DOC-04",
+    "DOC-05",
+    "INTEL-01"
+  ],
+  "acceptance_scenarios": [
+    "A03",
+    "A08"
+  ],
+  "sources": [
+    {
+      "id": "archive-alpha",
+      "reference": "https://archive-alpha.invalid/dispatches",
+      "ordinary_access": "offline_fixture_only",
+      "conditions": {
+        "access": "synthetic_fixture",
+        "automated_processing": "fixture_use",
+        "retention": "fixture_use",
+        "redistribution": "fixture_use"
+      }
+    },
+    {
+      "id": "mirror-beta",
+      "reference": "https://mirror-beta.invalid/coastal",
+      "ordinary_access": "offline_fixture_only",
+      "conditions": {
+        "access": "synthetic_fixture",
+        "automated_processing": "fixture_use",
+        "retention": "fixture_use",
+        "redistribution": "fixture_use"
+      }
+    },
+    {
+      "id": "digest-gamma",
+      "reference": "https://digest-gamma.invalid/syndicated",
+      "ordinary_access": "offline_fixture_only",
+      "conditions": {
+        "access": "synthetic_fixture",
+        "automated_processing": "fixture_use",
+        "retention": "fixture_use",
+        "redistribution": "fixture_use"
+      }
+    },
+    {
+      "id": "independent-observatory",
+      "reference": "https://observatory.invalid/logs",
+      "ordinary_access": "offline_fixture_only",
+      "conditions": {
+        "access": "synthetic_fixture",
+        "automated_processing": "fixture_use",
+        "retention": "fixture_use",
+        "redistribution": "fixture_use"
+      }
+    },
+    {
+      "id": "commentary-network",
+      "reference": "https://commentary.invalid/loop",
+      "ordinary_access": "offline_fixture_only",
+      "conditions": {
+        "access": "synthetic_fixture",
+        "automated_processing": "fixture_use",
+        "retention": "fixture_use",
+        "redistribution": "fixture_use"
+      }
+    },
+    {
+      "id": "foia-reading-room",
+      "reference": "https://foia.invalid/releases",
+      "ordinary_access": "offline_fixture_only",
+      "conditions": {
+        "access": "synthetic_fixture",
+        "automated_processing": "fixture_use",
+        "retention": "fixture_use",
+        "redistribution": "fixture_use"
+      }
+    },
+    {
+      "id": "partner-reading-room",
+      "reference": "https://partner-foia.invalid/releases",
+      "ordinary_access": "offline_fixture_only",
+      "conditions": {
+        "access": "synthetic_fixture",
+        "automated_processing": "fixture_use",
+        "retention": "fixture_use",
+        "redistribution": "fixture_use"
+      }
+    },
+    {
+      "id": "calibration-board",
+      "reference": "https://calibration.invalid/advisories",
+      "ordinary_access": "offline_fixture_only",
+      "conditions": {
+        "access": "synthetic_fixture",
+        "automated_processing": "fixture_use",
+        "retention": "fixture_use",
+        "redistribution": "fixture_use"
+      }
+    },
+    {
+      "id": "municipal-portal",
+      "reference": "https://municipal.invalid/notices",
+      "ordinary_access": "offline_fixture_only",
+      "conditions": {
+        "access": "synthetic_fixture",
+        "automated_processing": "fixture_use",
+        "retention": "fixture_use",
+        "redistribution": "fixture_use"
+      }
+    },
+    {
+      "id": "restricted-custodian",
+      "reference": "https://restricted.invalid/ledger",
+      "ordinary_access": "offline_fixture_only",
+      "conditions": {
+        "access": "synthetic_fixture",
+        "automated_processing": "fixture_use",
+        "retention": "reference_only_prohibited",
+        "redistribution": "prohibited"
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "id": "dispatch-root-v1.txt",
+      "path": "originals/dispatch-root-v1.txt",
+      "media_type": "text/plain; charset=utf-8",
+      "byte_length": 218,
+      "sha256": "8a4f33b3889b6650f1d36d1843d05fdb86edc297c013b5cbc9006358b4391539",
+      "origin_class": "simulation"
+    },
+    {
+      "id": "dispatch-root-v2-corrected.txt",
+      "path": "originals/dispatch-root-v2-corrected.txt",
+      "media_type": "text/plain; charset=utf-8",
+      "byte_length": 270,
+      "sha256": "cbccc2264187b7fb2384426cce2ad2e5f74c29d647129a23dea86ab2e2bd9cbd",
+      "origin_class": "simulation"
+    },
+    {
+      "id": "syndicated-quote-v1.txt",
+      "path": "originals/syndicated-quote-v1.txt",
+      "media_type": "text/plain; charset=utf-8",
+      "byte_length": 279,
+      "sha256": "3dc3e0a1f84aab4a8fb9d9d4ead28dedb5ade3ad9df0e4c7582caab07d525f4c",
+      "origin_class": "simulation"
+    },
+    {
+      "id": "independent-log-v1.txt",
+      "path": "originals/independent-log-v1.txt",
+      "media_type": "text/plain; charset=utf-8",
+      "byte_length": 225,
+      "sha256": "cbe2783010d93ddc20adf09e3d6f7762263d4d3cc820ea9d8d2a1f3dc7e1794b",
+      "origin_class": "simulation"
+    },
+    {
+      "id": "cycle-node-a.txt",
+      "path": "originals/cycle-node-a.txt",
+      "media_type": "text/plain; charset=utf-8",
+      "byte_length": 171,
+      "sha256": "358b5de399a70e004a4951f8710b2d5bc9526398bf22cbecd98d421ea42f7d41",
+      "origin_class": "simulation"
+    },
+    {
+      "id": "cycle-node-b.txt",
+      "path": "originals/cycle-node-b.txt",
+      "media_type": "text/plain; charset=utf-8",
+      "byte_length": 179,
+      "sha256": "698800d787c490dd00c6bbe630e23c1c9343df4c210d4ca95f5ac531d6625507",
+      "origin_class": "simulation"
+    },
+    {
+      "id": "cycle-node-c.txt",
+      "path": "originals/cycle-node-c.txt",
+      "media_type": "text/plain; charset=utf-8",
+      "byte_length": 186,
+      "sha256": "18989a22b1cd518c0fe77dcd45a49e509aa6e0abb0c298f654c9e204ab5c7307",
+      "origin_class": "simulation"
+    },
+    {
+      "id": "foia-release-2024-redacted.txt",
+      "path": "originals/foia-release-2024-redacted.txt",
+      "media_type": "text/plain; charset=utf-8",
+      "byte_length": 202,
+      "sha256": "0e6383f5d713148f5976b2398514bcb7f45fbeb3672822d479184f6485c5016d",
+      "origin_class": "simulation"
+    },
+    {
+      "id": "foia-release-2026-declassified.txt",
+      "path": "originals/foia-release-2026-declassified.txt",
+      "media_type": "text/plain; charset=utf-8",
+      "byte_length": 192,
+      "sha256": "4a0b88fcfb48e9e827f74358cf4eccdf256c281d9ca6e85e73fc0e781ba14059",
+      "origin_class": "simulation"
+    },
+    {
+      "id": "foia-release-partner-redacted.txt",
+      "path": "originals/foia-release-partner-redacted.txt",
+      "media_type": "text/plain; charset=utf-8",
+      "byte_length": 219,
+      "sha256": "1ccac973452a622cbdd098bb3c555a67e759c28e61ea685e7cf59ee0666776c4",
+      "origin_class": "simulation"
+    },
+    {
+      "id": "retracted-advisory-v1.txt",
+      "path": "originals/retracted-advisory-v1.txt",
+      "media_type": "text/plain; charset=utf-8",
+      "byte_length": 170,
+      "sha256": "191c073e8afe5f157574d31d3881562f3bf3218d7ed9b9f288f06b427afe25fc",
+      "origin_class": "simulation"
+    },
+    {
+      "id": "retraction-notice-v2.txt",
+      "path": "originals/retraction-notice-v2.txt",
+      "media_type": "text/plain; charset=utf-8",
+      "byte_length": 206,
+      "sha256": "177fe70ecb5f61ec64b6cb7266b8a3cfcb78e665a212ebed693246d79652e4a0",
+      "origin_class": "simulation"
+    },
+    {
+      "id": "removed-endpoint-v1.txt",
+      "path": "originals/removed-endpoint-v1.txt",
+      "media_type": "text/plain; charset=utf-8",
+      "byte_length": 168,
+      "sha256": "34ec59fc4c4cc74cd3d702b57f971b0823822c2458b839dee2b8e6663a257013",
+      "origin_class": "simulation"
+    }
+  ],
+  "records": [
+    {
+      "id": "dispatch-primary",
+      "version_id": "dispatch-primary-v1",
+      "source_id": "archive-alpha",
+      "provider_version": "2026-10-01-ed1",
+      "origin_class": "simulation",
+      "review_status": "unreviewed",
+      "availability": "available",
+      "lifecycle_state": "superseded_by_correction",
+      "predecessor_version_id": null,
+      "event_time": "2026-09-30T22:10:00Z",
+      "publication_time": "2026-10-01T04:15:00Z",
+      "retrieval_time": "2026-10-01T05:00:00Z",
+      "unknown_time_reason": null,
+      "retention": "retained",
+      "omission_reason": null,
+      "pages": [
+        {
+          "number": 1,
+          "artifact_id": "dispatch-root-v1.txt",
+          "expected_extraction": "text_available"
+        }
+      ]
+    },
+    {
+      "id": "dispatch-mirror",
+      "version_id": "dispatch-mirror-v1",
+      "source_id": "mirror-beta",
+      "provider_version": "mirror-2026-10-02",
+      "origin_class": "simulation",
+      "review_status": "unreviewed",
+      "availability": "available",
+      "lifecycle_state": "active",
+      "predecessor_version_id": null,
+      "event_time": "2026-09-30T22:10:00Z",
+      "publication_time": "2026-10-02T09:00:00Z",
+      "retrieval_time": "2026-10-02T10:00:00Z",
+      "unknown_time_reason": null,
+      "retention": "retained",
+      "omission_reason": null,
+      "pages": [
+        {
+          "number": 1,
+          "artifact_id": "dispatch-root-v1.txt",
+          "expected_extraction": "text_available"
+        }
+      ]
+    },
+    {
+      "id": "dispatch-primary",
+      "version_id": "dispatch-primary-v2",
+      "source_id": "archive-alpha",
+      "provider_version": "2026-10-05-ed2",
+      "origin_class": "simulation",
+      "review_status": "unreviewed",
+      "availability": "available",
+      "lifecycle_state": "active",
+      "predecessor_version_id": "dispatch-primary-v1",
+      "event_time": "2026-09-30T22:10:00Z",
+      "publication_time": "2026-10-05T12:00:00Z",
+      "retrieval_time": "2026-10-05T12:30:00Z",
+      "unknown_time_reason": null,
+      "retention": "retained",
+      "omission_reason": null,
+      "pages": [
+        {
+          "number": 1,
+          "artifact_id": "dispatch-root-v2-corrected.txt",
+          "expected_extraction": "text_available"
+        }
+      ]
+    },
+    {
+      "id": "regional-digest",
+      "version_id": "regional-digest-v1",
+      "source_id": "digest-gamma",
+      "provider_version": "digest-2026-10-03",
+      "origin_class": "simulation",
+      "review_status": "unreviewed",
+      "availability": "available",
+      "lifecycle_state": "active",
+      "predecessor_version_id": null,
+      "event_time": null,
+      "publication_time": "2026-10-03T18:30:00Z",
+      "retrieval_time": "2026-10-03T19:00:00Z",
+      "unknown_time_reason": "digest omits underlying observation timestamp",
+      "retention": "retained",
+      "omission_reason": null,
+      "pages": [
+        {
+          "number": 1,
+          "artifact_id": "syndicated-quote-v1.txt",
+          "expected_extraction": "text_available"
+        }
+      ]
+    },
+    {
+      "id": "harbor-radar-log",
+      "version_id": "harbor-radar-log-v1",
+      "source_id": "independent-observatory",
+      "provider_version": "log-sheet-7",
+      "origin_class": "simulation",
+      "review_status": "unreviewed",
+      "availability": "available",
+      "lifecycle_state": "active",
+      "predecessor_version_id": null,
+      "event_time": null,
+      "publication_time": null,
+      "retrieval_time": "2026-10-04T08:00:00Z",
+      "unknown_time_reason": "undated archival log sheet; no timestamp invented",
+      "retention": "retained",
+      "omission_reason": null,
+      "pages": [
+        {
+          "number": 1,
+          "artifact_id": "independent-log-v1.txt",
+          "expected_extraction": "text_available"
+        }
+      ]
+    },
+    {
+      "id": "restricted-deck-log",
+      "version_id": "restricted-deck-log-v1",
+      "source_id": "restricted-custodian",
+      "provider_version": "ledger-ref-9",
+      "origin_class": "simulation",
+      "review_status": "unreviewed",
+      "availability": "reference_only",
+      "lifecycle_state": "active",
+      "predecessor_version_id": null,
+      "event_time": "2026-09-30T22:11:00Z",
+      "publication_time": "2026-10-01T01:00:00Z",
+      "retrieval_time": "2026-10-01T06:00:00Z",
+      "unknown_time_reason": null,
+      "retention": "reference_only",
+      "omission_reason": "source license prohibits payload retention; catalog metadata only",
+      "pages": []
+    },
+    {
+      "id": "cycle-memo-a",
+      "version_id": "cycle-memo-a-v1",
+      "source_id": "commentary-network",
+      "provider_version": "memo-a-1",
+      "origin_class": "simulation",
+      "review_status": "unreviewed",
+      "availability": "available",
+      "lifecycle_state": "active",
+      "predecessor_version_id": null,
+      "event_time": null,
+      "publication_time": "2026-10-06T10:00:00Z",
+      "retrieval_time": "2026-10-06T12:00:00Z",
+      "unknown_time_reason": "commentary omits primary event time",
+      "retention": "retained",
+      "omission_reason": null,
+      "pages": [
+        {
+          "number": 1,
+          "artifact_id": "cycle-node-a.txt",
+          "expected_extraction": "text_available"
+        }
+      ]
+    },
+    {
+      "id": "cycle-bulletin-b",
+      "version_id": "cycle-bulletin-b-v1",
+      "source_id": "commentary-network",
+      "provider_version": "bulletin-b-1",
+      "origin_class": "simulation",
+      "review_status": "unreviewed",
+      "availability": "available",
+      "lifecycle_state": "active",
+      "predecessor_version_id": null,
+      "event_time": null,
+      "publication_time": "2026-10-06T11:00:00Z",
+      "retrieval_time": "2026-10-06T12:05:00Z",
+      "unknown_time_reason": "bulletin omits primary event time",
+      "retention": "retained",
+      "omission_reason": null,
+      "pages": [
+        {
+          "number": 1,
+          "artifact_id": "cycle-node-b.txt",
+          "expected_extraction": "text_available"
+        }
+      ]
+    },
+    {
+      "id": "cycle-review-c",
+      "version_id": "cycle-review-c-v1",
+      "source_id": "commentary-network",
+      "provider_version": "review-c-1",
+      "origin_class": "simulation",
+      "review_status": "unreviewed",
+      "availability": "available",
+      "lifecycle_state": "active",
+      "predecessor_version_id": null,
+      "event_time": null,
+      "publication_time": "2026-10-06T11:30:00Z",
+      "retrieval_time": "2026-10-06T12:10:00Z",
+      "unknown_time_reason": "review omits primary event time",
+      "retention": "retained",
+      "omission_reason": null,
+      "pages": [
+        {
+          "number": 1,
+          "artifact_id": "cycle-node-c.txt",
+          "expected_extraction": "text_available"
+        }
+      ]
+    },
+    {
+      "id": "foia-case-2024-09",
+      "version_id": "foia-release-2024-v1",
+      "source_id": "foia-reading-room",
+      "provider_version": "release-2024-redacted",
+      "origin_class": "simulation",
+      "review_status": "unreviewed",
+      "availability": "available",
+      "lifecycle_state": "active",
+      "predecessor_version_id": null,
+      "event_time": null,
+      "publication_time": "2024-11-15T00:00:00Z",
+      "retrieval_time": "2026-10-01T00:00:00Z",
+      "unknown_time_reason": "underlying incident date redacted in 2024 release",
+      "retention": "retained",
+      "omission_reason": null,
+      "pages": [
+        {
+          "number": 1,
+          "artifact_id": "foia-release-2024-redacted.txt",
+          "expected_extraction": "text_available"
+        }
+      ]
+    },
+    {
+      "id": "foia-case-2024-09",
+      "version_id": "foia-release-2026-v1",
+      "source_id": "foia-reading-room",
+      "provider_version": "release-2026-declassified",
+      "origin_class": "simulation",
+      "review_status": "unreviewed",
+      "availability": "available",
+      "lifecycle_state": "active",
+      "predecessor_version_id": "foia-release-2024-v1",
+      "event_time": null,
+      "publication_time": "2026-08-20T00:00:00Z",
+      "retrieval_time": "2026-10-01T00:05:00Z",
+      "unknown_time_reason": "underlying incident date not stated in release header",
+      "retention": "retained",
+      "omission_reason": null,
+      "pages": [
+        {
+          "number": 1,
+          "artifact_id": "foia-release-2026-declassified.txt",
+          "expected_extraction": "text_available"
+        }
+      ]
+    },
+    {
+      "id": "foia-case-2024-09-partner",
+      "version_id": "foia-release-partner-v1",
+      "source_id": "partner-reading-room",
+      "provider_version": "partner-release-2025",
+      "origin_class": "simulation",
+      "review_status": "unreviewed",
+      "availability": "available",
+      "lifecycle_state": "active",
+      "predecessor_version_id": null,
+      "event_time": null,
+      "publication_time": "2025-03-10T00:00:00Z",
+      "retrieval_time": "2026-10-01T00:10:00Z",
+      "unknown_time_reason": "underlying incident date not stated in partner release",
+      "retention": "retained",
+      "omission_reason": null,
+      "pages": [
+        {
+          "number": 1,
+          "artifact_id": "foia-release-partner-redacted.txt",
+          "expected_extraction": "text_available"
+        }
+      ]
+    },
+    {
+      "id": "calibration-advisory",
+      "version_id": "retracted-advisory-v1",
+      "source_id": "calibration-board",
+      "provider_version": "advisory-2026-07-v1",
+      "origin_class": "simulation",
+      "review_status": "unreviewed",
+      "availability": "available",
+      "lifecycle_state": "retracted",
+      "predecessor_version_id": null,
+      "event_time": null,
+      "publication_time": "2026-10-02T14:00:00Z",
+      "retrieval_time": "2026-10-02T15:00:00Z",
+      "unknown_time_reason": "advisory covers bench calibration rather than field event",
+      "retention": "retained",
+      "omission_reason": null,
+      "pages": [
+        {
+          "number": 1,
+          "artifact_id": "retracted-advisory-v1.txt",
+          "expected_extraction": "text_available"
+        }
+      ]
+    },
+    {
+      "id": "calibration-advisory-retraction",
+      "version_id": "retraction-notice-v2",
+      "source_id": "calibration-board",
+      "provider_version": "advisory-2026-07-retraction",
+      "origin_class": "simulation",
+      "review_status": "unreviewed",
+      "availability": "available",
+      "lifecycle_state": "active",
+      "predecessor_version_id": "retracted-advisory-v1",
+      "event_time": null,
+      "publication_time": "2026-10-07T09:30:00Z",
+      "retrieval_time": "2026-10-07T10:00:00Z",
+      "unknown_time_reason": "retraction notice timestamped by publication only",
+      "retention": "retained",
+      "omission_reason": null,
+      "pages": [
+        {
+          "number": 1,
+          "artifact_id": "retraction-notice-v2.txt",
+          "expected_extraction": "text_available"
+        }
+      ]
+    },
+    {
+      "id": "municipal-weather-notice",
+      "version_id": "removed-endpoint-v1",
+      "source_id": "municipal-portal",
+      "provider_version": "notice-2026-44",
+      "origin_class": "simulation",
+      "review_status": "unreviewed",
+      "availability": "removed",
+      "lifecycle_state": "active",
+      "predecessor_version_id": null,
+      "event_time": null,
+      "publication_time": "2026-10-01T08:00:00Z",
+      "retrieval_time": "2026-10-01T08:30:00Z",
+      "unknown_time_reason": "scheduled window omitted in notice snapshot",
+      "retention": "retained",
+      "omission_reason": null,
+      "pages": [
+        {
+          "number": 1,
+          "artifact_id": "removed-endpoint-v1.txt",
+          "expected_extraction": "text_available"
+        }
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "from": "dispatch-mirror-v1",
+      "to": "dispatch-primary-v1",
+      "kind": "republishes"
+    },
+    {
+      "from": "dispatch-primary-v2",
+      "to": "dispatch-primary-v1",
+      "kind": "supersedes"
+    },
+    {
+      "from": "regional-digest-v1",
+      "to": "dispatch-mirror-v1",
+      "kind": "quotes"
+    },
+    {
+      "from": "cycle-memo-a-v1",
+      "to": "cycle-bulletin-b-v1",
+      "kind": "cites"
+    },
+    {
+      "from": "cycle-bulletin-b-v1",
+      "to": "cycle-review-c-v1",
+      "kind": "quotes"
+    },
+    {
+      "from": "cycle-review-c-v1",
+      "to": "cycle-memo-a-v1",
+      "kind": "cites"
+    },
+    {
+      "from": "foia-release-2026-v1",
+      "to": "foia-release-2024-v1",
+      "kind": "alternate_redaction"
+    },
+    {
+      "from": "foia-release-partner-v1",
+      "to": "foia-release-2024-v1",
+      "kind": "alternate_redaction"
+    },
+    {
+      "from": "retraction-notice-v2",
+      "to": "retracted-advisory-v1",
+      "kind": "retracted_by"
+    }
+  ],
+  "derivations": [
+    {
+      "version_id": "claim-bearing-045-v1",
+      "object_type": "ExtractedClaim",
+      "origin_class": "extracted_claim",
+      "review_status": "unreviewed",
+      "derived_from": [
+        "dispatch-primary-v1"
+      ],
+      "description": "Extracted bearing 045 deg claim from Edition 1"
+    },
+    {
+      "version_id": "summary-coastal-track-v1",
+      "object_type": "CitedSummary",
+      "origin_class": "analytical_inference",
+      "review_status": "reviewed",
+      "derived_from": [
+        "claim-bearing-045-v1",
+        "harbor-radar-log-v1"
+      ],
+      "description": "Synthesized coastal track summary citing Edition 1 claim and harbor log"
+    },
+    {
+      "version_id": "report-coastal-dossier-v1",
+      "object_type": "Report",
+      "origin_class": "analytical_inference",
+      "review_status": "reviewed",
+      "issued": true,
+      "derived_from": [
+        "summary-coastal-track-v1"
+      ],
+      "description": "Issued report snapshot pinning summary-coastal-track-v1"
+    },
+    {
+      "version_id": "claim-sensor-fault-v1",
+      "object_type": "ExtractedClaim",
+      "origin_class": "extracted_claim",
+      "review_status": "unreviewed",
+      "derived_from": [
+        "retracted-advisory-v1"
+      ],
+      "description": "Claim attributing anomaly to sensor latch fault from Advisory 2026-07"
+    },
+    {
+      "version_id": "summary-foia-overview-v1",
+      "object_type": "CitedSummary",
+      "origin_class": "analytical_inference",
+      "review_status": "unreviewed",
+      "derived_from": [
+        "foia-release-2024-v1",
+        "removed-endpoint-v1"
+      ],
+      "description": "Summary of 2024 FOIA release and retained municipal notice snapshot"
+    }
+  ],
+  "expectations": {
+    "exact_duplicate_groups": [
+      {
+        "artifact_id": "dispatch-root-v1.txt",
+        "sha256": "8a4f33b3889b6650f1d36d1843d05fdb86edc297c013b5cbc9006358b4391539",
+        "member_record_versions": [
+          "dispatch-primary-v1",
+          "dispatch-mirror-v1"
+        ],
+        "distinct_source_ids": [
+          "archive-alpha",
+          "mirror-beta"
+        ]
+      }
+    ],
+    "citations": [
+      {
+        "record_version_id": "dispatch-primary-v1",
+        "artifact_id": "dispatch-root-v1.txt",
+        "page": 1,
+        "anchor_kind": "utf8_byte_range",
+        "start": 108,
+        "end": 171,
+        "quote": "Optical track bearing 045 deg true over synthetic sector Alpha."
+      },
+      {
+        "record_version_id": "dispatch-primary-v2",
+        "artifact_id": "dispatch-root-v2-corrected.txt",
+        "page": 1,
+        "anchor_kind": "utf8_byte_range",
+        "start": 120,
+        "end": 198,
+        "quote": "Correction: Optical track bearing 054 deg true after magnetic declination fix."
+      },
+      {
+        "record_version_id": "regional-digest-v1",
+        "artifact_id": "syndicated-quote-v1.txt",
+        "page": 1,
+        "anchor_kind": "utf8_byte_range",
+        "start": 138,
+        "end": 203,
+        "quote": "\"Optical track bearing 045 deg true over synthetic sector Alpha.\""
+      },
+      {
+        "record_version_id": "harbor-radar-log-v1",
+        "artifact_id": "independent-log-v1.txt",
+        "page": 1,
+        "anchor_kind": "utf8_byte_range",
+        "start": 108,
+        "end": 190,
+        "quote": "Visual log recorded luminous transit along bearing 053 deg true from pier station."
+      },
+      {
+        "record_version_id": "retracted-advisory-v1",
+        "artifact_id": "retracted-advisory-v1.txt",
+        "page": 1,
+        "anchor_kind": "utf8_byte_range",
+        "start": 100,
+        "end": 169,
+        "quote": "Anomaly attributed to thermal sensor latch fault in synthetic unit 4."
+      },
+      {
+        "record_version_id": "retraction-notice-v2",
+        "artifact_id": "retraction-notice-v2.txt",
+        "page": 1,
+        "anchor_kind": "utf8_byte_range",
+        "start": 117,
+        "end": 205,
+        "quote": "Retracts Advisory 2026-07; bench test confirmed thermal sensor latch operated nominally."
+      }
+    ],
+    "release_comparisons": [
+      {
+        "comparison_id": "foia-2024-vs-2026",
+        "left_record_version_id": "foia-release-2024-v1",
+        "right_record_version_id": "foia-release-2026-v1",
+        "forbidden_cleartext_in_left": [
+          "Sector-7 Telemetry"
+        ],
+        "segments": [
+          {
+            "page": 1,
+            "segment_kind": "unchanged_unredacted",
+            "left_byte_range": [
+              52,
+              99
+            ],
+            "right_byte_range": [
+              52,
+              99
+            ],
+            "left_text": "Document: Declassification Review Case 2024-09\n",
+            "right_text": "Document: Declassification Review Case 2024-09\n"
+          },
+          {
+            "page": 1,
+            "segment_kind": "newly_disclosed_in_right",
+            "left_byte_range": [
+              105,
+              142
+            ],
+            "right_byte_range": [
+              105,
+              123
+            ],
+            "left_text": "[REDACTED PER EXEMPTION B1: 18 CHARS]",
+            "right_text": "Sector-7 Telemetry"
+          },
+          {
+            "page": 1,
+            "segment_kind": "unchanged_unredacted",
+            "left_byte_range": [
+              152,
+              179
+            ],
+            "right_byte_range": [
+              133,
+              160
+            ],
+            "left_text": "Operator Callsign Kestrel-4",
+            "right_text": "Operator Callsign Kestrel-4"
+          },
+          {
+            "page": 1,
+            "segment_kind": "differently_redacted",
+            "left_byte_range": [
+              188,
+              201
+            ],
+            "right_byte_range": [
+              169,
+              191
+            ],
+            "left_text": "[REDACTED B1]",
+            "right_text": "[WITHHELD SECTION 3.2]"
+          }
+        ]
+      },
+      {
+        "comparison_id": "foia-2024-vs-partner",
+        "left_record_version_id": "foia-release-2024-v1",
+        "right_record_version_id": "foia-release-partner-v1",
+        "forbidden_cleartext_in_left": [
+          "Sector-7 Telemetry"
+        ],
+        "segments": [
+          {
+            "page": 1,
+            "segment_kind": "unchanged_unredacted",
+            "left_byte_range": [
+              52,
+              99
+            ],
+            "right_byte_range": [
+              52,
+              99
+            ],
+            "left_text": "Document: Declassification Review Case 2024-09\n",
+            "right_text": "Document: Declassification Review Case 2024-09\n"
+          },
+          {
+            "page": 1,
+            "segment_kind": "unchanged_unredacted",
+            "left_byte_range": [
+              105,
+              142
+            ],
+            "right_byte_range": [
+              105,
+              142
+            ],
+            "left_text": "[REDACTED PER EXEMPTION B1: 18 CHARS]",
+            "right_text": "[REDACTED PER EXEMPTION B1: 18 CHARS]"
+          },
+          {
+            "page": 1,
+            "segment_kind": "newly_redacted_in_right",
+            "left_byte_range": [
+              152,
+              179
+            ],
+            "right_byte_range": [
+              152,
+              187
+            ],
+            "left_text": "Operator Callsign Kestrel-4",
+            "right_text": "[REDACTED PER PARTNER PRIVACY RULE]"
+          },
+          {
+            "page": 1,
+            "segment_kind": "differently_redacted",
+            "left_byte_range": [
+              188,
+              201
+            ],
+            "right_byte_range": [
+              196,
+              218
+            ],
+            "left_text": "[REDACTED B1]",
+            "right_text": "[WITHHELD SECTION 3.2]"
+          }
+        ]
+      }
+    ],
+    "corroboration_queries": [
+      {
+        "query_id": "coastal-transit-corroboration",
+        "citing_inputs": [
+          "dispatch-primary-v1",
+          "dispatch-mirror-v1",
+          "regional-digest-v1",
+          "harbor-radar-log-v1",
+          "cycle-memo-a-v1",
+          "cycle-bulletin-b-v1",
+          "cycle-review-c-v1",
+          "summary-coastal-track-v1"
+        ],
+        "expected_supporting_record_versions": [
+          "cycle-bulletin-b-v1",
+          "cycle-memo-a-v1",
+          "cycle-review-c-v1",
+          "dispatch-mirror-v1",
+          "dispatch-primary-v1",
+          "harbor-radar-log-v1",
+          "regional-digest-v1"
+        ],
+        "expected_excluded_derivative_runs": [
+          "summary-coastal-track-v1"
+        ],
+        "expected_circular_only_record_versions": [
+          "cycle-bulletin-b-v1",
+          "cycle-memo-a-v1",
+          "cycle-review-c-v1"
+        ],
+        "expected_cycle_witness": [
+          "cycle-bulletin-b-v1",
+          "cycle-review-c-v1",
+          "cycle-memo-a-v1",
+          "cycle-bulletin-b-v1"
+        ],
+        "expected_independent_supporting_roots": [
+          "dispatch-primary-v1",
+          "harbor-radar-log-v1"
+        ],
+        "expected_independent_root_count": 2,
+        "earliest_known_source_view": {
+          "resolution": "ambiguous_candidates",
+          "earliest_dated_root": "dispatch-primary-v1",
+          "undated_candidate_roots": [
+            "harbor-radar-log-v1"
+          ],
+          "coverage_qualification": {
+            "scope": "retained_and_cataloged_workspace_records",
+            "omitted_reference_only_records": [
+              "restricted-deck-log-v1"
+            ],
+            "detected_cycle_count": 1
+          }
+        }
+      }
+    ],
+    "invalidation_propagation": {
+      "needs_reassessment": [
+        {
+          "target_version_id": "claim-bearing-045-v1",
+          "trigger_record_version_id": "dispatch-primary-v1",
+          "replacement_record_version_id": "dispatch-primary-v2",
+          "reason": "source_corrected",
+          "preserve_old_citations": true
+        },
+        {
+          "target_version_id": "summary-coastal-track-v1",
+          "trigger_record_version_id": "dispatch-primary-v1",
+          "replacement_record_version_id": "dispatch-primary-v2",
+          "reason": "source_corrected",
+          "preserve_old_citations": true
+        },
+        {
+          "target_version_id": "report-coastal-dossier-v1",
+          "trigger_record_version_id": "dispatch-primary-v1",
+          "replacement_record_version_id": "dispatch-primary-v2",
+          "reason": "source_corrected",
+          "preserve_old_citations": true
+        },
+        {
+          "target_version_id": "claim-sensor-fault-v1",
+          "trigger_record_version_id": "retracted-advisory-v1",
+          "replacement_record_version_id": "retraction-notice-v2",
+          "reason": "source_retracted",
+          "preserve_old_citations": true
+        }
+      ],
+      "unaffected_fresh_versions": [
+        "summary-foia-overview-v1"
+      ],
+      "removed_not_auto_retracted_record_versions": [
+        "removed-endpoint-v1"
+      ]
+    }
+  }
+}

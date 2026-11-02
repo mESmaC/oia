@@ -1,0 +1,9 @@
+SYNTHETIC A06 FIXTURE - NOT OBSERVED EVIDENCE
+PELAGIC MARITIME SAFETY DIRECTORATE (SYNTHETIC) -- CORAL ARCHIPELAGO HYDROGRAPHIC NOTICE SYNTH-NOTICE-CA-0041
+ORIGIN URL: https://nav-notices.pelagic.invalid/ca/SYNTH-NOTICE-CA-0041
+ISSUED: 2024-03-14T22:00:00Z (12:00 UTC-10:00)
+EFFECTIVE WINDOW: 2024-03-15T18:00:00Z TO 2024-03-16T04:00:00Z
+
+1. PLANNED ACTIVITY: Synthetic acoustic beacon and optical range calibration exercise in fictional Offshore Calibration Box CX-9 (bounding polygon: 21.850N 158.450W; 21.850N 158.950W; 21.400N 158.950W; 21.400N 158.450W; WGS84, surface to 1500m MSL).
+2. ASSETS: Two synthetic range-support tenders and one calibration target barge will transit from Solace Anchorage to Offshore Calibration Box CX-9 prior to 2024-03-15T17:30:00Z.
+3. MARITIME IMPACT: Routine offshore calibration only. Commercial shipping lanes and Vesper Harbor approaches on fictional Kestrel Atoll remain open. Vessel movement to Calibration Box CX-9 is a scheduled sensor calibration plan and does not establish an operational blockade or exclusion zone.

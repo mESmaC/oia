@@ -1,4 +1,4 @@
-# ADR 0005: First Lean 4 Verification Target and Rust Correspondence Method (D13)
+# ADR 0008: First Lean 4 Verification Target and Rust Correspondence Method (D13)
 
 - **Date:** 2026-11-01
 - **Status:** Accepted for P0

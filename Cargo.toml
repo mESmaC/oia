@@ -13,6 +13,7 @@ members = [
     "crates/oia-forecast",
     "crates/oia-export",
     "crates/oia-app",
+    "crates/oia-documents",
 ]
 
 [workspace.package]

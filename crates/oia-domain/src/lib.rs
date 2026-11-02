@@ -5,6 +5,7 @@
 //! provenance graphs, and content hashes follow in `#10`.
 
 pub mod ids;
+pub mod witness;
 
 pub use ids::{ActorId, IdError, MAX_ID_LEN, OpaqueId, SchemaVersion, VersionId};
 

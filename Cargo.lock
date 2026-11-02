@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "oia-alpr-map"
+version = "0.1.0"
+
+[[package]]
 name = "oia-analysis"
 version = "0.1.0"
 dependencies = [

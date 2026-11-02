@@ -1,0 +1,198 @@
+{
+  "schema": "oia.alpr.overpass-fixture.v1",
+  "origin": "synthetic-fixture",
+  "synthetic": true,
+  "description": "Synthetic New Meridian corridor OpenStreetMap ALPR / Flock camera fixture covering manufacturer classes, bearing edge cases, semicolon surveillance:type values, check_date vs osm_timestamp provenance, and synthetic markers.",
+  "viewport": {
+    "south": 37.605,
+    "west": -121.915,
+    "north": 37.635,
+    "east": -121.875
+  },
+  "elements": [
+    {
+      "type": "node",
+      "id": 900000000101,
+      "synthetic": true,
+      "lat": 37.6172,
+      "lon": -121.8931,
+      "timestamp": "2026-10-18T14:22:10Z",
+      "tags": {
+        "man_made": "surveillance",
+        "surveillance:type": "ALPR",
+        "manufacturer": "Flock Safety",
+        "model": "Falcon",
+        "operator": "New Meridian Municipal Transit Authority (Synthetic)",
+        "camera:type": "fixed",
+        "camera:direction": "180",
+        "surveillance:zone": "traffic",
+        "ref": "SYNTH-NM-001",
+        "check_date": "2026-09-14",
+        "source": "synthetic_fixture",
+        "contact:website": "https://transit.new-meridian.invalid/cameras/synth-nm-001",
+        "note": "SYNTHETIC FIXTURE - NOT OBSERVED",
+        "oia:synthetic": "true"
+      }
+    },
+    {
+      "type": "node",
+      "id": 900000000102,
+      "synthetic": true,
+      "lat": 37.6247,
+      "lon": -121.8904,
+      "timestamp": "2026-10-19T08:11:00Z",
+      "tags": {
+        "man_made": "surveillance",
+        "surveillance:type": "camera;ALPR",
+        "manufacturer": "Flock Safety",
+        "operator": "Aegis Harbor District Patrol (Synthetic)",
+        "camera:type": "fixed",
+        "camera:direction": "360",
+        "surveillance:zone": "street",
+        "ref": "SYNTH-NM-002",
+        "survey:date": "2026-08-29",
+        "note": "SYNTHETIC FIXTURE - NOT OBSERVED",
+        "oia:synthetic": "true"
+      }
+    },
+    {
+      "type": "node",
+      "id": 900000000103,
+      "synthetic": true,
+      "lat": 37.6138,
+      "lon": -121.9022,
+      "timestamp": "2026-10-21T19:45:33Z",
+      "tags": {
+        "man_made": "surveillance",
+        "surveillance:type": "ALPR",
+        "manufacturer": "Flock Safety",
+        "operator": "Kestrel Commons Commercial HOA (Synthetic)",
+        "camera:type": "fixed",
+        "camera:direction": "   ",
+        "surveillance:zone": "parking",
+        "ref": "SYNTH-NM-003",
+        "note": "SYNTHETIC FIXTURE - NOT OBSERVED",
+        "oia:synthetic": "true"
+      }
+    },
+    {
+      "type": "node",
+      "id": 900000000104,
+      "synthetic": true,
+      "lat": 37.6212,
+      "lon": -121.8841,
+      "timestamp": "2026-10-22T03:10:05Z",
+      "tags": {
+        "man_made": "surveillance",
+        "surveillance:type": "alpr",
+        "manufacturer": "Flock Safety",
+        "operator": "New Meridian Municipal Transit Authority (Synthetic)",
+        "camera:type": "fixed",
+        "direction": "265",
+        "surveillance:zone": "traffic",
+        "ref": "SYNTH-NM-004",
+        "check_date": "2026-10-02",
+        "note": "SYNTHETIC FIXTURE - NOT OBSERVED",
+        "oia:synthetic": "true"
+      }
+    },
+    {
+      "type": "node",
+      "id": 900000000105,
+      "synthetic": true,
+      "lat": 37.6291,
+      "lon": -121.8878,
+      "timestamp": "2026-10-25T11:04:19Z",
+      "tags": {
+        "man_made": "surveillance",
+        "surveillance:type": "ALPR",
+        "manufacturer": "Motorola Solutions / Vigilant",
+        "operator": "North Spire Institute Safety (Synthetic)",
+        "camera:type": "fixed",
+        "camera:direction": "95",
+        "surveillance:zone": "traffic",
+        "ref": "SYNTH-NM-005",
+        "check_date": "2026-07-19",
+        "note": "SYNTHETIC FIXTURE - NOT OBSERVED",
+        "oia:synthetic": "true"
+      }
+    },
+    {
+      "type": "node",
+      "id": 900000000106,
+      "synthetic": true,
+      "lat": 37.6104,
+      "lon": -121.8889,
+      "timestamp": "2026-10-26T16:30:00Z",
+      "tags": {
+        "man_made": "surveillance",
+        "surveillance:type": "ALPR",
+        "manufacturer": "Genetec AutoVu",
+        "operator": "Vanguard Plaza Parking Cooperative (Synthetic)",
+        "camera:type": "fixed",
+        "camera:direction": "45",
+        "surveillance:zone": "parking",
+        "ref": "SYNTH-NM-006",
+        "note": "SYNTHETIC FIXTURE - NOT OBSERVED",
+        "oia:synthetic": "true"
+      }
+    },
+    {
+      "type": "node",
+      "id": 900000000107,
+      "synthetic": true,
+      "lat": 37.6189,
+      "lon": -121.9074,
+      "timestamp": "2026-10-28T22:15:42Z",
+      "tags": {
+        "man_made": "surveillance",
+        "surveillance:type": "ALPR",
+        "camera:type": "fixed",
+        "camera:direction": "125",
+        "surveillance:zone": "traffic",
+        "ref": "SYNTH-NM-007",
+        "source": "synthetic_fixture",
+        "note": "SYNTHETIC FIXTURE - NOT OBSERVED",
+        "oia:synthetic": "true"
+      }
+    },
+    {
+      "type": "node",
+      "id": 900000000108,
+      "synthetic": true,
+      "lat": 37.6264,
+      "lon": -121.8995,
+      "timestamp": "2026-10-29T09:05:12Z",
+      "tags": {
+        "man_made": "surveillance",
+        "surveillance:type": "ALPR",
+        "manufacturer": "Flock Safety",
+        "operator": "Solstice Ridge Civic Association (Synthetic)",
+        "camera:type": "fixed",
+        "camera:direction": "NE",
+        "surveillance:zone": "street",
+        "ref": "SYNTH-NM-008",
+        "check_date": "2026-10-11",
+        "note": "SYNTHETIC FIXTURE - NOT OBSERVED",
+        "oia:synthetic": "true"
+      }
+    },
+    {
+      "type": "node",
+      "id": 900000000199,
+      "synthetic": true,
+      "lat": 37.6161,
+      "lon": -121.8922,
+      "timestamp": "2026-10-30T12:00:00Z",
+      "tags": {
+        "man_made": "surveillance",
+        "surveillance:type": "camera",
+        "operator": "New Meridian Regional Roadway Authority (Synthetic)",
+        "camera:direction": "90",
+        "ref": "SYNTH-NM-199",
+        "note": "SYNTHETIC FIXTURE - NOT OBSERVED",
+        "oia:synthetic": "true"
+      }
+    }
+  ]
+}

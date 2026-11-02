@@ -197,5 +197,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             row.vintage_number, row.forecast_version, row.brier_scores, row.horizon_timing
         );
     }
+    println!("Synthetic fixture reliability; descriptive vintage counts, not a calibration claim.");
+    for version in ["eval:a15-briefing:v1", "eval:a15-briefing:v2"] {
+        let report = ledger.reliability_report(&VersionId::new(version)?, 4, 10)?;
+        println!(
+            "reliability {} needs_reassessment={}",
+            report.evaluation.evaluation_version, report.evaluation.needs_reassessment
+        );
+        for (label, bins) in [
+            ("forecast", &report.forecast_bins),
+            ("baseline", &report.baseline_bins),
+        ] {
+            for bin in bins {
+                println!(
+                    "{label} [{:.2}, {:.2}{} counts={:?} statistics={:?}",
+                    bin.lower,
+                    bin.upper,
+                    if bin.upper_inclusive { "]" } else { ")" },
+                    bin.counts,
+                    bin.statistics
+                );
+            }
+        }
+    }
     Ok(())
 }

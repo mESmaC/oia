@@ -1,6 +1,8 @@
-//! `oia-analysis` — Composed analysis, reasoning, and lineage boundary stub (`#9`).
+//! `oia-analysis` — Analysis boundary with a local records-request drafting kernel.
 //!
-//! Full implementation follows in `#14` and P4 (`#35`–`#37`).
+//! Service integration and composed reasoning follow in `#14` and P4 (`#35`–`#37`).
+
+pub mod records_request;
 
 /// Crate boundary marker for `oia-analysis` (`docs/architecture.md` §1.2, `#9`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

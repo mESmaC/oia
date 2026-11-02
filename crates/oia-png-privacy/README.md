@@ -11,8 +11,8 @@ The kernel has no filesystem, network, model, storage or publication authority.
 A successful transformation is **not** a claim of anonymity, full PNG decoding,
 complete metadata removal, or passing integrated A18 acceptance.
 
-This package is a temporary standalone validation harness, not an additional
-accepted workspace boundary. Integrate the module into the agreed oia-media
-owner after #30/#22 prerequisites are available; do not copy unmerged P0 code.
-The local Cargo.lock is for these standalone checks only. On integration, use
-Cargo to update the root workspace lockfile instead of copying this lockfile.
+This package is a workspace validation harness for the PNG container privacy
+kernel (synthetic example: `clean-png-fixture`), not an additional accepted
+service boundary. Integrate the module into the agreed `oia-media` owner after
+`#30`/`#22` prerequisites are available; do not copy unmerged P0 code.
+Dependency locking is managed by the root workspace `Cargo.lock`.

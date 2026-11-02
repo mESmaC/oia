@@ -285,7 +285,7 @@ with an opaque body.
 ### Independent reference check
 
 [reference_check.py](../../crates/oia-jpeg-privacy/tests/reference_check.py)
-runs the synthetic-only `clean-fixture` example. It reads no user file and
+runs the synthetic-only `clean-jpeg-fixture` example. It reads no user file and
 exports nothing. It then:
 
 1. walks the original and the Rust-produced candidate with a separately written

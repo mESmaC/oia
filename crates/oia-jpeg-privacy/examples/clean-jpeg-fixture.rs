@@ -7,7 +7,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let hex = match std::env::args().nth(1).as_deref() {
         None => include_str!("../tests/fixtures/baseline.hex"),
         Some("progressive") => include_str!("../tests/fixtures/progressive.hex"),
-        Some(_) => return Err("usage: clean-fixture [progressive]".into()),
+        Some(_) => return Err("usage: clean-jpeg-fixture [progressive]".into()),
     }
     .trim();
     if !hex.len().is_multiple_of(2) {

@@ -182,7 +182,7 @@ and after, every chunk CRC and retained wire byte, target absence and decoded
 pixel equality. This is evidence for this synthetic fixture only, not complete
 independent parser coverage for all admitted inputs or a perceptual proof.
 The checker requires Python 3.12 and Pillow 12.3.0 in the development environment;
-it executes the synthetic-only clean-fixture example and does not export user
+it executes the synthetic-only clean-png-fixture example and does not export user
 files. For rgba.hex the candidate is 132 bytes (original: 232), with the three
 selected containers absent and both decoded pixels and all retained chunk bytes
 identical. For rgba-exif.hex (296 bytes) the four selected containers are absent,

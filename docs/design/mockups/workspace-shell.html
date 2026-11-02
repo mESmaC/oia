@@ -2,374 +2,421 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>OIA workspace shell — design mockup (fixture data)</title>
+<title>OIA workspace — interactive fixture prototype</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-/* OIA workspace shell mockup. Static page, no application behind it. Every value shown is fixture content.
-   Tokens follow docs/design/workspace-ui-ux.md §7. Layout follows §3: a full-bleed black evidence canvas with
-   floating glass instruments, in the manner of God's Eye View's shell (see §7.7), not a tiled grid of panels. */
+/* Dependency-free design prototype. No application services or persisted case data. */
 :root {
-  --canvas: #000000;
-  --canvas-raised: #07090c;
-  --glass-1: rgba(6, 9, 12, 0.66);
-  --glass-2: rgba(8, 12, 16, 0.80);
-  --glass-3: rgba(10, 14, 19, 0.94);
-  --line: rgba(255, 255, 255, 0.08);
-  --line-strong: rgba(255, 255, 255, 0.18);
+  color-scheme: dark;
+  --canvas: #000;
+  --glass: rgba(10, 15, 20, .88);
+  --solid: #0c1219;
+  --line: #344451;
   --text: #e6edf3;
-  --text-2: rgba(230, 237, 243, 0.55);
-  --text-3: rgba(230, 237, 243, 0.32);
+  --muted: #a2b0bc;
   --cyan: #45d1ff;
-  --cyan-dim: rgba(69, 209, 255, 0.16);
-  --cyan-glow: rgba(69, 209, 255, 0.35);
-  --green: #5fe08a;
-  --amber: #f59e2e;
-  --red: #ff6b6b;
-  --violet: #b59cff;
-  --grid: rgba(69, 209, 255, 0.05);
+  --amber: #ffc06b;
+  --violet: #c4b1ff;
   --blur: 18px;
-  --radius: 14px;
-  --dur-1: 120ms;
-  --dur-2: 200ms;
-  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
-  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+  --duration: 120ms;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
-@media (prefers-reduced-transparency: reduce) { :root { --glass-1: #0a0d11; --glass-2: #0c1014; --glass-3: #0e1318; --blur: 0px; } }
-:root[data-reduce-transparency="true"] { --glass-1: #0a0d11; --glass-2: #0c1014; --glass-3: #0e1318; --blur: 0px; }
-@media (prefers-reduced-motion: reduce) { :root { --dur-1: 0ms; --dur-2: 0ms; } }
-:root[data-reduce-motion="true"] { --dur-1: 0ms; --dur-2: 0ms; }
-
+@media (prefers-reduced-transparency: reduce) { :root { --glass: var(--solid); --blur: 0px; } }
+:root[data-reduce-transparency="true"] { --glass: var(--solid); --blur: 0px; }
+@media (prefers-reduced-motion: reduce) { :root { --duration: 0ms; } }
+:root[data-reduce-motion="true"] { --duration: 0ms; }
 * { box-sizing: border-box; }
-html, body { margin: 0; }
-body { background: var(--canvas); color: var(--text); font: 13px/1.4 var(--sans); -webkit-font-smoothing: antialiased; }
-
-/* Stage: 1440×900. The canvas fills it; instruments float over it. */
-.stage { position: relative; width: 1440px; height: 900px; margin: 0 auto; overflow: hidden; background: var(--canvas); }
-.stage::before { /* fine technical grid, decoration only */
-  content: ""; position: absolute; inset: 0; pointer-events: none;
-  background:
-    repeating-linear-gradient(0deg, var(--grid) 0 1px, transparent 1px 60px),
-    repeating-linear-gradient(90deg, var(--grid) 0 1px, transparent 1px 60px);
-  mask-image: radial-gradient(900px 600px at 50% 50%, #000 40%, transparent 100%);
-  -webkit-mask-image: radial-gradient(900px 600px at 50% 50%, #000 40%, transparent 100%);
-}
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--canvas); color: var(--text); font: 14px/1.5 var(--sans); }
+button, input, summary { font: inherit; }
+button, summary { cursor: pointer; }
+button { color: var(--text); background: #111b24; border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; min-height: 42px; transition: border-color var(--duration); }
+button:hover { border-color: var(--cyan); }
+button:disabled { color: var(--muted); cursor: not-allowed; }
+button[aria-pressed="true"], button[aria-selected="true"], button[aria-current="page"], .primary { border-color: var(--cyan); background: #102b36; }
+:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+a { color: var(--cyan); }
+h1, h2, h3, p { margin: 0; }
+h1 { font-size: 19px; line-height: 1.35; font-weight: 550; }
+h2 { font-size: 16px; font-weight: 550; }
+h3 { font-size: 14px; }
+small, .muted { color: var(--muted); }
+small { font-size: 12px; }
+.k { font: 500 11px/1.5 var(--mono); letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
+.mono, .v { font-family: var(--mono); }
+.glass { background: var(--glass); backdrop-filter: blur(var(--blur)); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 10px 30px #0008; }
+.badge { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 20px; padding: 3px 9px; font-size: 12px; }
+.badge.warn { color: var(--amber); }
+.badge.fixture-badge { color: var(--violet); border-style: dashed; }
+.row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.stack { display: grid; gap: 12px; }
+.skip { position: fixed; top: -100px; left: 12px; z-index: 100; background: var(--solid); padding: 12px; }
+.skip:focus { top: 12px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.stage { max-width: 1800px; min-height: 100vh; padding: 16px; margin: auto; display: grid; gap: 16px; grid-template-columns: 132px minmax(0, 1fr) 332px; grid-template-rows: auto auto minmax(420px, 1fr) auto auto; grid-template-areas: "fixture fixture fixture" "identity identity clock" "rail workspace inspector" "rail timeline inspector" "readout dock jobs"; }
+.stage > * { min-width: 0; }
+.fixture { grid-area: fixture; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: center; color: var(--violet); font-size: 12px; }
+.fixture label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); min-height: 32px; }
+.ident { grid-area: identity; display: flex; gap: 18px; align-items: center; }
+.wordmark { color: var(--cyan); font-size: 20px; letter-spacing: .16em; }
+.case { display: grid; gap: 8px; }
+.clock { grid-area: clock; padding: 14px; display: grid; gap: 6px; }
+.clock .v { font-size: 18px; }
+.rail { grid-area: rail; display: grid; align-content: start; gap: 6px; padding: 8px; align-self: start; }
+.rail button { text-align: left; padding: 9px; background: transparent; }
+.rail button span { color: var(--cyan); display: inline-block; width: 20px; }
+.rail small { display: block; font-size: 11px; }
+.rail hr { width: 100%; border: 0; border-top: 1px solid var(--line); }
+.workspace { grid-area: workspace; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.toolbar h2 { margin-right: auto; }
+.account-list { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; }
+.account-list button { text-align: left; padding: 10px; }
+.account-list strong, .account-list small { display: block; }
+.geometry { flex: 1; position: relative; min-height: 380px; overflow: hidden; background: radial-gradient(ellipse at center, #071219 0, #000 70%); border-radius: 12px; }
+.canvas { width: 100%; height: 100%; position: absolute; inset: 0; }
 svg text { font-family: var(--mono); }
-
-/* Type scale */
-.k { font: 500 9px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-2); }
-.v { font: 500 12px/1.2 var(--mono); color: var(--text); }
-.v.big { font-size: 20px; letter-spacing: -0.01em; }
-.dim { color: var(--text-3); }
-.mono { font-family: var(--mono); }
-
-/* Glass */
-.glass { background: var(--glass-1); -webkit-backdrop-filter: blur(var(--blur)); backdrop-filter: blur(var(--blur)); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 10px 30px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05); }
-.glass.strong { background: var(--glass-2); }
-button { font: inherit; color: var(--text); background: rgba(255,255,255,0.04); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; cursor: default; }
-button.primary { border-color: rgba(69,209,255,0.55); background: var(--cyan-dim); box-shadow: 0 0 14px rgba(69,209,255,0.12); }
-button:focus-visible, [tabindex]:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; box-shadow: 0 0 0 2px var(--canvas); }
-
-/* State badges: glyph + label, color as the fourth cue */
-.badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); font: 500 9px/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-2); white-space: nowrap; }
-.badge .g { font-size: 10px; letter-spacing: 0; color: var(--text-2); }
-.badge.ok { border-color: rgba(95,224,138,0.45); } .badge.ok .g { color: var(--green); }
-.badge.warn { border-color: rgba(245,158,46,0.5); } .badge.warn .g { color: var(--amber); }
-.badge.bad { border-color: rgba(255,107,107,0.5); } .badge.bad .g { color: var(--red); }
-.badge.gen { border-color: rgba(181,156,255,0.5); border-style: dashed; } .badge.gen .g { color: var(--violet); }
-.badge.sel { border-color: rgba(69,209,255,0.55); color: var(--text); } .badge.sel .g { color: var(--cyan); }
-
-/* ── Fixture strip (about the page, not the product) ── */
-.fixture { position: absolute; top: 0; left: 50%; transform: translateX(-50%); z-index: 20; padding: 4px 14px; border: 1px dashed rgba(181,156,255,0.6); border-top: 0; border-radius: 0 0 8px 8px; font: 500 9px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--violet); background: rgba(0,0,0,0.7); display: flex; gap: 14px; align-items: center; }
-.fixture label { color: var(--text-2); display: inline-flex; gap: 5px; align-items: center; text-transform: none; letter-spacing: 0.04em; font-family: var(--sans); font-size: 10px; }
-
-/* ── Canvas SVG ── */
-.canvas { position: absolute; inset: 0; }
-
-/* ── Top-left: identity + case ── */
-.ident { position: absolute; left: 24px; top: 22px; z-index: 10; display: grid; gap: 10px; }
-.wordmark { display: flex; align-items: center; gap: 10px; }
-.wordmark .mark { width: 26px; height: 26px; border: 1px solid rgba(69,209,255,0.7); border-radius: 50%; position: relative; box-shadow: 0 0 12px var(--cyan-glow); }
-.wordmark .mark::before { content: ""; position: absolute; inset: 7px; border-radius: 50%; background: var(--cyan); }
-.wordmark .mark::after { content: ""; position: absolute; left: -6px; right: -6px; top: 50%; height: 1px; background: rgba(69,209,255,0.7); }
-.wordmark b { font: 700 14px/1 var(--sans); letter-spacing: 0.22em; }
-.wordmark small { font: 500 9px/1 var(--mono); letter-spacing: 0.14em; color: var(--text-2); margin-left: 4px; }
-.wordmark small i { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--green); margin-right: 5px; vertical-align: 1px; }
-.case { padding: 12px 14px; width: 330px; display: grid; gap: 8px; }
-.case .q { font: 500 14px/1.3 var(--sans); color: var(--text); }
-.case .row { display: flex; gap: 6px; flex-wrap: wrap; }
-
-/* ── Left rail: icons only, labels on hover/focus ── */
-.rail { position: absolute; left: 24px; top: 190px; z-index: 10; padding: 8px 6px; display: grid; gap: 4px; width: 48px; }
-.rail a { position: relative; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 9px; color: var(--text-2); text-decoration: none; font: 500 14px/1 var(--mono); border: 1px solid transparent; }
-.rail a.active { color: var(--cyan); border-color: rgba(69,209,255,0.35); background: var(--cyan-dim); box-shadow: 0 0 12px rgba(69,209,255,0.15); }
-.rail a.off { color: var(--text-3); }
-.rail a .tip { position: absolute; left: 44px; top: 50%; transform: translateY(-50%); padding: 4px 8px; border-radius: 6px; background: var(--glass-3); border: 1px solid var(--line); font: 500 9px/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--text); white-space: nowrap; opacity: 0; pointer-events: none; }
-.rail a:hover .tip, .rail a:focus-visible .tip, .rail a.show .tip { opacity: 1; }
-.rail a .tip small { color: var(--text-3); margin-left: 6px; }
-.rail hr { width: 22px; border: 0; border-top: 1px solid var(--line); margin: 4px auto; }
-
-/* ── Top-right: clock + mode ── */
-.clock { position: absolute; right: 24px; top: 22px; z-index: 10; padding: 10px 14px; display: grid; grid-auto-flow: column; gap: 18px; align-items: end; }
-.clock .cell { display: grid; gap: 5px; }
-.clock .mode { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border: 1px solid var(--line-strong); border-radius: 6px; font: 600 10px/1 var(--mono); letter-spacing: 0.16em; }
-.clock .mode .g { color: var(--text-2); }
-
-/* ── Right inspector ── */
-.inspector { position: absolute; right: 24px; top: 92px; width: 312px; z-index: 10; padding: 12px 14px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; overflow: hidden; }
-.inspector .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin: -4px -4px 0; }
-.inspector .tabs button { background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 8px 7px; white-space: nowrap; font: 500 9px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-2); }
-.inspector .tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--cyan); }
-.kv { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 6px 10px; align-items: center; }
-.kv > span:nth-child(even) { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
-.kv .k { line-height: 1.2; }
-.kv .v { font-size: 11px; }
-.viz { display: grid; gap: 6px; }
-.viz .head { display: flex; justify-content: space-between; align-items: baseline; }
-.legend { display: flex; gap: 10px; flex-wrap: wrap; font: 500 9px/1 var(--mono); letter-spacing: 0.08em; color: var(--text-2); }
-.legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; vertical-align: -1px; margin-right: 5px; }
-.actions { display: flex; gap: 6px; }
-.actions button { font-size: 11px; padding: 5px 9px; }
-
-/* ── Bottom: timeline + command dock + jobs ── */
-.timeline { position: absolute; left: 212px; right: 360px; bottom: 86px; height: 92px; z-index: 10; padding: 10px 16px 8px; display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 18px; align-items: center; }
-.timeline .left { display: grid; gap: 6px; white-space: nowrap; }
-.dock { position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 10; display: flex; align-items: center; gap: 10px; padding: 8px 10px 8px 14px; width: 760px; border-radius: 999px; }
-.dock .scope { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border: 1px solid rgba(69,209,255,0.45); border-radius: 999px; font: 500 9px/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--text); white-space: nowrap; }
-.dock input { flex: 1; background: transparent; border: 0; color: var(--text); font: 13px var(--sans); min-width: 0; }
-.dock input::placeholder { color: var(--text-3); }
-.dock kbd { font: 500 10px/1 var(--mono); color: var(--text-3); border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px; }
-.dock .save { border-radius: 999px; padding: 6px 12px; font-size: 12px; }
-.jobs { position: absolute; right: 24px; bottom: 22px; z-index: 10; padding: 8px 12px; display: grid; gap: 6px; width: 312px; }
-.job { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: center; }
-.job .name { font: 500 11px/1.2 var(--mono); color: var(--text); }
-.job .sub { grid-column: 1 / -1; font: 500 9px/1 var(--mono); letter-spacing: 0.08em; color: var(--text-2); }
-.job .bar { grid-column: 1 / -1; height: 3px; background: rgba(255,255,255,0.08); border-radius: 2px; overflow: hidden; }
-.job .bar i { display: block; height: 100%; background: var(--cyan); }
-.job button { font: 500 9px/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; padding: 4px 8px; }
-
-/* ── Canvas readout (bottom-left): facts about the current view only ── */
-.readout { position: absolute; left: 24px; bottom: 22px; z-index: 10; padding: 10px 12px; display: grid; gap: 6px; width: 170px; }
-.readout .row { display: flex; justify-content: space-between; gap: 8px; }
-.readout .v { font-size: 10px; }
+.canvas-note { color: var(--muted); font-size: 12px; }
+.unplaced { border-left: 2px dashed var(--amber); padding: 8px 12px; color: var(--muted); }
+.inspector { grid-area: inspector; padding: 16px; align-self: start; display: grid; gap: 14px; overflow-wrap: anywhere; }
+.tabs { display: flex; gap: 8px; }
+.tabs button { flex: 1; }
+dl { display: grid; grid-template-columns: 88px minmax(0,1fr); gap: 10px; margin: 0; font-size: 13px; }
+dt { color: var(--muted); } dd { margin: 0; }
+.quote { border-left: 2px solid var(--cyan); padding: 10px 14px; background: #09151d; margin: 0; }
+.coverage { width: 100%; border-collapse: collapse; font-size: 12px; }
+.coverage caption { text-align: left; margin-bottom: 8px; font-size: 14px; }
+.coverage th, .coverage td { border-bottom: 1px solid var(--line); padding: 7px 4px; text-align: left; }
+.coverage th { color: var(--muted); font-weight: 500; }
+.coverage tr[data-selected="true"] { background: #102b36; }
+.coverage td { white-space: nowrap; }
+.timeline { grid-area: timeline; padding: 14px; display: grid; gap: 10px; }
+.time-track { height: 26px; position: relative; margin: 5px 8px; border-bottom: 1px solid var(--line); }
+.event-window { position: absolute; left: 47.22%; width: 16.67%; height: 22px; border: 1px dashed var(--cyan); background: #103442; }
+.clock-mark { position: absolute; left: 55.56%; height: 32px; top: -4px; border-left: 2px solid var(--text); }
+.time-labels { display: flex; justify-content: space-between; color: var(--muted); font: 11px var(--mono); }
+.readout { grid-area: readout; align-self: center; font-size: 12px; overflow-wrap: anywhere; }
+.dock { grid-area: dock; padding: 12px; display: grid; gap: 8px; align-self: end; }
+.search-row { display: flex; gap: 8px; }
+.dock input { width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: #02070b; color: var(--text); padding: 10px; }
+.dock input::placeholder { color: var(--muted); }
+.jobs { grid-area: jobs; padding: 12px; align-self: end; }
+.jobs summary { min-height: 32px; }
+.jobs p { margin-top: 8px; }
+.reader { background: var(--solid); padding: 24px; border-radius: 14px; border: 1px solid var(--line); }
+.reader p { max-width: 68ch; font-size: 16px; line-height: 1.75; }
+.reader section { padding: 16px; border-left: 2px solid transparent; }
+.reader section[data-selected="true"] { border-color: var(--cyan); background: #10212b; }
+.results { padding: 18px; }
+.result-list { display: grid; gap: 8px; list-style: none; margin: 0; padding: 0; }
+.result-list button { width: 100%; text-align: left; }
+.result-list small { display: block; }
+[data-clean="true"] .overlay { display: none; }
+.stage[data-focused="true"] { grid-template-columns: minmax(0,1fr) 332px; grid-template-areas: "fixture fixture" "identity clock" "workspace inspector" "workspace inspector" "dock jobs"; }
+.stage[data-focused="true"] .rail, .stage[data-focused="true"] .timeline, .stage[data-focused="true"] .readout { display: none; }
+@media (max-width: 1100px) {
+  .stage, .stage[data-focused="true"] { grid-template-columns: 112px minmax(0,1fr); grid-template-rows: auto; grid-template-areas: "fixture fixture" "identity identity" "rail clock" "rail workspace" "rail timeline" "rail inspector" "readout dock" "jobs jobs"; }
+  .stage[data-focused="true"] { grid-template-areas: "fixture fixture" "identity identity" "clock clock" "workspace workspace" "inspector inspector" "dock dock" "jobs jobs"; }
+  .clock { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  .inspector { width: 100%; }
+  .geometry { min-height: 420px; }
+}
+@media (max-width: 640px) {
+  .stage, .stage[data-focused="true"] { display: flex; flex-direction: column; padding: 12px; gap: 12px; }
+  .ident { align-items: flex-start; gap: 12px; }
+  .rail { display: flex; flex-wrap: wrap; width: 100%; }
+  .rail button { flex: 1 1 90px; }
+  .rail hr { display: none; }
+  .account-list { grid-template-columns: 1fr; }
+  .account-list button { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .geometry { min-height: 290px; }
+  .reader { padding: 12px; }
+  .toolbar button { flex: 1 1 auto; }
+  .clock, .dock, .jobs { width: 100%; }
+  .fixture .row { gap: 4px 12px; }
+}
+@media print {
+  :root { color-scheme: light; --text: #111; --muted: #333; --canvas: #fff; --glass: #fff; --solid: #fff; --line: #888; --cyan: #00617a; --violet: #4c327b; }
+  body { background: #fff; color: #111; }
+  .stage, .stage[data-focused="true"] { display: block; }
+  .stage > * { margin-bottom: 16px; }
+  .rail, .dock, .jobs, .toolbar button, .fixture label, .tabs, #open-source, .account-list { display: none; }
+  .glass { box-shadow: none; backdrop-filter: none; }
+  .geometry { height: 400px; background: #000; print-color-adjust: exact; }
+  .reader section[data-selected], .coverage tr[data-selected], .quote { background: #fff; }
+}
 </style>
 </head>
 <body>
-<div class="stage">
-
+<a class="skip" href="#workspace">Skip to evidence</a>
+<div class="stage" id="stage">
   <div class="fixture" role="note">
-    Fixture · synthetic case · no live sources
-    <label><input type="checkbox" id="rt"> reduced transparency</label>
-    <label><input type="checkbox" id="rm"> reduced motion</label>
+    <span>◇ Interactive prototype · synthetic case · nothing saved or live</span>
+    <div class="row"><label><input type="checkbox" id="rt"> Opaque panels</label><label><input type="checkbox" id="rm"> Reduced motion</label></div>
   </div>
-
-  <!-- Evidence canvas: reported geometry only. No basemap, no imagery, no terrain. -->
-  <svg class="canvas" viewBox="0 0 1440 900" aria-label="Case canvas: reported positions, bearings, and regions. No basemap.">
+  <header class="ident">
+    <b class="wordmark">OIA</b>
+    <div class="case"><span class="k">Case / 1994 valley accounts</span><h1>Why do the three accounts disagree on direction?</h1><div class="row"><span class="badge">3 accounts · 1 source</span><span class="badge fixture-badge">◇ Synthetic testimony</span></div></div>
+  </header>
+  <section class="clock glass" aria-label="Investigation clock">
+    <span class="k">▮ Historical · reported local time</span><span class="v">21:40 <small>±15 min · Account A</small></span><small>1994-03-14 · America/Denver</small>
+  </section>
+  <nav class="rail glass" aria-label="Instruments">
+    <button type="button" id="nav-case" aria-current="page"><span aria-hidden="true">◎</span>Case</button>
+    <button type="button" id="nav-library"><span aria-hidden="true">▣</span>Library<small>1 fixture source</small></button>
+    <hr>
+    <button type="button" disabled>News<small>Not in prototype</small></button>
+    <button type="button" disabled>Report<small>Not in prototype</small></button>
+    <button type="button" disabled>Export<small>Not in prototype</small></button>
+    <button type="button" disabled>Globe / sky<small>Not in prototype</small></button>
+  </nav>
+  <main class="workspace" id="workspace" tabindex="-1">
+    <div class="toolbar"><h2 id="view-title">Case geometry</h2><button type="button" id="back" disabled>← Back</button><button type="button" id="clean" aria-pressed="false">Clean evidence</button><button type="button" id="focus" aria-pressed="false">Focus view</button></div>
+    <div class="account-list" role="group" aria-label="Select a synthetic account">
+      <button type="button" data-account="A" aria-pressed="true"><strong>Account A</strong><small>Reported track</small></button>
+      <button type="button" data-account="B" aria-pressed="false"><strong>Account B</strong><small>Position unknown</small></button>
+      <button type="button" data-account="C" aria-pressed="false"><strong>Account C</strong><small>Region only</small></button>
+    </div>
+    <div id="geometry-view" class="stack" style="flex:1">
+      <div class="geometry">
+  <svg class="canvas" viewBox="340 160 760 560" role="img" aria-label="Synthetic case schematic. A reports northwest to southeast travel. C reports two lights east of a ridge. B has no location and is not plotted. No basemap or measured scale.">
     <defs>
-      <radialGradient id="vig" cx="50%" cy="50%" r="70%"><stop offset="55%" stop-color="#000" stop-opacity="0"/><stop offset="100%" stop-color="#000" stop-opacity="0.75"/></radialGradient>
       <pattern id="hatch" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="8" stroke="rgba(245,158,46,0.35)" stroke-width="1"/></pattern>
       <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#45d1ff"/></marker>
       <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
     </defs>
 
-    <!-- Range rings around the reported region centre at the fixture scale (1 km ≈ 42 px). The reported region is ≈12 km across, so its edge is the 6 km ring. -->
-    <g fill="none" stroke="rgba(69,209,255,0.14)" stroke-width="1">
+    <!-- Illustrative rings only; no calibrated geographic scale. -->
+    <g class="overlay" fill="none" stroke="rgba(69,209,255,0.14)" stroke-width="1">
       <circle cx="740" cy="450" r="126"/>
       <circle cx="740" cy="450" r="252" stroke-dasharray="3 6" stroke="rgba(69,209,255,0.3)"/>
       <circle cx="740" cy="450" r="378"/>
     </g>
-    <g fill="rgba(230,237,243,0.32)" font-size="9" letter-spacing="1.5">
-      <text x="608" y="446" text-anchor="end">3 KM</text><text x="356" y="446" text-anchor="end">9 KM</text>
-      <text x="930" y="650">≈ 6 KM · EDGE OF REPORTED REGION</text>
-    </g>
-    <!-- Cardinal ticks -->
-    <g stroke="rgba(69,209,255,0.35)" stroke-width="1"><line x1="740" y1="-10" x2="740" y2="40"/><line x1="740" y1="860" x2="740" y2="910"/><line x1="180" y1="450" x2="230" y2="450"/><line x1="1250" y1="450" x2="1300" y2="450"/></g>
-    <g fill="rgba(230,237,243,0.55)" font-size="10" letter-spacing="2" text-anchor="middle"><text x="754" y="52">N</text><text x="754" y="856">S</text><text x="244" y="440">W</text><text x="1312" y="440">E</text></g>
 
     <!-- Reported ridge line: a sketch derived from the accounts, labeled as such. -->
     <path d="M520 700 C 600 600, 660 560, 700 470 S 760 300, 830 200" fill="none" stroke="rgba(230,237,243,0.5)" stroke-width="1.5" stroke-dasharray="6 5"/>
-    <text x="838" y="190" fill="rgba(230,237,243,0.55)" font-size="9" letter-spacing="1.5">RIDGE LINE · SKETCH FROM ACCOUNTS</text>
+    <text x="838" y="190" fill="#a2b0bc" font-size="24">Ridge sketch</text>
 
     <!-- Account C: "two lights, east of the ridge", no bearing, no time -> a region, not a point. -->
     <path d="M760 320 L 1010 300 L 1040 560 L 720 560 C 740 480, 750 400, 760 320 Z" fill="url(#hatch)" stroke="rgba(245,158,46,0.6)" stroke-width="1" stroke-dasharray="4 4"/>
-    <g font-size="9" letter-spacing="1.5"><text x="880" y="586" fill="#f59e2e">C · "EAST OF THE RIDGE"</text><text x="880" y="600" fill="rgba(230,237,243,0.45)">2 LIGHTS · NO BEARING · NO TIME</text></g>
+    <text x="920" y="430" fill="#ffc06b" font-size="28">C</text>
 
     <!-- Account A: observer on the eastern road, light NW→SE over ~8 min. Track is reported, not measured. -->
     <g filter="url(#glow)">
       <line x1="560" y1="250" x2="860" y2="500" stroke="#45d1ff" stroke-width="1.5" stroke-dasharray="10 6" marker-end="url(#arrow)"/>
     </g>
-    <g font-size="9" letter-spacing="1.5"><text x="548" y="236" fill="#45d1ff">A · NW → SE · ≈ 8 MIN</text><text x="548" y="250" fill="rgba(230,237,243,0.45)">REPORTED TRACK · NOT MEASURED</text></g>
+    <text x="548" y="208" fill="#45d1ff" font-size="28">A · NW → SE</text>
     <!-- Observer A position and view wedge -->
     <path d="M930 545 L 760 350 L 790 320 Z" fill="rgba(69,209,255,0.06)" stroke="rgba(69,209,255,0.35)" stroke-width="1"/>
     <g transform="translate(930 545)">
       <circle r="5" fill="#45d1ff"/><circle r="11" fill="none" stroke="#45d1ff" stroke-width="1"/>
-      <text x="16" y="-6" fill="#e6edf3" font-size="10" letter-spacing="1.5">A</text>
-      <text x="16" y="7" fill="rgba(230,237,243,0.55)" font-size="9" letter-spacing="1.2">EASTERN ROAD · 21:40 ±15</text>
+      <text x="-130" y="42" fill="#a2b0bc" font-size="24">A · observer</text>
     </g>
-
-    <!-- Account B: position unknown -> drawn as an open question at the region edge, not at a guessed point. -->
-    <g transform="translate(470 620)">
-      <circle r="11" fill="none" stroke="rgba(230,237,243,0.5)" stroke-width="1" stroke-dasharray="3 3"/>
-      <text x="-3.5" y="4" fill="rgba(230,237,243,0.7)" font-size="11">?</text>
-      <text x="18" y="-4" fill="#e6edf3" font-size="10" letter-spacing="1.5">B</text>
-      <text x="18" y="9" fill="rgba(230,237,243,0.55)" font-size="9" letter-spacing="1.2">POSITION NOT RECORDED</text>
-    </g>
-
-    <!-- Region centre (reported, approximate) -->
-    <g transform="translate(740 450)"><line x1="-8" y1="0" x2="8" y2="0" stroke="#45d1ff"/><line x1="0" y1="-8" x2="0" y2="8" stroke="#45d1ff"/></g>
 
     <!-- Selection brackets around the selected observation (A's track) -->
-    <g fill="none" stroke="#45d1ff" stroke-width="1.2">
+    <g id="selection-brackets" class="overlay" fill="none" stroke="#45d1ff" stroke-width="1.2">
       <path d="M540 220 h14 M540 220 v14"/><path d="M880 220 h-14 M880 220 v14"/><path d="M540 520 h14 M540 520 v-14"/><path d="M880 520 h-14 M880 520 v-14"/>
     </g>
 
-    <!-- Canvas caption -->
-    <g font-size="9" letter-spacing="1.5" fill="rgba(230,237,243,0.4)"><text x="212" y="706">REPORTED GEOMETRY · NO BASEMAP · SCALE FROM REPORTED REGION SIZE (APPROX.)</text></g>
-
-    <!-- Edge frame lines: decoration only, in the manner of a HUD frame -->
-    <g fill="none" stroke="rgba(69,209,255,0.28)" stroke-width="1"><path d="M400 14 H 1040 M 400 886 H 1040"/><path d="M14 300 V 600 M 1426 300 V 600"/></g>
-    <rect width="1440" height="900" fill="url(#vig)" pointer-events="none"/>
   </svg>
 
-  <!-- Identity and case -->
-  <div class="ident">
-    <div class="wordmark"><span class="mark" aria-hidden="true"></span><b>OIA</b><small><i aria-hidden="true"></i>LOCAL · PRIVATE</small></div>
-    <div class="case glass">
-      <div class="k">Case · 1994 valley accounts</div>
-      <div class="q">Why do the three accounts disagree on direction?</div>
-      <div class="row"><span class="badge"><span class="g">◉</span>3 accounts</span><span class="badge"><span class="g">▣</span>1 source</span><span class="badge warn"><span class="g">◇</span>1 hypothesis</span><span class="badge"><span class="g">…</span>2 open</span></div>
+
+      </div>
+      <p class="canvas-note">Schematic from synthetic accounts. Bearings, distances, and positions are illustrative, not measured.</p>
+      <p class="canvas-note">A: reported NW → SE travel, ≈ 8 minutes. C: two lights east of the ridge, no bearing or event time.</p>
+      <p class="unplaced">? Account B · position not recorded. Kept outside the geometry.</p>
     </div>
-  </div>
-
-  <!-- Instruments -->
-  <nav class="rail glass" aria-label="Instruments">
-    <a href="#" class="active show"><span aria-hidden="true">◎</span><span class="tip">Case</span></a>
-    <a href="#"><span aria-hidden="true">▣</span><span class="tip">Library <small>1</small></span></a>
-    <a href="#"><span aria-hidden="true">≋</span><span class="tip">News</span></a>
-    <a href="#"><span aria-hidden="true">¶</span><span class="tip">Report <small>2 uncited</small></span></a>
-    <a href="#"><span aria-hidden="true">⇪</span><span class="tip">Export</span></a>
-    <hr>
-    <a href="#" class="off" aria-disabled="true"><span aria-hidden="true">◍</span><span class="tip">Globe <small>not in build</small></span></a>
-    <a href="#" class="off" aria-disabled="true"><span aria-hidden="true">✦</span><span class="tip">Sky <small>not in build</small></span></a>
-    <a href="#" class="off" aria-disabled="true"><span aria-hidden="true">▦</span><span class="tip">Media <small>not in build</small></span></a>
-    <hr>
-    <a href="#"><span aria-hidden="true">⟳</span><span class="tip">Jobs <small>2 running</small></span></a>
-    <a href="#"><span aria-hidden="true">⚙</span><span class="tip">Settings</span></a>
-  </nav>
-
-  <!-- Clock -->
-  <div class="clock glass" aria-label="Investigation clock">
-    <div class="cell"><span class="k">Mode</span><span class="mode"><span class="g">▮</span>HISTORICAL</span></div>
-    <div class="cell"><span class="k">Investigation clock</span><span class="v big">21:40 <span class="dim" style="font-size:12px">±15 MIN</span></span></div>
-    <div class="cell"><span class="k">Reference</span><span class="v">1994-03-14 · America/Denver · reported local</span></div>
-  </div>
-
-  <!-- Inspector -->
-  <aside class="inspector glass" aria-label="Inspector">
-    <div class="tabs" role="tablist"><button role="tab" aria-selected="true">Selected</button><button role="tab">Source</button><button role="tab">Claims</button><button role="tab">Notes</button><button role="tab">Lineage</button></div>
-
-    <div class="kv">
-      <span class="k">Object</span><span class="v">Account A · observation</span>
-      <span class="k">Origin</span><span><span class="badge"><span class="g">◉</span>testimony</span></span>
-      <span class="k">Anchor</span><span class="v">FIXTURE-DOC-0007 · v2 · p3.¶3</span>
-      <span class="k">Assessment</span><span><span class="badge"><span class="g">○</span>unsupported</span> <span class="badge"><span class="g">◻</span>unreviewed</span></span>
-      <span class="k">Conflicts</span><span><span class="badge bad"><span class="g">✕</span>1 · account C</span></span>
+    <article id="reader-view" class="reader stack" hidden aria-label="Synthetic source reader">
+      <span class="badge fixture-badge">◇ Synthetic source · not a historical document</span>
+      <h2>Valley accounts / fixture transcript</h2><p class="muted">FIXTURE-DOC-0007 · v2 · page 3</p>
+      <section id="passage-A" tabindex="-1"><h3>Account A · ¶3</h3><p>From the eastern road, a light appeared to travel from northwest to southeast for about eight minutes. The reported time was approximately 21:40, with an uncertainty of fifteen minutes.</p></section>
+      <section id="passage-B" tabindex="-1"><h3>Account B · ¶4</h3><p>A light was described in the valley. The account does not record an observer position, direction of travel, or event time.</p></section>
+      <section id="passage-C" tabindex="-1"><h3>Account C · ¶5</h3><p>Two lights were described east of the ridge. No bearing or event time was recorded. The account gives a region, not an observer position.</p></section>
+      <small>Written for this interaction prototype. These excerpts are fixture content, not retained originals or independent corroboration.</small>
+    </article>
+    <section id="search-view" class="results glass stack" hidden aria-labelledby="results-title">
+      <h2 id="results-title">Search this fixture case</h2><p id="search-coverage" class="muted"></p><ul class="result-list" id="results"></ul><p id="empty" hidden>No matching fixture accounts. Try “ridge”, “time”, or “Account B”.</p>
+    </section>
+  </main>
+  <aside class="inspector glass" aria-label="Selected account inspector">
+    <div class="row"><span class="k">Inspect</span><h2 id="selection-title">Account A</h2></div>
+    <div class="tabs" role="tablist" aria-label="Inspector details">
+      <button type="button" role="tab" id="tab-overview" aria-selected="true" aria-controls="panel-overview" tabindex="0">Overview</button>
+      <button type="button" role="tab" id="tab-source" aria-selected="false" aria-controls="panel-source" tabindex="-1">Source</button>
     </div>
-
-    <!-- Visualization 1: bearings by account -->
-    <div class="viz">
-      <div class="head"><span class="k">Reported direction of travel</span><span class="k dim">3 accounts</span></div>
-      <svg viewBox="0 0 284 120" width="284" height="120" aria-label="Compass rose: account A reports travel toward the south-east; account C gives no bearing; account B gives no bearing or position.">
-        <g transform="translate(60 60)">
-          <circle r="48" fill="none" stroke="rgba(255,255,255,0.12)"/>
-          <circle r="30" fill="none" stroke="rgba(255,255,255,0.08)"/>
-          <g stroke="rgba(255,255,255,0.25)"><line x1="0" y1="-52" x2="0" y2="-44"/><line x1="0" y1="52" x2="0" y2="44"/><line x1="-52" y1="0" x2="-44" y2="0"/><line x1="52" y1="0" x2="44" y2="0"/></g>
-          <text x="0" y="-55" text-anchor="middle" font-size="8" fill="rgba(230,237,243,0.55)">N</text>
-          <!-- A: NW -> SE, drawn as a wedge of ±15° around 135° to show the stated imprecision -->
-          <path d="M0 0 L -22 -40 A 46 46 0 0 1 22 -40 Z" transform="rotate(135)" fill="rgba(69,209,255,0.18)" stroke="#45d1ff" stroke-width="1"/>
-          <line x1="0" y1="0" x2="0" y2="-46" transform="rotate(135)" stroke="#45d1ff" stroke-width="1.5" marker-end="url(#arrow)"/>
-          <text x="30" y="36" font-size="8" fill="#45d1ff" letter-spacing="1">A</text>
-          <!-- C: no bearing -> dashed full ring -->
-          <circle r="40" fill="none" stroke="#f59e2e" stroke-width="1" stroke-dasharray="2 5"/>
-          <text x="-48" y="-40" font-size="8" fill="#f59e2e" letter-spacing="1">C</text>
-          <circle r="2" fill="#e6edf3"/>
-        </g>
-        <g font-size="8" letter-spacing="1">
-          <text x="130" y="30" fill="#45d1ff">A</text><text x="144" y="30" fill="rgba(230,237,243,0.7)">NW → SE · ±15° · "approx."</text>
-          <text x="130" y="52" fill="#f59e2e">C</text><text x="144" y="52" fill="rgba(230,237,243,0.7)">no bearing · E of ridge</text>
-          <text x="130" y="74" fill="rgba(230,237,243,0.55)">B</text><text x="144" y="74" fill="rgba(230,237,243,0.7)">no bearing · no position</text>
-          <text x="130" y="104" fill="rgba(230,237,243,0.4)">1 of 3 gives a direction</text>
-        </g>
-      </svg>
-    </div>
-
-    <!-- Visualization 2: when each time kind is known, per account -->
-    <div class="viz">
-      <div class="head"><span class="k">Time coverage by account</span><span class="k dim">known · unknown</span></div>
-      <svg viewBox="0 0 284 54" width="284" height="54" aria-label="Three rows: account A has event time ±15 min and a receipt date; B has a receipt date only; C has a receipt date only.">
-        <g font-size="8" fill="rgba(230,237,243,0.55)"><text x="0" y="12">A</text><text x="0" y="30">B</text><text x="0" y="48">C</text></g>
-        <g font-size="7" fill="rgba(230,237,243,0.4)" text-anchor="middle"><text x="70" y="7">EVENT</text><text x="160" y="7">RECEIVED</text><text x="240" y="7">POSITION</text></g>
-        <!-- A -->
-        <rect x="46" y="9" width="48" height="5" rx="2" fill="#45d1ff"/><rect x="136" y="9" width="48" height="5" rx="2" fill="#5fe08a"/><rect x="216" y="9" width="48" height="5" rx="2" fill="#5fe08a"/>
-        <!-- B -->
-        <rect x="46" y="27" width="48" height="5" rx="2" fill="none" stroke="rgba(255,255,255,0.25)" stroke-dasharray="2 2"/><rect x="136" y="27" width="48" height="5" rx="2" fill="#5fe08a"/><rect x="216" y="27" width="48" height="5" rx="2" fill="none" stroke="rgba(255,255,255,0.25)" stroke-dasharray="2 2"/>
-        <!-- C -->
-        <rect x="46" y="45" width="48" height="5" rx="2" fill="none" stroke="rgba(255,255,255,0.25)" stroke-dasharray="2 2"/><rect x="136" y="45" width="48" height="5" rx="2" fill="#5fe08a"/><rect x="216" y="45" width="48" height="5" rx="2" fill="url(#hatch)" stroke="rgba(245,158,46,0.6)"/>
-      </svg>
-      <div class="legend"><span><i style="background:#45d1ff"></i>approximate</span><span><i style="background:#5fe08a"></i>recorded</span><span><i style="background:transparent;border:1px dashed rgba(255,255,255,0.4)"></i>not recorded</span><span><i style="background:rgba(245,158,46,0.5)"></i>region only</span></div>
-    </div>
-
-    <div class="actions"><button class="primary">Cite</button><button>Assess</button><button>Discriminating evidence</button></div>
+    <section id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" tabindex="0" class="stack">
+      <dl><dt>Origin</dt><dd>◇ Synthetic testimony</dd><dt>Direction</dt><dd id="direction"></dd><dt>Location</dt><dd id="location"></dd><dt>Event time</dt><dd id="event-time"></dd><dt>Assessment</dt><dd>○ Unsupported by available evidence</dd><dt>Review</dt><dd>□ Unreviewed</dd></dl>
+      <p id="selection-note" class="quote"></p>
+      <table class="coverage"><caption>Case coverage · all 3 accounts</caption><thead><tr><th scope="col">Account</th><th scope="col">Event time</th><th scope="col">Location</th></tr></thead><tbody><tr data-coverage="A"><th scope="row">A</th><td>≈ ±15 min</td><td>≈ Road</td></tr><tr data-coverage="B"><th scope="row">B</th><td>— Unknown</td><td>— Unknown</td></tr><tr data-coverage="C"><th scope="row">C</th><td>— Unknown</td><td>◇ Region</td></tr></tbody></table>
+    </section>
+    <section id="panel-source" role="tabpanel" aria-labelledby="tab-source" tabindex="0" class="stack" hidden>
+      <dl><dt>Document</dt><dd>FIXTURE-DOC-0007</dd><dt>Version</dt><dd>v2 · synthetic transcript</dd><dt>Anchor</dt><dd id="source-anchor"></dd><dt>Lineage</dt><dd>One shared fixture source. Independence has not been established.</dd><dt>Original</dt><dd>No acquired original in this prototype.</dd></dl>
+    </section>
+    <button type="button" id="open-source" class="primary">Read source passage ↗</button>
   </aside>
-
-  <!-- Shared timeline over the case interval -->
   <section class="timeline glass" aria-label="Shared timeline">
-    <div class="left">
-      <span class="k">Shared timeline</span>
-      <span class="v">20:00 → 23:00</span>
-      <span class="k dim">1994-03-14 · 1 est</span>
-    </div>
-    <svg viewBox="0 0 760 70" width="100%" height="70" preserveAspectRatio="none" aria-label="Timeline from 20:00 to 23:00 with the reported event window at 21:25 to 21:55 and the clock at 21:40.">
-      <line x1="0" y1="44" x2="760" y2="44" stroke="rgba(255,255,255,0.2)"/>
-      <g stroke="rgba(255,255,255,0.2)"><line x1="0" y1="40" x2="0" y2="48"/><line x1="253" y1="40" x2="253" y2="48"/><line x1="507" y1="40" x2="507" y2="48"/><line x1="760" y1="40" x2="760" y2="48"/></g>
-      <g font-size="9" fill="rgba(230,237,243,0.45)" letter-spacing="1"><text x="2" y="62">20:00</text><text x="240" y="62">21:00</text><text x="494" y="62">22:00</text><text x="722" y="62">23:00</text></g>
-      <!-- event window 21:25–21:55 -->
-      <rect x="359" y="38" width="127" height="12" rx="3" fill="rgba(69,209,255,0.18)" stroke="rgba(69,209,255,0.6)"/>
-      <text x="422" y="30" text-anchor="middle" font-size="9" fill="#45d1ff" letter-spacing="1">◆ A · EVENT ≈ 21:40 ±15</text>
-      <!-- clock cursor -->
-      <line x1="422" y1="14" x2="422" y2="56" stroke="#45d1ff" stroke-width="1.5"/>
-      <!-- no-data rows: explicit absence -->
-      <text x="548" y="30" font-size="9" fill="rgba(230,237,243,0.4)" letter-spacing="1">B, C · NO EVENT TIME</text>
-    </svg>
+    <div class="row"><h2>Shared timeline</h2><span class="badge">▮ Historical</span></div>
+    <p id="timeline-selection" class="muted"></p>
+    <div role="img" aria-label="Case interval 20:00 to 23:00. Account A reports 21:25 to 21:55. Investigation clock 21:40. Accounts B and C have no event time."><div class="time-track"><span class="event-window"></span><span class="clock-mark"></span></div><div class="time-labels"><span>20:00</span><span>21:00</span><span>22:00</span><span>23:00</span></div></div>
+    <small>Dashed window: A’s approximate event time. White line: investigation clock. B and C have no time marker.</small>
   </section>
-
-  <!-- Command dock -->
-  <div class="dock glass strong" role="search">
-    <span class="scope">Scope · this case ▾</span>
-    <input type="text" aria-label="Search, identifier, place, or date" placeholder="Search, or id:  near:  t:  in:">
-    <kbd>Ctrl K</kbd>
-    <button class="save">Save <span class="dim">· private</span></button>
-  </div>
-
-  <!-- Jobs -->
-  <div class="jobs glass" aria-label="Jobs">
-    <div class="job"><span class="name">OCR · FIXTURE-DOC-0007</span><button>Cancel</button><div class="bar"><i style="width:78%"></i></div><span class="sub">running · 7 / 9 pages</span></div>
-    <div class="job"><span class="name">Acquire · release-2</span><button>Retry</button><span class="sub" style="color:var(--red)">✕ failed · unavailable · 503 · attempt 2/3</span></div>
-    <div class="job"><span class="name dim">Search · "ridge light 1994"</span><button>Open</button><span class="sub">⤳ superseded · not applied</span></div>
-  </div>
-
-  <!-- View readout -->
-  <div class="readout glass" aria-label="View state">
-    <div class="row"><span class="k">View</span><span class="v">case · geometry</span></div>
-    <div class="row"><span class="k">Basemap</span><span class="v">none</span></div>
-    <div class="row"><span class="k">Scale</span><span class="v">≈ 42 px / km</span></div>
-    <div class="row"><span class="k">Selected</span><span class="v">account A</span></div>
-    <div class="row"><span class="k">Overlays</span><span class="v">on</span></div>
-  </div>
-
+  <div class="readout" aria-label="View state"><span class="k">Selection</span><p id="readout-selection">Account A · v2</p><p id="readout-overlay" class="muted">Overlays on</p></div>
+  <form class="dock glass" id="search-form" role="search">
+    <label for="query" class="k">Search this case · 3 fixture accounts <span aria-hidden="true">/ Ctrl K</span></label>
+    <div class="search-row"><input type="search" id="query" maxlength="200" placeholder="Text or account identifier" aria-describedby="search-help"><button type="submit">Search</button></div>
+    <small id="search-help">Literal text only. No semantic search, saved queries, or live sources.</small>
+  </form>
+  <details class="jobs glass"><summary>Jobs · no connected worker</summary><p class="muted">This prototype runs no acquisition, OCR, or background jobs. Nothing is being saved or published.</p></details>
 </div>
+<p id="announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
+<noscript><p>This interactive prototype needs JavaScript for selection and search. The synthetic source passages require JavaScript to open.</p></noscript>
 <script>
-  document.getElementById('rt').addEventListener('change', e => document.documentElement.setAttribute('data-reduce-transparency', e.target.checked));
-  document.getElementById('rm').addEventListener('change', e => document.documentElement.setAttribute('data-reduce-motion', e.target.checked));
+'use strict';
+const byId = id => document.getElementById(id);
+// Deliberately fixture-only UI state. No storage, network calls, or domain services.
+const accounts = {
+  A: { direction: 'NW → SE · approximately', location: 'Eastern road · reported, uncalibrated', time: '≈ 21:40 ±15 min', anchor: 'p3.¶3', note: 'A reports a direction. The drawing is schematic; it does not establish speed, distance, or identity.', bracket: 'M540 220h14 M540 220v14 M880 220h-14 M880 220v14 M540 520h14 M540 520v-14 M880 520h-14 M880 520v-14' },
+  B: { direction: 'Not recorded', location: 'Not recorded · not plotted', time: 'Not recorded', anchor: 'p3.¶4', note: 'Missing position and time cannot be filled from another account. The investigation clock stays at 21:40.', bracket: '' },
+  C: { direction: 'Not recorded', location: 'East of ridge · region only', time: 'Not recorded', anchor: 'p3.¶5', note: 'Two lights east of a ridge does not specify travel direction. A disagreement with A has not been established.', bracket: 'M710 290h14 M710 290v14 M1050 290h-14 M1050 290v14 M710 570h14 M710 570v-14 M1050 570h-14 M1050 570v-14' }
+};
+let state = { account: 'A', view: 'geometry', tab: 'overview', query: '', clean: false, focused: false };
+const history = [];
+const announce = message => { byId('announcement').textContent = message; };
+function transition(change) {
+  if (Object.entries(change).every(([key, value]) => state[key] === value)) return;
+  // Bounded route history includes presentation and scroll state, never inferred evidence.
+  history.push({ state: { ...state }, x: window.scrollX, y: window.scrollY, focus: document.activeElement });
+  if (history.length > 40) history.shift();
+  state = { ...state, ...change };
+  render();
+}
+function renderResults() {
+  const term = state.query.trim().toLocaleLowerCase();
+  const matches = Object.keys(accounts).filter(key => {
+    const content = `Account ${key} FIXTURE-DOC-0007 v2 ${accounts[key].anchor} ${byId(`passage-${key}`).textContent}`;
+    return content.toLocaleLowerCase().includes(term);
+  });
+  byId('results').replaceChildren();
+  matches.forEach(key => {
+    const item = document.createElement('li');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = `Account ${key} · ${accounts[key].anchor}`;
+    const detail = document.createElement('small');
+    detail.textContent = `${accounts[key].direction} / ${accounts[key].time} · synthetic testimony`;
+    button.append(detail);
+    button.addEventListener('click', () => openPassage(key));
+    item.append(button);
+    byId('results').append(item);
+  });
+  byId('empty').hidden = matches.length !== 0;
+  byId('search-coverage').textContent = `${matches.length} of 3 fixture accounts${term ? ` match “${state.query.trim()}”` : ' shown'}. Searched all 3 synthetic passages from 1 source; no other documents were searched.`;
+}
+function render() {
+  const record = accounts[state.account];
+  byId('stage').dataset.clean = state.clean;
+  byId('stage').dataset.focused = state.focused;
+  byId('clean').setAttribute('aria-pressed', state.clean);
+  byId('focus').setAttribute('aria-pressed', state.focused);
+  byId('focus').textContent = state.focused ? 'Exit focus view' : 'Focus view';
+  byId('clean').textContent = state.clean ? 'Show overlays' : 'Clean evidence';
+  byId('back').disabled = history.length === 0;
+  byId('view-title').textContent = { geometry: 'Case geometry', reader: 'Source reader', search: 'Case search' }[state.view];
+  ['geometry', 'reader', 'search'].forEach(view => { byId(`${view}-view`).hidden = view !== state.view; });
+  ['case', 'library'].forEach(nav => {
+    const selected = nav === 'library' ? state.view === 'reader' : state.view === 'geometry';
+    if (selected) byId(`nav-${nav}`).setAttribute('aria-current', 'page');
+    else byId(`nav-${nav}`).removeAttribute('aria-current');
+  });
+  document.querySelectorAll('[data-account]').forEach(button => button.setAttribute('aria-pressed', button.dataset.account === state.account));
+  document.querySelectorAll('[data-coverage]').forEach(row => { row.dataset.selected = row.dataset.coverage === state.account; });
+  Object.keys(accounts).forEach(key => { byId(`passage-${key}`).dataset.selected = key === state.account; });
+  byId('selection-title').textContent = `Account ${state.account}`;
+  byId('direction').textContent = record.direction;
+  byId('location').textContent = record.location;
+  byId('event-time').textContent = record.time;
+  byId('selection-note').textContent = record.note;
+  byId('source-anchor').textContent = record.anchor;
+  byId('readout-selection').textContent = `Account ${state.account} · v2`;
+  byId('readout-overlay').textContent = state.clean ? 'Overlays off · labels retained' : 'Overlays on';
+  byId('timeline-selection').textContent = state.account === 'A' ? 'Selected A · event ≈ 21:40 ±15 min.' : `Selected ${state.account} · event time not recorded. Case clock unchanged.`;
+  byId('selection-brackets').replaceChildren();
+  if (record.bracket) {
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', record.bracket);
+    byId('selection-brackets').append(path);
+  }
+  ['overview', 'source'].forEach(tab => {
+    const selected = tab === state.tab;
+    byId(`tab-${tab}`).setAttribute('aria-selected', selected);
+    byId(`tab-${tab}`).tabIndex = selected ? 0 : -1;
+    byId(`panel-${tab}`).hidden = !selected;
+  });
+  byId('query').value = state.query;
+  if (state.view === 'search') renderResults();
+}
+function openPassage(account = state.account) {
+  transition({ account, view: 'reader', tab: 'source' });
+  byId(`passage-${account}`).focus({ preventScroll: true });
+  byId(`passage-${account}`).scrollIntoView({ block: 'nearest' });
+  announce(`Synthetic Account ${account}, version 2, ${accounts[account].anchor}. Source passage open.`);
+}
+function goBack() {
+  const previous = history.pop();
+  if (!previous) return;
+  state = previous.state;
+  render();
+  // Search results are recreated; fall back to the stable search field if their old button is gone.
+  const focus = previous.focus.isConnected && previous.focus.getClientRects().length ? previous.focus : byId('query');
+  focus.focus({ preventScroll: true });
+  window.scrollTo(previous.x, previous.y);
+  announce(`Returned to ${byId('view-title').textContent}, Account ${state.account}.`);
+}
+document.querySelectorAll('[data-account]').forEach(button => button.addEventListener('click', () => {
+  transition({ account: button.dataset.account });
+  announce(`Account ${state.account} selected. ${accounts[state.account].time}. ${accounts[state.account].location}.`);
+}));
+byId('nav-case').addEventListener('click', () => { transition({ view: 'geometry' }); byId('workspace').focus(); });
+byId('nav-library').addEventListener('click', () => openPassage());
+byId('open-source').addEventListener('click', () => openPassage());
+byId('back').addEventListener('click', goBack);
+byId('clean').addEventListener('click', () => transition({ clean: !state.clean }));
+byId('focus').addEventListener('click', () => transition({ focused: !state.focused }));
+const tabs = ['overview', 'source'];
+tabs.forEach((tab, index) => {
+  const button = byId(`tab-${tab}`);
+  button.addEventListener('click', () => { state.tab = tab; render(); });
+  button.addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? 1 : (index + 1) % 2;
+    state.tab = tabs[next];
+    render();
+    byId(`tab-${state.tab}`).focus();
+  });
+});
+byId('search-form').addEventListener('submit', event => {
+  event.preventDefault();
+  const query = byId('query').value;
+  transition({ view: 'search', query });
+  byId('workspace').focus();
+  announce(byId('search-coverage').textContent);
+});
+for (const [id, setting, preference] of [['rt', 'reduceTransparency', 'prefers-reduced-transparency'], ['rm', 'reduceMotion', 'prefers-reduced-motion']]) {
+  const media = matchMedia(`(${preference}: reduce)`);
+  byId(id).checked = media.matches;
+  byId(id).addEventListener('change', event => { document.documentElement.dataset[setting] = event.target.checked; });
+}
+document.addEventListener('keydown', event => {
+  const editing = event.target.matches('input, textarea, [contenteditable="true"]');
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k' || event.key === '/' && !editing && !event.altKey && !event.ctrlKey && !event.metaKey) {
+    event.preventDefault(); byId('query').focus(); byId('query').select();
+  } else if (event.altKey && event.key === 'ArrowLeft' && history.length) {
+    event.preventDefault(); goBack();
+  }
+});
+render();
 </script>
 </body>
 </html>

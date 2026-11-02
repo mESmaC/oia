@@ -1,12 +1,12 @@
 # OIA workspace: UI and UX design draft
 
-Version: 0.1 draft. Date: 2026-11-01. Status: design proposal for the investigation workspace ([#16](https://github.com/mESmaC/oia/issues/16)). Nothing here is implemented, measured on OIA, or approved. Where a section proposes a value, it is a starting point for the implementing session to confirm, not a shipped default.
+Version: 0.2 draft. Date: 2026-11-02. Status: design proposal for the investigation workspace ([#16](https://github.com/mESmaC/oia/issues/16)). Production workspace behavior is not implemented or approved by this draft. The companion prototype implements only the fixture interactions listed in §15. Where a section proposes a value, it is a starting point for the implementing session to confirm, not a shipped default.
 
 This draft covers requirements CASE-01 to CASE-05 and UX-01 to UX-05 from the [product specification](../spec.md), and the presentation obligations in [architecture](../architecture.md) §1.1, §7, and §8. It is written to be independent of decision D01 (native renderer versus rendering adapter). Everything below is expressed in layout, state, token, and interaction terms that either technology can realize. The D01 ADR belongs to [#9](https://github.com/mESmaC/oia/issues/9); this document does not settle it.
 
 Companion artifacts:
 
-- [Shell mockup](mockups/workspace-shell.html): a static, self-contained HTML page showing the P1 shell with the case geometry view as the central canvas: reported positions, bearings, and regions drawn without a basemap, with floating instruments over a black canvas. All content is labeled fixture data; nothing is live.
+- [Shell prototype](mockups/workspace-shell.html): a self-contained, interactive HTML page with schematic case geometry, a source reader, and fixture search. It preserves the black canvas and glass instruments while adapting to narrow screens. All case content is synthetic; nothing is live or persisted. Open the file directly; no server or dependencies are required.
 
 ## 1. Design principles
 
@@ -302,8 +302,8 @@ Conclusion: green, amber, and red cannot be distinguished by color alone for a m
 The first draft of the shell mockup was reviewed as too word-dense. The rule that follows applies to every instrument:
 
 - Each instrument leads with a visualization of the selected evidence: geometry, bearings, coverage, time, lineage, or media. Prose is confined to the inspector and the reader, and the inspector shows short key-value rows and small charts before any paragraph.
-- Labels are 9 px uppercase monospace at reduced opacity, in the manner of a HUD. Values are monospace. Sentences appear only in reading surfaces and tooltips.
-- Absence is drawn, not described: an unknown position is a dashed open marker with a question mark; an unknown bearing is a dashed full ring; an unknown time is a dashed empty bar. The word "unknown" accompanies the mark but is not the primary cue.
+- Essential labels use at least 11 px text at the contrast target in §8.2; controls and evidence details use the larger scale in §7.3. Compact monospace and restrained accents retain the instrument aesthetic without making text faint or unreadable. Scaled geometry labels have readable HTML equivalents.
+- Absence has a non-color cue and a text explanation. An unknown position is listed outside the geometry, never placed at an invented coordinate; an unknown bearing or time has an explicit unknown state. A missing value must not acquire an apparent location or interval from its presentation.
 - Counts belong in badges and charts, not in sentences.
 - A view that cannot yet show a visualization (an empty case) shows the empty canvas with its grid and a single short prompt, not a block of explanatory text.
 
@@ -314,7 +314,7 @@ Inspected on 2026-11-01 at `0d1a6816` in the local checkout listed in [prior-art
 | Pattern | Where seen | Taken into OIA | Not taken |
 | --- | --- | --- | --- |
 | Full-bleed globe with floating glass panels | `index.html`, `src/ui/styles/foundation.css` (`--glass-bg`, `--panel-radius: 16px`) | Full-bleed canvas, floating instruments, 14 px radius | Cesium as a decided renderer (D01 is open) |
-| Tiny uppercase mono labels at half opacity | `foundation.css` `--dock-label-*`, `status-badge.css` (8 to 9 px, 1.3 px tracking) | 9 px uppercase mono labels, badges with glyph plus label | Color-only badges |
+| Tiny uppercase mono labels at half opacity | `foundation.css` `--dock-label-*`, `status-badge.css` (8 to 9 px, 1.3 px tracking) | Compact mono labels and glyph-plus-label badges, enlarged for essential text | Tiny low-contrast controls and color-only badges |
 | Bottom command dock with collapsible trays | `src/ui/templates/command-dock.html` | A single pill-shaped command dock at the bottom center | Multiple trays in P1 |
 | Cyan accent with soft glow, text secondary at 50 percent | `foundation.css` `--accent`, `--accent-glow`, `--text-secondary` | One glowing active element per instrument; secondary text as alpha over the canvas | Glow on status colors |
 | HUD frame lines kept decorative and separate from telemetry | `src/ui/templates/cockpit.html` comment "Decorative only; telemetry and interactive panels remain separate" | Edge frame lines and corner brackets as decoration; readouts only from view state | Simulated pitch and roll scales outside the Devices instrument |
@@ -468,4 +468,28 @@ These apply to every view and are testable in review:
 
 - **Proposed:** every layout, token, binding, and view in §2 to §11.
 - **Measured:** the palette validator results in §7.1, on the stated tool, date, and inputs. They measure color separation, not OIA.
-- **Implemented, tested, or verified:** nothing. The mockup is a static page with fixture content and has no application behind it.
+- **Implemented in the prototype only:** the fixture interactions in §15. No production application, domain-service integration, persistence, acquisition, or formal verification is supplied by this design slice. A01 and A02 remain unfulfilled integration scenarios.
+
+## 15. Interactive prototype scope and walkthrough
+
+This follow-up to the merged design draft is a dependency-independent slice of #16. It does not choose the D01 renderer, establish a configuration schema, or copy the unmerged #9/#14 implementation. JavaScript is confined to temporary presentation state over three synthetic accounts. The transcript was written for the prototype; `FIXTURE-DOC-0007`, its version, and its paragraph anchors are illustrative identifiers, not acquired evidence.
+
+Implemented here:
+
+- Select A, B, or C to coordinate the inspector, geometry selection, coverage row, source anchor, and timeline explanation. B has no plotted position. B and C have no event-time marker; selecting them retains the case clock and explicitly says their event times are unknown.
+- Open **Read source passage** or **Library** to inspect the corresponding versioned fixture paragraph. **Back** or Alt+Left restores the prior view, selection, inspector tab, submitted search, display modes, scroll position, and available focus target. Route history is bounded to 40 transitions and ends on reload. When a search-result control was recreated, focus returns to the search field.
+- Search literal text or an account identifier in all three synthetic passages. Results retain anchors and fixture labels. The coverage statement names the complete searched scope; no matches is an empty result, not a failed acquisition. No saved queries, semantic retrieval, provider search, pagination, or acquisition is simulated.
+- Use Tab/Shift+Tab, the skip link, Enter/Space, Ctrl/Cmd+K (or `/` outside an input), and arrow/Home/End keys on inspector tabs. Other proposed bindings in §8.1 are not implemented in this prototype.
+- Toggle **Clean evidence** to remove rings and selection brackets while preserving the schematic and fixture labels. **Focus view** removes the rail and timeline; its exit control and search remain reachable. Opaque panels and reduced motion change presentation only and honor the corresponding system preferences. No audio is emitted.
+- Read disabled instruments' inline reasons. Jobs shows **no connected worker**, not fabricated progress. Save, publish, assessment, and export actions are absent because they have no functioning service in this prototype.
+
+Responsive behavior: wide screens retain separate glass instruments around the evidence canvas. At 1100 px and below, the inspector follows the evidence in normal document flow. At 640 px and below, the layout becomes a single column with labeled navigation and account controls. The source reader and search use the same layout; no fixed-width 1440 px stage or overlapping drawer is required. The print stylesheet preserves fixture and source labels, including uncertainty.
+
+Local verification on Windows, 2026-11-02:
+
+- Playwright 1.56.1 with headless Microsoft Edge 156.0.4314.58, opening the local HTML file directly: checked 1440, 1024, 768, 390, and 320 px viewports for horizontal overflow and overlapping top-level regions; inspected desktop and phone screenshots.
+- Exercised unknown-time selection, anchored source reading, Back and focus restoration, inspector keyboard tabs, search shortcut, matching/empty/all-account queries, literal markup input, clean/focus views, and reduced effects. No JavaScript errors or remote HTTP requests were observed.
+- axe-core 4.10.3 reported no WCAG 2 A/AA or 2.1 AA violations in the initial geometry view at 1440 and 390 px. This automated result does not establish full accessibility conformance or replace assistive-technology review.
+- Reviewed relative links, requirement references, and the diff locally. No Rust or Lean code changed; no product-runtime, provider, persistence, or full A01/A02 acceptance claims follow from these prototype checks.
+
+Reproduce the core walkthrough by opening the linked HTML file, selecting B, opening its source, returning with Back, searching for `ridge`, opening C's result, and returning with Alt+Left. Try an unmatched query and then an empty query. Repeat at a narrow width using only the keyboard and the presentation toggles. All displayed evidence remains explicitly synthetic throughout.

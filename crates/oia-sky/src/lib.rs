@@ -30,14 +30,28 @@ pub const MIN_JD_UT1: f64 = 2_415_020.5;
 /// Latest supported UT1 Julian date (2100-01-01T00:00 UT1).
 pub const MAX_JD_UT1: f64 = 2_488_069.5;
 /// Accepted range of TT − UT1 in seconds. Historical and predicted values for
-/// 1900–2100 lie inside it; a value outside usually means UTC or UT1 was passed
-/// as TT, or the arguments were swapped.
+/// 1900–2100 lie inside it. This is a gross-error check only. It rejects
+/// swapped arguments when ΔT exceeds 10 s (after about 1910). It cannot detect
+/// UTC or UT1 passed as TT, because UTC − UT1 is within ±0.9 s; that mistake
+/// shifts the nutation arguments by about 69 s and the result by ≲ 0.0001″.
 pub const TT_MINUS_UT1_RANGE_S: (f64, f64) = (-10.0, 400.0);
 /// Accepted ellipsoidal height range in metres.
 pub const HEIGHT_RANGE_M: (f64, f64) = (-12_000.0, 100_000.0);
-/// Smallest accepted geocentric target distance in kilometres. Targets closer
-/// than this would be at or below the Earth's surface.
-pub const MIN_TARGET_DISTANCE_KM: f64 = 6_400.0;
+/// Smallest accepted geocentric distance, in kilometres, for converting a
+/// geocentric apparent place with [`topocentric_place`].
+///
+/// A geocentric apparent place carries the geocentric light time. Correcting
+/// it only by vector subtraction leaves an error of about
+/// u⊥·(d − ρ)/(c·ρ), where u⊥ is the target's transverse velocity relative to
+/// the Earth, d is the geocentric distance and ρ is the topocentric distance.
+/// Beyond 100,000 km a target on a bound geocentric orbit (u ≲ 2 km/s) stays
+/// below 0.1″. Nearer targets reach 0.4″ at GEO and about 55″ in low Earth
+/// orbit. For those, use a topocentric apparent place from the provider with
+/// [`TopocentricPlace::new`].
+pub const MIN_TARGET_DISTANCE_KM: f64 = 100_000.0;
+/// Largest accepted finite distance, in kilometres (about 106 light-years).
+/// For anything farther, state [`TargetDistance::ParallaxNegligible`].
+pub const MAX_TARGET_DISTANCE_KM: f64 = 1.0e15;
 /// Lowest airless (true) elevation for which refraction is modelled, in degrees.
 pub const REFRACTION_MIN_ELEVATION_DEG: f64 = -1.0;
 /// Accepted pressure range for refraction, in hectopascals.
@@ -241,7 +255,12 @@ impl ApparentPlace {
         }
         let dec_deg = in_range(Field::Declination, dec_deg, -90.0, 90.0)?;
         if let TargetDistance::Kilometres(km) = distance {
-            in_range(Field::Distance, km, MIN_TARGET_DISTANCE_KM, f64::MAX)?;
+            in_range(
+                Field::Distance,
+                km,
+                MIN_TARGET_DISTANCE_KM,
+                MAX_TARGET_DISTANCE_KM,
+            )?;
         }
         Ok(Self {
             ra_deg,
@@ -263,15 +282,31 @@ impl ApparentPlace {
     }
 }
 
-/// Earth rotation angles at an instant, in degrees unless stated.
+/// Earth rotation angles at an instant. Only [`earth_rotation`] constructs
+/// it, so its values always come from a validated [`Instant`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EarthRotation {
-    /// Greenwich mean sidereal time (IAU 1982), [0, 360).
-    pub gmst_deg: f64,
-    /// Equation of the equinoxes from the truncated nutation series, arcseconds.
-    pub equation_of_equinoxes_arcsec: f64,
-    /// Greenwich apparent sidereal time, [0, 360).
-    pub gast_deg: f64,
+    gmst_deg: f64,
+    equation_of_equinoxes_arcsec: f64,
+    gast_deg: f64,
+}
+
+impl EarthRotation {
+    /// Greenwich mean sidereal time (IAU 1982), degrees in [0, 360).
+    pub fn gmst_deg(self) -> f64 {
+        self.gmst_deg
+    }
+
+    /// Equation of the equinoxes from the truncated nutation series, in
+    /// arcseconds. The IAU 1994 complementary terms (≤ 0.0027″) are omitted.
+    pub fn equation_of_equinoxes_arcsec(self) -> f64 {
+        self.equation_of_equinoxes_arcsec
+    }
+
+    /// Greenwich apparent sidereal time, degrees in [0, 360).
+    pub fn gast_deg(self) -> f64 {
+        self.gast_deg
+    }
 }
 
 /// Computes GMST, the equation of the equinoxes, and GAST.
@@ -387,14 +422,65 @@ fn observer_state(site: GeodeticSite, gast_deg: f64) -> (Vec3, Vec3) {
 /// date.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TopocentricPlace {
-    pub ra_deg: f64,
-    pub dec_deg: f64,
-    /// Observer-to-target distance, if the input distance was finite.
-    pub distance_km: Option<f64>,
+    ra_deg: f64,
+    dec_deg: f64,
+    distance_km: Option<f64>,
+}
+
+impl TopocentricPlace {
+    /// A topocentric apparent place supplied by a provider for this observer,
+    /// for example a satellite position nearer than
+    /// [`MIN_TARGET_DISTANCE_KM`]. `ra_deg` in [0, 360), `dec_deg` in
+    /// [−90, 90]. `distance_km`, if known, must be positive and at most
+    /// [`MAX_TARGET_DISTANCE_KM`].
+    pub fn new(ra_deg: f64, dec_deg: f64, distance_km: Option<f64>) -> Result<Self, SkyError> {
+        let ra_deg = finite(Field::RightAscension, ra_deg)?;
+        if !(0.0..360.0).contains(&ra_deg) {
+            return Err(SkyError::OutOfRange {
+                field: Field::RightAscension,
+                value: ra_deg,
+                min: 0.0,
+                max: 360.0,
+            });
+        }
+        let dec_deg = in_range(Field::Declination, dec_deg, -90.0, 90.0)?;
+        if let Some(km) = distance_km {
+            let km = in_range(Field::Distance, km, 0.0, MAX_TARGET_DISTANCE_KM)?;
+            if km <= 0.0 {
+                return Err(SkyError::OutOfRange {
+                    field: Field::Distance,
+                    value: km,
+                    min: f64::MIN_POSITIVE,
+                    max: MAX_TARGET_DISTANCE_KM,
+                });
+            }
+        }
+        Ok(Self {
+            ra_deg,
+            dec_deg,
+            distance_km,
+        })
+    }
+
+    pub fn ra_deg(self) -> f64 {
+        self.ra_deg
+    }
+
+    pub fn dec_deg(self) -> f64 {
+        self.dec_deg
+    }
+
+    /// Observer-to-target distance, if known.
+    pub fn distance_km(self) -> Option<f64> {
+        self.distance_km
+    }
 }
 
 /// Converts a geocentric apparent place to the observer's topocentric apparent
 /// place, applying parallax (finite distances only) and diurnal aberration.
+///
+/// The topocentric light-time difference is not corrected; see
+/// [`MIN_TARGET_DISTANCE_KM`] for the resulting bound.
 pub fn topocentric_place(
     place: ApparentPlace,
     site: GeodeticSite,
@@ -429,7 +515,8 @@ pub fn topocentric_place(
 pub struct Horizontal {
     /// Azimuth from north through east, [0, 360). Undefined at the zenith and
     /// nadir, where it is reported as computed by `atan2` and carries no
-    /// meaning.
+    /// meaning. At latitude ±90° "north" is undefined too; the azimuth is then
+    /// measured from the meridian of the longitude supplied and changes with it.
     pub azimuth_deg: f64,
     pub elevation_deg: f64,
     /// Local apparent hour angle, [−180, 180).
@@ -579,8 +666,9 @@ pub fn angular_separation_deg(ra1_deg: f64, dec1_deg: f64, ra2_deg: f64, dec2_de
 }
 
 fn wrap_deg(x: f64) -> f64 {
-    let r = x.rem_euclid(360.0);
-    // rem_euclid can return exactly 360.0 for tiny negative inputs.
+    // Adding 0.0 turns −0.0 into +0.0. rem_euclid can return exactly 360.0 for
+    // tiny negative inputs.
+    let r = x.rem_euclid(360.0) + 0.0;
     if r >= 360.0 { 0.0 } else { r }
 }
 

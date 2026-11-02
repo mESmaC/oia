@@ -8,6 +8,9 @@
 //! - refraction above the model domain: 1.0″ for the whole chain, 0.5″ for the
 //!   refraction amount alone.
 //!
+//! Each check prints its residual; run with `-- --nocapture` to regenerate the
+//! "measured maximum" column of the implementation record.
+//!
 //! TT is taken as UT + (TDB − UT) from each row; |TT − TDB| < 2 ms, which is
 //! negligible for the nutation arguments.
 
@@ -79,10 +82,9 @@ fn rows(name: &str) -> Vec<Row> {
         .lines()
         .filter(|l| !l.trim().is_empty())
         .map(|l| {
-            cols.iter()
-                .cloned()
-                .zip(l.split(',').map(|f| f.trim().to_owned()))
-                .collect()
+            let fields: Vec<String> = l.split(',').map(|f| f.trim().to_owned()).collect();
+            assert_eq!(fields.len(), cols.len(), "{name}: field count in {l:?}");
+            cols.iter().cloned().zip(fields).collect()
         })
         .collect()
 }
@@ -160,15 +162,16 @@ fn horizontal_transform_matches_horizons() {
         let site = GeodeticSite::new(lat, lon, h).unwrap();
         for row in rows(name) {
             let rotation = earth_rotation(instant(&row));
-            let place = oia_sky::TopocentricPlace {
-                ra_deg: num(&row, ra),
-                dec_deg: num(&row, dec),
-                distance_km: None,
-            };
+            let place =
+                oia_sky::TopocentricPlace::new(num(&row, ra), num(&row, dec), None).unwrap();
             let got = horizontal(place, site, rotation);
             let d_az = arcsec(wrapped_diff_deg(got.azimuth_deg, num(&row, az)))
                 * got.elevation_deg.to_radians().cos();
             let d_el = arcsec(got.elevation_deg - num(&row, el));
+            eprintln!(
+                "horizontal {name} {}: dAz·cos(el) {d_az:.4}″ dEl {d_el:.4}″",
+                row[DATE]
+            );
             assert!(
                 d_az.abs() <= 1.0 && d_el.abs() <= 1.0,
                 "{name} {}: dAz·cos(el) {d_az:.3}″ dEl {d_el:.3}″",
@@ -209,11 +212,12 @@ fn topocentric_parallax_matches_horizons() {
         assert!(oia_sky::angular_separation_deg(ra, dec, era, edec) > 0.4);
         // ...and is reproduced to a small fraction of an arcsecond.
         let err = arcsec(oia_sky::angular_separation_deg(
-            got.ra_deg,
-            got.dec_deg,
+            got.ra_deg(),
+            got.dec_deg(),
             era,
             edec,
         ));
+        eprintln!("parallax {}: {err:.4}″", geo[DATE]);
         assert!(err <= 0.1, "{}: {err:.4}″", geo[DATE]);
         checked += 1;
     }
@@ -248,10 +252,12 @@ fn refraction_matches_horizons_above_domain_and_is_withheld_below() {
                 got.airless.azimuth_deg,
                 num(&row, "Azimuth_(r-app)"),
             ));
+            eprintln!("chain {name} {}: dAz {d_az:.4}″", row[DATE]);
             assert!(d_az.abs() <= 1.0, "{name} {}: dAz {d_az:.3}″", row[DATE]);
             match got.refraction {
                 Some(Refraction::Applied { elevation_deg, .. }) => {
                     let d_el = arcsec(elevation_deg - num(&row, "Elevation_(r-app)"));
+                    eprintln!("chain {name} {}: refracted dEl {d_el:.4}″", row[DATE]);
                     assert!(d_el.abs() <= 1.0, "{name} {}: dEl {d_el:.3}″", row[DATE]);
                     applied += 1;
                 }
@@ -270,10 +276,12 @@ fn refraction_matches_horizons_above_domain_and_is_withheld_below() {
     assert_eq!((applied, withheld), (4, 6));
 
     // Refraction amount alone at ~64° elevation (airless versus refracted files).
-    for (airless, refracted) in rows("topo-dallas-sun-airless")
-        .iter()
-        .zip(rows("topo-dallas-sun-refracted").iter())
-    {
+    let (airless_rows, refracted_rows) = (
+        rows("topo-dallas-sun-airless"),
+        rows("topo-dallas-sun-refracted"),
+    );
+    assert_eq!((airless_rows.len(), refracted_rows.len()), (11, 11));
+    for (airless, refracted) in airless_rows.iter().zip(refracted_rows.iter()) {
         assert_eq!(airless[DATE], refracted[DATE]);
         let h = num(airless, "Elevation_(a-app)");
         let expected = arcsec(num(refracted, "Elevation_(r-app)") - h);
@@ -283,6 +291,11 @@ fn refraction_matches_horizons_above_domain_and_is_withheld_below() {
         else {
             panic!("above domain");
         };
+        eprintln!(
+            "refraction {}: {:.4}″",
+            airless[DATE],
+            refraction_arcsec - expected
+        );
         assert!(
             (refraction_arcsec - expected).abs() <= 0.5,
             "{}: {refraction_arcsec:.3}″ vs {expected:.3}″",
@@ -313,6 +326,13 @@ fn invalid_inputs_are_rejected_before_computation() {
     ));
     assert!(ApparentPlace::new(360.0, 0.0, TargetDistance::ParallaxNegligible).is_err());
     assert!(ApparentPlace::new(10.0, 0.0, TargetDistance::Kilometres(6_000.0)).is_err());
+    // Low Earth orbit (600 km altitude) would exceed the accuracy budget through
+    // the uncorrected topocentric light time; it needs a provider topocentric place.
+    assert!(ApparentPlace::new(10.0, 0.0, TargetDistance::Kilometres(6_978.0)).is_err());
+    assert!(ApparentPlace::new(10.0, 0.0, TargetDistance::Kilometres(1.0e200)).is_err());
+    assert!(oia_sky::TopocentricPlace::new(f64::NAN, 0.0, None).is_err());
+    assert!(oia_sky::TopocentricPlace::new(10.0, 0.0, Some(0.0)).is_err());
+    assert!(oia_sky::TopocentricPlace::new(10.0, 0.0, Some(600.0)).is_ok());
     assert!(ApparentPlace::new(10.0, 0.0, TargetDistance::Kilometres(f64::INFINITY)).is_err());
     assert!(Atmosphere::new(-1.0, 10.0).is_err());
     assert!(refract(f64::NAN, Atmosphere::conventional_reference()).is_err());

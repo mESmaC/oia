@@ -67,16 +67,20 @@ fn run(args: &[String]) -> Result<(), String> {
     );
     println!(
         "earth rotation: GMST {:.9}°  eq. equinoxes {:.4}\"  GAST {:.9}°",
-        p.rotation.gmst_deg, p.rotation.equation_of_equinoxes_arcsec, p.rotation.gast_deg
+        p.rotation.gmst_deg(),
+        p.rotation.equation_of_equinoxes_arcsec(),
+        p.rotation.gast_deg()
     );
-    match p.topocentric.distance_km {
+    match p.topocentric.distance_km() {
         Some(km) => println!(
             "topocentric apparent: RA {:.9}°  Dec {:.9}°  distance {km:.3} km",
-            p.topocentric.ra_deg, p.topocentric.dec_deg
+            p.topocentric.ra_deg(),
+            p.topocentric.dec_deg()
         ),
         None => println!(
             "topocentric apparent: RA {:.9}°  Dec {:.9}°  (parallax not applied: stated negligible)",
-            p.topocentric.ra_deg, p.topocentric.dec_deg
+            p.topocentric.ra_deg(),
+            p.topocentric.dec_deg()
         ),
     }
     println!(

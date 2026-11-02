@@ -1,0 +1,15 @@
+[package]
+name = "oia-sky"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+description = "Provider-independent observer sky geometry for OIA: Earth rotation, topocentric place, horizontal coordinates, and refraction"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"

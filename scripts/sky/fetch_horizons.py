@@ -265,6 +265,46 @@ CASES: list[dict] = [
 ]
 
 
+# Citation and usage terms as published by the provider, checked on the date
+# below. Keep in sync with fixtures/sky/README.md ("Citation and terms").
+TERMS_CHECKED_UTC = "2026-11-02"
+TERMS_URLS = [
+    "https://ssd.jpl.nasa.gov/horizons/manual.html",
+    "https://ssd.jpl.nasa.gov/about/",
+]
+TERMS_SUMMARY = (
+    "The Horizons manual (References for the Horizons system) asks users to cite "
+    "Giorgini and the JPL Solar System Dynamics Group with the system URL and retrieval "
+    "date; the SSD About page gives a citation template for downloaded data. Neither "
+    "page states a copyright notice, license, or redistribution restriction. The manual "
+    "calls user-produced files informal releases that must not be used for purposes "
+    "affecting spacecraft safety or mission success without contacting the JPL Solar "
+    "System Dynamics Group. Formal third-party notices remain to be settled with D06/#9."
+)
+
+
+def provider_block(retrieved_on: dt.date) -> dict:
+    """Provider identity, citation (for the given UTC retrieval date), and terms."""
+    horizons_date = retrieved_on.strftime("%Y-%b-%d")
+    ssd_date = f"{retrieved_on.year}, {retrieved_on.strftime('%B')} {retrieved_on.day}"
+    return {
+        "name": "NASA/JPL Solar System Dynamics Group, Horizons On-Line Ephemeris System",
+        "documentation": "https://ssd-api.jpl.nasa.gov/doc/horizons.html",
+        "manual": "https://ssd.jpl.nasa.gov/horizons/manual.html",
+        "retrieved_on_utc": retrieved_on.isoformat(),
+        "citation": "Giorgini, JD and JPL Solar System Dynamics Group, NASA/JPL Horizons "
+        f"On-Line Ephemeris System, <https://ssd.jpl.nasa.gov/horizons/>, data retrieved "
+        f"{horizons_date}.",
+        "ssd_citation": f"Solar System Dynamics. (Downloaded {ssd_date}). (Horizons System). "
+        "https://ssd.jpl.nasa.gov",
+        "terms": {
+            "checked_on_utc": TERMS_CHECKED_UTC,
+            "urls": TERMS_URLS,
+            "summary": TERMS_SUMMARY,
+        },
+    }
+
+
 def quote(value: str) -> str:
     return f"'{value}'"
 
@@ -302,6 +342,7 @@ def run(destination: Path, only: set[str] | None) -> int:
     (destination / "originals").mkdir()
     entries = []
     failures = 0
+    retrieved_on = dt.datetime.now(dt.timezone.utc).date()
     for index, case in enumerate(c for c in CASES if not only or c["id"] in only):
         if index:
             time.sleep(DELAY_BETWEEN_REQUESTS_SECONDS)
@@ -346,11 +387,7 @@ def run(destination: Path, only: set[str] | None) -> int:
         "origin_class": "external_reference",
         "description": "Unmodified JPL Horizons API responses used as an independent "
         "reference for sky and solar-system calculations. Not observations; not OIA output.",
-        "provider": {
-            "name": "NASA/JPL Solar System Dynamics Group, Horizons On-Line Ephemeris System",
-            "documentation": "https://ssd-api.jpl.nasa.gov/doc/horizons.html",
-            "manual": "https://ssd.jpl.nasa.gov/horizons/manual.html",
-        },
+        "provider": provider_block(retrieved_on),
         "generator": "scripts/sky/fetch_horizons.py",
         "cases": entries,
     }

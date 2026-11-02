@@ -17,6 +17,7 @@ that Horizons is correct, nor that any OIA calculation agrees with it.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import json
 import re
@@ -24,7 +25,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from fetch_horizons import CASES, ENDPOINT, MAX_RESPONSE_BYTES, build_query  # noqa: E402
+from fetch_horizons import CASES, ENDPOINT, MAX_RESPONSE_BYTES, build_query, provider_block  # noqa: E402
 from horizons_meta import HorizonsFormatError, extract_metadata  # noqa: E402
 
 SCHEMA = "oia.fixture.sky-reference/1"
@@ -56,6 +57,19 @@ def verify(root: Path) -> list[str]:
     cases = manifest.get("cases")
     if not isinstance(cases, list) or not cases:
         return errors + ["manifest: cases must be a non-empty list"]
+    provider = manifest.get("provider")
+    try:
+        retrieved_on = dt.date.fromisoformat(str((provider or {}).get("retrieved_on_utc")))
+    except ValueError:
+        errors.append("manifest: provider.retrieved_on_utc must be YYYY-MM-DD")
+    else:
+        if provider != provider_block(retrieved_on):
+            errors.append("manifest: provider citation/terms differ from fetch_horizons.py")
+        stamps = {str(c.get("retrieval", {}).get("requested_at_utc", ""))[:10]
+                  for c in cases if isinstance(c, dict)}
+        if stamps != {retrieved_on.isoformat()}:
+            errors.append(f"manifest: provider.retrieved_on_utc {retrieved_on} does not match "
+                          f"case retrieval dates {sorted(stamps)}")
 
     for entry in sorted(root.iterdir()):
         if entry.name not in ALLOWED_TOP_LEVEL:

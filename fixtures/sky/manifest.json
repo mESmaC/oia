@@ -5,7 +5,18 @@
   "provider": {
     "name": "NASA/JPL Solar System Dynamics Group, Horizons On-Line Ephemeris System",
     "documentation": "https://ssd-api.jpl.nasa.gov/doc/horizons.html",
-    "manual": "https://ssd.jpl.nasa.gov/horizons/manual.html"
+    "manual": "https://ssd.jpl.nasa.gov/horizons/manual.html",
+    "retrieved_on_utc": "2026-11-02",
+    "citation": "Giorgini, JD and JPL Solar System Dynamics Group, NASA/JPL Horizons On-Line Ephemeris System, <https://ssd.jpl.nasa.gov/horizons/>, data retrieved 2026-Nov-02.",
+    "ssd_citation": "Solar System Dynamics. (Downloaded 2026, November 2). (Horizons System). https://ssd.jpl.nasa.gov",
+    "terms": {
+      "checked_on_utc": "2026-11-02",
+      "urls": [
+        "https://ssd.jpl.nasa.gov/horizons/manual.html",
+        "https://ssd.jpl.nasa.gov/about/"
+      ],
+      "summary": "The Horizons manual (References for the Horizons system) asks users to cite Giorgini and the JPL Solar System Dynamics Group with the system URL and retrieval date; the SSD About page gives a citation template for downloaded data. Neither page states a copyright notice, license, or redistribution restriction. The manual calls user-produced files informal releases that must not be used for purposes affecting spacecraft safety or mission success without contacting the JPL Solar System Dynamics Group. Formal third-party notices remain to be settled with D06/#9."
+    }
   },
   "generator": "scripts/sky/fetch_horizons.py",
   "cases": [

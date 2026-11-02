@@ -41,11 +41,13 @@ Each response explains its own columns and flags after the table (`Column meanin
 
 ## Verify and regenerate
 
+The scripts in `scripts/sky/` are development tools for preparing and checking this fixture. No OIA runtime path calls them, and they are not an ephemeris implementation. They need Python 3.10 or later; they were tested with Python 3.12.10 on Windows 11.
+
 ```text
 python -I scripts/sky/verify_sky.py
 ```
 
-This checks offline that every declared original is present, with no extra files, and that byte length, SHA-256, and re-extracted metadata match the manifest. It also checks that each recorded query encodes its parameters and that the manifest still matches the case definitions in `scripts/sky/fetch_horizons.py`. A passing check establishes byte and bookkeeping integrity only. It does not show that Horizons is correct or that OIA agrees with it.
+This checks offline that every declared original is present, with no extra files, and that byte length, SHA-256, and re-extracted metadata match the manifest. It also checks that each recorded query encodes its parameters and that the manifest's case definitions and provider citation and terms still match `scripts/sky/fetch_horizons.py`. A passing check establishes byte and bookkeeping integrity only. It does not show that Horizons is correct or that OIA agrees with it.
 
 To re-retrieve, write to a new directory and compare. Never overwrite this one:
 
@@ -56,8 +58,26 @@ python -I scripts/sky/verify_sky.py <new-directory>
 
 The fetcher uses the Python standard library only. It issues one sequential request per case with a 60 s timeout and a 2 MiB response cap, and it does not retry. Each retrieval differs at least in the first line of the `Ephemeris / API_USER …` banner, which contains the generation time. On 2026-11-02, two retrievals of `geo-moon-eclipse` a few minutes apart differed only in that line. Other cases were not compared. Investigate and record any difference inside a table or header (for example, from a new EOP file or ephemeris version) before replacing this reference.
 
-## Attribution and limitations
+## Citation and terms
 
-Ephemerides were computed by the JPL Horizons On-Line Ephemeris System, Solar System Dynamics Group, Jet Propulsion Laboratory, California Institute of Technology. The terms for redistributing these outputs have not yet been recorded in an ADR or in third-party notices. Record them when D06 or the repository licensing work in #9 is settled.
+Cite these data as the Horizons manual recommends:
+
+> Giorgini, JD and JPL Solar System Dynamics Group, NASA/JPL Horizons On-Line Ephemeris System, <https://ssd.jpl.nasa.gov/horizons/>, data retrieved 2026-Nov-02.
+
+The [SSD About page](https://ssd.jpl.nasa.gov/about/) gives this form for data downloaded from the site:
+
+> Solar System Dynamics. (Downloaded 2026, November 2). (Horizons System). https://ssd.jpl.nasa.gov
+
+Horizons was developed at the Jet Propulsion Laboratory (Solar System Dynamics Group), California Institute of Technology, under contract with NASA.
+
+**Terms checked on 2026-11-02 (UTC):**
+- Sources: the [Horizons manual](https://ssd.jpl.nasa.gov/horizons/manual.html) (Acknowledgements and "References for the Horizons system") and the [SSD About page](https://ssd.jpl.nasa.gov/about/).
+- What they ask: citation in the form above, including the retrieval date.
+- Neither page states a copyright notice, license, or redistribution restriction. This is an absence of stated terms, not an explicit grant.
+- The manual calls files that users produce "informal file releases". They must not be used for purposes affecting spacecraft hardware safety or mission success without first contacting the JPL Solar System Dynamics Group. OIA uses them only as test references.
+
+The same citation and terms summary is recorded in `manifest.json` under `provider`, so it travels with the data. Formal third-party notices for bundled datasets remain to be settled with D06 or the repository licensing work in #9.
+
+## Limitations
 
 Not covered: satellite or TLE pass geometry and orbital-element age, planetary rotation and orientation models other than Earth's sub-solar point, observer height uncertainty, and dates outside 1952–2024.

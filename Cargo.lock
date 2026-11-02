@@ -95,6 +95,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "oia-news-claims"
+version = "0.1.0"
+
+[[package]]
 name = "oia-png-privacy"
 version = "0.1.0"
 

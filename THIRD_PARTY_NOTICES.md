@@ -1,25 +1,20 @@
 # Third-Party Notices
 
-This file records required notices and attributions for third-party source code
-selectively ported or adapted into Open Intelligence Agency (OIA).
+Open Intelligence Agency (OIA) original source code is dual-licensed under
+`MIT OR Apache-2.0` (see [`LICENSE-MIT`](LICENSE-MIT) and [`LICENSE-APACHE`](LICENSE-APACHE)).
 
- Upstream data sources, public records, media feeds, ephemerides, and models are
-governed by their own terms and are tracked per-source in `oia-ingest` registrations
-and `oia-export` bundle manifests rather than licensed under the repository's code
-license.
+**Important exclusion:** OIA's `MIT OR Apache-2.0` source-code license does **not** cover
+third-party datasets, reference fixtures, upstream feeds, public records, media assets,
+or models. Those materials remain governed by their respective upstream terms and
+attribution requirements recorded below and in each fixture or source manifest.
 
 ---
 
-## God's Eye View (selective algorithm and contract ports)
+## 1. God's Eye View (selective design and algorithm reuse)
 
 - **Upstream repository:** https://github.com/bilawalsidhu/gods-eye-view
 - **Inspected revision:** `0d1a68160e532ba65dc34b48ea205de6de4028fc` (2026-11-01)
-- **Ported / adapted scope in P0:**
-  - Bounded request body reading with hard byte caps, overflow draining, and cancellation (`server/providers/common/request.js`, `request.test.mjs`) -> adapted in `crates/oia-ingest`.
-  - Fail-safe rate-limit configuration resolution and bounded per-key/global sliding-window admission (`server/providers/common/rate-limit.js`, `src/sources/rateLimit.js`) -> adapted in `crates/oia-ingest`.
-  - Per-product historical time-window frame selection with maximum gap enforcement and generation-guarded transitions (`src/layers/weather/clock.js`, `clock.test.mjs`) -> adapted in `crates/oia-time-geo`, `crates/oia-ingest`, and formally specified in `proofs/OiaProofs/FrameSelection.lean`.
-  - Datum separation between WGS84 ellipsoidal height, orthometric MSL height, and barometric altitude (`src/data/geoid.js`) -> adapted in `crates/oia-time-geo`.
-  - Camera frame provenance classification distinguishing upstream imagery, still fallback, Street View, and synthetic substitutes (`src/layers/cctv/source.js`, `sourcePolicy.js`) -> adapted in `crates/oia-ingest`.
+- **Scope in repository:** Selective inspection and design/algorithm reference documented in [`docs/prior-art.md`](docs/prior-art.md) and [`docs/design/workspace-ui-ux.md`](docs/design/workspace-ui-ux.md). Module-level ports are recorded in `docs/prior-art.md` as each implementation package lands.
 
 ### License notice (God's Eye View source code)
 
@@ -46,3 +41,12 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+---
+
+## 2. NASA / JPL Solar System Dynamics — Horizons Reference Fixtures (`fixtures/sky/`)
+
+- **Upstream service:** NASA/JPL Solar System Dynamics Group, Horizons API (`https://ssd.jpl.nasa.gov/api/horizons.api`)
+- **Terms consulted:** https://www.jpl.nasa.gov/jpl-image-use-policy/ and https://ssd.jpl.nasa.gov/horizons/
+- **Scope in repository:** Retained raw JSON API responses in [`fixtures/sky/horizons/`](fixtures/sky/README.md) used as deterministic reference data for `#25` (`A04`, `A05`, `SPACE-04`, `SPACE-05`).
+- **Attribution & conditions:** Courtesy NASA/JPL-Caltech (Solar System Dynamics Group, Jet Propulsion Laboratory, California Institute of Technology). These reference responses are third-party ephemeris outputs, not OIA source code, and are not licensed under `MIT OR Apache-2.0`. NASA/JPL endorsement is not implied.

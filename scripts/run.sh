@@ -2,15 +2,15 @@
 # Build, check, and launch the OIA Rust workspace and CLI/examples.
 #
 # Runs Cargo against the root 15-crate OIA workspace (`Cargo.toml`) using the
-# pinned Rust toolchain (1.99.0) and runs `lake build` in `proofs/` during
-# `check` when `lake` is available on PATH.
+# pinned Rust toolchain (1.99.0), and runs `lake build` in `proofs/` during
+# `check` when the `proofs/` directory exists and `lake` is available on PATH.
 #
 # Usage: scripts/run.sh [build|fmt|lint|test|check|run|search] [-- ARGS...]
 #   build             Build the entire workspace (`--workspace --all-targets`).
 #   fmt               Check formatting across the workspace.
 #   lint              Run clippy across the workspace (`-D warnings`).
 #   test              Run all workspace tests.
-#   check             Run workspace fmt, clippy, test, and `lake build` in `proofs/`.
+#   check             Run workspace fmt, clippy, test, and (when `proofs/` exists) `lake build`.
 #   run [ARGS...]     Run `oia-documents` inspect-text: PATH [MAX_INPUT_BYTES] [MAX_PASSAGES].
 #                     Defaults to inspecting README.md when no PATH is given.
 #   search ARGS...    Run `oia-documents` find-text: PATH QUERY [MAX_MATCHES] [MAX_INPUT_BYTES]
@@ -67,7 +67,7 @@ case $action in
         cargo fmt --manifest-path "$MANIFEST" --all -- --check
         ws clippy --workspace --all-targets -- -D warnings
         ws test --workspace
-        if command -v lake >/dev/null 2>&1; then
+        if [ -d "$PROOFS_DIR" ] && command -v lake >/dev/null 2>&1; then
             (cd "$PROOFS_DIR" && lake build)
         fi
         ;;

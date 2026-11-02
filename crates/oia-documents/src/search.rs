@@ -53,6 +53,7 @@ pub enum SearchError {
     },
     MultilineQuery,
     WhitespaceInToken,
+    InvalidCursor,
     AllocationFailed,
     Stopped(StopReason),
 }
@@ -79,6 +80,7 @@ impl fmt::Display for SearchError {
             Self::WhitespaceInToken => {
                 write!(formatter, "token query must not contain Unicode whitespace")
             }
+            Self::InvalidCursor => write!(formatter, "search cursor is not a valid text boundary"),
             Self::Stopped(reason) => write!(formatter, "search stopped: {reason:?}"),
         }
     }
@@ -217,6 +219,11 @@ fn search<'input>(
     mut check_control: impl FnMut() -> Result<(), StopReason>,
 ) -> Result<SearchResult<'input>, SearchError> {
     check_control().map_err(SearchError::Stopped)?;
+    validate_query(query, limits, mode)?;
+    search_from(extraction, query, limits, mode, 0, check_control)
+}
+
+fn validate_query(query: &str, limits: SearchLimits, mode: SearchMode) -> Result<(), SearchError> {
     if query.is_empty() {
         return Err(SearchError::EmptyQuery);
     }
@@ -232,17 +239,96 @@ fn search<'input>(
     if mode == SearchMode::WhitespaceToken && query.chars().any(char::is_whitespace) {
         return Err(SearchError::WhitespaceInToken);
     }
+    Ok(())
+}
 
+/// Resumable search over one immutable extraction and query. The cursor is
+/// private and cannot be transferred to a different buffer, query or mode.
+/// Limits apply per page; callers must separately bound total pages/work.
+#[derive(Debug)]
+pub struct SearchSession<'session, 'input> {
+    extraction: &'session Extraction<'input>,
+    query: &'session str,
+    limits: SearchLimits,
+    mode: SearchMode,
+    searched_bytes: usize,
+    exhausted: bool,
+}
+
+impl<'session, 'input> SearchSession<'session, 'input> {
+    pub fn new(
+        extraction: &'session Extraction<'input>,
+        query: &'session str,
+        limits: SearchLimits,
+        mode: SearchMode,
+    ) -> Result<Self, SearchError> {
+        validate_query(query, limits, mode)?;
+        Ok(Self {
+            extraction,
+            query,
+            limits,
+            mode,
+            searched_bytes: 0,
+            exhausted: false,
+        })
+    }
+
+    /// Returns only this page's hits, with cumulative coverage since session
+    /// creation. An empty terminal page is possible. `None` means extracted
+    /// text is exhausted, not that extraction or source coverage is complete.
+    /// Failure (including the final control check) leaves the cursor unchanged.
+    pub fn next_page(
+        &mut self,
+        mut check_control: impl FnMut() -> Result<(), StopReason>,
+    ) -> Result<Option<SearchResult<'input>>, SearchError> {
+        check_control().map_err(SearchError::Stopped)?;
+        if self.exhausted {
+            return Ok(None);
+        }
+        let page = search_from(
+            self.extraction,
+            self.query,
+            self.limits,
+            self.mode,
+            self.searched_bytes,
+            check_control,
+        )?;
+        self.searched_bytes = page.coverage.searched_bytes;
+        self.exhausted = self.searched_bytes == self.extraction.coverage().extracted_bytes();
+        Ok(Some(page))
+    }
+}
+
+// start_byte is internal, either zero or the end of a successfully returned
+// match. Therefore it is a UTF-8 boundary in this immutable extraction.
+fn search_from<'input>(
+    extraction: &Extraction<'input>,
+    query: &str,
+    limits: SearchLimits,
+    mode: SearchMode,
+    start_byte: usize,
+    mut check_control: impl FnMut() -> Result<(), StopReason>,
+) -> Result<SearchResult<'input>, SearchError> {
     let mut matches = Vec::new();
-    let mut searched_bytes = 0;
+    let mut searched_bytes = start_byte;
     'passages: for passage in extraction.passages() {
-        let mut occurrences = passage.text().match_indices(query);
+        check_control().map_err(SearchError::Stopped)?;
+        if passage.byte_range().end <= start_byte {
+            continue;
+        }
+        let local_start = start_byte.saturating_sub(passage.byte_range().start);
+        let Some(remainder) = passage.text().get(local_start..) else {
+            // Unreachable through the private cursor; never use unchecked slicing.
+            return Err(SearchError::InvalidCursor);
+        };
+        let mut occurrences = remainder.match_indices(query);
         loop {
             check_control().map_err(SearchError::Stopped)?;
             let Some((offset, text)) = occurrences.next() else {
                 searched_bytes = passage.byte_range().end;
                 break;
             };
+            let offset = local_start + offset;
             if mode == SearchMode::WhitespaceToken {
                 // match_indices guarantees UTF-8 boundaries within the passage.
                 let before = passage

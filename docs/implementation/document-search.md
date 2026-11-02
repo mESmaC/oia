@@ -1,6 +1,6 @@
 # Bounded exact-text passage search
 
-Status: implemented in the temporary standalone `oia-documents` validation
+Status: implemented in the workspace's `oia-documents` validation
 package; not integrated into application services. This is the exact-text
 matching slice of [#18](https://github.com/mESmaC/oia/issues/18), supporting
 [CASE-05](../spec.md#31-investigation-workspace) and
@@ -101,14 +101,51 @@ workspace crate, source registry, job system, or runtime subprocess is added.
   processing deadline across extraction and search, starting after file I/O.
   File open/read/output are not deadline-controlled.
 
+## Resumable in-memory pages
+
+`SearchSession::new(extraction, query, limits, mode)` pins immutable borrowed
+inputs for its lifetime. `next_page(check_control)` returns only the next
+page's hits, ordered by original byte offset, with **cumulative** coverage from
+session creation. `max_matches` bounds each page. The private cursor cannot be
+supplied by a caller or reused with different text, query, or matching rules.
+A successful page advances the cursor; allocation or control failures leave it
+unchanged, so a retry cannot skip unpublished hits. Previously returned pages
+remain available if a later page fails. Callers must bound total pages and
+provide cancellation/deadline checks.
+
+A full page stops immediately after its last match. An additional empty page
+may be needed to establish that the remaining text has no matches. `None`
+means all **extracted** text has been searched; it does not erase an unextracted
+range or establish complete acquisition. The first call returns a coverage
+page even for empty input. This is an in-process primitive, not the versioned
+service cursor from the corpus search contract. No cursor serialization,
+source identity, authorization, or cross-document ranking is implemented.
+
+The read-only example holds one immutable file buffer for the whole session:
+
+```text
+cargo run -p oia-documents --example find-text-pages --locked --offline -- fixtures/documents/a03/originals/report-v1.txt fictional 1 10
+```
+
+Arguments: `[--token | --] PATH QUERY [PAGE_SIZE] [MAX_PAGES] [MAX_INPUT_BYTES]
+[MAX_PASSAGES]`. Defaults are 100 hits/page, 10 pages, 1,048,576 input bytes,
+10,000 passages, and a 4,096-byte query limit. All limits are positive. Input
+and query validation, escaping, and matching rules follow `find-text` above.
+The command prints each page's hits and cumulative gaps, plus a final session
+status. Exit 0 means complete buffer search; 2 means the page budget or
+extraction budget leaves a gap; 1 means an error. Earlier successful pages may
+already have been printed when a later call fails. One five-second cooperative
+processing deadline spans extraction and every page; blocking I/O is not
+interruptible. No timing guarantee or scientific proof is claimed.
+
 ## Integration and remaining scope
 
 This kernel implements only a matching primitive from the
 [search and cited-QA contract](../contracts/document-search-and-cited-qa.md).
-The existing package remains temporary; final module placement under the
-proposed `oia-query` boundary requires coordination with the P0 owner after
-shared contracts merge. Do not copy unmerged P0 code, invent identity envelopes,
-or adopt this package's standalone lockfile as the workspace lockfile.
+The package is now a workspace member using the root lockfile. Final module
+placement under the proposed `oia-query` boundary requires coordination with
+the P0 owner after shared contracts merge. Do not copy unmerged P0 code or
+invent identity envelopes.
 
 Application integration must authorize the selected scope before supplying
 text, bind matches to retained artifact/source/extraction versions, preserve
@@ -161,3 +198,17 @@ match budget, extraction budget, invalid token rejected before file access,
 and default substring mode with `--`. The original fixture SHA-256 was unchanged.
 Both A03 integrity and QA fixture validators (`verify_a03_qa.py --self-test`)
 passed. These fixture checks do not establish integrated QA or model behavior.
+
+Pagination verification on 2026-11-02, Windows x86-64/MSVC, Rust 1.99.0,
+base `86dabac`: workspace `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets --locked -- -D warnings`, and
+`cargo test --workspace --locked` passed. Example builds with
+`cargo build -p oia-documents --examples --locked --offline` and both A03
+validators above passed. Two focused assertions groups cover paged/one-shot
+hit equivalence, original Unicode anchors, extraction gaps, empty terminal
+pages, and retry after every second-page control boundary. Six direct CLI
+checks cover complete pagination, page budget, token anchor, extraction gap,
+zero page budget, and invalid token rejection before file access. The original
+fixture hash was unchanged. Relative documentation targets/fences and staged
+whitespace checks passed. No hosted CI, full A03 acceptance, cross-platform,
+model, performance, or Lean verification was run for this slice.

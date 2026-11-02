@@ -227,9 +227,9 @@
       "canonical_url": "https://nav-notices.pelagic.invalid/ca/SYNTH-NOTICE-CA-0041",
       "language": "en",
       "blob_path": "blobs/pelagic_notice_ca_0041_v1.txt",
-      "sha256": "343e8b0747bc1eee8cf0a887b01c861004995d5a9b744aec413c0cc356d15eea",
-      "byte_length": 1068,
-      "char_length": 1068,
+      "sha256": "d123c806bdaf7dd6f4cb5b6f6acf75d89347d301c7f7082266a41eb3723100e2",
+      "byte_length": 1063,
+      "char_length": 1063,
       "timestamps": {
         "event_interval": {
           "kind": "bounded_interval",
@@ -288,19 +288,19 @@
         {
           "passage_id": "p-pelagic-1",
           "language": "en",
-          "byte_start": 365,
-          "byte_end": 593,
-          "char_start": 365,
-          "char_end": 593,
+          "byte_start": 360,
+          "byte_end": 588,
+          "char_start": 360,
+          "char_end": 588,
           "quote": "Synthetic acoustic beacon and optical range calibration exercise in fictional Offshore Calibration Box CX-9 (bounding polygon: 21.850N 158.450W; 21.850N 158.950W; 21.400N 158.950W; 21.400N 158.450W; WGS84, surface to 1500m MSL)."
         },
         {
           "passage_id": "p-pelagic-2",
           "language": "en",
-          "byte_start": 828,
-          "byte_end": 1067,
-          "char_start": 828,
-          "char_end": 1067,
+          "byte_start": 823,
+          "byte_end": 1062,
+          "char_start": 823,
+          "char_end": 1062,
           "quote": "Commercial shipping lanes and Vesper Harbor approaches on fictional Kestrel Atoll remain open. Vessel movement to Calibration Box CX-9 is a scheduled sensor calibration plan and does not establish an operational blockade or exclusion zone."
         }
       ]

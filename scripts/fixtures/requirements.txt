@@ -1,0 +1,2 @@
+# Development-only raster fixture authoring; validation uses the standard library.
+Pillow==12.3.0

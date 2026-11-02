@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "summaries": [
+    {
+      "summary_id": "sum-doc-01",
+      "source_document_id": "doc-01-radar",
+      "source_version_id": "doc-01-radar:v1.0",
+      "subject": "Observational Analysis of Unusual X-Band Radar Reflections in the Gulf of Maine",
+      "executive_summary": "Coastal radar stations NEXRAD KCBW and KGYX detected non-precipitating echoes exceeding 450 m/s with localized NOAA-21 sea-surface temperature anomalies of +1.8 K.",
+      "claims": [
+        {
+          "statement": "Radar stations KCBW and KGYX detected anomalous non-precipitating echoes with radial velocities over 450 m/s on 2026-08-12.",
+          "claim_type": "SourceAssertion",
+          "citations": [
+            {
+              "source_id": "doc-01-radar",
+              "source_version_id": "doc-01-radar:v1.0",
+              "byte_offset_start": 241,
+              "byte_offset_end": 454,
+              "anchor_label": "Section 1: Executive Summary",
+              "verbatim_passage": "On 2026-08-12 between 03:14 UTC and 04:22 UTC, coastal meteorological radar stations NEXRAD KCBW and KGYX registered anomalous non-precipitating echoes exhibiting radial velocities exceeding 450 meters per second."
+            }
+          ]
+        },
+        {
+          "statement": "Target echo Charlie-1 registered an apparent velocity of 482 m/s (+/- 15 m/s) at 3,200 meters altitude.",
+          "claim_type": "SourceAssertion",
+          "citations": [
+            {
+              "source_id": "doc-01-radar",
+              "source_version_id": "doc-01-radar:v1.0",
+              "byte_offset_start": 1078,
+              "byte_offset_end": 1224,
+              "anchor_label": "Section 3: Measured Findings, Item 1",
+              "verbatim_passage": "At 03:22:15 UTC, target echo Charlie-1 exhibited an apparent velocity of 482 m/s (+/- 15 m/s) at an altitude of 3,200 meters above mean sea level."
+            }
+          ]
+        },
+        {
+          "statement": "Radar cross-section peaked at 42.5 dBZ with differential reflectivity (ZDR) of -1.4 dB, inconsistent with standard biological or hydrometeor scatterers.",
+          "claim_type": "SourceAssertion",
+          "citations": [
+            {
+              "source_id": "doc-01-radar",
+              "source_version_id": "doc-01-radar:v1.0",
+              "byte_offset_start": 1227,
+              "byte_offset_end": 1402,
+              "anchor_label": "Section 3: Measured Findings, Item 2",
+              "verbatim_passage": "At 03:41:00 UTC, the radar cross-section spiked to 42.5 dBZ with a differential reflectivity (ZDR) of -1.4 dB, inconsistent with standard biological or hydrometeor scatterers."
+            }
+          ]
+        }
+      ],
+      "declared_methodology": "Dual-polarization Doppler radar in VCP 212 normalized against 30-day sea-clutter baselines and Portland Jetport thermal inversion soundings.",
+      "stated_limitations": [
+        "Refraction effects from the atmospheric ducting inversion layer could not be completely decoupled from kinetic motion.",
+        "Secondary multipath reflections from sea-surface chop introduce range uncertainty up to 1,200 meters.",
+        "Ground-truth optical corroboration was precluded by overcast cloud ceilings below 1,000 meters."
+      ],
+      "unresolved_questions": [
+        "Did the thermal sea-surface anomaly precede or follow the passage of the primary radar return?",
+        "What physical mechanism accounts for the negative differential reflectivity (-1.4 dB) in the absence of frozen hydrometeors?",
+        "Were maritime Automatic Identification System (AIS) vessel transponders subjected to localized radio-frequency interference during the event interval?"
+      ],
+      "coverage": {
+        "is_exhaustive": true,
+        "total_bytes": 2344,
+        "processed_bytes": 2344,
+        "omitted_spans": [],
+        "truncation_reason": null
+      },
+      "provenance": {
+        "model_id": "oia-eval-reference-model",
+        "provider_kind": "LocalEmbedded",
+        "temperature_millicelsius": 0,
+        "prompt_template_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "generated_at_utc": "2026-11-01T21:45:00Z",
+        "human_review_status": "Unreviewed",
+        "needs_reassessment": false
+      }
+    },
+    {
+      "summary_id": "sum-doc-03",
+      "source_document_id": "doc-03-partial",
+      "source_version_id": "doc-03-partial:v1.0",
+      "subject": "Declassified Record Extract (Partial Scan)",
+      "executive_summary": "Partial flight safety extract noting radio direction finder deviations on airway J-75 on 2026-08-12; page 2 unreadable due to severe optical toner corruption.",
+      "claims": [
+        {
+          "statement": "Three commercial airliners on airway J-75 noted radio direction finder deviations at 03:30 UTC on 2026-08-12.",
+          "claim_type": "SourceAssertion",
+          "citations": [
+            {
+              "source_id": "doc-03-partial",
+              "source_version_id": "doc-03-partial:v1.0",
+              "byte_offset_start": 100,
+              "byte_offset_end": 271,
+              "anchor_label": "Page 1 - Recovered Text",
+              "verbatim_passage": "The preliminary flight safety report indicates that three commercial airliners on airway J-75 noted anomalous radio direction finder deviations on 2026-08-12 at 03:30 UTC."
+            }
+          ]
+        },
+        {
+          "statement": "Aircraft compasses stabilized immediately upon crossing waypoint PEARS.",
+          "claim_type": "SourceAssertion",
+          "citations": [
+            {
+              "source_id": "doc-03-partial",
+              "source_version_id": "doc-03-partial:v1.0",
+              "byte_offset_start": 683,
+              "byte_offset_end": 794,
+              "anchor_label": "Page 3 - Partial Recovery",
+              "verbatim_passage": "Aircraft flight crews reported that navigational compasses stabilized immediately upon crossing waypoint PEARS."
+            }
+          ]
+        }
+      ],
+      "declared_methodology": "Air traffic control record review and pilot debrief.",
+      "stated_limitations": [
+        "Page 2 suffered complete optical corruption and could not be recovered by OCR."
+      ],
+      "unresolved_questions": [
+        "What occurred between the initial deviation at 03:30 UTC and stabilization at waypoint PEARS?"
+      ],
+      "coverage": {
+        "is_exhaustive": false,
+        "total_bytes": 923,
+        "processed_bytes": 714,
+        "omitted_spans": [
+          {
+            "byte_start": 424,
+            "byte_end": 633,
+            "page_number": 2,
+            "reason": "Unreadable OCR scan with severe toner noise"
+          }
+        ],
+        "truncation_reason": "UnreadableOcr"
+      },
+      "provenance": {
+        "model_id": "oia-eval-reference-model",
+        "provider_kind": "LocalEmbedded",
+        "temperature_millicelsius": 0,
+        "prompt_template_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "generated_at_utc": "2026-11-01T21:45:00Z",
+        "human_review_status": "Unreviewed",
+        "needs_reassessment": false
+      }
+    }
+  ]
+}

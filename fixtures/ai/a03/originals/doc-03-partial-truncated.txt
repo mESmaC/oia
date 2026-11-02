@@ -1,0 +1,12 @@
+DECLASSIFIED RECORD EXTRACT
+FILE REF: DOD-2026-X88
+PAGES: 3 (PARTIAL SCAN)
+
+PAGE 1 - RECOVERED TEXT
+The preliminary flight safety report indicates that three commercial airliners on airway J-75 noted anomalous radio direction finder deviations on 2026-08-12 at 03:30 UTC. Air Traffic Control radar at Boston ARTCC confirmed no secondary transponder squawk in the immediate sector.
+
+PAGE 2 - UNREADABLE SCAN / OCR CORRUPTION
+[IMAGE CORRUPT: Severe optical noise, moisture damage, and toner smearing prevent machine extraction between byte offsets 420 and 780. Text confidence score: 0.04. Characters recovered: "###??$%@!~~--??&###"].
+
+PAGE 3 - PARTIAL RECOVERY / TOKEN BUDGET CUTOFF
+Aircraft flight crews reported that navigational compasses stabilized immediately upon crossing waypoint PEARS. No structural damage or turbulence was experienced. Further analysis was scheduled for the subsequent operational review cycle.

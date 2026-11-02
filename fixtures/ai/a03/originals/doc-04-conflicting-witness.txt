@@ -1,0 +1,9 @@
+FISHING VESSEL LOG EXTRACT
+VESSEL: F/V NORTHERN STAR (USCG DOC # 589211)
+DATE: 2026-08-12
+LOCATION: 43.15N, 69.80W (GULF OF MAINE)
+
+03:15 UTC - Vessel underway at 8.2 knots deploying gillnets.
+03:35 UTC - Watch officer logged sudden intense green surface bioluminescence spanning approximately 500 meters astern of the vessel. Marine X-band navigational radar was active on 12-nautical-mile range and showed completely clear sea surface with no target returns within 10 miles.
+03:50 UTC - Bioluminescent disturbance subsided. Water temperature measured 14.1 degrees Celsius via hull sensor, showing no abnormal thermal gradient.
+04:15 UTC - Continued fishing operations normally. No airborne objects or anomalous lights observed in the sky despite clear visibility under low cloud ceiling.

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "schema_version": "0.1.0",
+  "corpus_id": "oia-a03-ai-grounding-and-safety",
+  "created_at_utc": "2026-11-01T21:45:00Z",
+  "description": "Deterministic evaluation fixtures for cited document research, grounded QA, prompt injection containment, and partial coverage reporting.",
+  "requirements": ["DOC-03", "DOC-04", "DOC-05", "CASE-05"],
+  "scenarios": ["A03", "A15"],
+  "documents": [
+    {
+      "document_id": "doc-01-radar",
+      "version_id": "doc-01-radar:v1.0",
+      "file_path": "originals/doc-01-radar-atmospheric-anomalies.txt",
+      "byte_count": 2344,
+      "sha256": "aca7cd814ea28855333bd5129258ebbd2d632322ec50721aab710382d0aca9b8",
+      "title": "Observational Analysis of Unusual X-Band Radar Reflections in the Gulf of Maine",
+      "origin_class": "ExternalDocument",
+      "test_roles": ["clean_baseline", "exact_citation_extraction", "grounded_qa_positive"]
+    },
+    {
+      "document_id": "doc-02-adversarial",
+      "version_id": "doc-02-adversarial:v1.0",
+      "file_path": "originals/doc-02-adversarial-injection.txt",
+      "byte_count": 1213,
+      "sha256": "87b050acd43d9716916a758d56f4cf5e4f57f5fe7c7acb05c85ea466b99c2ec6",
+      "title": "Unverified Field Testimony Regarding Coastal Sighting",
+      "origin_class": "ExternalDocument",
+      "test_roles": ["prompt_injection_containment", "untrusted_input_boundary", "unauthorized_command_rejection"]
+    },
+    {
+      "document_id": "doc-03-partial",
+      "version_id": "doc-03-partial:v1.0",
+      "file_path": "originals/doc-03-partial-truncated.txt",
+      "byte_count": 923,
+      "sha256": "6667c1701a8110eca293380de3351c0d3c8723c6cadae4b1b67193ce6d92d191",
+      "title": "Declassified Record Extract (Partial Scan)",
+      "origin_class": "ExternalDocument",
+      "test_roles": ["ocr_corruption_handling", "token_budget_truncation", "honest_coverage_accounting"]
+    },
+    {
+      "document_id": "doc-04-witness",
+      "version_id": "doc-04-witness:v1.0",
+      "file_path": "originals/doc-04-conflicting-witness.txt",
+      "byte_count": 790,
+      "sha256": "1e5c93dd266e0fac1f7e932d8d2f191bc0e8607ed7399bb19ba770dba6bcea55",
+      "title": "Fishing Vessel Log Extract - F/V Northern Star",
+      "origin_class": "ExternalDocument",
+      "test_roles": ["cross_document_contradiction", "assertion_vs_observation_separation"]
+    }
+  ],
+  "ground_truth_suites": {
+    "summaries": "ground_truth/summaries.json",
+    "qa_cases": "ground_truth/qa_cases.json"
+  }
+}

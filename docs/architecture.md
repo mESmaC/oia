@@ -208,7 +208,7 @@ Allow local and remote providers through a common interface. No single provider 
 
 The workspace must expose when material is sent to a remote provider and honor configured workspace data-handling rules. Secrets and private fields outside the selected task must be excluded. Retrieved content cannot grant tool permissions or override task instructions.
 
-Generated citations must reference allowed input versions and valid anchors. Structural citation validation can detect nonexistent anchors; semantic support still needs assessment. Distinguish generated, structurally validated, and human-reviewed status. Retrieval and generation must report insufficient material rather than fabricate a citation.
+Generated citations must reference allowed input versions and valid anchors. Structural citation validation can detect nonexistent anchors; semantic support still needs assessment. Distinguish generated, structurally validated, and human-reviewed status. Retrieval and generation must report insufficient material rather than fabricate a citation. Detailed provider contracts, prompt-injection isolation delimiters, and grounded summarization schemas are specified in [ADR 0007](adr/0007-d04-ai-execution-and-retrieval.md) and [contracts/ai-retrieval-and-summaries.md](contracts/ai-retrieval-and-summaries.md).
 
 ### 6.4 Forecast records
 

@@ -1,0 +1,24 @@
+OPEN INTELLIGENCE AGENCY TECHNICAL REPORT
+REPORT ID: TR-2026-0881
+CLASSIFICATION: UNCLASSIFIED // PUBLIC RELEASE
+DATE: 2026-09-14
+SUBJECT: OBSERVATIONAL ANALYSIS OF UNUSUAL X-BAND RADAR REFLECTIONS IN THE GULF OF MAINE
+
+1. EXECUTIVE SUMMARY
+On 2026-08-12 between 03:14 UTC and 04:22 UTC, coastal meteorological radar stations NEXRAD KCBW and KGYX registered anomalous non-precipitating echoes exhibiting radial velocities exceeding 450 meters per second. Simultaneous thermal infrared observations from NOAA-21 revealed localized sea-surface temperature anomalies of +1.8 Kelvin along the track of the radar returns.
+
+2. INSTRUMENTATION AND METHODOLOGY
+Data were collected using dual-polarization Doppler radar operating in volume coverage pattern 212. Target cross-sections were normalized against sea-clutter reference baselines established over the preceding 30-day baseline period. Atmospheric soundings from Portland Jetport (PWM) confirmed a sharp thermal inversion layer between 850 hPa and 700 hPa with a temperature step of 6.2 degrees Celsius.
+
+3. MEASURED FINDINGS
+- At 03:22:15 UTC, target echo Charlie-1 exhibited an apparent velocity of 482 m/s (+/- 15 m/s) at an altitude of 3,200 meters above mean sea level.
+- At 03:41:00 UTC, the radar cross-section spiked to 42.5 dBZ with a differential reflectivity (ZDR) of -1.4 dB, inconsistent with standard biological or hydrometeor scatterers.
+- Total observed transit duration across the coastal surveillance corridor was 68 minutes before signal dissolution at coordinates 43.12N, 69.85W.
+
+4. DECLARED LIMITATIONS
+Radar refraction effects caused by the documented ducting inversion layer could not be completely decoupled from kinetic target motion. Secondary multipath reflections from sea-surface chop introduce an estimated positional uncertainty of up to 1,200 meters in range. Ground-truth optical corroboration was precluded by overcast cloud ceilings below 1,000 meters.
+
+5. UNRESOLVED QUESTIONS
+1. Did the thermal sea-surface anomaly precede or follow the passage of the primary radar return?
+2. What physical mechanism accounts for the negative differential reflectivity (-1.4 dB) in the absence of frozen hydrometeors?
+3. Were maritime Automatic Identification System (AIS) vessel transponders subjected to localized radio-frequency interference during the event interval?

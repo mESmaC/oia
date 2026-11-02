@@ -1,0 +1,2 @@
+# Keep original test fixtures unmodified by line ending normalization
+**/originals/** -text

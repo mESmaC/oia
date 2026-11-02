@@ -38,7 +38,7 @@ The repository was empty on GitHub when this backlog was created, so issue bodie
 
 - [#16: Build the investigation workspace and military-glass visual system](https://github.com/mESmaC/oia/issues/16)
 - [#17: Implement document acquisition, OCR, and versioned extraction](https://github.com/mESmaC/oia/issues/17)
-- [#18: Add document search, cited summaries, and grounded question answering](https://github.com/mESmaC/oia/issues/18)
+- [#18: Add document search, cited summaries, and grounded question answering](https://github.com/mESmaC/oia/issues/18) (D04 resolved in [ADR 0007](adr/0007-d04-ai-execution-and-retrieval.md), contract in [contracts/ai-retrieval-and-summaries.md](contracts/ai-retrieval-and-summaries.md))
 - [#19: Track document releases, source lineage, and correction propagation](https://github.com/mESmaC/oia/issues/19)
 - [#20: Construct regional news events from multiple sources](https://github.com/mESmaC/oia/issues/20)
 - [#21: Build claim-checking and misleading-coverage review](https://github.com/mESmaC/oia/issues/21)

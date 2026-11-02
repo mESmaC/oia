@@ -226,6 +226,25 @@ fn persisted_state_round_trips_and_reports_corruption() {
         persist::load(&path),
         Err(PersistError::Malformed(_))
     ));
+    let backup = persist::preserve_unreadable(&path).unwrap_or_else(|e| panic!("preserve: {e}"));
+    persist::save(
+        &path,
+        &Persisted::new(
+            ShellState::new(fixture::initial_context()),
+            JobRegistry::new(),
+        ),
+    )
+    .unwrap_or_else(|e| panic!("save defaults after preserve: {e}"));
+    assert_eq!(
+        std::fs::read(&backup).unwrap_or_else(|e| panic!("read backup: {e}")),
+        b"{ not json",
+        "unreadable state file is preserved aside when defaults are written"
+    );
+    assert!(
+        persist::load(&path)
+            .unwrap_or_else(|e| panic!("load fresh defaults: {e}"))
+            .is_some()
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

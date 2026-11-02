@@ -22,7 +22,7 @@ The question for P1 is therefore: a Rust-native renderer, or a rendering adapter
 
 | Option | Description |
 | --- | --- |
-| A. Rust-native immediate mode | `egui`/`eframe` over `glow` or `wgpu`. One language, one process, consistent rendering across platforms. **Built and measured** as `spikes/workspace-shell-egui`. |
+| A. Rust-native immediate mode | `egui`/`eframe` over `wgpu` (default in 0.37) or `glow`. One language, one process, consistent rendering across platforms. **Built and measured** as `spikes/workspace-shell-egui` (`wgpu` backend). |
 | B. Rust-native retained | `iced` (Elm-style, `wgpu`, `cosmic-text`) or `Slint` (declarative markup, own renderer; dual-licensed). **Not built**; assessed from documentation only. |
 | C. Rendering adapter: Tauri 2 | Rust process owns the window and all state; the system WebView (WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux) renders a bundled, no-remote-load presentation layer. **Built and measured** as `spikes/workspace-shell-tauri`, with plain HTML/CSS/JS and no build step. |
 | D. Electron or CEF | Bundled Chromium with a Node or C++ host. **Not evaluated further**: it bundles a browser per install and puts a non-Rust process at the centre, against the local-first Rust core in ADR 0001 and `AGENTS.md` §4. |
@@ -36,7 +36,7 @@ Both built spikes share one model crate (`spikes/workspace-shell-core`: shell co
 | Criterion (source) | A egui (built) | B iced / Slint (not built) | C Tauri 2 adapter (built) | Basis |
 | --- | --- | --- | --- | --- |
 | Glass: backdrop blur, hairlines, shadows, reduced-transparency equivalents (design §7.2, `UX-04`) | Translucent fill, hairline, shadow, opaque fallback achieved. No backdrop-blur primitive; blur would need a custom render pass per surface. | No backdrop blur in either, per docs. | All achieved with CSS and media queries. | A, C measured; B documented |
-| Instrumentation typography: compact tracked uppercase mono, essential labels ≥ 11 px, 72 ch reading width, scalable reading text (design §7.3 v0.2) | Uppercase monospace at 11 px achieved; no letter-spacing property, so tracking is not reproducible. | No tracking property in text widgets, per docs. | All achieved. | A, C measured; B documented |
+| Instrumentation typography: compact tracked uppercase mono, essential labels ≥ 11 px, 72 ch reading width, scalable reading text (design §7.3 v0.2) | Uppercase monospace at ≥ 11 px, tracking (`RichText::extra_letter_spacing(0.9)` ≈ 0.08 em), and scalable reading text achieved. | `Slint` `Text` supports `letter-spacing: length` per docs; `iced` text widgets not verified for tracking. | All achieved. | A, C measured; B documented |
 | Absence drawn, not invented: unknown position listed outside the geometry, dashed ring for no bearing (design §7.6 v0.2) | Achieved ("Not plotted" row; dashed ring). | Achievable. | Achieved. | A, C measured |
 | Accessible names, focus order, roving tabs, screen readers (`UX-04`) | AccessKit enabled by eframe's default features; **not tested**. | `iced` and `Slint`: partial, per docs. | Platform accessibility tree via WebView2; names, focus ring, F6 regions, roving tabs implemented; **no screen reader run**. | Implemented, not verified |
 | Keyboard model (design §8.1) | Subset implemented. Chords must be read per event, not from end-of-frame modifier state. | Achievable. | Subset implemented, including F6 region cycling. | A, C measured |
@@ -47,14 +47,14 @@ Both built spikes share one model crate (`spikes/workspace-shell-core`: shell co
 | Domain logic stays in Rust (`AGENTS.md` §4) | By construction; UI and model in one language. | Same. | Needs a review rule: the presentation layer draws state and sends intents only. The spike holds every value and transition in Rust and returns the full shell view after each command. | Measured (structure) |
 | Local security boundary (architecture §9) | No web surface, no second runtime. | Same. | No localhost listener: IPC with a capability allow-list and a `default-src 'self'` CSP. The WebView is a large, OS-updated dependency with its own behaviour (next row). | Measured (configuration) |
 | Network silence of the UI process tree (privacy stance, `AGENTS.md` §5) | **0 established TCP connections** during a 4 s idle run. | Expected 0; not measured. | **2 established HTTPS connections** from the WebView2 browser process to a Microsoft address (no PTR record) on every run, not initiated by the page. Passing `--disable-background-networking`, `--disable-component-update`, `--disable-domain-reliability`, `--metrics-recording-only`, `--no-pings`, and feature disables through `additionalBrowserArgs` did **not** remove them (flags confirmed on the process command line). | Measured |
-| Footprint and startup (release, warm) | 14.6 MB binary; first frame 383 to 465 ms; 157 to 208 MB working set, one process. | Not measured. | 8.9 MB binary; UI ready 305 to 321 ms; main process 27 to 33 MB; process tree with six WebView2 processes 361 to 382 MB. | Measured |
+| Footprint and startup (release, warm) | 14.6 MB binary (`egui-wgpu`); first frame 383 to 465 ms; 157 to 208 MB working set, one process. | Not measured. | 8.9 MB binary; UI ready 305 to 321 ms; main process 27 to 33 MB; process tree with six WebView2 processes 361 to 382 MB. | Measured |
 | Cross-platform consistency | Identical rendering everywhere. | Same. | Depends on the system WebView; WebKitGTK on Linux lags for `backdrop-filter`. | Documented |
 | Reuse of delivered design work | Mockup re-implemented in Rust (about 1,900 formatted lines for the subset). | Same. | The merged mockup's tokens and layout map directly; the spike's stylesheet derives from it. | Measured |
 | Toolchain | Cargo only. | Cargo only. | Cargo only in the spike; a TypeScript or WASM layer would add one later. | Measured |
 
 ## 4. Proposed decision
 
-Adopt **option C, Tauri 2, for the P1 workspace**, under the rules below, with the **network finding in §3 as a named condition**: before P1 ships, either the WebView2 runtime's own outbound connections are shown to be controllable (environment options, WebView2 or Edge policies, or a documented allow-list), or the user-facing privacy documentation states them plainly. If neither is achievable, the owner should prefer option A, whose spike shows the shell is realisable natively at the cost of blur, tracking, and media convenience.
+Adopt **option C, Tauri 2, for the P1 workspace**, under the rules below, with the **network finding in §3 as a named condition**: before P1 ships, either the WebView2 runtime's own outbound connections are shown to be controllable (environment options, WebView2 or Edge policies, or a documented allow-list), or the user-facing privacy documentation states them plainly. If neither is achievable, the owner should prefer option A, whose spike shows the shell is realisable natively (including label tracking via `RichText::extra_letter_spacing`) at the cost of backdrop blur and media/PDF/globe convenience.
 
 1. **`oia-app` owns the shell.** Shared context, route stack, local filters, settings, job states, and the query sequence live in Rust and are exposed through typed commands and queries (architecture §7). The presentation layer never computes a domain value, never decides whether a late result applies, and never persists anything. Both spikes already work this way over one core crate.
 2. **Versioned transport.** Every response carries a schema identifier, an outcome, and a coverage statement, as the Tauri spike's envelope does. Types are generated from Rust for the presentation layer once the P0 contracts merge; hand-written duplicates are not acceptable.
@@ -64,13 +64,13 @@ Adopt **option C, Tauri 2, for the P1 workspace**, under the rules below, with t
 6. **Globe deferred to #23**, with Cesium inside the same WebView as the option to evaluate first and a `wgpu` globe as the alternative.
 7. **Exit path.** Because the presentation layer holds no state and no domain logic, a Rust-native renderer can replace it instrument by instrument against the same `oia-app` contracts. The egui spike is the existence proof. The ADR 0001 state model is the stable interface; this ADR adds nothing to it.
 
-Why C over A, given that A was also built: A's spike could not reproduce the glass blur or the label tracking, would need native video and PDF decoding for the P1 reader and P3 media, and would still need a WebView for Cesium if #23 chooses it. C's spike reproduced the design as merged with less code and a smaller binary. A's advantages are real and measured: one process, under 210 MB of working set against 360 to 380 MB, and no runtime network traffic. The recommendation therefore comes with the condition rather than ignoring that difference.
+Why C over A, given that A was also built: A's measured visual gap is backdrop blur (plus hatched region fills; label tracking is supported via `RichText::extra_letter_spacing`), and A would need native video and PDF decoding for the P1 reader and P3 media and would still need a WebView for Cesium if #23 chooses it. C's spike reproduced the design as merged with less code and a smaller binary. A's advantages are real and measured: one process, under 210 MB of working set against 360 to 380 MB, and no runtime network traffic. The recommendation therefore comes with the condition rather than ignoring that difference.
 
 ## 5. Measurements
 
-From the spikes' validation run, recorded in [`spikes/README.md`](../../spikes/README.md). Machine: Windows 11 Home 10.0.26200, Intel Core Ultra 7 265F, 64 GB RAM, NVIDIA GeForce RTX 5070, WebView2 runtime 156.0.4314.58. Toolchain: rustc 1.99.0; `tauri` 2.12.5, `wry` 0.57.1; `eframe`/`egui` 0.37.0 (`glow`). Release profile: `strip`, thin LTO, one codegen unit. Date: 2026-11-02 UTC. Five warm launches per binary, same script, same fixture, same scenarios.
+From the spikes' validation run, recorded in [`spikes/README.md`](../../spikes/README.md). Machine: Windows 11 Home 10.0.26200, Intel Core Ultra 7 265F, 64 GB RAM, NVIDIA GeForce RTX 5070, WebView2 runtime 156.0.4314.58. Toolchain: rustc 1.99.0; `tauri` 2.12.5, `wry` 0.57.1; `eframe`/`egui` 0.37.0 (`wgpu` default renderer via `egui-wgpu`). Release profile: `strip`, thin LTO, one codegen unit. Date: 2026-11-02 UTC. Five warm launches per binary, same script, same fixture, same scenarios.
 
-| Measure | Tauri 2 | egui |
+| Measure | Tauri 2 | egui (`wgpu`) |
 | --- | --- | --- |
 | Release binary | 8,948,224 bytes | 14,620,160 bytes |
 | Process start to UI ready / first frame | 305 to 321 ms | 383 to 465 ms |
@@ -86,22 +86,23 @@ These characterise two spikes on one warm machine. They are not OIA performance 
 
 ## 6. Consequences
 
-- **Accepted cost under C:** the WebView process tree costs several hundred megabytes of working set before any evidence is loaded, roughly twice the native spike. This belongs in P1 benchmarks and is the strongest technical argument for A if memory on field hardware (P4 offline work) turns out to matter.
+- **Accepted cost under C:** the WebView process tree costs several hundred megabytes of working set before any evidence is loaded, roughly twice the native spike. Note that the egui memory (156.7 to 208.3 MB) and startup figures were measured with `eframe` 0.37.0's default `wgpu` backend (`egui-wgpu`, which initializes a GPU device); an `egui_glow` OpenGL build was not measured. This belongs in P1 benchmarks and is the strongest technical argument for A if memory on field hardware (P4 offline work) turns out to matter.
 - **Condition under C:** the runtime's outbound connections must be controlled or disclosed before P1 ships (see §4). A follow-up task should evaluate WebView2 environment options and policies and record the result; this ADR does not claim they work.
 - **Accepted risk under C:** Linux rendering depends on WebKitGTK; glass may need the opaque fallback there. Supported platforms are a D14 matter and are not widened by this ADR.
 - **Review rule under C:** any domain computation, state, or persistence appearing in the presentation layer is a blocking review finding.
+- **Job completion attempt fencing for `oia-app`:** while the spike's `JobRegistry::finish` checks job state and `query_seq`, the production `oia-app` job contract must also fence completions by an attempt or generation token so a worker from a cancelled attempt can never complete a retried attempt (`AGENTS.md` §5).
 - **Open items unchanged:** typeface and icon set (design §12), Rust→WASM versus TypeScript (§4.5), globe technology (#23), light theme (not P1), responsive behaviour below 1100 px in either spike.
 - **Consistency item for #9/#16:** the `oia-app` state model in PR #56 carries token values (`#090d12` canvas, `#2ea043` green, `#58a6ff` cyan, `#d29922` amber) that differ from the merged design draft (`#000000`, `#5fe08a`, `#45d1ff`, `#f59e2e`, plus red and violet). One vocabulary must win before implementation; this ADR does not pick it.
 
 ## 7. Validation and limits
 
-Ran locally in `spikes/` on 2026-11-02: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` (4 tests on the shared core: route back restores the whole entry; late search is superseded and not applied; persisted state round-trips and corruption is reported; settings leave the context untouched), debug and release builds of both front-ends, and keyboard- and mouse-driven scenarios on both release builds with screenshots in each package's `screenshots/` directory.
+Ran locally in `spikes/` on 2026-11-02: `cargo +1.99.0 fmt --all -- --check`, `cargo +1.99.0 clippy --workspace --all-targets --locked -- -D warnings`, `cargo +1.99.0 test --workspace --locked` (4 tests on the shared core: route back restores the whole entry; late search is superseded and not applied; persisted state round-trips and corruption is moved aside and reported without losing the unreadable file; settings leave the context untouched), debug and release builds of both front-ends, and keyboard- and mouse-driven scenarios on both release builds with screenshots in each package's `screenshots/` directory.
 
-Not done: no screen-reader session; no Linux or macOS build; `iced` and `Slint` not built; no cold-boot timing; no test against bright imagery (A02 reading surfaces); no identification of the WebView2 endpoints beyond their addresses.
+Not done: no screen-reader session; no Linux or macOS build; `iced` and `Slint` not built; `egui_glow` backend not measured; no cold-boot timing; no test against bright imagery (A02 reading surfaces); no identification of the WebView2 endpoints beyond their addresses.
 
 ## 8. Alternatives rejected for now
 
-- **Build the P1 shell in `egui` directly.** Rejected for now on the measured gaps (blur, tracking) and the documented media and globe costs, while kept as the exit path and as the fallback if the network condition in §4 cannot be met. Reconsider if the memory cost in §6 proves unacceptable or if the toolkit gains the missing primitives.
+- **Build the P1 shell in `egui` directly.** Rejected for now on the measured backdrop-blur gap and the documented media, PDF, and globe costs, while kept as the exit path and as the fallback if the network condition in §4 cannot be met. Reconsider if the memory cost in §6 proves unacceptable or if the toolkit gains a backdrop-blur primitive.
 - **Decide the globe now.** Rejected; #23 owns it and the P1 shell does not need it.
 - **Adopt a JavaScript framework and bundler.** Rejected for P1; the shell's presentation logic is small and a build step would add a toolchain the repository does not yet have.
 

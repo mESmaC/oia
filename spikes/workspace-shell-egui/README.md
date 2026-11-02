@@ -14,8 +14,9 @@ bounded atomic persistence, and the synthetic case fixture (geometry, objects,
 passages, report, export preview, timeline marks). The four contract tests run
 against that crate, so they cover this spike too.
 
-Drawn here with `egui` 0.37 through `eframe` (default `glow` renderer, default
-fonts, AccessKit enabled by eframe's default features but not tested):
+Drawn here with `egui` 0.37 through `eframe` (default `wgpu` renderer via
+`egui-wgpu`, default fonts, AccessKit enabled by eframe's default features but
+not tested):
 
 - Full-bleed black canvas with the case geometry (rings, ridge sketch, region,
   track, wedge, observer, selection brackets), floating panels for the case
@@ -32,8 +33,9 @@ fonts, AccessKit enabled by eframe's default features but not tested):
   with the same simulated latency and goes through `JobRegistry::finish`, so a
   stale result is superseded and shown as "not applied".
 - Persistence to `%APPDATA%\org.oia.shell-spike-egui\shell-state.json` with the
-  same restore and interruption behaviour; one line per launch in
-  `startup-log.jsonl` with the milliseconds to the first frame.
+  same restore and interruption behaviour (unreadable files are moved aside to
+  `shell-state.json.unreadable-<unix>` before defaults are saved); one line per
+  launch in `startup-log.jsonl` with the milliseconds to the first frame.
 
 Where egui could not express the design as written, the spike shows the
 nearest native equivalent rather than hiding the gap:
@@ -42,7 +44,7 @@ nearest native equivalent rather than hiding the gap:
 | --- | --- |
 | Glass with 14 to 20 px backdrop blur (§7.2) | Translucent fill only. egui has no backdrop-blur primitive; a custom render pass would be needed. Reduced transparency swaps to the opaque tokens as designed. |
 | Hatched fill for region-only evidence (mockup) | Translucent amber fill with a dashed outline. egui has no pattern fill. |
-| Tracked uppercase monospace labels (§7.3) | Uppercase monospace without letter spacing; egui text has no tracking property. |
+| Tracked uppercase monospace labels (§7.3) | Uppercase monospace at 11 px with `RichText::extra_letter_spacing(0.9)` (`≈0.08 em`). |
 | Unknown position listed outside the geometry (§7.6 v0.2) | A "Not plotted" row of buttons above the canvas; no marker is drawn. |
 | Responsive layout down to 320 px (§3 v0.2) | Fixed-position panels for a 1400 × 840 window and larger; not attempted. |
 
@@ -51,8 +53,8 @@ nearest native equivalent rather than hiding the gap:
 From `spikes/`:
 
 ```sh
-cargo run -p oia-shell-spike-egui              # debug
-cargo run --release -p oia-shell-spike-egui    # release, as measured
+cargo +1.99.0 run --locked -p oia-shell-spike-egui              # debug
+cargo +1.99.0 run --release --locked -p oia-shell-spike-egui    # release, as measured
 ```
 
 Delete the state file above to start fresh. Measurements and the comparison

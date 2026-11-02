@@ -21,17 +21,20 @@ lockfile. Building needs network access the first time to fetch `tauri` and
 
 The persisted shell-state file format is throwaway. It is not the schema
 proposed for `oia-app`, whose `WorkspaceShellState` in PR #56 remains the
-contract to implement against once P0 merges.
+contract to implement against once P0 merges. Note also that `persist::load`
+checks file size and schema version, while re-validating `ShellState` mutation
+invariants on load (clock within interval, `reading_text_px` range, route-stack
+limit, and instrument availability) is a known gap of this throwaway format.
 
 ## Commands
 
 ```sh
 cd spikes
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo run --release -p oia-shell-spike        # Tauri
-cargo run --release -p oia-shell-spike-egui   # egui
+cargo +1.99.0 fmt --all -- --check
+cargo +1.99.0 clippy --workspace --all-targets --locked -- -D warnings
+cargo +1.99.0 test --workspace --locked
+cargo +1.99.0 run --release --locked -p oia-shell-spike        # Tauri
+cargo +1.99.0 run --release --locked -p oia-shell-spike-egui   # egui
 ```
 
 State files: `%APPDATA%\org.oia.shell-spike\` and
@@ -44,8 +47,8 @@ frame (egui).
 
 Machine: Windows 11 Home 10.0.26200, Intel Core Ultra 7 265F, 64 GB RAM, NVIDIA
 GeForce RTX 5070, WebView2 runtime 156.0.4314.58. Toolchain: rustc 1.99.0;
-`tauri` 2.12.5 and `wry` 0.57.1; `eframe`/`egui` 0.37.0 with the default `glow`
-renderer (resolved versions in `Cargo.lock`). Release profile: `strip`, thin
+`tauri` 2.12.5 and `wry` 0.57.1; `eframe`/`egui` 0.37.0 with the default `wgpu`
+renderer (`egui-wgpu`; resolved versions in `Cargo.lock`). Release profile: `strip`, thin
 LTO, one codegen unit. Source: this branch at the PR head.
 
 A PowerShell script launched each binary, waited for a main window wider than

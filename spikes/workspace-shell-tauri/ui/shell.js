@@ -124,7 +124,8 @@ function reportRestore() {
     const when = new Date(r.saved_at_unix * 1000).toISOString();
     notice(`Previous context restored (saved ${when}).${r.interrupted_jobs ? ` ${r.interrupted_jobs} job(s) were running at shutdown and are marked interrupted.` : ''}`);
   } else if (r.kind === 'unreadable') {
-    notice(`Previous context could not be read: ${r.reason}. Defaults are in effect; the file was left in place.`, 'bad');
+    const where = r.preserved_path ? `unreadable file preserved at ${r.preserved_path}` : 'the unreadable file was left in place';
+    notice(`Previous context could not be read: ${r.reason}. Defaults are in effect; ${where}.`, 'bad');
   }
 }
 

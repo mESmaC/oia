@@ -80,32 +80,45 @@ impl App {
                 .join("org.oia.shell-spike-egui")
                 .join("shell-state.json")
         });
-        let (shell, jobs, restore) = match store_path.as_deref().map(persist::load) {
-            Some(Ok(Some(mut p))) => {
-                let interrupted = p.jobs.mark_interrupted();
-                let saved_at_unix = p.saved_at_unix;
-                (
-                    p.shell,
-                    p.jobs,
-                    RestoreReport::Restored {
-                        saved_at_unix,
-                        interrupted_jobs: interrupted,
-                    },
-                )
-            }
-            Some(Ok(None)) | None => {
+        let (shell, jobs, restore, can_persist_initial) = match store_path.as_deref() {
+            Some(path) => match persist::load(path) {
+                Ok(Some(mut p)) => {
+                    let interrupted = p.jobs.mark_interrupted();
+                    let saved_at_unix = p.saved_at_unix;
+                    (
+                        p.shell,
+                        p.jobs,
+                        RestoreReport::Restored {
+                            saved_at_unix,
+                            interrupted_jobs: interrupted,
+                        },
+                        true,
+                    )
+                }
+                Ok(None) => {
+                    let (s, j) = fresh_state();
+                    (s, j, RestoreReport::Fresh, true)
+                }
+                Err(e) => {
+                    let preserved_path = persist::preserve_unreadable(path)
+                        .ok()
+                        .map(|p| p.display().to_string());
+                    let can_save = preserved_path.is_some();
+                    let (s, j) = fresh_state();
+                    (
+                        s,
+                        j,
+                        RestoreReport::Unreadable {
+                            reason: e.to_string(),
+                            preserved_path,
+                        },
+                        can_save,
+                    )
+                }
+            },
+            None => {
                 let (s, j) = fresh_state();
-                (s, j, RestoreReport::Fresh)
-            }
-            Some(Err(e)) => {
-                let (s, j) = fresh_state();
-                (
-                    s,
-                    j,
-                    RestoreReport::Unreadable {
-                        reason: e.to_string(),
-                    },
-                )
+                (s, j, RestoreReport::Fresh, false)
             }
         };
         let mut notices = VecDeque::new();
@@ -115,9 +128,18 @@ impl App {
             } => notices.push_back(format!(
                 "Previous context restored. {interrupted_jobs} job(s) were running at shutdown and are marked interrupted."
             )),
-            RestoreReport::Unreadable { reason } => notices.push_back(format!(
-                "Previous context could not be read: {reason}. Defaults are in effect."
-            )),
+            RestoreReport::Unreadable {
+                reason,
+                preserved_path,
+            } => {
+                let where_note = match preserved_path {
+                    Some(p) => format!("unreadable file preserved at {p}"),
+                    None => "the unreadable file was left in place".to_owned(),
+                };
+                notices.push_back(format!(
+                    "Previous context could not be read: {reason}. Defaults are in effect; {where_note}."
+                ));
+            }
             RestoreReport::Fresh => {}
         }
         let mut app = Self {
@@ -149,7 +171,9 @@ impl App {
                 });
             }
         }
-        app.persist();
+        if can_persist_initial {
+            app.persist();
+        }
         app
     }
 
@@ -484,6 +508,7 @@ fn k(text: &str) -> RichText {
     RichText::new(text.to_uppercase())
         .monospace()
         .size(11.0)
+        .extra_letter_spacing(0.9)
         .color(TEXT_2)
 }
 
@@ -584,6 +609,7 @@ impl eframe::App for App {
                             )
                             .monospace()
                             .size(10.0)
+                            .extra_letter_spacing(0.8)
                             .color(VIOLET),
                         );
                     });

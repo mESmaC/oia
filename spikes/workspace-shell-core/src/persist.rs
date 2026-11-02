@@ -1,14 +1,15 @@
 //! Shell context persistence (A01 slice: context survives restart).
 //!
 //! One bounded JSON file, written to a temporary sibling and renamed into
-//! place so a crash mid-write leaves the previous file intact. Unreadable or
-//! oversized files are reported, never silently replaced with defaults
-//! without telling the user.
+//! place so a crash mid-write leaves the previous file intact. Unreadable,
+//! oversized, or schema-mismatched files are moved aside to
+//! `<path>.unreadable-<unix>` and reported, never silently overwritten with
+//! defaults.
 
 use std::fmt;
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -88,8 +89,27 @@ pub enum RestoreReport {
         interrupted_jobs: u32,
     },
     /// A state file existed but could not be used; defaults are in effect and
-    /// the unreadable file was left in place.
-    Unreadable { reason: String },
+    /// the unreadable file was moved aside to `preserved_path` (or left in
+    /// place without saving defaults if moving it aside failed).
+    Unreadable {
+        reason: String,
+        preserved_path: Option<String>,
+    },
+}
+
+/// Moves an unreadable or incompatible state file aside to
+/// `<path>.unreadable-<unix>` before fresh defaults are written so the
+/// original file is never destroyed.
+pub fn preserve_unreadable(path: &Path) -> Result<PathBuf, PersistError> {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut backup = path.as_os_str().to_owned();
+    backup.push(format!(".unreadable-{secs}"));
+    let backup_path = PathBuf::from(backup);
+    fs::rename(path, &backup_path).map_err(|e| PersistError::Io(e.to_string()))?;
+    Ok(backup_path)
 }
 
 /// Loads the state file if present. Missing is `Ok(None)`; anything else that

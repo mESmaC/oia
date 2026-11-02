@@ -445,7 +445,7 @@ pub fn setup(app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = app.path().app_data_dir()?;
     let store_path = data_dir.join(STATE_FILE);
 
-    let (shell, jobs, restore) = match persist::load(&store_path) {
+    let (shell, jobs, restore, can_persist_initial) = match persist::load(&store_path) {
         Ok(Some(mut persisted)) => {
             let interrupted = persisted.jobs.mark_interrupted();
             let saved_at_unix = persisted.saved_at_unix;
@@ -456,20 +456,27 @@ pub fn setup(app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     saved_at_unix,
                     interrupted_jobs: interrupted,
                 },
+                true,
             )
         }
         Ok(None) => {
             let (shell, jobs) = fresh_state();
-            (shell, jobs, RestoreReport::Fresh)
+            (shell, jobs, RestoreReport::Fresh, true)
         }
         Err(e) => {
+            let preserved_path = persist::preserve_unreadable(&store_path)
+                .ok()
+                .map(|p| p.display().to_string());
+            let can_save = preserved_path.is_some();
             let (shell, jobs) = fresh_state();
             (
                 shell,
                 jobs,
                 RestoreReport::Unreadable {
                     reason: e.to_string(),
+                    preserved_path,
                 },
+                can_save,
             )
         }
     };
@@ -481,7 +488,9 @@ pub fn setup(app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         restore,
         last_persist_error: None,
     };
-    inner.persist();
+    if can_persist_initial {
+        inner.persist();
+    }
     let active: Vec<String> = inner
         .jobs
         .jobs()

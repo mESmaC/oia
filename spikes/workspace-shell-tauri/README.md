@@ -77,8 +77,8 @@ From `spikes/`, with the pinned Rust toolchain and, on Windows, the WebView2
 runtime (present on Windows 11). No Node.
 
 ```sh
-cargo run -p oia-shell-spike              # debug
-cargo run --release -p oia-shell-spike    # release, as measured
+cargo +1.99.0 run --locked -p oia-shell-spike              # debug
+cargo +1.99.0 run --release --locked -p oia-shell-spike    # release, as measured
 ```
 
 State file: `%APPDATA%\org.oia.shell-spike\shell-state.json`. Delete it to start

@@ -1,11 +1,13 @@
-HAWAII DEPARTMENT OF TRANSPORTATION -- HARBORS DIVISION & PORT AUTHORITY ENFORCEMENT BULLETIN
-CASE NO: HBP-ENF-2026-0412
-ISSUED: 2026-10-16T01:15:00Z
-INCIDENT TIME: 2026-10-15T19:12:00Z TO 2026-10-15T19:47:00Z
-INCIDENT LOCATION: Barbers Point West Approach Channel Buoy #3 (21.3182N 158.1319W, WGS84, uncertainty 50m)
+SYNTHETIC A06 FIXTURE - NOT OBSERVED EVIDENCE
+VESPER PORT SAFETY BOARD (SYNTHETIC) -- HARBOR ENFORCEMENT BULLETIN
+CASE NO: SYNTH-VPSB-0412
+ORIGIN URL: https://safetyboard.vesper.invalid/bulletins/SYNTH-VPSB-0412
+ISSUED: 2024-03-16T01:15:00Z
+INCIDENT TIME: 2024-03-15T19:12:00Z TO 2024-03-15T19:47:00Z
+INCIDENT LOCATION: Vesper Harbor West Fairway Buoy B3, fictional Kestrel Atoll (21.3182N 158.1319W, WGS84, uncertainty 50m)
 
-1. DETENTION AND CITATION: Harbor Enforcement boarded the 14-meter commercial hydrographic survey launch M/V Reef Scanner (State Reg. HA-9941-CS) at Pier 2B at 2026-10-15T20:05:00Z and temporarily detained the vessel master for credential verification and sober-operation screening.
+1. DETENTION AND CITATION: Vesper Harbor Enforcement boarded the 14-meter commercial hydrographic survey launch M/V Reef Scanner (Fictional Reg. KA-9941-CS) at Pier 2B at 2024-03-15T20:05:00Z and temporarily detained the vessel master for credential verification and sober-operation screening.
 2. ADMINISTRATIVE CHARGES FILED:
    - Count 1 (Administrative Charge): Operating a commercial survey vessel in a restricted fairway approach with inoperative navigation lamps and unannounced AIS transponder dropout.
    - Count 2 (Provisional Charge): Willful obstruction of a commercial pilotage fairway.
-3. SCOPE NOTE: Inspection confirmed M/V Reef Scanner is a privately contracted bathymetric survey launch. No military assets or sub-surface ordnance were involved in the harbor channel incident.
+3. SCOPE NOTE: Inspection confirmed M/V Reef Scanner is a privately contracted bathymetric survey launch. No range tenders or sub-surface payloads were involved in the harbor channel incident.

@@ -1,7 +1,8 @@
-PACIFIC WATCH BLOG -- COMMUNITY MARITIME NOTEBOOK
-SNAPSHOT RETRIEVED: 2026-10-15T22:10:00Z
-ORIGINAL URL: https://pacificwatch.example.org/posts/2026-10-15-west-channel-lights
-SUBSEQUENT POLL STATUS (2026-10-16T06:00:00Z): HTTP 410 Gone (Page deleted by site administrator during blog migration; no retraction notice issued)
+SYNTHETIC A06 FIXTURE - NOT OBSERVED EVIDENCE
+SABLE SHORE COMMUNITY NOTEBOOK (SYNTHETIC) -- HARBOR WATCH POST
+SNAPSHOT RETRIEVED: 2024-03-15T22:10:00Z
+ORIGINAL URL: https://notebook.sableshore.invalid/posts/2024-03-15-west-fairway-lights
+SUBSEQUENT POLL STATUS (2024-03-16T06:00:00Z): HTTP 410 Gone (Page deleted by site administrator during notebook migration; no retraction notice issued)
 
 POST BODY:
-Readers on the Ewa Beach shoreline reported seeing two harbor tugs idling near the Barbers Point entrance buoy around 9:20 a.m. HST today while an inbound barge waited outside the reef line. Commenters speculated about whether the offshore Navy range notice (W-188B) was related, though the tugs remained inside the nearshore harbor approach.
+Readers on the fictional Sable Shore headland reported seeing two harbor tugs idling near the Vesper Harbor entrance buoy around 9:20 a.m. KST today while an inbound barge waited outside the reef line. Commenters speculated about whether the offshore range calibration notice (CX-9) was related, though the tugs remained inside the nearshore harbor approach.

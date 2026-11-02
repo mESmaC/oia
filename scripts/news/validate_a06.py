@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Deterministic contract and byte-integrity validator for the A06 news fixture corpus.
+"""Deterministic fixture consistency and byte-integrity validator for the A06 news corpus.
 
-Validates `fixtures/news/a06/manifest.json` and `fixtures/news/a06/blobs/*.txt` against
-OIA requirements NEWS-01..NEWS-05, GEO-03, INTEL-01, INTEL-04, and ADR 0004 (D03).
+Checks `fixtures/news/a06/manifest.json` and `fixtures/news/a06/blobs/*.txt` for internal
+consistency and expected outcomes against OIA requirements NEWS-01..NEWS-05, GEO-03,
+INTEL-01, INTEL-04, and ADR 0005 (D03). Runtime enforcement in Rust crates is not yet
+implemented.
 """
 
 from __future__ import annotations
@@ -13,7 +15,10 @@ import hashlib
 import json
 import pathlib
 import sys
+from urllib.parse import urlparse
 from typing import Any
+
+SYNTHETIC_HEADER = "SYNTHETIC A06 FIXTURE - NOT OBSERVED EVIDENCE"
 
 REQUIRED_EPISTEMIC_CATEGORIES = {
     "plan",
@@ -62,6 +67,16 @@ def require(condition: bool, message: str) -> None:
         raise ValidationError(message)
 
 
+def require_invalid_tld_url(url_value: Any, context: str) -> None:
+    require(isinstance(url_value, str) and bool(url_value), f"{context} must be a non-empty URL string")
+    parsed = urlparse(url_value)
+    host = (parsed.hostname or "").lower()
+    require(
+        parsed.scheme in ("http", "https") and host.endswith(".invalid"),
+        f"{context} must use a reserved '.invalid' hostname (got {url_value!r})",
+    )
+
+
 def validate_manifest_data(manifest: dict[str, Any], fixture_dir: pathlib.Path) -> dict[str, int]:
     meta = manifest.get("fixture_metadata", {})
     require(
@@ -72,6 +87,10 @@ def validate_manifest_data(manifest: dict[str, Any], fixture_dir: pathlib.Path) 
     require(
         meta.get("acceptance_scenario") == "A06",
         "fixture_metadata.acceptance_scenario must be 'A06'",
+    )
+    require(
+        meta.get("is_synthetic_fixture") is True,
+        "fixture_metadata must declare is_synthetic_fixture=True",
     )
 
     repo_root = fixture_dir.parent.parent.parent
@@ -99,8 +118,12 @@ def validate_manifest_data(manifest: dict[str, Any], fixture_dir: pathlib.Path) 
                 bool(policy.get(field)),
                 f"Source {sid} missing required use_policy.{field}",
             )
+        require(
+            src.get("is_synthetic_fixture") is True,
+            f"Source {sid} must declare is_synthetic_fixture=True",
+        )
 
-    # 2. Validate SourceRecords, SHA-256 byte integrity, timestamps, geography, and passage anchors
+    # 2. Validate SourceRecords, SHA-256 byte integrity, synthetic headers, timestamps, geography, and passage anchors
     records = manifest.get("source_records", [])
     require(len(records) >= 8, "At least 8 source_record versions required for A06")
     records_by_version: dict[str, dict[str, Any]] = {}
@@ -128,6 +151,7 @@ def validate_manifest_data(manifest: dict[str, Any], fixture_dir: pathlib.Path) 
             rec.get("review_status") in VALID_REVIEW_STATES,
             f"SourceRecord {vid} has invalid review_status: {rec.get('review_status')}",
         )
+        require_invalid_tld_url(rec.get("canonical_url"), f"SourceRecord {vid} canonical_url")
 
         # Deleted/removed page must NOT be auto-marked retracted (NEWS-04, A06)
         if rec.get("availability") == "removed":
@@ -137,7 +161,7 @@ def validate_manifest_data(manifest: dict[str, Any], fixture_dir: pathlib.Path) 
             )
             has_removed_non_retracted = True
 
-        # Verify retained blob bytes, SHA-256, byte length, and char length
+        # Verify retained blob bytes, SHA-256, byte length, char length, and synthetic header
         blob_rel = rec.get("blob_path")
         require(bool(blob_rel), f"SourceRecord {vid} missing blob_path")
         blob_file = (fixture_dir / blob_rel).resolve()
@@ -147,7 +171,13 @@ def validate_manifest_data(manifest: dict[str, Any], fixture_dir: pathlib.Path) 
         )
         require(blob_file.is_file(), f"SourceRecord {vid} missing blob file: {blob_file}")
         raw_bytes = blob_file.read_bytes()
+        require(b"\r\n" not in raw_bytes, f"SourceRecord {vid} blob contains CRLF bytes; LF required")
         decoded_text = raw_bytes.decode("utf-8")
+        first_line = decoded_text.splitlines()[0] if decoded_text else ""
+        require(
+            first_line == SYNTHETIC_HEADER,
+            f"SourceRecord {vid} blob {blob_rel} must start with {SYNTHETIC_HEADER!r}",
+        )
         actual_sha = hashlib.sha256(raw_bytes).hexdigest()
         require(
             actual_sha == rec.get("sha256"),
@@ -328,14 +358,14 @@ def validate_manifest_data(manifest: dict[str, Any], fixture_dir: pathlib.Path) 
             f"Cluster {eid} independent_lineage_roots mismatch",
         )
         # Ensure syndicated reprints collapsed into fewer independent sources than articles for the channel-hold cluster
-        if eid == "evt-barbers-point-channel-hold":
+        if eid == "evt-vesper-harbor-channel-hold":
             require(
                 counts["independent_sources"] < counts["articles"],
-                "Syndicated articles in evt-barbers-point-channel-hold must collapse to fewer independent_sources than articles",
+                "Syndicated articles in evt-vesper-harbor-channel-hold must collapse to fewer independent_sources than articles",
             )
             require(
                 len(cl.get("preserved_conflicts", [])) >= 2,
-                "evt-barbers-point-channel-hold must preserve conflicting vessel-count and location-uncertainty accounts",
+                "evt-vesper-harbor-channel-hold must preserve conflicting vessel-count and location-uncertainty accounts",
             )
 
     rev_history = clusters_block.get("cluster_revision_history", [])
@@ -492,6 +522,11 @@ def run_self_tests(manifest: dict[str, Any], fixture_dir: pathlib.Path) -> int:
     m6 = copy.deepcopy(manifest)
     m6["source_records"][1]["passages"][1]["byte_end"] += 1
     cases.append(("broken_utf8_passage_byte_span", m6))
+
+    # 7. Non-.invalid URL in synthetic fixture (violates synthetic-fixture hygiene)
+    m7 = copy.deepcopy(manifest)
+    m7["source_records"][0]["canonical_url"] = "https://www.navcen.uscg.gov/lnm"
+    cases.append(("real_world_url_in_synthetic_fixture", m7))
 
     for name, mutated in cases:
         try:

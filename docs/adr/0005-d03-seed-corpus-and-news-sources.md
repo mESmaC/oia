@@ -1,0 +1,74 @@
+# ADR 0005: seed corpus and regional news source architecture (D03)
+
+Date: 2026-11-02 UTC.
+Status:
+- **Tier 1 (Bundled synthetic evaluation fixtures `A03` and `A06`):** Accepted and implemented as development fixtures (`fixtures/documents/a03/` and `fixtures/news/a06/`).
+- **Tier 2 (Live and scheduled public-record/news source candidates):** **Proposed** direction informed by [initial public-source research](../research/public-information-sources.md); no live provider adapter or runtime enforcement is implemented by this ADR.
+
+Scope: the dependency-independent `D03` decision and `A06` fixture slice of [#20](https://github.com/mESmaC/oia/issues/20), supporting [#17](https://github.com/mESmaC/oia/issues/17), [#19](https://github.com/mESmaC/oia/issues/19), and [#21](https://github.com/mESmaC/oia/issues/21).
+Affected requirements: `DOC-01`, `DOC-02`, `NEWS-01`, `NEWS-02`, `NEWS-03`, `NEWS-04`, `NEWS-05`, `GEO-03`, `INTEL-01`, `INTEL-04`, `REPRO-01`, `REPRO-02`.
+
+## 1. Context and problem statement
+
+Open Intelligence Agency (OIA) P1 requires a small, documented seed collection for UAP/disclosure documents and regional news/official reporting ([`D03`](../delivery.md#6-decision-register)), together with deterministic verification corpora for Acceptance Scenarios [`A03`](../delivery.md#a03-cited-document-research) and [`A06`](../delivery.md#a06-news-lineage-and-claim-assessment).
+
+Several constraints from [docs/spec.md](../spec.md), [docs/architecture.md](../architecture.md), [docs/research/public-information-sources.md](../research/public-information-sources.md), and [AGENTS.md](../../AGENTS.md) govern this choice:
+
+1. **Separate access, processing, retention, and redistribution conditions (`DOC-01`, `NEWS-01`, `REPRO-01`):** Ordinary public readability does not grant permission to automate collection, retain full-text copies indefinitely, or redistribute third-party material in git repositories or exported investigation bundles. As documented in [public-information-sources.md](../research/public-information-sources.md), even public government collections require **item-level rights review** (for example, GovInfo warns that government publications can contain copyrighted material, and agency FOIA releases can enclose third-party works).
+2. **Real provider availability is uneven and must not be fabricated (`DOC-01`, `NEWS-01`):** In the [initial probe log](../research/source-checks.json), bounded metadata samples succeeded for Crossref (`crossref-sample`), NWS (`nws-sample`), USGS (`usgs-sample`), NASA CMR (`cmr-sample`), and JPL Horizons (`jpl-corrected-sample`), whereas NARA (`nara-uap`) returned HTTP `502` and AARO (`aaro`) and NUFORC (`nuforc`) returned HTTP `403`. Listings such as FBI Vault (`fbi-ufo`), CIA Reading Room (`cia-reading`), NASA UAP (`nasa-uap`), arXiv (`arxiv-api`), GovInfo (`govinfo`), GDELT (`gdelt`), and ReliefWeb (`reliefweb`) were read at the documentation/listing level without verified asset-redistribution rights or live regional selection (`D06`).
+3. **Syndication versus independent corroboration (`NEWS-01`, `GEO-03`, `INTEL-01`):** Multiple regional outlets republishing a wire dispatch or quoting the same briefing are not independent observations. Event clusters must maintain distinct counts of articles, accounts, independent sources, and proposed events.
+4. **Epistemic discipline on regional events (`NEWS-02`):** Military movements, exercises, deployments, public-safety incidents, and transport disruptions must keep plans, observations, allegations, arrests, charges, judgments, and attributed statements distinct. Reported movement alone must never establish intent, mission, or destination.
+5. **Time and geographic uncertainty (`NEWS-01`, `GEO-01`, `GEO-03`):** Event/capture time, publication time, provider revision time, and OIA retrieval/ingestion time must remain distinct, with original timezone offsets and ambiguity preserved. Gazetteer centroids, bounded operational areas, and point coordinates must retain explicit geometry and altitude reference kinds.
+6. **Correction propagation and removed-page semantics (`NEWS-03`, `NEWS-04`, `NEWS-05`):** Corrections, retractions, and case outcomes must create new versioned records and flag downstream clusters, summaries, and reports for reassessment without overwriting issued versions. A removed source page (such as HTTP `410 Gone`) must not be automatically marked retracted.
+7. **Publisher summary guards (`NEWS-05`):** Publisher-level summaries must expose sample scope, evaluation method, time window, unresolved assessments, and correction history, and must never equate news article volume with incident frequency, crime rate, or community criminality.
+
+## 2. Alternatives considered
+
+| Alternative | Evaluation |
+| --- | --- |
+| Live-only queries against commercial news aggregators without local fixtures | Rejected. Live feeds change continuously, cannot provide deterministic verification for `A06`, risk violating source terms or rate limits, and do not provide controlled ground truth for syndication cycles, silent revisions, removed pages, or distorted quotations. |
+| Commit verbatim copyrighted commercial wire and regional news articles into git | Rejected. Public web readability does not grant a repository or bundle redistribution license (`AGENTS.md` §6–§7, `REPRO-01`). |
+| Alter real government or news documents to manufacture failure cases | Rejected. Per `AGENTS.md` §2 and [public-information-sources.md](../research/public-information-sources.md), real source material must not be altered to fabricate test cases, and synthetic fixtures must not impersonate real agency notices or live events. |
+| Two-tier architecture: clearly labeled synthetic fixtures (`Tier 1`) plus evidence-gated candidate source profiles (`Tier 2`) | **Selected.** Provides deterministic offline verification immediately while keeping live provider admission gated on verified access and item-level rights review. |
+
+## 3. Decision
+
+### 3.1 Tier 1 (Accepted): Clearly labeled synthetic fixture corpora (`A03` and `A06`)
+
+Deterministic offline verification uses self-contained synthetic corpora that never impersonate real observations or real agency releases:
+
+- **Document research (`A03`):** `fixtures/documents/a03/` (delivered in [#53](https://github.com/mESmaC/oia/pull/53) for `#17`).
+- **Regional news lineage, event clustering, and claim assessment (`A06`):** `fixtures/news/a06/` and `scripts/news/validate_a06.py` (delivered in this slice for `#20` and `#21`).
+
+Every retained blob in `fixtures/news/a06/blobs/` begins with an explicit banner (`SYNTHETIC A06 FIXTURE - NOT OBSERVED EVIDENCE`), uses fictional agencies, publishers, islands, and identifiers, uses `.invalid` URLs, and is preserved as exact bytes (`blobs/** -text` in `.gitattributes`). `fixtures/news/a06/manifest.json` is a **fixture-specific format**—not a competing production domain or bundle schema—that records expected outcomes for:
+
+1. **Planned exercise notice (`sr-pelagic-notice-0041@v1`):** Fictional hydrographic notice (`plan`, WGS84 polygon, explicit statement that range transit is a scheduled calibration plan and not a blockade).
+2. **Primary harbor watch log (`sr-vesper-harbor-log@v1`):** Fictional port-pilot cooperative log (`observation` and `attributed_statement`), including a bilingual Japanese/English VHF relay excerpt with anchored translation (`NEWS-01`, `INTEL-04`), recording 4 vessels and a 35-minute channel hold.
+3. **Wire dispatch `v1` and `v2` correction (`sr-meridian-wire-884@v1`, `sr-meridian-wire-884@v2`):** `v1` quotes the watch log using a regional gazetteer centroid, introduces a numerical transcription error (`14 vessels` instead of `14-meter survey launch` / `4 vessels`), and attributes an uncorroborated contractor `allegation`. `v2` issues a formal correction and notes the contractor's withdrawal of the allegation, flagging downstream dependents for reassessment without overwriting `v1`.
+4. **Syndicated regional reprints (`sr-archipelago-chronicle-884@v1`, `sr-pelagic-digest-884@v1`):** Republish `sr-meridian-wire-884@v1` and share the same independent lineage root (`lineage-root-vesper-harbor-log`) so syndicated copies do not inflate `independent_sources`. `sr-archipelago-chronicle-884@v1` also exercises `NEWS-03`/`NEWS-04` (`materially_misleading`) via an overstated blockade headline, a fabricated quotation, and a selective comparison equating 7 news articles with a 350% maritime crime surge.
+5. **Enforcement detention/charges and subsequent administrative judgment (`sr-vesper-port-safety-0412@v1`, `sr-maritime-adj-panel-0412@v1`):** Separates initial boarding/detention (`arrest`) and provisional counts (`charge`) from the later administrative order (`judgment`) dismissing the willful-obstruction count with prejudice after electrical log verification and entering a civil equipment penalty.
+6. **Removed community page (`sr-sable-shore-notebook@v1`):** Retained snapshot whose subsequent poll recorded HTTP `410 Gone` (`availability: "removed"`, `retraction_status: "not_retracted"`), verifying that a deleted page is not auto-marked retracted.
+7. **Reversible clustering (`GEO-03`) and publisher summaries (`NEWS-05`):** Records an initial provisional merge (`cluster-rev-1`) and reversible split (`cluster-rev-2`) with preserved conflicts and separate counts (`articles`, `accounts`, `independent_sources`, `proposed_events`), plus publisher summaries with explicit sample/methodology disclosures and non-crime-rate guards.
+
+### 3.2 Tier 2 (Proposed): Candidate P1 seed source profiles and four-part policy requirement
+
+Live and scheduled P1 source selection remains **Proposed** until the P0 source registry (`#13`), domain records (`#10`), and regional selection (`D06`) merge and each candidate source completes item-level access and rights verification as outlined in [docs/research/public-information-sources.md](../research/public-information-sources.md):
+
+| Candidate category | Initial research leads ([public-information-sources.md](../research/public-information-sources.md)) | Current verification state | Required admission and bundle rule |
+| --- | --- | --- | --- |
+| Public disclosure & government archives (`DOC-01`) | FBI Vault UFO listing (`fbi-ufo`), NASA UAP study page (`nasa-uap`), CIA Reading Room (`cia-reading`), GovInfo (`govinfo`); NARA (`nara-uap`, HTTP 502) and AARO (`aaro`, HTTP 403) remain unresolved | Documentation/listing read only (`nara-uap` and `aaro` unresolved); no bulk download or item rights verified | Require **item-level rights review** before retaining or redistributing bytes in a bundle; government hosting does not guarantee public-domain status for embedded third-party material (`govinfo-policy`). Default to reference/anchor export until item-level redistribution permission is recorded. |
+| Scientific preprints & bibliographic metadata (`DOC-01`, `DOC-02`) | Crossref REST API (`crossref-sample` checked), arXiv API (`arxiv-api`, `arxiv-terms` documentation read), OpenAlex (`openalex-auth` documentation read) | Crossref single DOI sample checked; arXiv/OpenAlex documentation read only | Pin exact version (`arXiv ID + vN`, DOI, deposit/update timestamps). Descriptive metadata may be retained per source terms, but full-text bundle redistribution requires checking the specific version's license (`CC-BY`/`CC0` vs non-exclusive distribution license). |
+| Official operational & safety bulletins (`NEWS-01`, `NEWS-02`) | NWS API (`nws-sample` grid metadata checked), USGS FDSN (`usgs-sample` capped GeoJSON checked), regional transport/maritime notices (pending `D06` region choice) | NWS point metadata and capped USGS sample checked; historical archives and USGS copyright page timed out / unresolved | Record issue, valid/event, update, and retrieval timestamps plus spatial bounds/station metadata. Confirm product-specific retention and redistribution terms before bundling payloads. |
+| Regional news, wire & humanitarian reporting (`NEWS-01`–`NEWS-05`) | GDELT (`gdelt` docs read), ReliefWeb (`reliefweb` docs read; requires pre-approved `appname`), user-configured regional RSS/Atom/article URLs | Documentation read only; no live news feed or regional publisher selected yet | Preserve article versions, syndication lineage, and attribution. External third-party news articles default to reference-and-anchor export (no full-text bundle redistribution without explicit publisher license). |
+
+Rather than defining production Rust field or enum spellings owned by `#10` (`oia-domain`) and `#13` (`oia-ingest`), this ADR establishes the **policy requirement** that every registered source and acquired source record must separately represent four dimensions using `#10` and `#13`'s canonical types once they land:
+
+1. **Ordinary access method:** How OIA reaches the source through normal documented interfaces (e.g., local import, direct HTTP GET, RSS/Atom poll, or documented API query) without credential guessing or restriction bypass.
+2. **Automated processing policy:** Whether scheduled polling, OCR, or model/indexing pipelines are permitted, rate-limited, manual-only, or prohibited under the source's terms.
+3. **Retention policy:** Whether original bytes may be retained as pinned case evidence, kept only in bounded ephemeral cache, or restricted to bibliographic metadata and citation anchors.
+4. **Redistribution policy:** Whether exported investigation bundles (`REPRO-01`) may include the retained bytes after item-level rights verification or must omit the payload and export versioned references, hashes, and bounded citation anchors only.
+
+## 4. Validation and follow-up
+
+- **What is verified now:** `python -I scripts/news/validate_a06.py --self-test` checks the `A06` fixture's internal consistency and expected outcomes (SHA-256 byte integrity, UTF-8 byte-offset and character-offset passage anchors, synthetic banners, `.invalid` URLs, syndication lineage deduplication, `NEWS-02` epistemic categories, reversible `GEO-03` cluster counts, `NEWS-04` assessment states, removed-page non-retraction, `needs_reassessment` flags, and `NEWS-05` volume guards, plus 7 negative mutation checks). Runtime enforcement is not yet implemented.
+- **Follow-up for `#20` and `#21` runtime implementation:** Once `#10`, `#12`, `#13`, `#17`, and `#19` merge, bind `fixtures/news/a06/manifest.json` to the production `oia-domain`, `oia-time-geo`, `oia-ingest`, and `oia-analysis` contracts, complete item-level verification for the first selected regional sources with the `D06` owner, and execute the runtime `A06` acceptance scenario.

@@ -1,7 +1,0 @@
-USCG FOURTEENTH DISTRICT / COMPACFLT JOINT HYDROGRAPHIC NOTICE 2026-41
-ISSUED: 2026-10-14T22:00:00Z (12:00 HST)
-EFFECTIVE WINDOW: 2026-10-15T18:00:00Z TO 2026-10-16T04:00:00Z
-
-1. PLANNED ACTIVITY: Acoustic beacon and optical range calibration exercise in Offshore Warning Area W-188B (bounding polygon: 21.850N 158.450W; 21.850N 158.950W; 21.400N 158.950W; 21.400N 158.450W; WGS84, surface to 1500m MSL).
-2. ASSETS: Two range-support vessels and one calibration target barge will transit from Pearl Harbor to W-188B prior to 2026-10-15T17:30:00Z.
-3. MARITIME IMPACT: Routine offshore calibration only. Commercial shipping lanes and harbor approaches remain open. Vessel movement to W-188B is a scheduled sensor calibration plan and does not establish an operational blockade or exclusion zone.

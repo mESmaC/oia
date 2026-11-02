@@ -75,7 +75,7 @@ Do not weaken a theorem, remove a proof from verification, change its domain cov
 
 Proofs over ideal arithmetic do not establish floating-point correctness automatically. Timing, source truth, physical models, detector quality, and forecast accuracy require independent reference data or empirical evaluation. Report those separately.
 
-Lean is a development/CI tool by default. Do not add a Lean runtime, invoke Lake from production startup/build hooks, or link generated proof runtime into Rust binaries as an incidental dependency. Any deliberate change to this boundary requires an explicit architecture decision within the task's scope.
+Lean is a local development and verification tool by default. Do not add a Lean runtime, invoke Lake from production startup/build hooks, or link generated proof runtime into Rust binaries as an incidental dependency. Any deliberate change to this boundary requires an explicit architecture decision within the task's scope.
 
 ## 4. Keep one domain model and clear ownership
 
@@ -129,6 +129,16 @@ Differential tests against prior work help detect regressions; independently val
 
 There is no established OIA Cargo/Lake workspace or CI command set yet. Check for actual manifests, lockfiles, toolchains, scripts, and CI configuration before issuing build commands. Do not copy Kadmium crate names, versions, ports, or test paths into this repository.
 
+### Local automation and functionality first
+
+Run build, lint, verification, packaging, and authorized release/deployment steps locally by default to avoid hosted CI/CD costs. Do not add, enable, or trigger GitHub Actions or other hosted CI/CD jobs unless the user explicitly requests them. References to CI or release gates in the specification describe checks to satisfy locally; they do not require a hosted runner. Prefer reproducible local commands or scripts using the pinned toolchains, and record what ran, the revision, environment, and results in the handoff or PR. Running locally does not expand authorization to publish or deploy.
+
+Implement working functionality first. Do not make test scaffolding, test-driven development, broad test matrices, or coverage targets prerequisites for ordinary feature work. The default preference is to add no new test cases. Verify the actual behavior with focused local execution or inspection appropriate to the change.
+
+Add only the small number of targeted test assertions needed to establish a critical contract or catch a concrete failure that ordinary verification would miss. Examples include evidence preservation, access isolation, destructive recovery, nontrivial numerical correctness, and the Rust-to-Lean correspondence required for a proof claim. State what risk or requirement each added test addresses. Avoid redundant cases, tests that merely mirror implementation details, and large speculative suites. A compact fixture with relevant assertions is preferable to many repetitive cases.
+
+This preference does not remove input validation, required acceptance evidence, existing meaningful tests, or Lean proof obligations. Assertions in test code must not become production panics on fallible or untrusted inputs. Run applicable existing checks, and do not delete tests or weaken their assertions just to reduce the test count.
+
 For documentation-only work, check the diff, relative links/anchors, requirement references, code fences, and consistency with the canonical spec. `git diff --check` does not include untracked files; inspect new files as well. Do not report unrun product tests as passing.
 
 Once a Rust workspace and lockfile exist, the baseline checks should be:
@@ -141,11 +151,11 @@ cargo test --workspace --locked
 
 Use the pinned project toolchain when present. Establish and review the lockfile explicitly during bootstrap; do not remove `--locked` to hide unexpected resolution changes. Run the repository's actual feature/platform matrix when relevant rather than guessing `--all-features` is valid.
 
-While developing, run focused tests for the changed mechanism. Before delivering runtime changes, run the applicable baseline and relevant acceptance/integration checks; report unavailable platforms, hardware, credentials, or tools precisely. Documentation-only changes do not require unrelated runtime or hardware suites.
+While developing, implement and exercise the changed behavior locally; run applicable existing focused tests and add assertions only where justified above. Before delivering runtime changes, run the applicable baseline and relevant acceptance/integration checks locally; report unavailable platforms, hardware, credentials, or tools precisely. Documentation-only changes do not require unrelated runtime or hardware suites.
 
 When a Lean package exists, run its documented checks from its actual directory. Pin its toolchain and make proof placeholders fail the validation gate. Never cite a hypothetical command or nonexistent theorem audit as an executed check. Rust changes covered by proofs also require the appropriate correspondence tests.
 
-Tests should exercise behavior and failure modes, including malformed input, incomplete coverage, clock/coordinate boundaries, cancellation, stale completions, permission isolation, and original preservation. Use deterministic fixtures for ordinary CI; live provider/hardware checks must be identifiable and separately configured.
+When targeted assertions are necessary, select the relevant behavior or failure mode: malformed input, incomplete coverage, clock/coordinate boundaries, cancellation, stale completions, permission isolation, or original preservation. This list is not a mandatory test matrix for every change. Use deterministic fixtures for repeatable local verification; live provider/hardware checks must be identifiable and separately configured.
 
 For forecasts, enforce point-in-time data, fixed outcome definitions, chronological evaluation, and preserved failed predictions. For detectors, report operational false alerts, event recall, latency, and coverage on held-out data. Do not change seeds, thresholds, samples, or baselines simply to improve reported results.
 

@@ -2,6 +2,7 @@
 //!
 //! Service integration and composed reasoning follow in `#14` and P4 (`#35`–`#37`).
 
+pub mod multilingual;
 pub mod records_request;
 
 /// Crate boundary marker for `oia-analysis` (`docs/architecture.md` §1.2, `#9`).

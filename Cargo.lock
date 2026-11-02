@@ -75,6 +75,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "oia-jpeg-privacy"
+version = "0.1.0"
+
+[[package]]
 name = "oia-media"
 version = "0.1.0"
 dependencies = [

@@ -32,8 +32,8 @@ Verification claims will be limited to the properties and implementation connect
 
 The **P0: Evidence Foundation** workspace is implemented and verified locally:
 
-- **14-crate Rust workspace** (`rustc 1.99.0`, `edition = "2024"`, `#![forbid(unsafe_code)]`):
-  - `oia-domain`, `oia-time-geo`, `oia-store`, `oia-ingest`, `oia-query`, `oia-analysis`, `oia-models`, `oia-media`, `oia-devices`, `oia-forecast`, `oia-export`, `oia-app`, `oia-documents`, and `oia-png-privacy`.
+- **15-crate Rust workspace** (`rustc 1.99.0`, `edition = "2024"`, `#![forbid(unsafe_code)]`):
+  - `oia-domain`, `oia-time-geo`, `oia-store`, `oia-ingest`, `oia-query`, `oia-analysis`, `oia-models`, `oia-media`, `oia-devices`, `oia-forecast`, `oia-export`, `oia-app`, `oia-documents`, `oia-png-privacy`, and `oia-jpeg-privacy`.
 - **Lean 4 formal verification (`proofs/`, `leanprover/lean4:v4.35.0`)**:
   - Machine-checked theorems (zero `sorry`/`admit`/project axioms) for source frame selection (`OiaProofs.FrameSelection`), point-in-time forecast cutoff admissibility (`OiaProofs.CutoffAdmissibility`), and DAG dependency invalidation (`OiaProofs.DependencyInvalidation`), paired with Rust correspondence tests.
 - **Architecture Decision Records (`docs/adr/`)**:

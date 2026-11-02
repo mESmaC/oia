@@ -15,6 +15,7 @@ members = [
     "crates/oia-app",
     "crates/oia-documents",
     "crates/oia-png-privacy",
+    "crates/oia-jpeg-privacy",
 ]
 
 [workspace.package]

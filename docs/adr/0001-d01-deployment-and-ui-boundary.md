@@ -29,4 +29,4 @@
 
 ## Validation
 
-- Verified by compiling the 14-crate workspace (`cargo clippy --workspace --all-targets --locked -- -D warnings`) and exercising `oia-app` workspace shell navigation, accessibility toggles, quality-setting isolation, and localhost transport protection in `crates/oia-app`.
+- Verified by compiling the 15-crate workspace (`cargo clippy --workspace --all-targets --locked -- -D warnings`) and exercising `oia-app` workspace shell navigation, accessibility toggles, quality-setting isolation, and localhost transport protection in `crates/oia-app`.

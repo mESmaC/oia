@@ -3,7 +3,7 @@
 Build, check, and launch the OIA Rust workspace and CLI/examples.
 
 .DESCRIPTION
-Runs Cargo against the root 14-crate OIA workspace (`Cargo.toml`) using the
+Runs Cargo against the root 15-crate OIA workspace (`Cargo.toml`) using the
 pinned Rust toolchain (1.99.0) and runs `lake build` in `proofs/` during `check`
 when `lake` is available on PATH. Mirrors `scripts/run.sh`.
 

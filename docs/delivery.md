@@ -195,10 +195,10 @@ Decisions belong to the project owner and implementing maintainers. Each resolut
 | ID | Decision | Proposed direction or open question | Needed before |
 | --- | --- | --- | --- |
 | D01 | Deployment and UI | Resolved for P0 in [ADR 0001](adr/0001-d01-deployment-and-ui-boundary.md): local-first Rust core (`oia-app`) with typed command/query/event boundary and localhost session-token/origin guard | P0 application shell (resolved) |
-| D02 | Storage/indexes | Resolved for P0 in [ADR 0002](adr/0002-d02-storage-and-indexing.md): atomic WAL-backed snapshot + SHA-256 content-addressed blob store (`oia-store`) and permission-filtered token index (`oia-query`) | P0 persistence (resolved) |
+| D02 | Storage/indexes | Proposed in [ADR 0002](adr/0002-d02-storage-and-indexing.md): WAL-backed journaled snapshot + SHA-256 content-addressed blob store (`oia-store`) implemented for P0; awaiting owner confirmation on embedded SQLite (`rusqlite` + FTS5/R-Tree) vs. journaled snapshot store | P0/P1 persistence scale gate (open) |
 | D03 | Seed corpus and news sources | Small, documented UAP/disclosure and regional collection with verified source access | P1 adapters |
-| D04 | AI execution | Provider-neutral local/remote interface; select evaluated summarization/OCR/embedding options and data-handling defaults | P1 AI features |
-| D05 | Export formats | Markdown, self-contained HTML, JSON bundle proposed; PDF after render QA | P1 report exporter |
+| D04 | AI execution | [ADR 0007](adr/0007-d04-ai-execution-and-grounding.md): provider-neutral local/remote interface; select evaluated summarization/OCR/embedding options and data-handling defaults | P1 AI features |
+| D05 | Export formats | [ADR 0006](adr/0006-d05-report-and-bundle-formats.md): Markdown, self-contained HTML, uncompressed JSON directory bundle selected for implementation; wire schema pending shared contracts; PDF after render QA | P1 report exporter |
 | D06 | Region and geo/space sources | Choose a first region, weather/track/imagery providers, ephemerides, and historical depth | P2 integrations |
 | D07 | Cameras and retention | Choose eligible directories/feeds, automated-use conditions, buffer/storage limits, and excluded views | P3 live monitoring |
 | D08 | Devices and radio | Select first drone video/telemetry interface, SDR, remote receiver, and stream integrations | P3 hardware claims |
@@ -206,8 +206,8 @@ Decisions belong to the project owner and implementing maintainers. Each resolut
 | D10 | Collaboration and sync | Choose hosted transport/identity, capability matrix, merge rules, and sensitive-data defaults | P4 shared service |
 | D11 | Markets | Choose instruments, providers, calendars, corporate-action handling, historical depth, and licensed uses | P5 market ingestion |
 | D12 | Forecasting | Choose first targets/horizons, baselines, point-in-time datasets, calibration and resolution methods | P5 issued forecasts |
-| D13 | Lean correspondence | Resolved for P0 in [ADR 0004](adr/0004-d13-lean-correspondence-target.md): Lean 4 (`v4.35.0`) proofs in `proofs/` for frame selection, cutoff admissibility, and dependency invalidation with Rust correspondence tests | First proof claim (resolved) |
-| D14 | Distribution and project licensing | Resolved for P0 in [ADR 0003](adr/0003-d14-licensing-and-distribution.md): MIT license for OIA code ([LICENSE](../LICENSE)), separate dataset/asset terms, and [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) | Public release (resolved) |
+| D13 | Lean correspondence | Resolved for P0 in [ADR 0005](adr/0005-d13-lean-correspondence-target.md): Lean 4 (`v4.35.0`) proofs in `proofs/` for frame selection, cutoff admissibility, and dependency invalidation with Rust correspondence tests | First proof claim (resolved) |
+| D14 | Distribution and project licensing | Proposed in [ADR 0003](adr/0003-d14-licensing-and-distribution.md): awaiting owner confirmation of OIA repository license before adding root `LICENSE`; separate dataset/asset terms and [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) tracked | Public release (open) |
 
 ## 7. Risk and dependency register
 

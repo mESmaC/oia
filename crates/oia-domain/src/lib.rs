@@ -4,6 +4,7 @@
 //! This crate has zero dependencies on UI toolkits, HTTP clients, database engines, model
 //! services, or vendor SDKs (`docs/architecture.md` Section 1.2).
 
+pub mod codec;
 pub mod graph;
 pub mod ids;
 pub mod json;

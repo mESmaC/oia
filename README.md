@@ -38,9 +38,9 @@ The **P0: Evidence Foundation** workspace is implemented and verified locally:
   - Machine-checked theorems (zero `sorry`/`admit`/project axioms) for source frame selection (`OiaProofs.FrameSelection`), point-in-time forecast cutoff admissibility (`OiaProofs.CutoffAdmissibility`), and DAG dependency invalidation (`OiaProofs.DependencyInvalidation`), paired with Rust correspondence tests.
 - **Architecture Decision Records (`docs/adr/`)**:
   - [ADR 0001 (D01): Deployment and UI boundary](docs/adr/0001-d01-deployment-and-ui-boundary.md)
-  - [ADR 0002 (D02): Storage and indexing](docs/adr/0002-d02-storage-and-indexing.md)
-  - [ADR 0003 (D14): Project licensing and distribution notices](docs/adr/0003-d14-licensing-and-distribution.md)
-  - [ADR 0004 (D13): Initial Lean 4 proof targets and Rust correspondence](docs/adr/0004-d13-lean-correspondence-target.md)
+  - [ADR 0002 (D02): Storage and indexing (Proposed)](docs/adr/0002-d02-storage-and-indexing.md)
+  - [ADR 0003 (D14): Project licensing and distribution notices (Proposed)](docs/adr/0003-d14-licensing-and-distribution.md)
+  - [ADR 0005 (D13): Initial Lean 4 proof targets and Rust correspondence](docs/adr/0005-d13-lean-correspondence-target.md)
 
 Phases P1–P5 (external source adapters, 3D globe/sky renderer, media forensics/hardware adapters, hosted collaboration, and market/analogue forecasting) remain open work packages in the [GitHub implementation backlog](docs/backlog.md):
 
@@ -49,7 +49,7 @@ Phases P1–P5 (external source adapters, 3D globe/sky renderer, media forensics
 - [Delivery and verification](docs/delivery.md): milestones, acceptance scenarios, release gates, and decision register.
 - [GitHub implementation backlog](docs/backlog.md): the Project, phase epics, and linked work packages covering the specification.
 - [Selective reuse inventory](docs/prior-art.md): implementation groundwork in God's Eye View and P0 ports into Rust.
-- [Third-party notices](THIRD_PARTY_NOTICES.md) and [MIT license](LICENSE).
+- [Third-party notices](THIRD_PARTY_NOTICES.md).
 
 The [earlier exploration draft](docs/spec-draft.md) is retained as design history.
 

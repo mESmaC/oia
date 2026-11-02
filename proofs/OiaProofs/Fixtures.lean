@@ -28,7 +28,9 @@ namespace OiaProofs
 #guard isAdmissibleAtCutoff CutoffMode.retrospectiveReconstruction 1000 (some 900) 1500 == true
 #guard isAdmissibleAtCutoff CutoffMode.retrospectiveReconstruction 1000 (some 1001) 500 == false
 
--- Fixture 5: Dependency invalidation step.
+-- Fixture 5: Dependency invalidation single step and multi-step transitive closure.
 #guard stepInvalidation [(2, 1), (3, 2), (4, 1)] [1] == [1, 2, 4]
+#guard (let closed := invalidateClosure [(2, 1), (3, 2), (4, 1)] 3 [1];
+        closed.contains 1 && closed.contains 2 && closed.contains 3 && closed.contains 4) == true
 
 end OiaProofs

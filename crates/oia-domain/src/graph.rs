@@ -92,10 +92,13 @@ impl EvidenceGraph {
         Self::default()
     }
 
-    /// Inserts a validated [`DomainObject`] version without overwriting any prior version.
+    /// Inserts a validated [`DomainObject`] version without overwriting any prior version (`B5`, `B6`, `B7`, `B9`).
     ///
-    /// If `object.envelope().supersedes` is set, records the `Supersedes` edge and triggers
-    /// downstream reassessment for objects that depended on the superseded version.
+    /// - Rejects duplicate `version_id` with [`DomainError::DuplicateVersion`].
+    /// - Validates all `supersedes` invariants and edge IDs before mutating any state (`B6`).
+    /// - Preserves prior `Challenged` review status in `processing_history` when superseding (`B6`).
+    /// - Verifies that any referenced `source_version_ids` already in the graph do not launder
+    ///   non-observational ancestors into observational target classes (`B9`).
     pub fn insert_object(
         &mut self,
         object: DomainObject,
@@ -105,15 +108,56 @@ impl EvidenceGraph {
         let env = object.envelope().clone();
         let version_id = env.version_id.clone();
 
-        if let Some(prev_version) = &env.supersedes {
-            if let Some(prev_obj) = self.objects.get_mut(prev_version) {
-                prev_obj.envelope_mut().review_status = ReviewStatus::Superseded;
+        if self.objects.contains_key(&version_id) {
+            return Err(DomainError::DuplicateVersion(version_id));
+        }
+
+        // Check origin-class inheritance against existing upstream provenance versions (`B9`).
+        let mut upstream_classes = Vec::new();
+        for src_ver in &env.provenance.source_version_ids {
+            if let Some(src_obj) = self.objects.get(src_ver) {
+                upstream_classes.push(src_obj.envelope().origin_class);
+                if self.has_non_observational_ancestor(src_ver) {
+                    upstream_classes.push(crate::records::OriginClass::AnalyticalInference);
+                }
+            }
+        }
+        crate::records::OriginClass::validate_derivation(&upstream_classes, env.origin_class)?;
+
+        let pending_supersede = if let Some(prev_version) = &env.supersedes {
+            let prev_obj = self
+                .objects
+                .get(prev_version)
+                .ok_or_else(|| DomainError::SupersedesMissingVersion(prev_version.clone()))?;
+            if prev_obj.envelope().id != env.id {
+                return Err(DomainError::SupersedesMismatchedObjectId {
+                    expected_id: env.id.clone(),
+                    actual_id: prev_obj.envelope().id.clone(),
+                });
             }
             let edge_id = OpaqueId::new(format!(
                 "supersedes:{}:{}",
                 version_id.as_str(),
                 prev_version.as_str()
             ))?;
+            Some((prev_version.clone(), edge_id))
+        } else {
+            None
+        };
+
+        // All validations passed; now apply mutations atomically (`B6`).
+        if let Some((prev_version, edge_id)) = pending_supersede {
+            if let Some(prev_obj) = self.objects.get_mut(&prev_version) {
+                let prev_status = prev_obj.envelope().review_status;
+                if prev_status == ReviewStatus::Challenged {
+                    prev_obj
+                        .envelope_mut()
+                        .provenance
+                        .processing_history
+                        .push("preserved_prior_review_status:challenged".to_owned());
+                }
+                prev_obj.envelope_mut().review_status = ReviewStatus::Superseded;
+            }
             self.edges.push(RelationEdge {
                 edge_id,
                 from_version: version_id.clone(),
@@ -125,26 +169,123 @@ impl EvidenceGraph {
                 review_status: ReviewStatus::Reviewed,
             });
             let reason = reason_if_superseding.unwrap_or("upstream dependency superseded");
-            self.propagate_reassessment(prev_version, reason, env.created_at_ms);
+            self.propagate_reassessment(&prev_version, reason, env.created_at_ms);
         }
 
-        self.latest_by_id.insert(env.id.clone(), version_id.clone());
         self.objects.insert(version_id.clone(), object);
+        self.recompute_latest_for_id(&env.id);
         Ok(version_id)
     }
 
-    /// Adds a [`RelationEdge`], enforcing that `RelationKind::DerivedFrom` remains a DAG.
+    fn recompute_latest_for_id(&mut self, id: &OpaqueId) {
+        let mut superseded_versions = BTreeSet::new();
+        let mut candidates = Vec::new();
+        for (ver, obj) in &self.objects {
+            if &obj.envelope().id == id {
+                if let Some(prev) = &obj.envelope().supersedes {
+                    superseded_versions.insert(prev.clone());
+                }
+                candidates.push((ver.clone(), obj.envelope().created_at_ms));
+            }
+        }
+        let mut best: Option<(VersionId, i64)> = None;
+        for (ver, ts) in &candidates {
+            if !superseded_versions.contains(ver) {
+                match &best {
+                    None => best = Some((ver.clone(), *ts)),
+                    Some((b_ver, b_ts)) if ts > b_ts || (ts == b_ts && ver > b_ver) => {
+                        best = Some((ver.clone(), *ts));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let Some((latest_ver, _)) = best {
+            self.latest_by_id.insert(id.clone(), latest_ver);
+        }
+    }
+
+    /// Returns `true` if `version_id` or any of its transitive `DerivedFrom` / `source_version_ids`
+    /// ancestors has a non-observational [`crate::records::OriginClass`] (`B9`).
+    #[must_use]
+    pub fn has_non_observational_ancestor(&self, start: &VersionId) -> bool {
+        let mut visited = BTreeSet::new();
+        let mut queue = VecDeque::new();
+        queue.push_back(start.clone());
+        while let Some(curr) = queue.pop_front() {
+            if !visited.insert(curr.clone()) {
+                continue;
+            }
+            if let Some(obj) = self.objects.get(&curr) {
+                if obj.envelope().origin_class.is_non_observational() {
+                    return true;
+                }
+                for parent in &obj.envelope().provenance.source_version_ids {
+                    queue.push_back(parent.clone());
+                }
+            }
+            for edge in &self.edges {
+                if edge.from_version == curr && edge.kind == RelationKind::DerivedFrom {
+                    queue.push_back(edge.to_version.clone());
+                }
+            }
+        }
+        false
+    }
+
+    /// Adds a [`RelationEdge`], enforcing that `RelationKind::DerivedFrom` remains a DAG and
+    /// does not launder a non-observational input into an observational target (`B9`).
     pub fn add_edge(&mut self, edge: RelationEdge) -> Result<(), DomainError> {
-        if edge.kind == RelationKind::DerivedFrom
-            && (edge.from_version == edge.to_version
-                || self.has_derivation_path(&edge.to_version, &edge.from_version))
-        {
-            return Err(DomainError::CyclicDerivation {
-                from: edge.from_version,
-                to: edge.to_version,
-            });
+        if edge.kind == RelationKind::DerivedFrom {
+            if edge.from_version == edge.to_version
+                || self.has_derivation_path(&edge.to_version, &edge.from_version)
+            {
+                return Err(DomainError::CyclicDerivation {
+                    from: edge.from_version,
+                    to: edge.to_version,
+                });
+            }
+            if let Some(from_obj) = self.objects.get(&edge.from_version) {
+                let target_class = from_obj.envelope().origin_class;
+                if self.has_non_observational_ancestor(&edge.to_version) {
+                    crate::records::OriginClass::validate_derivation(
+                        &[crate::records::OriginClass::AnalyticalInference],
+                        target_class,
+                    )?;
+                }
+            }
         }
         self.edges.push(edge);
+        Ok(())
+    }
+
+    /// Restores a previously persisted [`DomainObject`] into the graph without re-emitting
+    /// duplicate `Supersedes` edges or re-mutating processing history (`A1`).
+    pub fn restore_object_unchecked(&mut self, object: DomainObject) -> Result<(), DomainError> {
+        object.validate()?;
+        let env = object.envelope().clone();
+        self.objects.insert(env.version_id, object);
+        self.recompute_latest_for_id(&env.id);
+        Ok(())
+    }
+
+    /// Restores a previously persisted [`RelationEdge`] into the graph (`A1`).
+    pub fn restore_edge_unchecked(&mut self, edge: RelationEdge) {
+        self.edges.push(edge);
+    }
+
+    /// Sets the [`crate::records::AvailabilityState`] of a stored version (used by `oia-store`
+    /// when tombstoning or expiring an artifact's bytes, `A3`).
+    pub fn set_version_availability(
+        &mut self,
+        version_id: &VersionId,
+        availability: crate::records::AvailabilityState,
+    ) -> Result<(), DomainError> {
+        let obj = self
+            .objects
+            .get_mut(version_id)
+            .ok_or_else(|| DomainError::UnknownInputVersion(version_id.clone()))?;
+        obj.envelope_mut().availability = availability;
         Ok(())
     }
 
@@ -271,44 +412,86 @@ impl EvidenceGraph {
         flagged.into_iter().collect()
     }
 
-    /// Traces upstream `Quotes` and `Republishes` lineage from `version_id` to find independent
-    /// origin roots (`INTEL-01`, `NEWS-01`).
+    /// Traces upstream `Quotes` and `Republishes` lineage from `version_ids` to find independent
+    /// origin roots (`INTEL-01`, `NEWS-01`, `B8`).
     ///
-    /// Multiple syndicated articles repeating a single wire story resolve to that single root,
-    /// preventing circular or copied accounts from inflating corroboration counts.
+    /// Computes the reachable `Quotes` / `Republishes` subgraph and condenses strongly connected
+    /// components (SCCs) so that:
+    /// - Diamond DAGs (`X` quotes `A` and `B`, and both republish `W`) resolve to the single root `{W}`.
+    /// - Terminal citation cycles (`A <-> B` with no external parent) collapse to a single canonical
+    ///   representative (`min(SCC)`) rather than inflating corroboration counts.
     #[must_use]
     pub fn independent_source_roots(&self, version_ids: &[VersionId]) -> BTreeSet<VersionId> {
-        let mut roots = BTreeSet::new();
-        for start in version_ids {
-            let mut visited = BTreeSet::new();
-            let mut stack = vec![start.clone()];
-            while let Some(curr) = stack.pop() {
-                if !visited.insert(curr.clone()) {
-                    continue;
-                }
-                let mut parents = Vec::new();
-                for edge in &self.edges {
-                    if edge.from_version == curr
-                        && matches!(edge.kind, RelationKind::Quotes | RelationKind::Republishes)
-                    {
-                        parents.push(edge.to_version.clone());
-                    }
-                }
-                if parents.is_empty() {
-                    roots.insert(curr);
-                } else {
-                    for p in parents {
-                        if !visited.contains(&p) {
-                            stack.push(p);
-                        } else {
-                            // In a citation cycle with no external upstream parent, retain the
-                            // lexicographically smallest cycle representative as a single shared root.
-                            roots.insert(curr.clone().min(p));
-                        }
-                    }
+        // 1. Collect all nodes reachable from `version_ids` via `Quotes` / `Republishes`.
+        let mut reachable = BTreeSet::new();
+        let mut queue: VecDeque<VersionId> = version_ids.iter().cloned().collect();
+        while let Some(curr) = queue.pop_front() {
+            if !reachable.insert(curr.clone()) {
+                continue;
+            }
+            for edge in &self.edges {
+                if edge.from_version == curr
+                    && matches!(edge.kind, RelationKind::Quotes | RelationKind::Republishes)
+                {
+                    queue.push_back(edge.to_version.clone());
                 }
             }
         }
+
+        if reachable.is_empty() {
+            return BTreeSet::new();
+        }
+
+        // 2. Partition `reachable` into strongly connected components (mutual reachability in the
+        //    Quotes/Republishes subgraph) and identify terminal SCCs (zero outgoing edges to other SCCs).
+        let can_reach = |from: &VersionId, target: &VersionId| -> bool {
+            let mut seen = BTreeSet::new();
+            let mut q = VecDeque::new();
+            q.push_back(from.clone());
+            while let Some(n) = q.pop_front() {
+                if &n == target {
+                    return true;
+                }
+                if !seen.insert(n.clone()) {
+                    continue;
+                }
+                for e in &self.edges {
+                    if e.from_version == n
+                        && matches!(e.kind, RelationKind::Quotes | RelationKind::Republishes)
+                        && reachable.contains(&e.to_version)
+                    {
+                        q.push_back(e.to_version.clone());
+                    }
+                }
+            }
+            false
+        };
+
+        let mut assigned = BTreeSet::new();
+        let mut roots = BTreeSet::new();
+        for node in &reachable {
+            if assigned.contains(node) {
+                continue;
+            }
+            let mut scc = BTreeSet::new();
+            for other in &reachable {
+                if can_reach(node, other) && can_reach(other, node) {
+                    scc.insert(other.clone());
+                    assigned.insert(other.clone());
+                }
+            }
+            // Check if any node in `scc` has a Quotes/Republishes edge to a node outside `scc`.
+            let has_external_parent = self.edges.iter().any(|e| {
+                scc.contains(&e.from_version)
+                    && matches!(e.kind, RelationKind::Quotes | RelationKind::Republishes)
+                    && reachable.contains(&e.to_version)
+                    && !scc.contains(&e.to_version)
+            });
+            if !has_external_parent && let Some(rep) = scc.into_iter().next() {
+                roots.insert(rep);
+            }
+        }
+
         roots
     }
 

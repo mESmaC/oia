@@ -1,15 +1,16 @@
 //! `oia-app` — Shared application service boundary, command/query separation, optimistic
 //! concurrency, role-based workspace isolation, bounded event subscriptions with resynchronization,
-//! localhost transport authentication, and `UX-01`–`UX-05` military-glass workspace shell state (`#9`, `#14`, `A01`, `A02`, `A16`).
+//! localhost transport authentication, and `UX-01`–`UX-05` military-glass workspace shell state
+//! (`#9`, `#14`, `C11`, `C12`, `A01`, `A02`, `A16`).
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::path::Path;
 
 use oia_domain::{
-    Annotation, AvailabilityState, ContentHash, DomainError, DomainObject, DomainObjectType,
-    Investigation, ObjectEnvelope, OpaqueId, OriginClass, ProvenanceRecord, ReassessmentState,
-    Review, ReviewStatus, SchemaVersion, VersionId, WorkspaceVisibility,
+    ActorId, Annotation, AvailabilityState, ContentHash, DomainError, DomainObject,
+    DomainObjectType, Investigation, ObjectEnvelope, OpaqueId, OriginClass, ProvenanceRecord,
+    ReassessmentState, Review, ReviewStatus, SchemaVersion, VersionId, WorkspaceVisibility,
 };
 use oia_query::{AuthorizationContext, SearchRequest, SearchResponse, execute_scoped_search};
 use oia_store::{EvidenceStore, StoreBudget, StoreError};
@@ -370,13 +371,45 @@ pub enum AppCommand {
     },
 }
 
+impl AppCommand {
+    const fn case_id(&self) -> &OpaqueId {
+        match self {
+            Self::CreateInvestigation { case_id, .. }
+            | Self::AddAnnotation { case_id, .. }
+            | Self::SubmitReview { case_id, .. } => case_id,
+        }
+    }
+
+    fn command_fingerprint(&self) -> String {
+        match self {
+            Self::CreateInvestigation { case_id, .. } => format!("create_case:{case_id}"),
+            Self::AddAnnotation {
+                case_id,
+                annotation_id,
+                target_version_id,
+                ..
+            } => format!("add_ann:{case_id}:{annotation_id}:{target_version_id}"),
+            Self::SubmitReview {
+                case_id,
+                review_id,
+                target_version_id,
+                resulting_status,
+                ..
+            } => format!(
+                "submit_rev:{case_id}:{review_id}:{target_version_id}:{}",
+                resulting_status.as_str()
+            ),
+        }
+    }
+}
+
 /// Shared application service coordinating `EvidenceStore`, authorization, idempotency,
-/// optimistic concurrency, and event subscriptions (`#14`).
+/// optimistic concurrency, and event subscriptions (`#14`, `C11`, `C12`).
 #[derive(Debug)]
 pub struct OiaApplicationService {
     store: EvidenceStore,
     shell: WorkspaceShellState,
-    completed_requests: BTreeMap<OpaqueId, VersionId>,
+    completed_requests: BTreeMap<(ActorId, OpaqueId), (String, VersionId)>,
     next_event_seq: u64,
     subscriptions: Vec<EventSubscription>,
 }
@@ -501,21 +534,46 @@ impl OiaApplicationService {
     }
 
     // -------------------------------------------------------------------------
-    // State-Changing Commands (idempotent and version-checked)
+    // State-Changing Commands (idempotent, authorized, and version-checked)
     // -------------------------------------------------------------------------
 
-    /// Executes a state-changing [`AppCommand`] with `request_id` idempotency, role authorization,
-    /// and optimistic concurrency checking (`#14`, `A01`, `A16`).
+    /// Executes a state-changing [`AppCommand`] with actor-scoped `request_id` idempotency,
+    /// pre-replay role authorization, target sensitivity inheritance, and optimistic concurrency
+    /// checking (`#14`, `C11`, `C12`, `A01`, `A16`).
     pub fn execute_command(
         &mut self,
         request_id: OpaqueId,
         auth: &AuthorizationContext,
         command: AppCommand,
     ) -> Result<VersionId, AppError> {
-        if let Some(existing_ver) = self.completed_requests.get(&request_id) {
+        // 1. Authenticate actor and authorize role on the target case BEFORE checking replay table (`C11`).
+        let actor = auth.actor_id.clone().ok_or(AppError::UnauthorizedAccess)?;
+        let case_id = command.case_id();
+        let role = auth
+            .role_in_case(case_id)
+            .ok_or(AppError::UnauthorizedAccess)?;
+        match &command {
+            AppCommand::CreateInvestigation { .. } | AppCommand::AddAnnotation { .. } => {
+                if !role.can_edit_case() {
+                    return Err(AppError::UnauthorizedAccess);
+                }
+            }
+            AppCommand::SubmitReview { .. } => {
+                if !role.can_submit_review() {
+                    return Err(AppError::UnauthorizedAccess);
+                }
+            }
+        }
+
+        // 2. Check actor-scoped idempotent replay table (`(ActorId, request_id) -> (fingerprint, VersionId)`, `C11`).
+        let fingerprint = command.command_fingerprint();
+        let replay_key = (actor.clone(), request_id.clone());
+        if let Some((prev_fp, existing_ver)) = self.completed_requests.get(&replay_key) {
+            if prev_fp != &fingerprint {
+                return Err(AppError::ConflictingRequestIdReplay(request_id));
+            }
             return Ok(existing_ver.clone());
         }
-        let actor = auth.actor_id.clone().ok_or(AppError::UnauthorizedAccess)?;
 
         let committed_version = match command {
             AppCommand::CreateInvestigation {
@@ -528,11 +586,9 @@ impl OiaApplicationService {
                 topics,
                 now_ms,
             } => {
-                let role = auth
-                    .role_in_case(&case_id)
-                    .ok_or(AppError::UnauthorizedAccess)?;
-                if !role.can_edit_case() {
-                    return Err(AppError::UnauthorizedAccess);
+                // Reject overwriting an existing investigation with `CreateInvestigation` (`C12`).
+                if self.store.graph().get_latest(&case_id).is_some() {
+                    return Err(AppError::DuplicateObjectId(case_id));
                 }
                 let inv = Investigation {
                     envelope: ObjectEnvelope {
@@ -587,18 +643,21 @@ impl OiaApplicationService {
                 body,
                 now_ms,
             } => {
-                let role = auth
-                    .role_in_case(&case_id)
-                    .ok_or(AppError::UnauthorizedAccess)?;
-                if !role.can_edit_case() {
-                    return Err(AppError::UnauthorizedAccess);
+                // Verify caller has read permission on `target_version_id` and target belongs to `case_id`
+                // or is `LibraryPublic`, and inherit target sensitivity (`C12`).
+                let target_sensitive = {
+                    let target_obj = self.query_version(auth, &target_version_id)?;
+                    if let Some(target_cid) = target_obj.envelope().visibility.case_id()
+                        && target_cid != &case_id
+                    {
+                        return Err(AppError::UnauthorizedAccess);
+                    }
+                    target_obj.envelope().visibility.is_sensitive()
+                };
+                if self.store.graph().get_latest(&annotation_id).is_some() {
+                    return Err(AppError::DuplicateObjectId(annotation_id));
                 }
-                // Verify target exists and is untouched by the annotation (`CASE-03`).
-                if self.store.graph().get_version(&target_version_id).is_none() {
-                    return Err(AppError::Store(StoreError::VersionNotFound(
-                        target_version_id,
-                    )));
-                }
+
                 // Optimistic concurrency check on the owning investigation (`#14`, `A16`).
                 let latest_case = self.store.graph().get_latest(&case_id).ok_or_else(|| {
                     AppError::Store(StoreError::VersionNotFound(expected_case_version.clone()))
@@ -623,7 +682,7 @@ impl OiaApplicationService {
                         created_by: actor.clone(),
                         visibility: WorkspaceVisibility::PrivateCase {
                             case_id: case_id.clone(),
-                            sensitive: false,
+                            sensitive: target_sensitive,
                         },
                         supersedes: None,
                         provenance: ProvenanceRecord {
@@ -643,7 +702,7 @@ impl OiaApplicationService {
                     .put_object(DomainObject::Annotation(ann), None)
                     .map_err(AppError::Store)?;
 
-                case_clone.envelope.version_id = new_case_version.clone();
+                case_clone.envelope.version_id = new_case_version;
                 case_clone.envelope.supersedes = Some(expected_case_version);
                 case_clone.envelope.created_at_ms = now_ms;
                 case_clone.envelope.created_by = actor;
@@ -655,7 +714,12 @@ impl OiaApplicationService {
                     )
                     .map_err(AppError::Store)?;
 
-                self.emit_event(Some(case_id), false, "annotation_added", version_id.clone());
+                self.emit_event(
+                    Some(case_id),
+                    target_sensitive,
+                    "annotation_added",
+                    version_id.clone(),
+                );
                 version_id
             }
 
@@ -669,12 +733,31 @@ impl OiaApplicationService {
                 cited_evidence_versions,
                 now_ms,
             } => {
-                let role = auth
-                    .role_in_case(&case_id)
-                    .ok_or(AppError::UnauthorizedAccess)?;
-                if !role.can_submit_review() {
-                    return Err(AppError::UnauthorizedAccess);
+                // Verify caller has read permission on `target_version_id` and every cited evidence version,
+                // verify case membership, and inherit target sensitivity (`C12`).
+                let target_sensitive = {
+                    let target_obj = self.query_version(auth, &target_version_id)?;
+                    if let Some(target_cid) = target_obj.envelope().visibility.case_id()
+                        && target_cid != &case_id
+                    {
+                        return Err(AppError::UnauthorizedAccess);
+                    }
+                    let mut sens = target_obj.envelope().visibility.is_sensitive();
+                    for cited in &cited_evidence_versions {
+                        let cited_obj = self.query_version(auth, cited)?;
+                        if let Some(cited_cid) = cited_obj.envelope().visibility.case_id()
+                            && cited_cid != &case_id
+                        {
+                            return Err(AppError::UnauthorizedAccess);
+                        }
+                        sens |= cited_obj.envelope().visibility.is_sensitive();
+                    }
+                    sens
+                };
+                if self.store.graph().get_latest(&review_id).is_some() {
+                    return Err(AppError::DuplicateObjectId(review_id));
                 }
+
                 let rev = Review {
                     envelope: ObjectEnvelope {
                         id: review_id,
@@ -685,7 +768,7 @@ impl OiaApplicationService {
                         created_by: actor,
                         visibility: WorkspaceVisibility::PrivateCase {
                             case_id: case_id.clone(),
-                            sensitive: false,
+                            sensitive: target_sensitive,
                         },
                         supersedes: None,
                         provenance: ProvenanceRecord {
@@ -706,13 +789,18 @@ impl OiaApplicationService {
                 self.store
                     .put_object(DomainObject::Review(rev), None)
                     .map_err(AppError::Store)?;
-                self.emit_event(Some(case_id), false, "review_submitted", version_id.clone());
+                self.emit_event(
+                    Some(case_id),
+                    target_sensitive,
+                    "review_submitted",
+                    version_id.clone(),
+                );
                 version_id
             }
         };
 
         self.completed_requests
-            .insert(request_id, committed_version.clone());
+            .insert(replay_key, (fingerprint, committed_version.clone()));
         Ok(committed_version)
     }
 }
@@ -733,6 +821,10 @@ pub enum AppError {
         /// Actual current version ID.
         actual: VersionId,
     },
+    /// Same `request_id` was replayed by the same actor for a different command payload (`C11`).
+    ConflictingRequestIdReplay(OpaqueId),
+    /// Attempted to create a new case, annotation, or review with an `OpaqueId` that already exists (`C12`).
+    DuplicateObjectId(OpaqueId),
     /// Localhost session token was shorter than 16 characters.
     WeakSessionToken,
     /// Localhost transport request lacked a valid session token.
@@ -757,6 +849,14 @@ impl fmt::Display for AppError {
             Self::OptimisticConcurrencyConflict { expected, actual } => write!(
                 f,
                 "optimistic concurrency conflict: expected version '{expected}', actual is '{actual}'"
+            ),
+            Self::ConflictingRequestIdReplay(req) => write!(
+                f,
+                "request_id '{req}' was replayed with a conflicting command payload"
+            ),
+            Self::DuplicateObjectId(id) => write!(
+                f,
+                "object ID '{id}' already exists and cannot be overwritten without supersession"
             ),
             Self::WeakSessionToken => {
                 write!(f, "localhost session token must be at least 16 characters")
@@ -795,18 +895,16 @@ pub fn compute_sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oia_domain::{ActorId, Artifact, RetainedContent, SourceRecord};
+    use oia_domain::{Artifact, RetainedContent, SourceRecord};
     use oia_query::WorkspaceRole;
     use oia_store::RetentionClass;
 
-    /// Verifies A01, A02, and A16 across `oia-app`:
-    /// - Case creation defaults to private (`is_published == false`), view switching preserves history
-    ///   and exposes divergent local filters (`CASE-01`, `CASE-02`).
-    /// - Visual/accessibility toggles (`reduced_motion`, `reduced_transparency`, `CleanEvidence`) and
-    ///   non-color mode badges (`[LIVE ●]`, `[HIST ◷]`) never alter domain state (`UX-01`–`UX-05`, `A02`).
-    /// - Annotations do not mutate source records (`CASE-03`), optimistic concurrency catches conflicting edits,
-    ///   and Owner/Editor/Reviewer/Viewer permissions isolate sensitive artifacts across queries, search,
-    ///   blob reads, and event subscriptions (`#14`, `A16`).
+    /// Verifies A01, A02, A16, C11, and C12 across `oia-app`:
+    /// - Pre-replay authorization (`Outsider` cannot replay `Owner`'s `request_id`), actor-scoped
+    ///   command fingerprinting (`ConflictingRequestIdReplay`).
+    /// - Sensitivity inheritance on `AddAnnotation` / `SubmitReview` so `Viewer` never receives
+    ///   events or read access to annotations/reviews on sensitive records (`C12`).
+    /// - Optimistic concurrency and duplicate-case protection.
     #[test]
     fn workspace_shell_concurrency_and_role_isolation() -> Result<(), Box<dyn std::error::Error>> {
         let mut dir = std::env::temp_dir();
@@ -863,7 +961,7 @@ mod tests {
             Some(WorkspaceViewKind::Globe)
         );
 
-        // 3. Role permissions: Owner vs Viewer on sensitive artifacts, subscriptions, and search (A16).
+        // 3. Role permissions: Owner vs Viewer vs Outsider on sensitive artifacts, subscriptions, and replay (C11, C12, A16).
         let case_id = OpaqueId::new("case_shared")?;
         let mut owner_auth = AuthorizationContext::new(ActorId::new("user_owner")?);
         owner_auth.grant_case_role(case_id.clone(), WorkspaceRole::Owner);
@@ -874,8 +972,9 @@ mod tests {
         let mut outsider_auth = AuthorizationContext::new(ActorId::new("user_outsider")?);
         outsider_auth.grant_case_role(OpaqueId::new("other_case")?, WorkspaceRole::Owner);
 
-        let viewer_sub = app.subscribe(viewer_auth.clone(), 2);
-        let outsider_sub = app.subscribe(outsider_auth.clone(), 2);
+        let owner_sub = app.subscribe(owner_auth.clone(), 4);
+        let viewer_sub = app.subscribe(viewer_auth.clone(), 4);
+        let outsider_sub = app.subscribe(outsider_auth.clone(), 4);
 
         let case_v1 = VersionId::new("ver_case_shared_1")?;
         app.execute_command(
@@ -893,7 +992,26 @@ mod tests {
             },
         )?;
 
-        // Idempotent retry of the same request_id returns `case_v1` without error.
+        // Outsider or Viewer attempting to replay `cmd_create_case` is rejected by pre-replay auth (`C11`)!
+        assert_eq!(
+            app.execute_command(
+                OpaqueId::new("cmd_create_case")?,
+                &outsider_auth,
+                AppCommand::CreateInvestigation {
+                    case_id: case_id.clone(),
+                    version_id: case_v1.clone(),
+                    title: "Ignored".to_owned(),
+                    question: "Ignored".to_owned(),
+                    geographic_scope: None,
+                    temporal_scope: None,
+                    topics: Vec::new(),
+                    now_ms: 1_700_000_000_100,
+                },
+            ),
+            Err(AppError::UnauthorizedAccess)
+        );
+
+        // Idempotent retry by the same authorized actor for the same command succeeds.
         let idempotent_ver = app.execute_command(
             OpaqueId::new("cmd_create_case")?,
             &owner_auth,
@@ -909,6 +1027,27 @@ mod tests {
             },
         )?;
         assert_eq!(idempotent_ver, case_v1);
+
+        // Replaying the same request_id with a different command fingerprint returns ConflictingRequestIdReplay (`C11`).
+        assert_eq!(
+            app.execute_command(
+                OpaqueId::new("cmd_create_case")?,
+                &owner_auth,
+                AppCommand::SubmitReview {
+                    case_id: case_id.clone(),
+                    review_id: OpaqueId::new("rev_conflict")?,
+                    version_id: VersionId::new("ver_rev_conflict")?,
+                    target_version_id: case_v1.clone(),
+                    resulting_status: ReviewStatus::Reviewed,
+                    rationale: "Different command".to_owned(),
+                    cited_evidence_versions: Vec::new(),
+                    now_ms: 1_700_000_000_200,
+                },
+            ),
+            Err(AppError::ConflictingRequestIdReplay(OpaqueId::new(
+                "cmd_create_case"
+            )?))
+        );
 
         // Commit a sensitive source record + artifact in `case_shared`.
         let sensitive_bytes = b"CLASSIFIED_WITNESS_IDENTITY_RECORD";
@@ -994,15 +1133,16 @@ mod tests {
             Err(AppError::UnauthorizedAccess)
         );
 
-        // Viewer cannot mutate case; Owner adds annotation; stale concurrent edit is rejected.
+        // Owner adds annotation on sensitive target `sr_sens_ver`; annotation inherits `sensitive: true` (`C12`)!
         let case_v2 = VersionId::new("ver_case_shared_2")?;
+        let ann_v1 = VersionId::new("ver_ann_1")?;
         app.execute_command(
             OpaqueId::new("cmd_ann_1")?,
             &owner_auth,
             AppCommand::AddAnnotation {
                 case_id: case_id.clone(),
                 annotation_id: OpaqueId::new("ann_1")?,
-                version_id: VersionId::new("ver_ann_1")?,
+                version_id: ann_v1.clone(),
                 target_version_id: sr_sens_ver.clone(),
                 expected_case_version: case_v1.clone(),
                 new_case_version: case_v2.clone(),
@@ -1010,6 +1150,11 @@ mod tests {
                 now_ms: 1_700_000_002_000,
             },
         )?;
+        // Viewer cannot read the annotation on the sensitive record (`C12`)!
+        assert_eq!(
+            app.query_version(&viewer_auth, &ann_v1),
+            Err(AppError::UnauthorizedAccess)
+        );
 
         let stale_edit = app.execute_command(
             OpaqueId::new("cmd_ann_stale")?,
@@ -1030,11 +1175,14 @@ mod tests {
             Err(AppError::OptimisticConcurrencyConflict { .. })
         ));
 
-        // Outsider subscription received 0 events from `case_shared`; Viewer received the 2 non-sensitive events.
+        // Outsider received 0 events; Viewer received only the non-sensitive `case_created` event (1 event);
+        // Owner received both `case_created` and sensitive `annotation_added` (2 events) (`C12`).
         let (outsider_events, _) = app.drain_subscription(outsider_sub)?;
         assert!(outsider_events.is_empty());
         let (viewer_events, _) = app.drain_subscription(viewer_sub)?;
-        assert_eq!(viewer_events.len(), 2);
+        assert_eq!(viewer_events.len(), 1);
+        let (owner_events, _) = app.drain_subscription(owner_sub)?;
+        assert_eq!(owner_events.len(), 2);
 
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())

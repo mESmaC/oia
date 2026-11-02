@@ -5,8 +5,22 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
 use oia_domain::{
-    ActorId, DomainError, ObjectEnvelope, OpaqueId, OriginClass, ReassessmentState, VersionId,
+    ActorId, DomainError, EvidenceGraph, ObjectEnvelope, OpaqueId, OriginClass, ReassessmentState,
+    VersionId,
 };
+
+/// Explicit verification claim classification (`AGENTS.md` Section 3, `ADR 0004`, `E17`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerificationStatus {
+    /// Unverified or draft claim.
+    Unverified,
+    /// Mathematical/algorithmic property proved on a Lean 4 model (`proofs/`).
+    ModelPropertyProved,
+    /// Lean 4 model property proved AND deterministic Rust correspondence fixtures executed.
+    RustCorrespondenceTested,
+    /// Empirically evaluated against held-out or independent reference data.
+    EmpiricallyEvaluated,
+}
 
 /// Explicit verification badge distinguishing AI-proposed, human-reviewed, and Lean-checked
 /// reasoning (`REASON-01`, `AGENTS.md` Section 3).
@@ -36,6 +50,24 @@ pub enum VerificationBadge {
         /// Whether Rust-to-Lean correspondence fixtures have been executed.
         rust_correspondence_tested: bool,
     },
+}
+
+impl VerificationBadge {
+    /// Returns the [`VerificationStatus`] level represented by this badge.
+    #[must_use]
+    pub const fn verification_status(&self) -> VerificationStatus {
+        match self {
+            Self::AiProposed { .. } | Self::HumanReviewed { .. } => VerificationStatus::Unverified,
+            Self::LeanModelProved {
+                rust_correspondence_tested: true,
+                ..
+            } => VerificationStatus::RustCorrespondenceTested,
+            Self::LeanModelProved {
+                rust_correspondence_tested: false,
+                ..
+            } => VerificationStatus::ModelPropertyProved,
+        }
+    }
 }
 
 /// Reasoning or analytical method family (`REASON-01`–`REASON-04`).
@@ -150,14 +182,50 @@ pub struct AnalysisRun {
 }
 
 impl AnalysisRun {
-    /// Validates envelope, method specification, and origin-class derivation rules (`A07`).
+    /// Validates envelope, method specification, and origin-class derivation rules (`A07`, `B9`).
+    ///
+    /// Rejects runs where `input_origin_classes.len() != input_versions.len()` so an empty
+    /// caller-supplied `input_origin_classes` slice can never bypass origin-promotion guards.
     pub fn validate(&self) -> Result<(), AnalysisError> {
         self.envelope.validate().map_err(AnalysisError::Domain)?;
         self.method.validate()?;
         if self.input_versions.is_empty() {
             return Err(AnalysisError::NoInputVersionsPinned);
         }
+        if self.input_origin_classes.len() != self.input_versions.len() {
+            return Err(AnalysisError::InputOriginClassCountMismatch {
+                versions_len: self.input_versions.len(),
+                classes_len: self.input_origin_classes.len(),
+            });
+        }
         OriginClass::validate_derivation(&self.input_origin_classes, self.envelope.origin_class)
+            .map_err(AnalysisError::Domain)?;
+        Ok(())
+    }
+
+    /// Validates this run against the actual [`EvidenceGraph`], deriving each input's [`OriginClass`]
+    /// and transitive non-observational taint directly from the stored `input_versions` (`B9`).
+    pub fn validate_against_graph(&self, graph: &EvidenceGraph) -> Result<(), AnalysisError> {
+        self.validate()?;
+        let mut graph_classes = Vec::with_capacity(self.input_versions.len());
+        for (idx, ver) in self.input_versions.iter().enumerate() {
+            let obj = graph.get_version(ver).ok_or_else(|| {
+                AnalysisError::Domain(DomainError::UnknownInputVersion(ver.clone()))
+            })?;
+            let actual_class = obj.envelope().origin_class;
+            if self.input_origin_classes.get(idx) != Some(&actual_class) {
+                return Err(AnalysisError::InputOriginClassMismatch {
+                    version_id: ver.clone(),
+                    declared: self.input_origin_classes[idx],
+                    actual: actual_class,
+                });
+            }
+            graph_classes.push(actual_class);
+            if graph.has_non_observational_ancestor(ver) {
+                graph_classes.push(OriginClass::AnalyticalInference);
+            }
+        }
+        OriginClass::validate_derivation(&graph_classes, self.envelope.origin_class)
             .map_err(AnalysisError::Domain)?;
         Ok(())
     }
@@ -226,6 +294,22 @@ pub enum AnalysisError {
     Domain(DomainError),
     /// Analysis run did not pin any input versions.
     NoInputVersionsPinned,
+    /// `input_origin_classes.len()` did not match `input_versions.len()` (`B9`).
+    InputOriginClassCountMismatch {
+        /// Number of pinned input versions.
+        versions_len: usize,
+        /// Number of declared input origin classes.
+        classes_len: usize,
+    },
+    /// Declared input origin class did not match the stored object's origin class in the graph (`B9`).
+    InputOriginClassMismatch {
+        /// Input version ID.
+        version_id: VersionId,
+        /// Caller-declared origin class.
+        declared: OriginClass,
+        /// Actual origin class in the graph.
+        actual: OriginClass,
+    },
     /// Deduction lacked premises or an explicit rule.
     IncompleteDeductionSpec,
     /// Extrapolation lacked observed domain, horizon, or uncertainty method.
@@ -245,6 +329,23 @@ impl fmt::Display for AnalysisError {
             Self::NoInputVersionsPinned => {
                 write!(f, "analysis run must pin at least one input version")
             }
+            Self::InputOriginClassCountMismatch {
+                versions_len,
+                classes_len,
+            } => write!(
+                f,
+                "analysis run pinned {versions_len} input versions but declared {classes_len} origin classes"
+            ),
+            Self::InputOriginClassMismatch {
+                version_id,
+                declared,
+                actual,
+            } => write!(
+                f,
+                "input version '{version_id}' has origin class '{}', not declared '{}'",
+                actual.as_str(),
+                declared.as_str()
+            ),
             Self::IncompleteDeductionSpec => {
                 write!(
                     f,

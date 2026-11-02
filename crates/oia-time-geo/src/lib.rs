@@ -227,23 +227,50 @@ pub enum TimeScale {
 /// Fixed offset between TAI and TT in milliseconds (`32.184 s = 32_184 ms`).
 pub const TT_MINUS_TAI_MS: i64 = 32_184;
 
-/// Versioned leap-second table for `UTC <-> TAI <-> TT` conversions.
+/// Versioned leap-second table for `UTC <-> TAI <-> TT` conversions (`E16`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeapSecondTable {
     /// Table version identifier (e.g., `"IERS-Bulletin-C-2026"`).
     pub version: String,
+    /// Expiry timestamp (UTC ms) from IERS Bulletin C beyond which `TAI - UTC` is not yet known (`E16`).
+    pub expires_at_utc_ms: i64,
     /// Sorted list of `(effective_utc_ms, tai_minus_utc_seconds)`.
     entries: Vec<(i64, i32)>,
 }
 
 impl LeapSecondTable {
-    /// Returns the standard IERS leap-second table from 1972-01-01 (`10 s`) through 2017-01-01 (`37 s`).
+    /// Returns the complete IERS leap-second table containing all 28 historical steps from
+    /// 1972-01-01 (`10 s`) through 2017-01-01 (`37 s`) with a Bulletin C validity horizon (`E16`).
     #[must_use]
     pub fn iers_standard() -> Self {
         Self {
-            version: "IERS-Bulletin-C-2017-2026".to_owned(),
+            version: "IERS-Bulletin-C-1972-2027".to_owned(),
+            expires_at_utc_ms: 1_814_140_800_000, // 2027-06-28T00:00:00Z
             entries: vec![
                 (63_072_000_000, 10),    // 1972-01-01T00:00:00Z
+                (78_796_800_000, 11),    // 1972-07-01T00:00:00Z
+                (94_694_400_000, 12),    // 1973-01-01T00:00:00Z
+                (126_230_400_000, 13),   // 1974-01-01T00:00:00Z
+                (157_766_400_000, 14),   // 1975-01-01T00:00:00Z
+                (189_302_400_000, 15),   // 1976-01-01T00:00:00Z
+                (220_924_800_000, 16),   // 1977-01-01T00:00:00Z
+                (252_460_800_000, 17),   // 1978-01-01T00:00:00Z
+                (283_996_800_000, 18),   // 1979-01-01T00:00:00Z
+                (315_532_800_000, 19),   // 1980-01-01T00:00:00Z
+                (362_793_600_000, 20),   // 1981-07-01T00:00:00Z
+                (394_329_600_000, 21),   // 1982-07-01T00:00:00Z
+                (425_865_600_000, 22),   // 1983-07-01T00:00:00Z
+                (489_024_000_000, 23),   // 1985-07-01T00:00:00Z
+                (567_993_600_000, 24),   // 1988-01-01T00:00:00Z
+                (631_152_000_000, 25),   // 1990-01-01T00:00:00Z
+                (662_688_000_000, 26),   // 1991-01-01T00:00:00Z
+                (709_948_800_000, 27),   // 1992-07-01T00:00:00Z
+                (741_484_800_000, 28),   // 1993-07-01T00:00:00Z
+                (773_020_800_000, 29),   // 1994-07-01T00:00:00Z
+                (820_454_400_000, 30),   // 1996-01-01T00:00:00Z
+                (867_715_200_000, 31),   // 1997-07-01T00:00:00Z
+                (915_148_800_000, 32),   // 1999-01-01T00:00:00Z
+                (1_136_073_600_000, 33), // 2006-01-01T00:00:00Z
                 (1_230_768_000_000, 34), // 2009-01-01T00:00:00Z
                 (1_341_100_800_000, 35), // 2012-07-01T00:00:00Z
                 (1_435_708_800_000, 36), // 2015-07-01T00:00:00Z
@@ -252,8 +279,14 @@ impl LeapSecondTable {
         }
     }
 
-    /// Looks up `TAI - UTC` in seconds for a UTC timestamp (`utc_ms >= 1972-01-01`).
+    /// Looks up `TAI - UTC` in seconds for a UTC timestamp (`1972-01-01 <= utc_ms < expires_at_utc_ms`, `E16`).
     pub fn tai_minus_utc_seconds(&self, utc_ms: i64) -> Result<i32, TimeGeoError> {
+        if utc_ms >= self.expires_at_utc_ms {
+            return Err(TimeGeoError::LeapTableExpired {
+                utc_ms,
+                expires_at_utc_ms: self.expires_at_utc_ms,
+            });
+        }
         let mut selected = None;
         for &(effective_ms, delta_s) in &self.entries {
             if utc_ms >= effective_ms {
@@ -510,6 +543,19 @@ impl GeoPoint {
             horizontal_uncertainty_m,
         })
     }
+}
+
+/// Normalizes a finite longitude in degrees into the canonical half-open interval `[-180.0, 180.0)`
+/// (`docs/architecture.md` Section 3.2, `F19`).
+pub fn normalize_longitude_deg(lon_deg: f64) -> Result<f64, TimeGeoError> {
+    if !lon_deg.is_finite() {
+        return Err(TimeGeoError::InvalidLongitude(lon_deg));
+    }
+    let mut wrapped = (lon_deg + 180.0).rem_euclid(360.0) - 180.0;
+    if wrapped >= 180.0 {
+        wrapped -= 360.0;
+    }
+    Ok(wrapped)
 }
 
 /// Geographic bounding box supporting antimeridian / dateline crossing (`west_lon_deg > east_lon_deg`)
@@ -773,6 +819,13 @@ pub enum TimeGeoError {
     EmptyUnknownReason,
     /// UTC timestamp precedes 1972-01-01 leap-second table coverage.
     PreLeapSecondEpoch(i64),
+    /// UTC timestamp is at or beyond the IERS Bulletin C expiry horizon (`E16`).
+    LeapTableExpired {
+        /// Requested UTC timestamp (ms).
+        utc_ms: i64,
+        /// Table expiry timestamp (ms).
+        expires_at_utc_ms: i64,
+    },
     /// Device clock is unsynchronized; receipt time cannot masquerade as capture time.
     UnsynchronizedClock,
     /// Aligned device timestamp fell outside the alignment validity interval.
@@ -828,6 +881,13 @@ impl fmt::Display for TimeGeoError {
             Self::PreLeapSecondEpoch(ms) => {
                 write!(f, "timestamp {ms} precedes 1972-01-01 leap-second coverage")
             }
+            Self::LeapTableExpired {
+                utc_ms,
+                expires_at_utc_ms,
+            } => write!(
+                f,
+                "timestamp {utc_ms} exceeds leap-second table expiry {expires_at_utc_ms}"
+            ),
             Self::UnsynchronizedClock => write!(
                 f,
                 "cannot align device timestamp: clock is unsynchronized and receipt time must not substitute for capture time"
@@ -877,8 +937,9 @@ impl std::error::Error for TimeGeoError {}
 mod tests {
     use super::*;
 
-    /// Verifies DST ambiguity, date-only non-promotion, leap-second UTC->TAI->TT conversion,
-    /// dateline-crossing bounding boxes, barometric geoid misuse rejection, and exact decimal arithmetic (#12, A04, A05, A14).
+    /// Verifies DST ambiguity, date-only non-promotion, complete 28-step leap-second UTC->TAI->TT
+    /// conversion + expiry check (`E16`), longitude normalization, dateline-crossing bounding boxes,
+    /// barometric geoid misuse rejection, and exact decimal arithmetic (`#12`, `E16`, `A04`, `A05`, `A14`).
     #[test]
     fn time_scales_dateline_bounds_altitude_datums_and_exact_decimal() -> Result<(), TimeGeoError> {
         // 1. Date-only record refuses silent instant window overlap and validates leap days.
@@ -901,13 +962,20 @@ mod tests {
             .is_err()
         );
 
-        // 2. Leap-second aware UTC -> TAI -> TT conversion (2026: TAI - UTC = 37s, TT - TAI = 32.184s).
+        // 2. Complete 28-step IERS leap-second table: verify 1997-03-13 (Phoenix Lights = 30s),
+        //    2004-11-14 (Nimitz = 32s), 2026 (37s), and post-expiry rejection (`E16`).
         let table = LeapSecondTable::iers_standard();
+        assert_eq!(table.tai_minus_utc_seconds(858_297_600_000)?, 30); // 1997-03-14T00:00:00Z
+        assert_eq!(table.tai_minus_utc_seconds(1_100_390_400_000)?, 32); // 2004-11-14T00:00:00Z
         let utc_2026_ms = 1_793_577_600_000_i64; // 2026-11-02T00:00:00Z
         let tai_ms = table.utc_to_tai_ms(utc_2026_ms)?;
         let tt_ms = table.utc_to_tt_ms(utc_2026_ms)?;
         assert_eq!(tai_ms - utc_2026_ms, 37_000);
         assert_eq!(tt_ms - utc_2026_ms, 69_184);
+        assert!(matches!(
+            table.tai_minus_utc_seconds(table.expires_at_utc_ms),
+            Err(TimeGeoError::LeapTableExpired { .. })
+        ));
 
         // 3. Unsynchronized clock refuses alignment.
         let unsynced = ClockAlignment {
@@ -924,7 +992,9 @@ mod tests {
             Err(TimeGeoError::UnsynchronizedClock)
         );
 
-        // 4. Dateline-crossing bounding box (e.g. Aleutians / Western Pacific: 170E to 170W).
+        // 4. Dateline-crossing bounding box (e.g. Aleutians / Western Pacific: 170E to 170W) and longitude wrap.
+        assert!((normalize_longitude_deg(185.0)? - (-175.0)).abs() < 1e-9);
+        assert!((normalize_longitude_deg(180.0)? - (-180.0)).abs() < 1e-9);
         let aleutian_box = GeoBoundingBox::new(50.0, 60.0, 170.0, -170.0)?;
         assert!(aleutian_box.crosses_dateline());
         let west_of_dateline = GeoPoint::new(52.5, 175.0, None, None)?;

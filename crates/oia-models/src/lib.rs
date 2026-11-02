@@ -1,6 +1,6 @@
 //! `oia-models` — Provider-neutral AI execution interface, workspace data-handling policy guards,
 //! untrusted document prompt-injection isolation, and structural citation anchor validation
-//! (`DOC-03`–`DOC-05`, `A03`, `docs/architecture.md` Section 6.3).
+//! (`DOC-03`–`DOC-05`, `D15`, `A03`, `docs/architecture.md` Section 6.3).
 
 use std::fmt;
 
@@ -85,7 +85,10 @@ pub enum GroundedGenerationResult {
 
 /// Enforces workspace data-handling policy, isolates untrusted source text as non-executable data
 /// (preventing prompt-injected tool execution or permission escalation, `DOC-05`, `A03`), and
-/// structurally validates all generated citations against the allowed [`Document`] versions.
+/// structurally validates all generated citations against the allowed [`Document`] versions (`D15`).
+///
+/// Rejects any model output that attempts to self-grant [`CitationValidationState::HumanReviewed`]
+/// (`ModelError::SelfGrantedReviewStatusRejected`, `AGENTS.md` Section 5 & `docs/architecture.md` Section 6.3).
 pub fn validate_and_ground_draft(
     policy: &WorkspaceAiPolicy,
     locality: &ModelLocality,
@@ -141,6 +144,10 @@ pub fn validate_and_ground_draft(
     omitted_pages.sort_unstable();
 
     for stmt in &mut draft_statements {
+        // Model outputs can never self-grant `HumanReviewed` (`D15`, `docs/architecture.md` Section 6.3).
+        if stmt.validation_state == CitationValidationState::HumanReviewed {
+            return Err(ModelError::SelfGrantedReviewStatusRejected);
+        }
         let doc = allowed_documents
             .iter()
             .find(|d| d.envelope.version_id == stmt.document_version_id)
@@ -156,9 +163,7 @@ pub fn validate_and_ground_draft(
                 anchor_id: stmt.anchor_id.clone(),
             });
         }
-        if stmt.validation_state == CitationValidationState::GeneratedUnchecked {
-            stmt.validation_state = CitationValidationState::StructurallyValidated;
-        }
+        stmt.validation_state = CitationValidationState::StructurallyValidated;
     }
 
     Ok(GroundedGenerationResult::Draft {
@@ -222,6 +227,8 @@ pub enum ModelError {
         /// Missing anchor ID.
         anchor_id: OpaqueId,
     },
+    /// Model output attempted to claim `CitationValidationState::HumanReviewed` without human review (`D15`).
+    SelfGrantedReviewStatusRejected,
 }
 
 impl fmt::Display for ModelError {
@@ -256,6 +263,10 @@ impl fmt::Display for ModelError {
             } => write!(
                 f,
                 "citation anchor '{anchor_id}' does not exist in document version '{document_version}'"
+            ),
+            Self::SelfGrantedReviewStatusRejected => write!(
+                f,
+                "model output cannot self-grant CitationValidationState::HumanReviewed"
             ),
         }
     }

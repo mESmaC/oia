@@ -280,6 +280,73 @@ impl JsonValue {
             ))),
         }
     }
+
+    /// Returns an optional integer field from an object.
+    pub fn opt_i64(obj: &BTreeMap<String, JsonValue>, key: &str) -> Result<Option<i64>, JsonError> {
+        match obj.get(key) {
+            None | Some(Self::Null) => Ok(None),
+            Some(Self::Int(n)) => Ok(Some(*n)),
+            Some(_) => Err(JsonError::Schema(format!(
+                "field '{key}' must be an integer or null"
+            ))),
+        }
+    }
+
+    /// Returns a required finite float field from an object.
+    pub fn req_f64(obj: &BTreeMap<String, JsonValue>, key: &str) -> Result<f64, JsonError> {
+        match obj.get(key) {
+            Some(Self::Float(v)) if v.is_finite() => Ok(*v),
+            Some(Self::Int(n)) => Ok(*n as f64),
+            Some(_) => Err(JsonError::Schema(format!(
+                "field '{key}' must be a finite number"
+            ))),
+            None => Err(JsonError::Schema(format!(
+                "missing required number field '{key}'"
+            ))),
+        }
+    }
+
+    /// Returns an optional finite float field from an object.
+    pub fn opt_f64(obj: &BTreeMap<String, JsonValue>, key: &str) -> Result<Option<f64>, JsonError> {
+        match obj.get(key) {
+            None | Some(Self::Null) => Ok(None),
+            Some(Self::Float(v)) if v.is_finite() => Ok(Some(*v)),
+            Some(Self::Int(n)) => Ok(Some(*n as f64)),
+            Some(_) => Err(JsonError::Schema(format!(
+                "field '{key}' must be a finite number or null"
+            ))),
+        }
+    }
+
+    /// Returns a required object field from an object.
+    pub fn req_obj<'a>(
+        obj: &'a BTreeMap<String, JsonValue>,
+        key: &str,
+    ) -> Result<&'a BTreeMap<String, JsonValue>, JsonError> {
+        match obj.get(key) {
+            Some(Self::Object(m)) => Ok(m),
+            Some(_) => Err(JsonError::Schema(format!(
+                "field '{key}' must be an object"
+            ))),
+            None => Err(JsonError::Schema(format!(
+                "missing required object field '{key}'"
+            ))),
+        }
+    }
+
+    /// Returns an optional object field from an object.
+    pub fn opt_obj<'a>(
+        obj: &'a BTreeMap<String, JsonValue>,
+        key: &str,
+    ) -> Result<Option<&'a BTreeMap<String, JsonValue>>, JsonError> {
+        match obj.get(key) {
+            None | Some(Self::Null) => Ok(None),
+            Some(Self::Object(m)) => Ok(Some(m)),
+            Some(_) => Err(JsonError::Schema(format!(
+                "field '{key}' must be an object or null"
+            ))),
+        }
+    }
 }
 
 fn write_escaped_str(s: &str, out: &mut String) {

@@ -135,4 +135,121 @@ theorem selectFrameInWindow_selected_sound
       ⟩
     · contradiction
 
+/-- Theorem 5 (Completeness): If `selectLatestValid` returns `none`, then no element
+    in `candidates` satisfies `isValidFrame`. -/
+theorem selectLatestValid_complete
+    (windowStart windowEnd target maxGap : Int)
+    (candidates : List Int)
+    (hNone : selectLatestValid windowStart windowEnd target maxGap candidates = none)
+    (c : Int)
+    (hMem : c ∈ candidates) :
+    isValidFrame windowStart windowEnd target maxGap c = false := by
+  induction candidates with
+  | nil =>
+    cases hMem
+  | cons head tail ih =>
+    simp only [selectLatestValid] at hNone
+    split at hNone
+    · split at hNone
+      · contradiction
+      · split at hNone <;> contradiction
+    · rename_i hHeadInvalid
+      have hHeadFalse : isValidFrame windowStart windowEnd target maxGap head = false :=
+        Bool.eq_false_iff.mpr hHeadInvalid
+      cases hMem with
+      | head _ => exact hHeadFalse
+      | tail _ hTailMem => exact ih hNone hTailMem
+
+/-- Theorem 6 (Optimality / Latest-Selection): If `selectLatestValid` returns `some t`,
+    then for every valid candidate `c ∈ candidates`, `c <= t`. -/
+theorem selectLatestValid_optimal
+    (windowStart windowEnd target maxGap : Int)
+    (candidates : List Int)
+    (t : Int)
+    (hSome : selectLatestValid windowStart windowEnd target maxGap candidates = some t)
+    (c : Int)
+    (hMem : c ∈ candidates)
+    (hValid : isValidFrame windowStart windowEnd target maxGap c = true) :
+    c <= t := by
+  induction candidates generalizing t with
+  | nil =>
+    simp [selectLatestValid] at hSome
+  | cons head tail ih =>
+    simp only [selectLatestValid] at hSome
+    split at hSome
+    · rename_i hHeadValid
+      split at hSome
+      · rename_i hTailNone
+        injection hSome with hEq
+        subst hEq
+        cases hMem with
+        | head _ => exact Int.le_refl c
+        | tail _ hTailMem =>
+          have hFalse := selectLatestValid_complete windowStart windowEnd target maxGap tail hTailNone c hTailMem
+          rw [hValid] at hFalse
+          contradiction
+      · rename_i b hTailSome
+        split at hSome
+        · rename_i hBGeHead
+          injection hSome with hEq
+          subst hEq
+          have hHeadLeB : head <= b := of_decide_eq_true hBGeHead
+          cases hMem with
+          | head _ => exact hHeadLeB
+          | tail _ hTailMem => exact ih b hTailSome hTailMem
+        · rename_i hNotBGeHead
+          injection hSome with hEq
+          subst hEq
+          have hBLeHead : b <= head := by
+            have hLt : ¬(b >= head) := of_decide_eq_false (Bool.eq_false_iff.mpr hNotBGeHead)
+            omega
+          cases hMem with
+          | head _ => exact Int.le_refl c
+          | tail _ hTailMem =>
+            have hCLeB : c <= b := ih b hTailSome hTailMem
+            exact Int.le_trans hCLeB hBLeHead
+    · rename_i hHeadInvalid
+      cases hMem with
+      | head _ =>
+        exfalso
+        exact hHeadInvalid hValid
+      | tail _ hTailMem =>
+        exact ih t hSome hTailMem
+
+/-- Theorem 7 (Coverage-Gap Characterization): `selectFrameInWindow` returns `coverageGap`
+    if and only if `candidates` is non-empty and every candidate fails `isValidFrame`. -/
+theorem selectFrameInWindow_coverageGap_iff
+    (windowStart windowEnd target maxGap : Int)
+    (candidates : List Int) :
+    selectFrameInWindow windowStart windowEnd target maxGap candidates =
+      FrameSelectionOutcome.coverageGap ↔
+      (candidates ≠ [] ∧ ∀ c ∈ candidates, isValidFrame windowStart windowEnd target maxGap c = false) := by
+  constructor
+  · intro hGap
+    cases candidates with
+    | nil =>
+      simp [selectFrameInWindow] at hGap
+    | cons head tail =>
+      simp only [selectFrameInWindow] at hGap
+      split at hGap
+      · contradiction
+      · rename_i hNone
+        exact ⟨
+          List.cons_ne_nil head tail,
+          fun c hMem => selectLatestValid_complete windowStart windowEnd target maxGap (head :: tail) hNone c hMem
+        ⟩
+  · intro ⟨hNonEmpty, hAllInvalid⟩
+    cases candidates with
+    | nil => contradiction
+    | cons head tail =>
+      simp only [selectFrameInWindow]
+      split
+      · rename_i t hSome
+        have hMem := selectLatestValid_mem windowStart windowEnd target maxGap (head :: tail) t hSome
+        have hValid := selectLatestValid_sound windowStart windowEnd target maxGap (head :: tail) t hSome
+        have hInvalid := hAllInvalid t hMem
+        rw [hValid] at hInvalid
+        contradiction
+      · rfl
+
 end OiaProofs

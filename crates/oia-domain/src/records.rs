@@ -151,18 +151,15 @@ impl OriginClass {
         )
     }
 
-    /// Validates whether an output with `target` origin class may be produced from `inputs`.
+    /// Validates whether an output with `target` origin class may be produced from `inputs` (`B9`).
     ///
     /// Feeding an inference, forecast, predictive derivative, simulation, or recreation into
-    /// a downstream step cannot promote the result to `AcquiredSourceMaterial` or `NormalizedObservation`.
+    /// a downstream step cannot promote the result to `AcquiredSourceMaterial`,
+    /// `NormalizedObservation`, `UserTestimony`, `ExtractedClaim`, or `ConventionalDerivative`.
+    /// This prevents two-hop laundering (e.g. `PredictiveDerivative -> ConventionalDerivative -> NormalizedObservation`).
     pub fn validate_derivation(inputs: &[Self], target: Self) -> Result<(), DomainError> {
         let has_non_obs = inputs.iter().copied().any(Self::is_non_observational);
-        if has_non_obs
-            && matches!(
-                target,
-                Self::AcquiredSourceMaterial | Self::NormalizedObservation | Self::UserTestimony
-            )
-        {
+        if has_non_obs && !target.is_non_observational() {
             return Err(DomainError::IllegalOriginPromotion { target });
         }
         Ok(())
@@ -1189,6 +1186,19 @@ pub enum DomainError {
     },
     /// Attempted to interpret a `CoOccursWith` edge as organizational affiliation or causation.
     IllegalCoOccurrencePromotion,
+    /// Attempted to insert a version ID that already exists in the evidence graph (`B5`).
+    DuplicateVersion(VersionId),
+    /// `supersedes` referenced a version ID not present in the evidence graph (`B6`).
+    SupersedesMissingVersion(VersionId),
+    /// `supersedes` referenced a version belonging to a different semantic object ID (`B6`).
+    SupersedesMismatchedObjectId {
+        /// New version's semantic object ID.
+        expected_id: OpaqueId,
+        /// Superseded version's semantic object ID.
+        actual_id: OpaqueId,
+    },
+    /// Referenced input version ID was not found in the evidence graph (`B9`).
+    UnknownInputVersion(VersionId),
 }
 
 impl fmt::Display for DomainError {
@@ -1237,6 +1247,25 @@ impl fmt::Display for DomainError {
                 f,
                 "co-occurrence relation cannot be promoted to affiliation or causation"
             ),
+            Self::DuplicateVersion(v) => {
+                write!(
+                    f,
+                    "immutable version '{v}' already exists and cannot be overwritten"
+                )
+            }
+            Self::SupersedesMissingVersion(v) => {
+                write!(f, "superseded version '{v}' does not exist in graph")
+            }
+            Self::SupersedesMismatchedObjectId {
+                expected_id,
+                actual_id,
+            } => write!(
+                f,
+                "cannot supersede version from object '{actual_id}' with version for object '{expected_id}'"
+            ),
+            Self::UnknownInputVersion(v) => {
+                write!(f, "referenced input version '{v}' not found in graph")
+            }
         }
     }
 }

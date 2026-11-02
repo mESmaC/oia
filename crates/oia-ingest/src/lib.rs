@@ -1,14 +1,15 @@
 //! `oia-ingest` — Capability-aware source registry, `CAM-01`/`CAM-02` camera admission rules,
-//! injected transport, bounded payload reading, fail-safe rate limiting, idempotent retries,
-//! generation-guarded cancellation, and coverage/freshness result envelopes (`#13`, `A01`, `A04`, `A09`).
+//! injected lazy transport, bounded streaming payload reading with mid-stream cancellation,
+//! fail-safe rate limiting, source-scoped idempotent retries preserving partial coverage,
+//! generation-guarded cancellation, and coverage/freshness result envelopes (`#13`, `D13`, `D14`, `A01`, `A04`, `A09`).
 //!
-//! Portions of the bounded payload reader (`read_bounded_chunks`), fail-safe rate-limit config
-//! and sliding-window admission (`resolve_per_minute_cap`, `SlidingWindowRateLimiter`), and
-//! camera frame provenance classification (`CameraFrameProvenance`) are adapted from God's Eye View
-//! (`server/providers/common/request.js`, `server/providers/common/rate-limit.js`,
-//! `src/sources/rateLimit.js`, and `src/layers/cctv/source.js`, commit
-//! `0d1a68160e532ba65dc34b48ea205de6de4028fc`), Copyright (c) 2026 Bilawal Sidhu, under the MIT
-//! License (`THIRD_PARTY_NOTICES.md`).
+//! Portions of the bounded payload reader (`read_bounded_chunks`, `read_bounded_chunks_with_cancel`),
+//! fail-safe rate-limit config and sliding-window admission (`resolve_per_minute_cap`,
+//! `SlidingWindowRateLimiter`), and camera frame provenance classification (`CameraFrameProvenance`)
+//! are adapted from God's Eye View (`server/providers/common/request.js`,
+//! `server/providers/common/rate-limit.js`, `src/sources/rateLimit.js`, and
+//! `src/layers/cctv/source.js`, commit `0d1a68160e532ba65dc34b48ea205de6de4028fc`),
+//! Copyright (c) 2026 Bilawal Sidhu, under the MIT License (`THIRD_PARTY_NOTICES.md`).
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
@@ -217,23 +218,26 @@ impl SlidingWindowRateLimiter {
     }
 }
 
-/// Reads a sequence of incoming payload chunks under a hard byte cap and cancellation flag,
-/// adapted from God's Eye View (`server/providers/common/request.js`, MIT License).
+/// Reads a sequence of incoming payload chunks under a hard byte cap and a dynamic per-chunk
+/// cancellation predicate (`D14`), adapted from God's Eye View (`server/providers/common/request.js`, MIT License).
 ///
 /// Discards retained bytes immediately on overflow (`IngestError::PayloadTooLarge`) or
-/// cancellation (`IngestError::Cancelled`).
-pub fn read_bounded_chunks(
+/// mid-stream cancellation (`IngestError::Cancelled`).
+pub fn read_bounded_chunks_with_cancel<F>(
     chunks: &[&[u8]],
     max_bytes: usize,
-    cancelled: bool,
-) -> Result<Vec<u8>, IngestError> {
-    if cancelled {
+    mut is_cancelled: F,
+) -> Result<Vec<u8>, IngestError>
+where
+    F: FnMut() -> bool,
+{
+    if is_cancelled() {
         return Err(IngestError::Cancelled);
     }
     let mut total = 0usize;
     let mut out = Vec::new();
     for &chunk in chunks {
-        if cancelled {
+        if is_cancelled() {
             out.clear();
             return Err(IngestError::Cancelled);
         }
@@ -248,6 +252,15 @@ pub fn read_bounded_chunks(
         out.extend_from_slice(chunk);
     }
     Ok(out)
+}
+
+/// Reads a sequence of incoming payload chunks under a hard byte cap and static cancellation flag.
+pub fn read_bounded_chunks(
+    chunks: &[&[u8]],
+    max_bytes: usize,
+    cancelled: bool,
+) -> Result<Vec<u8>, IngestError> {
+    read_bounded_chunks_with_cancel(chunks, max_bytes, || cancelled)
 }
 
 /// Machine-readable query/ingestion outcome (`docs/architecture.md` Section 4.2).
@@ -326,7 +339,7 @@ pub struct QueryResultEnvelope<T> {
     pub diagnostic: Option<String>,
 }
 
-///Registered source entry with capability and budget enforcement (`#13`).
+/// Registered source entry with capability and budget enforcement (`#13`).
 #[derive(Debug, Clone)]
 pub struct SourceRegistration {
     /// Source ID.
@@ -347,7 +360,7 @@ pub struct SourceRegistration {
     pub health: SourceHealthState,
 }
 
-/// Simulated or live transport response injected into [`SourceRegistry`].
+/// Simulated or live transport response produced by an injected transport callback (`D14`).
 #[derive(Debug, Clone)]
 pub enum TransportResponse {
     /// HTTP-like 200 OK with chunks and coverage flags.
@@ -369,13 +382,21 @@ pub enum TransportResponse {
     Unavailable(String),
 }
 
-/// Capability-aware source registry with idempotent acquisition tracking, rate limiting,
-/// and generation-guarded cancellation (`#13`, `A01`, `A09`).
+#[derive(Debug, Clone)]
+struct CachedAcquisitionEntry {
+    version_id: VersionId,
+    outcome: IngestOutcome,
+    coverage: CoverageEnvelope,
+    upstream_timestamp_ms: Option<i64>,
+}
+
+/// Capability-aware source registry with source-scoped idempotent acquisition tracking,
+/// rate limiting, and generation-guarded cancellation (`#13`, `D13`, `D14`, `A01`, `A09`).
 #[derive(Debug)]
 pub struct SourceRegistry {
     sources: BTreeMap<OpaqueId, SourceRegistration>,
     rate_limiters: BTreeMap<OpaqueId, SlidingWindowRateLimiter>,
-    committed_by_acquisition_key: BTreeMap<String, VersionId>,
+    committed_by_acquisition_key: BTreeMap<(OpaqueId, String), CachedAcquisitionEntry>,
     active_generation_by_context: BTreeMap<OpaqueId, u64>,
 }
 
@@ -442,10 +463,11 @@ impl SourceRegistry {
         *entry
     }
 
-    /// Executes a bounded source acquisition with capability verification, endpoint validation,
-    /// rate limiting, idempotent retry deduplication, and generation-epoch checking (`#13`).
+    /// Executes a bounded source acquisition using a lazy transport callback `fetch_transport` that
+    /// is ONLY invoked after generation-epoch, registration, health, capability, URL allow-list,
+    /// idempotency cache, and rate-limit gates pass (`#13`, `D13`, `D14`).
     #[allow(clippy::too_many_arguments)]
-    pub fn execute_acquisition(
+    pub fn execute_acquisition_lazy<F>(
         &mut self,
         request_id: OpaqueId,
         context_id: &OpaqueId,
@@ -456,9 +478,12 @@ impl SourceRegistry {
         acquisition_key: &str,
         requested_window_ms: Option<(i64, i64)>,
         now_ms: i64,
-        transport_response: TransportResponse,
+        fetch_transport: F,
         mint_version_id: VersionId,
-    ) -> QueryResultEnvelope<Vec<u8>> {
+    ) -> QueryResultEnvelope<Vec<u8>>
+    where
+        F: FnOnce(&str, usize) -> TransportResponse,
+    {
         let current_gen = self
             .active_generation_by_context
             .get(context_id)
@@ -533,24 +558,20 @@ impl SourceRegistry {
             );
         }
 
-        // Idempotent retry check: if this exact acquisition_key already committed, return the existing version.
-        if let Some(existing_ver) = self.committed_by_acquisition_key.get(acquisition_key) {
+        // Source-scoped idempotent retry check (`D13`): preserves original `outcome` (`Partial` vs `Success`),
+        // `coverage` (`is_exhaustive`, `truncated_by_pagination`, `blind_spots`), and `upstream_timestamp_ms`.
+        let cache_key = (source_id.clone(), acquisition_key.to_owned());
+        if let Some(cached) = self.committed_by_acquisition_key.get(&cache_key) {
             return QueryResultEnvelope {
                 request_id,
                 source_id: source_id.clone(),
-                outcome: IngestOutcome::Success,
+                outcome: cached.outcome,
                 records: Vec::new(),
-                committed_source_version: Some(existing_ver.clone()),
-                coverage: CoverageEnvelope {
-                    requested_window_ms,
-                    covered_window_ms: requested_window_ms,
-                    truncated_by_pagination: false,
-                    is_exhaustive: true,
-                    blind_spots: Vec::new(),
-                },
+                committed_source_version: Some(cached.version_id.clone()),
+                coverage: cached.coverage.clone(),
                 freshness: FreshnessEnvelope {
                     retrieved_at_ms: now_ms,
-                    upstream_timestamp_ms: None,
+                    upstream_timestamp_ms: cached.upstream_timestamp_ms,
                     is_cached_or_stale: true,
                     source_health: reg.health,
                 },
@@ -576,6 +597,9 @@ impl SourceRegistry {
 
         let max_bytes = reg.max_payload_bytes;
         let health = reg.health;
+
+        // Pre-fetch gates passed; now invoke lazy transport (`D14`).
+        let transport_response = fetch_transport(endpoint_url, max_bytes);
 
         match transport_response {
             TransportResponse::Unauthorized => {
@@ -617,16 +641,37 @@ impl SourceRegistry {
                 blind_spot,
             } => {
                 let slice_refs: Vec<&[u8]> = chunks.iter().map(Vec::as_slice).collect();
-                let Ok(bytes) = read_bounded_chunks(&slice_refs, max_bytes, false) else {
-                    return Self::empty_envelope(
-                        request_id,
-                        source_id.clone(),
-                        IngestOutcome::Malformed,
-                        requested_window_ms,
-                        now_ms,
-                        health,
-                        Some(format!("Payload exceeded max_payload_bytes ({max_bytes})")),
-                    );
+                let active_gen_after_fetch = self
+                    .active_generation_by_context
+                    .get(context_id)
+                    .copied()
+                    .unwrap_or(request_generation);
+                let bytes = match read_bounded_chunks_with_cancel(&slice_refs, max_bytes, || {
+                    request_generation < active_gen_after_fetch
+                }) {
+                    Ok(b) => b,
+                    Err(IngestError::Cancelled) => {
+                        return Self::empty_envelope(
+                            request_id,
+                            source_id.clone(),
+                            IngestOutcome::Cancelled,
+                            requested_window_ms,
+                            now_ms,
+                            health,
+                            Some("Request cancelled during payload read".to_owned()),
+                        );
+                    }
+                    Err(_) => {
+                        return Self::empty_envelope(
+                            request_id,
+                            source_id.clone(),
+                            IngestOutcome::Malformed,
+                            requested_window_ms,
+                            now_ms,
+                            health,
+                            Some(format!("Payload exceeded max_payload_bytes ({max_bytes})")),
+                        );
+                    }
                 };
 
                 if bytes.is_empty() {
@@ -641,15 +686,29 @@ impl SourceRegistry {
                     );
                 }
 
-                self.committed_by_acquisition_key
-                    .insert(acquisition_key.to_owned(), mint_version_id.clone());
-
                 let has_blind_spot = blind_spot.is_some();
                 let outcome = if truncated || has_blind_spot {
                     IngestOutcome::Partial
                 } else {
                     IngestOutcome::Success
                 };
+                let coverage = CoverageEnvelope {
+                    requested_window_ms,
+                    covered_window_ms: requested_window_ms,
+                    truncated_by_pagination: truncated,
+                    is_exhaustive: !truncated && !has_blind_spot,
+                    blind_spots: blind_spot.into_iter().collect(),
+                };
+
+                self.committed_by_acquisition_key.insert(
+                    cache_key,
+                    CachedAcquisitionEntry {
+                        version_id: mint_version_id.clone(),
+                        outcome,
+                        coverage: coverage.clone(),
+                        upstream_timestamp_ms,
+                    },
+                );
 
                 QueryResultEnvelope {
                     request_id,
@@ -657,13 +716,7 @@ impl SourceRegistry {
                     outcome,
                     records: vec![bytes],
                     committed_source_version: Some(mint_version_id),
-                    coverage: CoverageEnvelope {
-                        requested_window_ms,
-                        covered_window_ms: requested_window_ms,
-                        truncated_by_pagination: truncated,
-                        is_exhaustive: !truncated && !has_blind_spot,
-                        blind_spots: blind_spot.into_iter().collect(),
-                    },
+                    coverage,
                     freshness: FreshnessEnvelope {
                         retrieved_at_ms: now_ms,
                         upstream_timestamp_ms,
@@ -674,6 +727,37 @@ impl SourceRegistry {
                 }
             }
         }
+    }
+
+    /// Convenience wrapper around [`Self::execute_acquisition_lazy`] for pre-built [`TransportResponse`] fixtures.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_acquisition(
+        &mut self,
+        request_id: OpaqueId,
+        context_id: &OpaqueId,
+        request_generation: u64,
+        source_id: &OpaqueId,
+        required_capability: SourceCapability,
+        endpoint_url: &str,
+        acquisition_key: &str,
+        requested_window_ms: Option<(i64, i64)>,
+        now_ms: i64,
+        transport_response: TransportResponse,
+        mint_version_id: VersionId,
+    ) -> QueryResultEnvelope<Vec<u8>> {
+        self.execute_acquisition_lazy(
+            request_id,
+            context_id,
+            request_generation,
+            source_id,
+            required_capability,
+            endpoint_url,
+            acquisition_key,
+            requested_window_ms,
+            now_ms,
+            |_, _| transport_response,
+            mint_version_id,
+        )
     }
 
     fn empty_envelope(
@@ -759,8 +843,9 @@ mod tests {
     use super::*;
 
     /// Verifies distinct Partial, Empty, Unavailable, Unauthorized, RateLimited, Malformed,
-    /// and Cancelled outcomes; idempotent retries; CAM-01 home-interior exclusion and
-    /// restricted-source handling; and fail-safe rate-limit parsing (#13, A01, A04, A09).
+    /// and Cancelled outcomes; source-scoped idempotent retries preserving Partial/blind-spots (`D13`);
+    /// lazy pre-fetch gating and mid-stream chunk cancellation (`D14`); CAM-01 home-interior exclusion
+    /// and restricted-source handling; and fail-safe rate-limit parsing (`#13`, `A01`, `A04`, `A09`).
     #[test]
     fn source_outcomes_idempotency_cam01_and_rate_limits() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -769,6 +854,15 @@ mod tests {
         assert_eq!(resolve_per_minute_cap(Some("-5"), 30), 30);
         assert_eq!(resolve_per_minute_cap(Some("0.5"), 30), 1);
         assert_eq!(resolve_per_minute_cap(Some("0"), 30), 0); // explicit opt-out
+
+        // Mid-stream cancellation predicate aborts on chunk #2 (`D14`).
+        let mut seen_chunks = 0usize;
+        let cancel_mid_stream =
+            read_bounded_chunks_with_cancel(&[b"chunk1", b"chunk2", b"chunk3"], 1024, || {
+                seen_chunks += 1;
+                seen_chunks > 2
+            });
+        assert_eq!(cancel_mid_stream, Err(IngestError::Cancelled));
 
         // 2. CAM-01: Home interior excluded; restricted camera marked unavailable without probing;
         //    ordinarily accessible traffic camera admitted without requiring proof of owner publication.
@@ -854,8 +948,10 @@ mod tests {
         let ctx_id = OpaqueId::new("ctx_main")?;
         let gen1 = registry.advance_context_generation(&ctx_id);
 
-        // Querying unsupported HistoricalArchive on a LivePolling-only source returns Unavailable.
-        let unavail_hist = registry.execute_acquisition(
+        // Querying unsupported HistoricalArchive on a LivePolling-only source returns Unavailable
+        // WITHOUT invoking the lazy transport callback (`D14`)!
+        let mut transport_called = false;
+        let unavail_hist = registry.execute_acquisition_lazy(
             OpaqueId::new("req_hist")?,
             &ctx_id,
             gen1,
@@ -865,15 +961,19 @@ mod tests {
             "key_hist",
             Some((1_000, 2_000)),
             10_000,
-            TransportResponse::Ok {
-                chunks: vec![b"data".to_vec()],
-                upstream_timestamp_ms: Some(1_500),
-                truncated: false,
-                blind_spot: None,
+            |_, _| {
+                transport_called = true;
+                TransportResponse::Ok {
+                    chunks: vec![b"data".to_vec()],
+                    upstream_timestamp_ms: Some(1_500),
+                    truncated: false,
+                    blind_spot: None,
+                }
             },
             VersionId::new("ver_unused")?,
         );
         assert_eq!(unavail_hist.outcome, IngestOutcome::Unavailable);
+        assert!(!transport_called);
 
         // Oversized payload (> 64 bytes) returns Malformed.
         let malformed = registry.execute_acquisition(
@@ -896,7 +996,8 @@ mod tests {
         );
         assert_eq!(malformed.outcome, IngestOutcome::Malformed);
 
-        // Partial outcome with blind spot; then idempotent retry reuses the same version ID without consuming rate limit.
+        // Partial outcome with blind spot; then idempotent retry reuses the same version ID AND
+        // preserves `IngestOutcome::Partial`, `!is_exhaustive`, and `blind_spots` (`D13`).
         let v1 = VersionId::new("ver_sr_1")?;
         let partial = registry.execute_acquisition(
             OpaqueId::new("req_1")?,
@@ -939,6 +1040,13 @@ mod tests {
             VersionId::new("ver_sr_duplicate")?,
         );
         assert_eq!(retry.committed_source_version, Some(v1));
+        assert_eq!(retry.outcome, IngestOutcome::Partial);
+        assert!(!retry.coverage.is_exhaustive);
+        assert_eq!(
+            retry.coverage.blind_spots,
+            vec!["North sector offline".to_owned()]
+        );
+        assert_eq!(retry.freshness.upstream_timestamp_ms, Some(10_050));
         assert!(retry.freshness.is_cached_or_stale);
 
         // 3rd non-cached request within the same minute triggers RateLimited (cap = 2/min).

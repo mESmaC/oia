@@ -32,8 +32,8 @@ Verification claims will be limited to the properties and implementation connect
 
 The **P0: Evidence Foundation** workspace is implemented and verified locally:
 
-- **12-crate Rust workspace** (`rustc 1.99.0`, `edition = "2024"`, `#![forbid(unsafe_code)]`):
-  - `oia-domain`, `oia-time-geo`, `oia-store`, `oia-ingest`, `oia-query`, `oia-analysis`, `oia-models`, `oia-media`, `oia-devices`, `oia-forecast`, `oia-export`, and `oia-app`.
+- **14-crate Rust workspace** (`rustc 1.99.0`, `edition = "2024"`, `#![forbid(unsafe_code)]`):
+  - `oia-domain`, `oia-time-geo`, `oia-store`, `oia-ingest`, `oia-query`, `oia-analysis`, `oia-models`, `oia-media`, `oia-devices`, `oia-forecast`, `oia-export`, `oia-app`, `oia-documents`, and `oia-png-privacy`.
 - **Lean 4 formal verification (`proofs/`, `leanprover/lean4:v4.35.0`)**:
   - Machine-checked theorems (zero `sorry`/`admit`/project axioms) for source frame selection (`OiaProofs.FrameSelection`), point-in-time forecast cutoff admissibility (`OiaProofs.CutoffAdmissibility`), and DAG dependency invalidation (`OiaProofs.DependencyInvalidation`), paired with Rust correspondence tests.
 - **Architecture Decision Records (`docs/adr/`)**:
@@ -57,3 +57,35 @@ Phases P1–P5 (external source adapters, 3D globe/sky renderer, media forensics
 The [earlier exploration draft](docs/spec-draft.md) is retained as design history.
 
 Coding agents should read [AGENTS.md](AGENTS.md) before making changes.
+
+## Build and run
+
+The workspace provides the `oia` CLI in [`crates/oia-app`](crates/oia-app/src/main.rs) as well as read-only inspection examples in [`crates/oia-documents`](crates/oia-documents/README.md) and [`crates/oia-png-privacy`](crates/oia-png-privacy/README.md):
+
+- `inspect-text` prints the UTF-8 passages, byte ranges, and coverage of a local file.
+- `find-text` searches a local UTF-8 file for an exact query and prints each match's byte range, line, and search coverage.
+
+Neither example imports, stores, or detects file types, parses PDFs, or runs OCR.
+
+**Requirements:** Rust 1.99.0 via [rustup](https://rustup.rs/) (`rustup toolchain install 1.99.0`). No network access is needed; the package has no third-party dependencies and builds with `--locked --offline`. Without rustup, the scripts warn and use whatever `cargo` is on `PATH`; only the pinned 1.99.0 toolchain has been checked.
+
+The run scripts wrap the package-local Cargo commands. Use `scripts/run.sh` on Linux, macOS, or Git Bash and `scripts\run.ps1` in Windows PowerShell:
+
+| Task | POSIX shell | Windows PowerShell |
+| --- | --- | --- |
+| Build | `scripts/run.sh build` | `.\scripts\run.ps1 build` |
+| Inspect `README.md` | `scripts/run.sh run` | `.\scripts\run.ps1 run` |
+| Inspect a file | `scripts/run.sh run PATH [MAX_INPUT_BYTES] [MAX_PASSAGES]` | `.\scripts\run.ps1 run PATH [MAX_INPUT_BYTES] [MAX_PASSAGES]` |
+| Search a file | `scripts/run.sh search PATH QUERY [MAX_MATCHES] [MAX_INPUT_BYTES] [MAX_PASSAGES]` | `.\scripts\run.ps1 search PATH QUERY [MAX_MATCHES] [MAX_INPUT_BYTES] [MAX_PASSAGES]` |
+| Format, lint, and test | `scripts/run.sh check` | `.\scripts\run.ps1 check` |
+
+Defaults are 1,048,576 input bytes, 10,000 passages, and (for search) 100 matches. Exit code `0` means complete (including empty input or zero matches), `2` means explicitly partial because a budget was reached, and `1` means an error. Oversized input is refused rather than truncated. A complete search with zero matches covers only the file that was read; it is not evidence that the text is absent from the source. Set `OIA_RUST_TOOLCHAIN` to use a different installed toolchain. If PowerShell blocks local scripts, run `powershell -ExecutionPolicy Bypass -File scripts\run.ps1 run`.
+
+The equivalent direct commands are:
+
+```text
+cargo +1.99.0 run --manifest-path crates/oia-documents/Cargo.toml --example inspect-text --locked --offline -- README.md
+cargo +1.99.0 run --manifest-path crates/oia-documents/Cargo.toml --example find-text --locked --offline -- fixtures/documents/a03/originals/report-v1.txt "two lights"
+```
+
+See [document text extraction](docs/implementation/document-text.md) and [document text search](docs/implementation/document-search.md) for the full contracts, limitations, and verification records. These scripts will change when the shared Rust workspace and application land ([#9](https://github.com/mESmaC/oia/issues/9)).

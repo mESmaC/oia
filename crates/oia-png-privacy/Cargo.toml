@@ -1,0 +1,15 @@
+[package]
+name = "oia-png-privacy"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+description = "Bounded static PNG container privacy kernel for OIA media workers"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"

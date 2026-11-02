@@ -52,6 +52,7 @@ pub enum SearchError {
         limit_bytes: usize,
     },
     MultilineQuery,
+    WhitespaceInToken,
     AllocationFailed,
     Stopped(StopReason),
 }
@@ -75,6 +76,9 @@ impl fmt::Display for SearchError {
                 "passage search does not support queries containing LF"
             ),
             Self::AllocationFailed => write!(formatter, "unable to allocate search match metadata"),
+            Self::WhitespaceInToken => {
+                write!(formatter, "token query must not contain Unicode whitespace")
+            }
             Self::Stopped(reason) => write!(formatter, "search stopped: {reason:?}"),
         }
     }
@@ -137,9 +141,21 @@ pub struct SearchResult<'input> {
     matches: Vec<TextMatch<'input>>,
     coverage: SearchCoverage,
     limits: SearchLimits,
+    mode: SearchMode,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchMode {
+    ExactSubstring,
+    /// A whole token bounded by Unicode whitespace or a passage edge.
+    WhitespaceToken,
 }
 
 impl<'input> SearchResult<'input> {
+    pub fn mode(&self) -> SearchMode {
+        self.mode
+    }
+
     pub fn matches(&self) -> &[TextMatch<'input>] {
         &self.matches
     }
@@ -162,6 +178,42 @@ pub fn find_text<'input>(
     extraction: &Extraction<'input>,
     query: &str,
     limits: SearchLimits,
+    check_control: impl FnMut() -> Result<(), StopReason>,
+) -> Result<SearchResult<'input>, SearchError> {
+    search(
+        extraction,
+        query,
+        limits,
+        SearchMode::ExactSubstring,
+        check_control,
+    )
+}
+
+/// Match a complete, case-sensitive Unicode-whitespace-delimited token.
+/// Punctuation, BOMs, combining marks and zero-width characters remain literal
+/// token content. No normalization, word segmentation or case folding occurs.
+/// Empty queries and queries containing whitespace are rejected. Limits,
+/// original byte anchors and cooperative control follow `find_text`.
+pub fn find_token<'input>(
+    extraction: &Extraction<'input>,
+    query: &str,
+    limits: SearchLimits,
+    check_control: impl FnMut() -> Result<(), StopReason>,
+) -> Result<SearchResult<'input>, SearchError> {
+    search(
+        extraction,
+        query,
+        limits,
+        SearchMode::WhitespaceToken,
+        check_control,
+    )
+}
+
+fn search<'input>(
+    extraction: &Extraction<'input>,
+    query: &str,
+    limits: SearchLimits,
+    mode: SearchMode,
     mut check_control: impl FnMut() -> Result<(), StopReason>,
 ) -> Result<SearchResult<'input>, SearchError> {
     check_control().map_err(SearchError::Stopped)?;
@@ -177,6 +229,9 @@ pub fn find_text<'input>(
     if query.contains('\n') {
         return Err(SearchError::MultilineQuery);
     }
+    if mode == SearchMode::WhitespaceToken && query.chars().any(char::is_whitespace) {
+        return Err(SearchError::WhitespaceInToken);
+    }
 
     let mut matches = Vec::new();
     let mut searched_bytes = 0;
@@ -188,6 +243,21 @@ pub fn find_text<'input>(
                 searched_bytes = passage.byte_range().end;
                 break;
             };
+            if mode == SearchMode::WhitespaceToken {
+                // match_indices guarantees UTF-8 boundaries within the passage.
+                let before = passage
+                    .text()
+                    .get(..offset)
+                    .and_then(|s| s.chars().next_back());
+                let after = passage
+                    .text()
+                    .get(offset + text.len()..)
+                    .and_then(|s| s.chars().next());
+                if !before.is_none_or(char::is_whitespace) || !after.is_none_or(char::is_whitespace)
+                {
+                    continue;
+                }
+            }
             // These additions stay within the validated original buffer:
             // match_indices returns byte spans inside this exact passage.
             let start = passage.byte_range().start + offset;
@@ -214,5 +284,6 @@ pub fn find_text<'input>(
             searched_bytes,
         },
         limits,
+        mode,
     })
 }

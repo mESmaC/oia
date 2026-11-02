@@ -1,5 +1,5 @@
 use oia_png_privacy::{
-    Coverage, Handling, Limit, Limits, PngError, Selection, StopReason, clean, inspect,
+    Coverage, Handling, Limit, Limits, PngError, Selection, StopReason, Target, clean, inspect,
 };
 use std::error::Error;
 
@@ -20,6 +20,10 @@ fn fixture() -> Result<Vec<u8>, Box<dyn Error>> {
     decode(include_str!("fixtures/rgba.hex"))
 }
 
+fn exif_fixture() -> Result<Vec<u8>, Box<dyn Error>> {
+    decode(include_str!("fixtures/rgba-exif.hex"))
+}
+
 fn decode(hex: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     hex.trim()
         .as_bytes()
@@ -35,7 +39,15 @@ fn all_metadata() -> Selection {
     Selection {
         text: true,
         modification_time: true,
+        exif: true,
     }
+}
+
+fn with_chunk_at(input: &[u8], offset: usize, wire: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut bytes = input.get(..offset).ok_or("prefix")?.to_vec();
+    bytes.extend_from_slice(&decode(wire)?);
+    bytes.extend_from_slice(input.get(offset..).ok_or("suffix")?);
+    Ok(bytes)
 }
 
 fn with_header(input: &[u8], header: &str) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -77,6 +89,7 @@ fn selected_removal_preserves_every_retained_byte() -> Result<(), Box<dyn Error>
         Selection {
             text: true,
             modification_time: false,
+            exif: false,
         },
         limits(),
         || Ok(()),
@@ -95,11 +108,95 @@ fn selected_removal_preserves_every_retained_byte() -> Result<(), Box<dyn Error>
         Selection {
             text: false,
             modification_time: false,
+            exif: false,
         },
         limits(),
         || Ok(()),
     )?;
     assert_eq!(no_op.bytes(), input);
+    Ok(())
+}
+
+// Contract section 3: an Exif container is removed only when doing so cannot
+// drop orientation; otherwise it is retained or the selected cleanup is refused.
+#[test]
+fn exif_removal_never_drops_orientation() -> Result<(), Box<dyn Error>> {
+    let input = exif_fixture()?;
+    let report = inspect(&input, limits(), || Ok(()))?;
+    assert_eq!(report.coverage, Coverage::CompleteContainerProfile);
+    let exif = report
+        .chunks
+        .iter()
+        .find(|chunk| chunk.kind == *b"eXIf")
+        .ok_or("exif")?;
+    assert_eq!(exif.handling, Handling::Removable(Target::Exif));
+    let cleaned = clean(&input, all_metadata(), limits(), || Ok(()))?;
+    assert_eq!(cleaned.removed_chunks(), 4);
+    let plain = clean(&fixture()?, all_metadata(), limits(), || Ok(()))?;
+    assert_eq!(cleaned.bytes(), plain.bytes());
+    assert!(!format!("{cleaned:?}").contains("Synthetic Bob"));
+    let text_only = Selection {
+        text: true,
+        modification_time: false,
+        exif: false,
+    };
+    let retained = clean(&input, text_only, limits(), || Ok(()))?;
+    assert!(
+        retained
+            .bytes()
+            .windows(exif.wire_range.len())
+            .any(|window| Some(window) == input.get(exif.wire_range.clone()))
+    );
+    // Little-endian IFD0 with Orientation = 6 (rotate 90 degrees clockwise).
+    let rotated = with_chunk_at(
+        &fixture()?,
+        33,
+        "0000001a6558496649492a0008000000010012010300010000000600000000000000b7481129",
+    )?;
+    let report = inspect(&rotated, limits(), || Ok(()))?;
+    assert_eq!(report.coverage, Coverage::CompleteContainerProfile);
+    assert!(
+        report
+            .chunks
+            .iter()
+            .any(|chunk| chunk.handling == Handling::RequiredForRendering(Target::Exif))
+    );
+    assert_eq!(
+        clean(&rotated, all_metadata(), limits(), || Ok(())).err(),
+        Some(PngError::RequiredForRendering(Target::Exif))
+    );
+    let kept = clean(&rotated, text_only, limits(), || Ok(()))?;
+    assert!(
+        kept.inspection()
+            .chunks
+            .iter()
+            .any(|chunk| chunk.kind == *b"eXIf")
+    );
+    // A JPEG-style "Exif" identifier-code prefix is not the PNG eXIf layout: opaque, not removable.
+    let prefixed = with_chunk_at(
+        &fixture()?,
+        33,
+        "0000003a655849664578696600004d4d002a000000080002011200030000000100010000013b00020000000e000000260000000053796e74686574696320426f6200e9d79836",
+    )?;
+    assert_eq!(
+        inspect(&prefixed, limits(), || Ok(()))?.coverage,
+        Coverage::Partial
+    );
+    assert_eq!(
+        clean(&prefixed, all_metadata(), limits(), || Ok(())).err(),
+        Some(PngError::UnsupportedProfile)
+    );
+    let wire = input.get(exif.wire_range.clone()).ok_or("exif wire")?;
+    let mut late = plain.bytes().to_vec();
+    let iend = late.len() - 12;
+    late.splice(iend..iend, wire.iter().copied());
+    assert!(matches!(
+        inspect(&late, limits(), || Ok(())),
+        Err(PngError::Malformed {
+            reason: "eXIf follows image data",
+            ..
+        })
+    ));
     Ok(())
 }
 
@@ -251,15 +348,21 @@ fn resource_budgets_reject_before_publication() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn cancellation_and_deadlines_never_return_a_candidate() -> Result<(), Box<dyn Error>> {
-    let input = fixture()?;
+    for input in [fixture()?, exif_fixture()?] {
+        stop_at_every_checkpoint(&input)?;
+    }
+    Ok(())
+}
+
+fn stop_at_every_checkpoint(input: &[u8]) -> Result<(), Box<dyn Error>> {
     let mut checkpoints = 0;
-    clean(&input, all_metadata(), limits(), || {
+    clean(input, all_metadata(), limits(), || {
         checkpoints += 1;
         Ok(())
     })?;
     for stop_at in 1..=checkpoints {
         let mut current = 0;
-        let result = clean(&input, all_metadata(), limits(), || {
+        let result = clean(input, all_metadata(), limits(), || {
             current += 1;
             if current == stop_at {
                 Err(StopReason::Cancelled)
@@ -271,7 +374,7 @@ fn cancellation_and_deadlines_never_return_a_candidate() -> Result<(), Box<dyn E
     }
     for reason in [StopReason::DeadlineExceeded, StopReason::Superseded] {
         assert_eq!(
-            clean(&input, all_metadata(), limits(), || Err(reason)).err(),
+            clean(input, all_metadata(), limits(), || Err(reason)).err(),
             Some(PngError::Stopped(reason))
         );
     }

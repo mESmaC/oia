@@ -2,7 +2,7 @@ use std::error::Error;
 use std::fmt;
 use std::ops::Range;
 
-pub const PROFILE: &str = "oia-png-container-rgba8-v1";
+pub const PROFILE: &str = "oia-png-container-rgba8-v2";
 const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 const CONTROL_BYTES: usize = 4096;
 
@@ -64,6 +64,7 @@ pub enum PngError {
     UnsupportedFormat,
     Malformed { offset: usize, reason: &'static str },
     UnsupportedProfile,
+    RequiredForRendering(Target),
     Stopped(StopReason),
     AllocationFailed,
     VerificationFailed,
@@ -82,6 +83,10 @@ impl fmt::Display for PngError {
                 )
             }
             Self::UnsupportedProfile => write!(formatter, "PNG has regions outside {PROFILE}"),
+            Self::RequiredForRendering(target) => write!(
+                formatter,
+                "selected {target:?} container carries rendering information; removal refused"
+            ),
             Self::Stopped(reason) => write!(formatter, "PNG operation stopped: {reason:?}"),
             Self::AllocationFailed => write!(formatter, "PNG operation could not allocate memory"),
             Self::VerificationFailed => write!(formatter, "PNG container verification failed"),
@@ -95,12 +100,15 @@ impl Error for PngError {}
 pub enum Target {
     Text,
     ModificationTime,
+    Exif,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Handling {
     Retained,
     Removable(Target),
+    /// Recognized container whose removal would change rendering; retained or refused.
+    RequiredForRendering(Target),
     Unsupported,
 }
 
@@ -131,15 +139,20 @@ pub struct Inspection {
 pub struct Selection {
     pub text: bool,
     pub modification_time: bool,
+    pub exif: bool,
 }
 
 impl Selection {
-    fn removes(self, handling: Handling) -> bool {
-        match handling {
-            Handling::Removable(Target::Text) => self.text,
-            Handling::Removable(Target::ModificationTime) => self.modification_time,
-            _ => false,
+    fn selects(self, target: Target) -> bool {
+        match target {
+            Target::Text => self.text,
+            Target::ModificationTime => self.modification_time,
+            Target::Exif => self.exif,
         }
+    }
+
+    fn removes(self, handling: Handling) -> bool {
+        matches!(handling, Handling::Removable(target) if self.selects(target))
     }
 }
 
@@ -241,6 +254,77 @@ fn validate_text(
     Ok(())
 }
 
+/// Orientation as recorded in IFD0 of an eXIf TIFF structure (Exif tag 0x0112).
+enum Orientation {
+    AbsentOrDefault,
+    NonDefault,
+    Uninterpretable,
+}
+
+/// Bounded read of the eXIf TIFF header and IFD0 that looks only for Orientation.
+/// No other tag values are decoded; offsets are relative to the payload start
+/// (PNG Third Edition 11.3.4.5: no APP1 marker or "Exif" identifier code).
+fn exif_orientation(
+    payload: &[u8],
+    check_control: &mut impl FnMut() -> Result<(), StopReason>,
+) -> Result<Orientation, PngError> {
+    let big_endian = match payload.get(..4) {
+        Some(b"MM\x00\x2a") => true,
+        Some(b"II\x2a\x00") => false,
+        _ => return Ok(Orientation::Uninterpretable),
+    };
+    let u16_at = |offset: usize| -> Option<u16> {
+        let bytes = <[u8; 2]>::try_from(payload.get(offset..offset.checked_add(2)?)?).ok()?;
+        Some(if big_endian {
+            u16::from_be_bytes(bytes)
+        } else {
+            u16::from_le_bytes(bytes)
+        })
+    };
+    let u32_at = |offset: usize| -> Option<u32> {
+        let bytes = <[u8; 4]>::try_from(payload.get(offset..offset.checked_add(4)?)?).ok()?;
+        Some(if big_endian {
+            u32::from_be_bytes(bytes)
+        } else {
+            u32::from_le_bytes(bytes)
+        })
+    };
+    let Some(ifd) = u32_at(4).and_then(|offset| usize::try_from(offset).ok()) else {
+        return Ok(Orientation::Uninterpretable);
+    };
+    let Some(count) = u16_at(ifd).filter(|_| ifd >= 8) else {
+        return Ok(Orientation::Uninterpretable);
+    };
+    // u16_at(ifd) succeeded, so ifd + 2 <= payload.len() and cannot overflow.
+    let entries = ifd + 2;
+    let entries_fit = usize::from(count)
+        .checked_mul(12)
+        .and_then(|length| entries.checked_add(length))
+        .is_some_and(|end| end <= payload.len());
+    if !entries_fit {
+        return Ok(Orientation::Uninterpretable);
+    }
+    let mut orientation = None;
+    for index in 0..usize::from(count) {
+        if index % (CONTROL_BYTES / 12) == 0 {
+            check_control().map_err(PngError::Stopped)?;
+        }
+        let entry = entries + index * 12;
+        if u16_at(entry) != Some(0x0112) {
+            continue;
+        }
+        if orientation.is_some() || u16_at(entry + 2) != Some(3) || u32_at(entry + 4) != Some(1) {
+            return Ok(Orientation::Uninterpretable);
+        }
+        orientation = u16_at(entry + 8);
+    }
+    Ok(match orientation {
+        None | Some(1) => Orientation::AbsentOrDefault,
+        Some(2..=8) => Orientation::NonDefault,
+        Some(_) => Orientation::Uninterpretable,
+    })
+}
+
 pub fn inspect(
     input: &[u8],
     limits: Limits,
@@ -320,7 +404,10 @@ pub fn inspect(
         if result.chunks.is_empty() && kind != *b"IHDR" {
             return Err(malformed(offset, "IHDR must be first"));
         }
-        if matches!(&kind, b"IHDR" | b"tIME" | b"gAMA" | b"sRGB" | b"pHYs") {
+        if matches!(
+            &kind,
+            b"IHDR" | b"tIME" | b"gAMA" | b"sRGB" | b"pHYs" | b"eXIf"
+        ) {
             if singletons.contains(&kind) {
                 return Err(malformed(offset, "duplicate singleton chunk"));
             }
@@ -415,6 +502,16 @@ pub fn inspect(
                 }
                 Handling::Removable(Target::ModificationTime)
             }
+            b"eXIf" => {
+                if data_started {
+                    return Err(malformed(offset, "eXIf follows image data"));
+                }
+                match exif_orientation(payload, &mut check_control)? {
+                    Orientation::AbsentOrDefault => Handling::Removable(Target::Exif),
+                    Orientation::NonDefault => Handling::RequiredForRendering(Target::Exif),
+                    Orientation::Uninterpretable => Handling::Unsupported,
+                }
+            }
             b"gAMA" | b"sRGB" | b"pHYs" => {
                 if data_started {
                     return Err(malformed(offset, "rendering chunk follows image data"));
@@ -463,6 +560,13 @@ pub fn clean(
     let original = inspect(input, limits, &mut check_control)?;
     if original.coverage != Coverage::CompleteContainerProfile {
         return Err(PngError::UnsupportedProfile);
+    }
+    for chunk in &original.chunks {
+        if let Handling::RequiredForRendering(target) = chunk.handling
+            && selection.selects(target)
+        {
+            return Err(PngError::RequiredForRendering(target));
+        }
     }
     let mut output_size = SIGNATURE.len();
     let mut removed_chunks = 0;

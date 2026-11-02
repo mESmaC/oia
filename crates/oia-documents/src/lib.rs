@@ -2,6 +2,8 @@ use std::error::Error;
 use std::fmt;
 use std::ops::Range;
 
+pub mod search;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Limit {
     InputBytes,

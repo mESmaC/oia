@@ -61,6 +61,7 @@ The repository was empty on GitHub when this backlog was created, so issue bodie
 - [#28: Integrate eligible camera directories, feeds, and retained clips](https://github.com/mESmaC/oia/issues/28)
 - [#29: Detect and review camera anomalies with source-aware alerts](https://github.com/mESmaC/oia/issues/29)
 - [#30: Build the image and video forensic workbench](https://github.com/mESmaC/oia/issues/30)
+  - [Still-image diagnostic slice and remaining integration](implementation/image-forensics.md)
 - [#31: Add predictive restoration and recreation-prompt export](https://github.com/mESmaC/oia/issues/31)
 - [#32: Build radio listening with shared and local receivers](https://github.com/mESmaC/oia/issues/32)
 - [#33: Connect personal drones with live telemetry and a UAV HUD](https://github.com/mESmaC/oia/issues/33)

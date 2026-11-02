@@ -63,10 +63,11 @@ The workspace provides the bootstrap `oia` CLI in [`crates/oia-app`](crates/oia-
 
 - `inspect-text` prints the UTF-8 passages, byte ranges, and coverage of a local file.
 - `find-text` searches a local UTF-8 file for an exact query and prints each match's byte range, line, and search coverage.
+- [Still-image forensic cues](crates/oia-image-forensics/README.md): `cargo run -p oia-image-forensics --locked --offline -- IMAGE` reports PNG/JPEG metadata signatures, RGB histograms, repeated-block candidates, and JPEG residuals; not an AI/authenticity verdict.
 
 Neither `oia-documents` example imports, stores, or detects file types, parses PDFs, or runs OCR.
 
-**Requirements:** Rust 1.99.0 via [rustup](https://rustup.rs/) (`rustup toolchain install 1.99.0`). No network access is needed for the current workspace (`--locked --offline`). Without rustup, the scripts warn and use whatever `cargo` is on `PATH`; only the pinned 1.99.0 toolchain has been checked.
+**Requirements:** Rust 1.99.0 via [rustup](https://rustup.rs/) (`rustup toolchain install 1.99.0`). After locked dependencies are cached, builds and diagnostics run without network access (`--locked --offline`). Without rustup, the scripts warn and use whatever `cargo` is on `PATH`; only the pinned 1.99.0 toolchain has been checked.
 
 The run scripts wrap the root workspace Cargo commands (and `lake build` in `proofs/` once `#15` lands and `lake` is installed). Use `scripts/run.sh` on Linux, macOS, or Git Bash and `scripts\run.ps1` in Windows PowerShell:
 

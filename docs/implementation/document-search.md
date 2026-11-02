@@ -16,7 +16,8 @@ From the repository root with Rust 1.99.0 installed:
 cargo +1.99.0 run --manifest-path crates/oia-documents/Cargo.toml --example find-text --locked --offline -- fixtures/documents/a03/originals/report-v1.txt "two lights"
 ```
 
-Arguments: `PATH QUERY [MAX_MATCHES] [MAX_INPUT_BYTES] [MAX_PASSAGES]`.
+Arguments: `[--token | --] PATH QUERY [MAX_MATCHES] [MAX_INPUT_BYTES] [MAX_PASSAGES]`.
+Use `--` before a path named `--token` or `--`. Substring search remains the default.
 Defaults: 100 matches, 1,048,576 input bytes, and 10,000 passages. All budgets
 must be positive; query length is limited to 4,096 UTF-8 bytes. Query validation
 happens before file access. Empty queries and queries containing LF are errors.
@@ -42,13 +43,38 @@ the budget and still produce complete coverage.
 
 ## Kernel contract
 
+### Exact whitespace-token mode
+
+`search::find_token` and the example's `--token` flag match one complete token
+bounded by Unicode whitespace (`char::is_whitespace`) or passage edges. For example:
+
+```text
+cargo +1.99.0 run --manifest-path crates/oia-documents/Cargo.toml --example find-text --locked --offline -- --token fixtures/documents/a03/originals/report-v1.txt "lights."
+```
+
+This returns the original `lights.` bytes at `121..128`. Punctuation is literal:
+`lights` does not match `lights.`. Tabs, CR/LF and non-breaking spaces delimit
+tokens; BOMs, zero-width characters and combining marks remain token content.
+This is an explicit deterministic matching option, not linguistic word
+segmentation. Case folding, normalization and stemming are unsupported.
+Queries containing any whitespace are rejected before file access (LF retains
+the existing `MultilineQuery` error; other whitespace uses `WhitespaceInToken`).
+
+`SearchResult::mode()` records `ExactSubstring` or `WhitespaceToken`, and the CLI
+prints the selected matching rule. Only accepted whole-token hits consume the
+match budget. Rejected substring candidates still check cancellation before
+the next scan. Both modes share the coverage and control rules below; complete
+coverage means evaluation under the selected rule, not observed absence.
+
+### Shared limits and anchors
+
 `search::find_text(extraction, query, limits, check_control)` consumes a borrowed
 [UTF-8 extraction](document-text.md). The extraction already bounds input bytes
 and passage count; `SearchLimits` separately bounds query bytes and returned
 match count. Match metadata uses fallible reservation. No new dependency,
 workspace crate, source registry, job system, or runtime subprocess is added.
 
-- Matching is exact, case-sensitive, non-overlapping UTF-8 substring matching
+- `find_text` uses exact, case-sensitive, non-overlapping UTF-8 substring matching
   within each LF-delimited passage, ordered by original byte offset. There is
   no case folding, Unicode normalization, stemming, regex syntax, tokenization,
   cross-line matching, or semantic retrieval. For example, `aa` in `aaaa`
@@ -91,7 +117,7 @@ again before publication. A byte range alone is not a publishable citation.
 Searching duplicate text does not combine source identities or count independent
 corroboration. This kernel cannot enforce access isolation or atomic publication.
 
-Still open on #18: exact-identifier/filter/token search, corpus ranking and
+Still open on #18: exact-identifier/filter search, linguistic tokenization, corpus ranking and
 pagination, saved searches, semantic indexes, model adapters and evaluation,
 grounded summaries/QA, correction propagation, and full A03 acceptance. There
 is no resolution of D04's model selection or other open platform decisions,
@@ -124,3 +150,14 @@ gap and both together, input/query budgets, malformed UTF-8, invalid arguments,
 missing/directory paths, and escaped controls. Original fixture and control-file
 bytes remained unchanged. Documentation links/anchors/fences passed. Other
 platforms, file-I/O deadlines, access isolation, and full A03 were not tested.
+
+Token-mode verification on 2026-11-02, Windows x86-64/MSVC, Rust 1.99.0,
+base `24bbb4f`: package fmt, all-target Clippy with warnings denied, all eight
+tests, and example builds passed with the commands above. The two additional
+tests protect original token anchors, literal punctuation/Unicode boundaries,
+accepted-hit budgets, both coverage gaps and cancellation at every callback.
+Six direct CLI checks passed: A03 token anchor, punctuation-sensitive zero hits,
+match budget, extraction budget, invalid token rejected before file access,
+and default substring mode with `--`. The original fixture SHA-256 was unchanged.
+Both A03 integrity and QA fixture validators (`verify_a03_qa.py --self-test`)
+passed. These fixture checks do not establish integrated QA or model behavior.

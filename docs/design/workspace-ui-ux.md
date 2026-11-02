@@ -1,12 +1,12 @@
 # OIA workspace: UI and UX design draft
 
-Version: 0.2 draft. Date: 2026-11-02. Status: design proposal for the investigation workspace ([#16](https://github.com/mESmaC/oia/issues/16)). Production workspace behavior is not implemented or approved by this draft. The companion prototype implements only the fixture interactions listed in §15. Where a section proposes a value, it is a starting point for the implementing session to confirm, not a shipped default.
+Version: 0.3 draft. Date: 2026-11-02. Status: design proposal for the investigation workspace ([#16](https://github.com/mESmaC/oia/issues/16)). Production workspace behavior is not implemented or approved by this draft. The companion prototype implements only the fixture interactions listed in §15. Where a section proposes a value, it is a starting point for the implementing session to confirm, not a shipped default.
 
 This draft covers requirements CASE-01 to CASE-05 and UX-01 to UX-05 from the [product specification](../spec.md), and the presentation obligations in [architecture](../architecture.md) §1.1, §7, and §8. It is written to be independent of decision D01 (native renderer versus rendering adapter). Everything below is expressed in layout, state, token, and interaction terms that either technology can realize. The D01 ADR belongs to [#9](https://github.com/mESmaC/oia/issues/9); this document does not settle it.
 
 Companion artifacts:
 
-- [Shell prototype](mockups/workspace-shell.html): a self-contained, interactive HTML page with schematic case geometry, a source reader, and fixture search. It preserves the black canvas and glass instruments while adapting to narrow screens. All case content is synthetic; nothing is live or persisted. Open the file directly; no server or dependencies are required.
+- [Shell prototype](mockups/workspace-shell.html): a self-contained, interactive HTML page with a case overview, filterable evidence inventory, schematic case geometry, a source reader, and fixture search. It preserves the black canvas and glass instruments while adapting to narrow screens. All case content is synthetic; nothing is live or persisted. Open the file directly; no server or dependencies are required.
 
 ## 1. Design principles
 
@@ -476,6 +476,10 @@ This follow-up to the merged design draft is a dependency-independent slice of #
 
 Implemented here:
 
+- Start in **Case overview** with an investigation brief, case interval, evidence limits, and a source-version inventory. **Explore case geometry** opens the schematic; **Case** returns to the overview. The case question is open-ended: the interface does not presume that missing details establish disagreement.
+- Filter the inventory by unrecorded event time (B and C) or unrecorded position (B). C retains its reported region. A visible local-filter notice and shown/total count make the scope explicit. Filters never change selection, clock, source records, or global search scope. If the selected account is outside the filter, the coverage line says so. **Clear filter** restores all entries and focuses the All accounts control.
+- Inventory **Inspect** actions coordinate selection and focus the inspector; **Read passage** opens the pinned source anchor. Back restores the filter and exact inventory control, along with prior selection and scroll. Counts describe accounts from one shared source version, not independent corroboration.
+
 - Select A, B, or C to coordinate the inspector, geometry selection, coverage row, source anchor, and timeline explanation. B has no plotted position. B and C have no event-time marker; selecting them retains the case clock and explicitly says their event times are unknown.
 - Open **Read source passage** or **Library** to inspect the corresponding versioned fixture paragraph. **Back** or Alt+Left restores the prior view, selection, inspector tab, submitted search, display modes, scroll position, and available focus target. Route history is bounded to 40 transitions and ends on reload. When a search-result control was recreated, focus returns to the search field.
 - Search literal text or an account identifier in all three synthetic passages. Results retain anchors and fixture labels. The coverage statement names the complete searched scope; no matches is an empty result, not a failed acquisition. No saved queries, semantic retrieval, provider search, pagination, or acquisition is simulated.
@@ -485,11 +489,22 @@ Implemented here:
 
 Responsive behavior: wide screens retain separate glass instruments around the evidence canvas. At 1100 px and below, the inspector follows the evidence in normal document flow. At 640 px and below, the layout becomes a single column with labeled navigation and account controls. The source reader and search use the same layout; no fixed-width 1440 px stage or overlapping drawer is required. The print stylesheet preserves fixture and source labels, including uncertainty.
 
-Local verification on Windows, 2026-11-02:
+Earlier v0.2 verification on Windows, 2026-11-02 (not a new v0.3 accessibility audit):
 
 - Playwright 1.56.1 with headless Microsoft Edge 156.0.4314.58, opening the local HTML file directly: checked 1440, 1024, 768, 390, and 320 px viewports for horizontal overflow and overlapping top-level regions; inspected desktop and phone screenshots.
 - Exercised unknown-time selection, anchored source reading, Back and focus restoration, inspector keyboard tabs, search shortcut, matching/empty/all-account queries, literal markup input, clean/focus views, and reduced effects. No JavaScript errors or remote HTTP requests were observed.
 - axe-core 4.10.3 reported no WCAG 2 A/AA or 2.1 AA violations in the initial geometry view at 1440 and 390 px. This automated result does not establish full accessibility conformance or replace assistive-technology review.
 - Reviewed relative links, requirement references, and the diff locally. No Rust or Lean code changed; no product-runtime, provider, persistence, or full A01/A02 acceptance claims follow from these prototype checks.
 
-Reproduce the core walkthrough by opening the linked HTML file, selecting B, opening its source, returning with Back, searching for `ridge`, opening C's result, and returning with Alt+Left. Try an unmatched query and then an empty query. Repeat at a narrow width using only the keyboard and the presentation toggles. All displayed evidence remains explicitly synthetic throughout.
+Reproduce the core walkthrough by opening the linked HTML file, choosing Explore case geometry, selecting B, opening its source, returning with Back, searching for `ridge`, opening C's result, and returning with Alt+Left. Try an unmatched query and then an empty query. Repeat at a narrow width using only the keyboard and the presentation toggles. All displayed evidence remains explicitly synthetic throughout.
+
+
+### 15.1 Case overview follow-up (v0.3)
+
+This bounded design slice exercises CASE-02, CASE-05, and UX-01 through UX-05. It leaves D01 open, consumes no unmerged runtime contracts, and does not complete production A01/A02. The full proposed case home in §9.1 (case editing, hypotheses, leads, activity, and correction propagation) remains future work; the current inspector continues to describe the selected account. No source acquisition, persistence, saving, or publishing is added.
+
+Local verification on Windows, 2026-11-02: Playwright 1.58.0 with headless Chromium 145.0.7632.6 opened the local HTML directly at 1440, 1024, 768, 390, and 320 px. The walkthrough checked all inventory filters, selection outside the filter, source anchors, Back restoring selection/filter/focus, clear-filter focus, inspector focus, geometry navigation, scoped search including literal markup and empty results, presentation toggles, horizontal overflow, and print visibility. No JavaScript errors or HTTP requests were observed. Desktop and phone screenshots were inspected. This is focused prototype verification, not assistive-technology or full accessibility conformance testing.
+
+Manual walkthrough: filter **Time not recorded**, read B, then Alt+Left. The inventory returns to B and C, focus returns to B’s passage button, and the previous selected account is restored. Inspect B, open geometry, and return through Case; the local filter remains. Clear it to restore all three accounts. Repeat with the keyboard and reduced effects.
+
+Tracking handoff: #16, Codex case-overview session, branch `codex/case-overview`; intended Project status **In Progress**. The issue claim was recorded, but Project reading/updating was unavailable because the current GitHub token lacks `read:project`. Reconcile the Project when access returns; keep #16 open for the remaining runtime scope.

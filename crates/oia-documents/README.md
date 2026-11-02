@@ -13,6 +13,10 @@ add bounded passage matching for the CASE-05/DOC-04 slice of #18. This remains a
 temporary validation package; application search and final module placement
 under the proposed `oia-query` boundary await merged P0 contracts.
 
+`search::find_token` and the example's `--token` option additionally match whole
+Unicode-whitespace-delimited tokens. Case and punctuation remain literal;
+results preserve original byte anchors and disclose the selected matching mode.
+
 The local Cargo.lock exists only to reproduce standalone checks. Discard it
 when integrating into P0 and regenerate the root workspace lockfile with Cargo;
 do not treat this file as the reviewed shared workspace lockfile.

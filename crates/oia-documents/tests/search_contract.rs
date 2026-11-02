@@ -1,7 +1,129 @@
 use std::error::Error;
 
-use oia_documents::search::{SearchError, SearchLimit, SearchLimits, find_text};
+use oia_documents::search::{
+    SearchError, SearchLimit, SearchLimits, SearchMode, find_text, find_token,
+};
 use oia_documents::{ExtractionLimits, StopReason, extract_utf8};
+
+// DOC-04: token boundaries must not rewrite citation bytes or let rejected
+// substring candidates exhaust the accepted-hit budget.
+#[test]
+fn whole_tokens_preserve_unicode_anchors_and_literal_punctuation() -> Result<(), Box<dyn Error>> {
+    let input = "xcat cat, cat\r\ncafé\u{a0}café caféx cafe\u{301}\n";
+    let extraction = extract_utf8(input.as_bytes(), ExtractionLimits::new(100, 10)?, || Ok(()))?;
+    let limits = SearchLimits::new(20, 10)?;
+    let cats = find_token(&extraction, "cat", SearchLimits::new(20, 1)?, || Ok(()))?;
+    assert_eq!(cats.mode(), SearchMode::WhitespaceToken);
+    assert_eq!(cats.matches().len(), 1);
+    assert_eq!(cats.matches().first().map(|m| m.byte_range()), Some(10..13));
+    assert_eq!(cats.coverage().unsearched_extracted_range(), Some(13..42));
+    let accents = find_token(&extraction, "café", limits, || Ok(()))?;
+    assert!(accents.coverage().is_complete());
+    assert_eq!(
+        accents
+            .matches()
+            .iter()
+            .map(|m| (m.byte_range(), m.line_number()))
+            .collect::<Vec<_>>(),
+        [(15..20, 2), (22..27, 2)]
+    );
+    for hit in accents.matches() {
+        assert_eq!(
+            input.as_bytes().get(hit.byte_range()),
+            Some(hit.text().as_bytes())
+        );
+        assert_eq!(
+            hit.text().as_ptr(),
+            input.as_ptr().wrapping_add(hit.byte_range().start)
+        );
+    }
+    assert_eq!(
+        find_token(&extraction, "cat,", limits, || Ok(()))?
+            .matches()
+            .len(),
+        1
+    );
+    assert!(
+        find_token(&extraction, "CAFÉ", limits, || Ok(()))?
+            .matches()
+            .is_empty()
+    );
+    assert_eq!(
+        find_text(&extraction, "cat", limits, || Ok(()))?.mode(),
+        SearchMode::ExactSubstring
+    );
+    let fixture = include_bytes!("../../../fixtures/documents/a03/originals/report-v1.txt");
+    let extracted = extract_utf8(fixture, ExtractionLimits::new(4096, 100)?, || Ok(()))?;
+    let result = find_token(&extracted, "lights.", limits, || Ok(()))?;
+    assert!(
+        result
+            .matches()
+            .iter()
+            .any(|hit| hit.byte_range() == (121..128))
+    );
+    Ok(())
+}
+
+// CASE-05: rejected candidates, extraction gaps and stop boundaries must not
+// publish an apparently complete result or usable cancelled hits.
+#[test]
+fn token_coverage_and_control_include_rejected_candidates() -> Result<(), Box<dyn Error>> {
+    let extraction = extract_utf8(
+        b"xcat cat cat\nmissing",
+        ExtractionLimits::new(100, 1)?,
+        || Ok(()),
+    )?;
+    let limits = SearchLimits::new(10, 1)?;
+    let partial = find_token(&extraction, "cat", limits, || Ok(()))?;
+    assert_eq!(partial.coverage().unsearched_extracted_range(), Some(8..13));
+    assert_eq!(
+        partial.coverage().extraction().unprocessed_range(),
+        Some(13..20)
+    );
+    for query in ["xcat", "cat", "missing"] {
+        let mut checks = 0;
+        let result = find_token(&extraction, query, limits, || {
+            checks += 1;
+            Ok(())
+        })?;
+        assert!(!result.coverage().is_complete());
+        for stop_at in 1..=checks {
+            let mut calls = 0;
+            assert_eq!(
+                find_token(&extraction, query, limits, || {
+                    calls += 1;
+                    if calls == stop_at {
+                        Err(StopReason::Cancelled)
+                    } else {
+                        Ok(())
+                    }
+                }),
+                Err(SearchError::Stopped(StopReason::Cancelled))
+            );
+        }
+    }
+    for query in ["cat dog", "cat\t", "\u{a0}cat"] {
+        assert_eq!(
+            find_token(&extraction, query, limits, || Ok(())),
+            Err(SearchError::WhitespaceInToken)
+        );
+    }
+    assert_eq!(
+        find_token(&extraction, "", limits, || Ok(())),
+        Err(SearchError::EmptyQuery)
+    );
+    assert_eq!(
+        find_token(&extraction, "cat\n", limits, || Ok(())),
+        Err(SearchError::MultilineQuery)
+    );
+    let empty = extract_utf8(b"", ExtractionLimits::new(10, 1)?, || Ok(()))?;
+    assert!(
+        find_token(&empty, "cat", limits, || Ok(()))?
+            .coverage()
+            .is_complete()
+    );
+    Ok(())
+}
 
 // DOC-04/A03: matches must retain exact original byte anchors, including a
 // non-ASCII prefix; adversarial source text is only returned as borrowed data.

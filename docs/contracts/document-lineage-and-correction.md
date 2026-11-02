@@ -103,8 +103,8 @@ A `CorroborationSummary` for a proposition or claim must compute and expose:
 | --- | --- |
 | `supporting_record_versions` | All `SourceRecord` versions linked as supporting the claim. |
 | `exact_duplicate_group_count` | Count of distinct content hashes (`Artifact.sha256`) among retained supporting records; `reference_only` records are tracked separately. |
-| `independent_supporting_roots` | Upstream lineage roots reached from supporting records after collapsing all `{republishes, quotes, cites, translates}` chains, collapsing shared-hash duplicate groups, and excluding unanchored citation cycles. |
-| `independent_root_count` | `len(independent_supporting_roots)`. Only records with distinct upstream sources, distinct content hashes, and non-circular lineage contribute to this count. |
+| `independent_supporting_roots` | Upstream lineage roots reached from supporting records after collapsing all `{republishes, quotes, cites, translates}` copy/citation chains, collapsing `{supersedes, alternate_redaction, preprint_version}` version chains and shared document/`source_id` identities (selecting the earliest verified publication instant, then retrieval instant, then lexical `version_id`), collapsing shared-hash duplicate groups, and excluding unanchored citation cycles. |
+| `independent_root_count` | `len(independent_supporting_roots)`. Only records with distinct upstream sources, distinct document version chains, distinct content hashes, and non-circular lineage contribute to this count. |
 | `circular_only_record_versions` | Supporting records whose upstream lineage terminates solely in a citation cycle (`unanchored_cycle`). |
 | `contradicting_independent_roots` | Upstream lineage roots of records linked via `contradicts`. |
 | `excluded_derivative_runs` | Inferences, AI summaries (`origin_class = analytical_inference`), and simulations, which are never counted as source corroboration. |

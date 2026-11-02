@@ -1,7 +1,7 @@
 """Independent check of the Rust JPEG cleaner on synthetic fixtures only.
 
 Development tool: requires Python 3.12, Pillow 12.3.0 and the pinned Rust
-1.99.0 toolchain. It runs the clean-fixture example (which embeds the
+1.99.0 toolchain. It runs the clean-jpeg-fixture example (which embeds the
 synthetic fixtures; no user file is read or exported), walks original and
 candidate with a separately written marker parser, and decodes both with
 Pillow's libjpeg.
@@ -80,7 +80,7 @@ def check(name, example_args, target_count):
     original_hash = hashlib.sha256(original).hexdigest()
     candidate = subprocess.run(
         ["cargo", "+1.99.0", "run", "--quiet", "--locked", "--offline", "--manifest-path",
-         str(PACKAGE / "Cargo.toml"), "--example", "clean-fixture", "--", *example_args],
+         str(PACKAGE / "Cargo.toml"), "--example", "clean-jpeg-fixture", "--", *example_args],
         check=True, stdout=subprocess.PIPE, timeout=120,
     ).stdout
     before = segments(original)

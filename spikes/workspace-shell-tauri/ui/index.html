@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OIA workspace shell spike (fixture data)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="shell.css">
+</head>
+<body>
+<a class="skip" href="#canvas">Skip to canvas</a>
+
+<div class="fixture-strip" role="note" id="fixture-strip">Fixture · synthetic case · no live sources · spike build</div>
+
+<!-- C. Evidence canvas: the one region that changes per instrument. -->
+<svg id="canvas" class="canvas" tabindex="-1" role="img" aria-label="Evidence canvas"></svg>
+<div id="pane" class="pane" tabindex="-1" hidden></div>
+<div id="local-filter" class="chip-row local-filter" hidden></div>
+<div id="unplotted" class="chip-row unplotted glass" hidden aria-label="Accounts without a plotted position"></div>
+
+<!-- Identity and case card -->
+<header class="ident">
+  <div class="wordmark"><span class="mark" aria-hidden="true"></span><b>OIA</b><small id="wordmark-state">LOCAL · PRIVATE</small></div>
+  <div id="case-card" class="case glass"></div>
+  <!-- B. Navigation rail: flows under the case card so neither covers the other. -->
+  <nav id="rail" class="rail glass" aria-label="Instruments"></nav>
+</header>
+
+<!-- G. Context strip -->
+<div id="context" class="context glass" aria-label="Shared context"></div>
+
+<!-- Clock and mode -->
+<div id="clock" class="clock glass" aria-label="Investigation clock"></div>
+
+<!-- D. Inspector -->
+<aside id="inspector" class="inspector glass" aria-label="Inspector"></aside>
+
+<!-- E. Shared timeline -->
+<section id="timeline" class="timeline glass" aria-label="Shared timeline" tabindex="0"></section>
+
+<!-- A. Command field -->
+<form id="dock" class="dock glass strong" role="search" autocomplete="off">
+  <span class="scope" id="scope-chip">Scope · this case</span>
+  <input type="text" id="command" aria-label="Search, identifier, place, or date" placeholder="Search, or id:  near:  t:  in:" maxlength="200">
+  <kbd>Ctrl K</kbd>
+  <button type="button" class="save" id="save-btn" title="Save is private. Nothing in this spike is published.">Save <span class="dim">· private</span></button>
+</form>
+
+<!-- F. Job tray -->
+<div id="jobs" class="jobs glass" aria-label="Jobs"></div>
+
+<!-- View-state readout -->
+<div id="readout" class="readout glass" aria-label="View state"></div>
+
+<!-- Notices: superseded results, persistence errors -->
+<div id="notice" class="notice glass strong" role="status" aria-live="polite" hidden></div>
+
+<script src="shell.js"></script>
+</body>
+</html>

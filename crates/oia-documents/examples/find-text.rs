@@ -6,7 +6,7 @@ use std::io::{self, Read, Write};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use oia_documents::search::{SearchLimits, find_text};
+use oia_documents::search::{SearchLimits, SearchMode, find_text, find_token};
 use oia_documents::{ExtractionLimits, StopReason, extract_utf8};
 
 fn invalid_argument(message: &str) -> io::Error {
@@ -25,8 +25,15 @@ fn parse_limit(argument: Option<OsString>, default: usize) -> Result<usize, Box<
 
 fn run() -> Result<ExitCode, Box<dyn Error>> {
     let mut arguments = env::args_os().skip(1);
-    let usage = "usage: find-text PATH QUERY [MAX_MATCHES] [MAX_INPUT_BYTES] [MAX_PASSAGES]";
-    let path = arguments.next().ok_or_else(|| invalid_argument(usage))?;
+    let usage =
+        "usage: find-text [--token | --] PATH QUERY [MAX_MATCHES] [MAX_INPUT_BYTES] [MAX_PASSAGES]";
+    let first = arguments.next().ok_or_else(|| invalid_argument(usage))?;
+    let token_mode = first == "--token";
+    let path = if token_mode || first == "--" {
+        arguments.next().ok_or_else(|| invalid_argument(usage))?
+    } else {
+        first
+    };
     let query = arguments
         .next()
         .ok_or_else(|| invalid_argument(usage))?
@@ -42,7 +49,11 @@ fn run() -> Result<ExitCode, Box<dyn Error>> {
     }
     // Validate the query before opening or reading a file.
     let empty = extract_utf8(b"", extraction_limits, || Ok(()))?;
-    find_text(&empty, &query, search_limits, || Ok(()))?;
+    if token_mode {
+        find_token(&empty, &query, search_limits, || Ok(()))?;
+    } else {
+        find_text(&empty, &query, search_limits, || Ok(()))?;
+    }
     let read_limit = extraction_limits
         .max_input_bytes()
         .checked_add(1)
@@ -69,7 +80,11 @@ fn run() -> Result<ExitCode, Box<dyn Error>> {
         }
     };
     let extraction = extract_utf8(&input, extraction_limits, &mut check_control)?;
-    let result = find_text(&extraction, &query, search_limits, &mut check_control)?;
+    let result = if token_mode {
+        find_token(&extraction, &query, search_limits, &mut check_control)?
+    } else {
+        find_text(&extraction, &query, search_limits, &mut check_control)?
+    };
     let coverage = result.coverage();
     let status = if coverage.is_complete() {
         "complete"
@@ -80,6 +95,14 @@ fn run() -> Result<ExitCode, Box<dyn Error>> {
     writeln!(
         output,
         "Local UTF-8 passage search; exact, case-sensitive, non-overlapping; no OCR or semantic retrieval"
+    )?;
+    writeln!(
+        output,
+        "matching={}",
+        match result.mode() {
+            SearchMode::ExactSubstring => "substring",
+            SearchMode::WhitespaceToken => "whole Unicode-whitespace token; punctuation is literal",
+        }
     )?;
     writeln!(
         output,

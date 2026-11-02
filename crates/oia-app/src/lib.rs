@@ -382,23 +382,49 @@ impl AppCommand {
 
     fn command_fingerprint(&self) -> String {
         match self {
-            Self::CreateInvestigation { case_id, .. } => format!("create_case:{case_id}"),
+            Self::CreateInvestigation {
+                case_id,
+                version_id,
+                title,
+                question,
+                geographic_scope,
+                temporal_scope,
+                topics,
+                ..
+            } => format!(
+                "create_case:{case_id}:{version_id}:{title:?}:{question:?}:{geographic_scope:?}:{temporal_scope:?}:{topics:?}"
+            ),
             Self::AddAnnotation {
                 case_id,
                 annotation_id,
+                version_id,
                 target_version_id,
+                expected_case_version,
+                new_case_version,
+                body,
                 ..
-            } => format!("add_ann:{case_id}:{annotation_id}:{target_version_id}"),
+            } => format!(
+                "add_ann:{case_id}:{annotation_id}:{version_id}:{target_version_id}:{expected_case_version}:{new_case_version}:{body:?}"
+            ),
             Self::SubmitReview {
                 case_id,
                 review_id,
+                version_id,
                 target_version_id,
                 resulting_status,
+                rationale,
+                cited_evidence_versions,
                 ..
-            } => format!(
-                "submit_rev:{case_id}:{review_id}:{target_version_id}:{}",
-                resulting_status.as_str()
-            ),
+            } => {
+                let cited: Vec<&str> = cited_evidence_versions
+                    .iter()
+                    .map(VersionId::as_str)
+                    .collect();
+                format!(
+                    "submit_rev:{case_id}:{review_id}:{version_id}:{target_version_id}:{}:{rationale:?}:{cited:?}",
+                    resulting_status.as_str()
+                )
+            }
         }
     }
 }
@@ -698,19 +724,25 @@ impl OiaApplicationService {
                     target_version_id,
                     body,
                 };
-                self.store
-                    .put_object(DomainObject::Annotation(ann), None)
-                    .map_err(AppError::Store)?;
 
                 case_clone.envelope.version_id = new_case_version;
                 case_clone.envelope.supersedes = Some(expected_case_version);
                 case_clone.envelope.created_at_ms = now_ms;
                 case_clone.envelope.created_by = actor;
                 case_clone.annotation_versions.push(version_id.clone());
+
+                // Atomically validate and commit both the `Annotation` and the updated `Investigation`
+                // in a single batch so a failure in `case_clone` never leaves an orphaned annotation (`A2`, `C11`).
                 self.store
-                    .put_object(
-                        DomainObject::Investigation(case_clone),
-                        Some("Added annotation to investigation"),
+                    .put_objects_batch(
+                        vec![
+                            (DomainObject::Annotation(ann), None),
+                            (
+                                DomainObject::Investigation(case_clone),
+                                Some("Added annotation to investigation".to_owned()),
+                            ),
+                        ],
+                        Vec::new(),
                     )
                     .map_err(AppError::Store)?;
 
@@ -1011,24 +1043,43 @@ mod tests {
             Err(AppError::UnauthorizedAccess)
         );
 
-        // Idempotent retry by the same authorized actor for the same command succeeds.
+        // Exact idempotent retry by the same authorized actor for the identical command payload succeeds.
         let idempotent_ver = app.execute_command(
             OpaqueId::new("cmd_create_case")?,
             &owner_auth,
             AppCommand::CreateInvestigation {
                 case_id: case_id.clone(),
-                version_id: VersionId::new("ver_unused")?,
-                title: "Ignored".to_owned(),
-                question: "Ignored".to_owned(),
-                geographic_scope: None,
-                temporal_scope: None,
-                topics: Vec::new(),
+                version_id: case_v1.clone(),
+                title: "Shared Aerial Anomaly Case".to_owned(),
+                question: "Were two sensors correlated?".to_owned(),
+                geographic_scope: Some("33.4484N, 112.0740W".to_owned()),
+                temporal_scope: Some("2026-11-01T04:00Z..05:00Z".to_owned()),
+                topics: vec!["uap".to_owned(), "radar".to_owned()],
                 now_ms: 1_700_000_000_100,
             },
         )?;
         assert_eq!(idempotent_ver, case_v1);
 
-        // Replaying the same request_id with a different command fingerprint returns ConflictingRequestIdReplay (`C11`).
+        // Replaying the same request_id with a different title/body/version returns ConflictingRequestIdReplay (`C11`).
+        assert_eq!(
+            app.execute_command(
+                OpaqueId::new("cmd_create_case")?,
+                &owner_auth,
+                AppCommand::CreateInvestigation {
+                    case_id: case_id.clone(),
+                    version_id: case_v1.clone(),
+                    title: "Different Title".to_owned(),
+                    question: "Were two sensors correlated?".to_owned(),
+                    geographic_scope: Some("33.4484N, 112.0740W".to_owned()),
+                    temporal_scope: Some("2026-11-01T04:00Z..05:00Z".to_owned()),
+                    topics: vec!["uap".to_owned(), "radar".to_owned()],
+                    now_ms: 1_700_000_000_150,
+                },
+            ),
+            Err(AppError::ConflictingRequestIdReplay(OpaqueId::new(
+                "cmd_create_case"
+            )?))
+        );
         assert_eq!(
             app.execute_command(
                 OpaqueId::new("cmd_create_case")?,

@@ -69,4 +69,62 @@ theorem stepInvalidation_includes_direct_dependent
   rw [List.mem_flatMap]
   exact ⟨src, hSrc, mem_directDependents_of_edge edges dep src hEdge⟩
 
+/-- Inductive reachability predicate: `IsReachable edges seeds n` holds iff `n` is in `seeds`
+    or is reachable from `seeds` via a finite directed chain of `(dependent, upstream) ∈ edges`. -/
+inductive IsReachable (edges : List (Nat × Nat)) (seeds : List Nat) : Nat → Prop where
+  | base {n : Nat} (h : n ∈ seeds) : IsReachable edges seeds n
+  | step {src dep : Nat}
+      (hSrc : IsReachable edges seeds src)
+      (hEdge : (dep, src) ∈ edges) :
+      IsReachable edges seeds dep
+
+/-- Helper lemma: every element of `directDependents edges src` has an edge `(dep, src) ∈ edges`. -/
+theorem edge_of_mem_directDependents
+    (edges : List (Nat × Nat)) (dep src : Nat)
+    (hMem : dep ∈ directDependents edges src) :
+    (dep, src) ∈ edges := by
+  simp only [directDependents, List.mem_map, List.mem_filter, isDirectDependentEdge] at hMem
+  rcases hMem with ⟨⟨d, s⟩, ⟨hInEdges, hDec⟩, hFst⟩
+  have hEqS : s = src := of_decide_eq_true hDec
+  subst hEqS
+  subst hFst
+  exact hInEdges
+
+/-- Theorem 4 (One-step Soundness): If every node in `flagged` is reachable from `seeds`,
+    then every node in `stepInvalidation edges flagged` is also reachable from `seeds`
+    (no unrelated node is ever flagged). -/
+theorem stepInvalidation_sound
+    (edges : List (Nat × Nat)) (seeds flagged : List Nat)
+    (hSound : ∀ x ∈ flagged, IsReachable edges seeds x)
+    (n : Nat)
+    (hMem : n ∈ stepInvalidation edges flagged) :
+    IsReachable edges seeds n := by
+  simp only [stepInvalidation, List.mem_append, List.mem_flatMap] at hMem
+  cases hMem with
+  | inl hInFlagged =>
+    exact hSound n hInFlagged
+  | inr hInNext =>
+    rcases hInNext with ⟨src, hSrcInFlagged, hDepInDirect⟩
+    exact IsReachable.step
+      (hSound src hSrcInFlagged)
+      (edge_of_mem_directDependents edges n src hDepInDirect)
+
+/-- Theorem 5 (Multi-step Closure Soundness): Every node in `invalidateClosure edges fuel seeds`
+    is reachable from `seeds` via `edges` (`flagged ⊆ reachable`). -/
+theorem invalidateClosure_sound
+    (edges : List (Nat × Nat)) (fuel : Nat) (seeds : List Nat) :
+    ∀ n ∈ invalidateClosure edges fuel seeds, IsReachable edges seeds n := by
+  suffices hGen : ∀ (flagged : List Nat),
+      (∀ x ∈ flagged, IsReachable edges seeds x) →
+      ∀ n ∈ invalidateClosure edges fuel flagged, IsReachable edges seeds n by
+    exact hGen seeds (fun x hx => IsReachable.base hx)
+  induction fuel with
+  | zero =>
+    intro flagged hSound n hMem
+    exact hSound n hMem
+  | succ k ih =>
+    intro flagged hSound n hMem
+    simp only [invalidateClosure] at hMem
+    exact ih (stepInvalidation edges flagged) (stepInvalidation_sound edges seeds flagged hSound) n hMem
+
 end OiaProofs

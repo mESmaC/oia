@@ -376,3 +376,165 @@ impl fmt::Display for AnalysisError {
 }
 
 impl std::error::Error for AnalysisError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oia_domain::{
+        AvailabilityState, Claim, ClaimAssessment, ClaimNature, DomainObject, DomainObjectType,
+        Hypothesis, ProvenanceRecord, ReviewStatus, SchemaVersion, WorkspaceVisibility,
+    };
+
+    #[test]
+    fn validate_against_graph_derives_input_classes_and_transitive_taint_from_graph()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut graph = EvidenceGraph::new();
+        let actor = ActorId::new("analyst")?;
+        let case_id = OpaqueId::new("case_b9")?;
+
+        // 1. Insert a non-observational root (`Hypothesis` with `AnalyticalInference`).
+        let hyp_ver = VersionId::new("ver_hyp_root")?;
+        let hyp = Hypothesis {
+            envelope: ObjectEnvelope {
+                id: OpaqueId::new("hyp_root")?,
+                version_id: hyp_ver.clone(),
+                schema_version: SchemaVersion::V1,
+                object_type: DomainObjectType::Hypothesis,
+                created_at_ms: 1_700_000_000_000,
+                created_by: actor.clone(),
+                visibility: WorkspaceVisibility::PrivateCase {
+                    case_id: case_id.clone(),
+                    sensitive: false,
+                },
+                supersedes: None,
+                provenance: ProvenanceRecord {
+                    source_version_ids: Vec::new(),
+                    declared_origin_note: Some("Analyst hypothesis".to_owned()),
+                    processing_history: Vec::new(),
+                },
+                origin_class: OriginClass::AnalyticalInference,
+                review_status: ReviewStatus::Unreviewed,
+                availability: AvailabilityState::Available,
+                reassessment: ReassessmentState::Current,
+            },
+            statement: "Relay timing anomaly".to_owned(),
+            supporting_versions: Vec::new(),
+            contradicting_versions: Vec::new(),
+            discriminating_observables: vec!["Packet gap > 100ms".to_owned()],
+        };
+        graph.insert_object(DomainObject::Hypothesis(hyp), None)?;
+
+        // 2. Insert a two-hop `AnalyticalInference` claim derived from `ver_hyp_root`.
+        let claim_ver = VersionId::new("ver_claim_summary")?;
+        let claim = Claim {
+            envelope: ObjectEnvelope {
+                id: OpaqueId::new("claim_summary")?,
+                version_id: claim_ver.clone(),
+                schema_version: SchemaVersion::V1,
+                object_type: DomainObjectType::Claim,
+                created_at_ms: 1_700_000_001_000,
+                created_by: actor.clone(),
+                visibility: WorkspaceVisibility::PrivateCase {
+                    case_id,
+                    sensitive: false,
+                },
+                supersedes: None,
+                provenance: ProvenanceRecord {
+                    source_version_ids: vec![hyp_ver.clone()],
+                    declared_origin_note: None,
+                    processing_history: Vec::new(),
+                },
+                origin_class: OriginClass::AnalyticalInference,
+                review_status: ReviewStatus::Unreviewed,
+                availability: AvailabilityState::Available,
+                reassessment: ReassessmentState::Current,
+            },
+            proposition: "Intermediate analytical summary".to_owned(),
+            claimant: "analyst".to_owned(),
+            nature: ClaimNature::AnalyticalProposal,
+            supporting_anchor: None,
+            assessment: ClaimAssessment::Unresolved,
+            assessment_rationale: "Summary of hypothesis".to_owned(),
+        };
+        graph.insert_object(DomainObject::Claim(claim), None)?;
+
+        // 3. Spoofed `input_origin_classes` claiming `ver_hyp_root` is `AcquiredSourceMaterial` is rejected.
+        let make_run = |inputs: Vec<VersionId>,
+                        declared_classes: Vec<OriginClass>,
+                        output_class: OriginClass|
+         -> Result<AnalysisRun, DomainError> {
+            Ok(AnalysisRun {
+                envelope: ObjectEnvelope {
+                    id: OpaqueId::new("run_test")?,
+                    version_id: VersionId::new("ver_run_test")?,
+                    schema_version: SchemaVersion::V1,
+                    object_type: DomainObjectType::AnalysisRun,
+                    created_at_ms: 1_700_000_002_000,
+                    created_by: actor.clone(),
+                    visibility: WorkspaceVisibility::LibraryPublic,
+                    supersedes: None,
+                    provenance: ProvenanceRecord {
+                        source_version_ids: inputs.clone(),
+                        declared_origin_note: None,
+                        processing_history: Vec::new(),
+                    },
+                    origin_class: output_class,
+                    review_status: ReviewStatus::Unreviewed,
+                    availability: AvailabilityState::Available,
+                    reassessment: ReassessmentState::Current,
+                },
+                definition_id: OpaqueId::new("def_1")?,
+                method: AnalysisMethodSpec::Deduction {
+                    premises: vec!["P1".to_owned()],
+                    rule: "Modus ponens".to_owned(),
+                },
+                input_versions: inputs,
+                input_origin_classes: declared_classes,
+                calibration_version: None,
+                parameters_with_units: BTreeMap::new(),
+                random_seed: Some(7),
+                verification: VerificationBadge::HumanReviewed {
+                    reviewer: actor.clone(),
+                },
+                output_summary: "Checked".to_owned(),
+            })
+        };
+
+        let spoofed_run = make_run(
+            vec![hyp_ver],
+            vec![OriginClass::AcquiredSourceMaterial],
+            OriginClass::NormalizedObservation,
+        )?;
+        assert!(matches!(
+            spoofed_run.validate_against_graph(&graph),
+            Err(AnalysisError::InputOriginClassMismatch {
+                declared: OriginClass::AcquiredSourceMaterial,
+                actual: OriginClass::AnalyticalInference,
+                ..
+            })
+        ));
+
+        // 4. Attempting to promote `ver_claim_summary` (`AnalyticalInference`) to `NormalizedObservation`
+        //    is rejected by `validate_against_graph`.
+        let transitive_promotion = make_run(
+            vec![claim_ver.clone()],
+            vec![OriginClass::AnalyticalInference],
+            OriginClass::NormalizedObservation,
+        )?;
+        assert!(matches!(
+            transitive_promotion.validate_against_graph(&graph),
+            Err(AnalysisError::Domain(DomainError::IllegalOriginPromotion {
+                target: OriginClass::NormalizedObservation
+            }))
+        ));
+
+        // 5. Valid `AnalyticalInference` output succeeds against the graph.
+        let valid_run = make_run(
+            vec![claim_ver],
+            vec![OriginClass::AnalyticalInference],
+            OriginClass::AnalyticalInference,
+        )?;
+        valid_run.validate_against_graph(&graph)?;
+        Ok(())
+    }
+}

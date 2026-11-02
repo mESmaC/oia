@@ -550,6 +550,8 @@ pub struct StoreBackupSnapshot {
     pub blobs: BTreeMap<ContentHash, Vec<u8>>,
     /// Integrity index mapping each `ContentHash` to its expected byte length.
     pub integrity_index: BTreeMap<ContentHash, u64>,
+    /// Preserved retention classes for each stored blob.
+    pub blob_retention: BTreeMap<ContentHash, Vec<RetentionClass>>,
 }
 
 /// Write durable file bytes using `File::create`, `write_all`, and `sync_all` (`A2`).
@@ -589,7 +591,8 @@ impl EvidenceStore {
     /// - If `store.wal` or `store.json` already exists in `root_dir`, loads and validates the
     ///   persisted schema version, domain objects, graph edges, tombstones, jobs, blob retention
     ///   metadata, and `schema_migrations.json` from disk.
-    /// - Cleans up any leftover uncommitted files in `staging/` from an interrupted prior run.
+    /// - Cleans up any leftover uncommitted files in `staging/` and any unlinked tombstoned blobs
+    ///   from an interrupted prior run.
     pub fn open(
         root_dir: impl AsRef<Path>,
         schema_version: u32,
@@ -622,18 +625,37 @@ impl EvidenceStore {
         let wal_path = root.join("store.wal");
         let store_path = root.join("store.json");
         if wal_path.exists() {
-            // Replay uncommitted write-ahead journal into store.json and remove wal.
-            let wal_bytes = fs::read(&wal_path).map_err(|e| StoreError::Io(e.to_string()))?;
-            write_and_sync_file(&store_path, &wal_bytes)?;
+            // Parse and validate the write-ahead journal BEFORE replacing `store.json` (`#11`, `A1`).
+            // If `store.wal` was torn during a crash, discard the torn WAL and preserve the intact `store.json`.
+            if let Ok(wal_raw) = fs::read_to_string(&wal_path)
+                && store.parse_and_apply_state_json(&wal_raw).is_ok()
+            {
+                let tmp_path = root.join("store.json.tmp");
+                write_and_sync_file(&tmp_path, wal_raw.as_bytes())?;
+                fs::rename(&tmp_path, &store_path).map_err(|e| StoreError::Io(e.to_string()))?;
+            }
             let _ = fs::remove_file(&wal_path);
         }
 
         if store_path.exists() {
             store.load_state_from_disk()?;
+            store.sweep_tombstoned_blobs()?;
         } else {
             store.persist_state()?;
         }
         Ok(store)
+    }
+
+    fn sweep_tombstoned_blobs(&self) -> Result<(), StoreError> {
+        for ts in self.tombstones.values() {
+            if !self.blob_sizes.contains_key(&ts.content_hash) {
+                let path = self.blob_path(&ts.content_hash);
+                if path.exists() {
+                    fs::remove_file(&path).map_err(|e| StoreError::Io(e.to_string()))?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn persist_state(&self) -> Result<(), StoreError> {
@@ -724,13 +746,17 @@ impl EvidenceStore {
     fn load_state_from_disk(&mut self) -> Result<(), StoreError> {
         let store_path = self.root_dir.join("store.json");
         let raw = fs::read_to_string(&store_path).map_err(|e| StoreError::Io(e.to_string()))?;
+        self.parse_and_apply_state_json(&raw)
+    }
+
+    fn parse_and_apply_state_json(&mut self, raw: &str) -> Result<(), StoreError> {
         let budget = JsonBudget {
             max_input_bytes: 64 * 1024 * 1024,
             max_depth: 64,
             max_container_items: 100_000,
             max_string_bytes: 4 * 1024 * 1024,
         };
-        let val = JsonValue::parse_bounded(&raw, budget)
+        let val = JsonValue::parse_bounded(raw, budget)
             .map_err(|e| StoreError::Domain(DomainError::Json(e)))?;
         let m = val
             .as_object()
@@ -745,23 +771,24 @@ impl EvidenceStore {
                 max_supported: CURRENT_STORE_SCHEMA_VERSION,
             });
         }
-        self.schema_version = disk_sv_u32;
 
-        let mut graph = oia_domain::EvidenceGraph::new();
+        let mut objects = Vec::new();
         for item in JsonValue::req_array(m, "objects")
             .map_err(|e| StoreError::Domain(DomainError::Json(e)))?
         {
             let obj = DomainObject::from_json_value(item).map_err(StoreError::Domain)?;
-            graph
-                .restore_object_unchecked(obj)
-                .map_err(StoreError::Domain)?;
+            objects.push(obj);
         }
+        let mut edges = Vec::new();
         for item in JsonValue::req_array(m, "edges")
             .map_err(|e| StoreError::Domain(DomainError::Json(e)))?
         {
             let edge = RelationEdge::from_json_value(item).map_err(StoreError::Domain)?;
-            graph.restore_edge_unchecked(edge);
+            edges.push(edge);
         }
+        let graph = oia_domain::EvidenceGraph::restore_and_validate(objects, edges)
+            .map_err(StoreError::Domain)?;
+        self.schema_version = disk_sv_u32;
         self.graph = graph;
 
         self.tombstones.clear();
@@ -1097,6 +1124,24 @@ impl EvidenceStore {
         Ok(ver)
     }
 
+    /// Atomically validates and commits a batch of [`DomainObject`]s (topologically ordered over
+    /// supersession and provenance dependencies) and [`RelationEdge`]s into the store (`A2`, `C10`, `C11`).
+    ///
+    /// Performs all validation on a cloned graph and persists once so a failure anywhere in the batch
+    /// leaves the store completely unchanged.
+    pub fn put_objects_batch(
+        &mut self,
+        objects: Vec<(DomainObject, Option<String>)>,
+        edges: Vec<RelationEdge>,
+    ) -> Result<Vec<VersionId>, StoreError> {
+        let vers = self
+            .graph
+            .insert_batch_validated(objects, edges)
+            .map_err(StoreError::Domain)?;
+        self.persist_state()?;
+        Ok(vers)
+    }
+
     /// Adds a validated [`RelationEdge`] to the store's evidence graph and persists to disk.
     pub fn add_edge(&mut self, edge: RelationEdge) -> Result<(), StoreError> {
         self.graph.add_edge(edge).map_err(StoreError::Domain)?;
@@ -1165,16 +1210,13 @@ impl EvidenceStore {
         }
 
         if !other_live_refs {
-            let path = self.blob_path(&hash);
-            if path.exists() {
-                fs::remove_file(&path).map_err(|e| StoreError::Io(e.to_string()))?;
-            }
             self.blob_sizes.remove(&hash);
             self.blob_retention.remove(&hash);
             // Also purge the deleted bytes from any in-memory pre-migration backup (`A3`, `AGENTS.md` §5).
             if let Some(ref mut backup) = self.pre_migration_backup {
                 backup.blobs.remove(&hash);
                 backup.integrity_index.remove(&hash);
+                backup.blob_retention.remove(&hash);
             }
         }
 
@@ -1186,14 +1228,25 @@ impl EvidenceStore {
 
         let tombstone = TombstoneRecord {
             artifact_version_id: artifact_version_id.clone(),
-            content_hash: hash,
+            content_hash: hash.clone(),
             deleted_at_ms,
             deleted_by,
             reason: reason_str,
         };
         self.tombstones
             .insert(artifact_version_id.clone(), tombstone.clone());
+
+        // Persist the tombstone and `Removed` state BEFORE unlinking the physical blob file (`A3`).
+        // If a crash occurs after `persist_state` and before `remove_file`, `EvidenceStore::open`
+        // sweeps any remaining physical blob file for tombstoned hashes via `sweep_tombstoned_blobs`.
         self.persist_state()?;
+
+        if !other_live_refs {
+            let path = self.blob_path(&hash);
+            if path.exists() {
+                fs::remove_file(&path).map_err(|e| StoreError::Io(e.to_string()))?;
+            }
+        }
         Ok(tombstone)
     }
 
@@ -1210,10 +1263,6 @@ impl EvidenceStore {
             let all_expired =
                 !classes.is_empty() && classes.iter().copied().all(|c| c.is_expired_at(now_ms));
             if !has_protected && all_expired {
-                let path = self.blob_path(&hash);
-                if path.exists() {
-                    fs::remove_file(&path).map_err(|e| StoreError::Io(e.to_string()))?;
-                }
                 self.blob_retention.remove(&hash);
                 self.blob_sizes.remove(&hash);
                 evicted.push(hash);
@@ -1221,6 +1270,12 @@ impl EvidenceStore {
         }
         if !evicted.is_empty() {
             self.persist_state()?;
+            for hash in &evicted {
+                let path = self.blob_path(hash);
+                if path.exists() {
+                    fs::remove_file(&path).map_err(|e| StoreError::Io(e.to_string()))?;
+                }
+            }
         }
         Ok(evicted)
     }
@@ -1249,6 +1304,7 @@ impl EvidenceStore {
         let edges = self.graph.edges().to_vec();
         let tombstones = self.tombstones.values().cloned().collect();
         let jobs = self.jobs.values().cloned().collect();
+        let blob_retention = self.blob_retention.clone();
 
         Ok(StoreBackupSnapshot {
             schema_version: self.schema_version,
@@ -1259,6 +1315,7 @@ impl EvidenceStore {
             jobs,
             blobs,
             integrity_index,
+            blob_retention,
         })
     }
 
@@ -1286,26 +1343,28 @@ impl EvidenceStore {
                 return Err(StoreError::CorruptBlobOnDisk(hash.clone()));
             }
         }
+        let validated_graph = oia_domain::EvidenceGraph::restore_and_validate(
+            snapshot.objects.clone(),
+            snapshot.edges.clone(),
+        )
+        .map_err(StoreError::Domain)?;
 
         let mut store = Self::open(target_dir, snapshot.schema_version, budget)?;
         for (hash, bytes) in &snapshot.blobs {
             let (_, stage_path) = store.stage_blob_bytes(bytes)?;
-            store.promote_staged_blob(
-                hash,
-                &stage_path,
-                bytes.len() as u64,
-                RetentionClass::PinnedCaseEvidence,
-            )?;
+            let classes = snapshot
+                .blob_retention
+                .get(hash)
+                .cloned()
+                .unwrap_or_else(|| vec![RetentionClass::PinnedCaseEvidence]);
+            let first = classes
+                .first()
+                .copied()
+                .unwrap_or(RetentionClass::PinnedCaseEvidence);
+            store.promote_staged_blob(hash, &stage_path, bytes.len() as u64, first)?;
+            store.blob_retention.insert(hash.clone(), classes);
         }
-        for obj in &snapshot.objects {
-            store
-                .graph
-                .restore_object_unchecked(obj.clone())
-                .map_err(StoreError::Domain)?;
-        }
-        for edge in &snapshot.edges {
-            store.graph.restore_edge_unchecked(edge.clone());
-        }
+        store.graph = validated_graph;
         for ts in &snapshot.tombstones {
             store
                 .tombstones
@@ -1502,12 +1561,12 @@ impl EvidenceStore {
     /// Recovers interrupted or lease-expired `Running` jobs on restart or watchdog tick (`#14`).
     ///
     /// Never marks incomplete work as succeeded; re-queues jobs with remaining retry budget or
-    /// marks them `Failed`.
+    /// marks them `Failed`, and propagates any persistence failure to the caller.
     pub fn recover_interrupted_jobs(
         &mut self,
         now_ms: i64,
         force_restart_recovery: bool,
-    ) -> Vec<OpaqueId> {
+    ) -> Result<Vec<OpaqueId>, StoreError> {
         let mut recovered = Vec::new();
         for (id, job) in &mut self.jobs {
             if job.state == JobState::Running {
@@ -1532,9 +1591,9 @@ impl EvidenceStore {
             }
         }
         if !recovered.is_empty() {
-            let _ = self.persist_state();
+            self.persist_state()?;
         }
-        recovered
+        Ok(recovered)
     }
 
     /// Looks up a [`DurableJob`] by ID.
@@ -1842,18 +1901,58 @@ mod tests {
         )?;
         assert_eq!(store.read_verified_blob(&hash)?, payload);
 
-        // 4. Schema migration takes pre-migration backup snapshot and persists `schema_migrations.json`.
+        // 4. Add a relation edge, enqueue an active job, and run schema migration (`A1`, `#11`).
+        store.add_edge(RelationEdge {
+            edge_id: OpaqueId::new("edge_cites_memo")?,
+            kind: oia_domain::RelationKind::Quotes,
+            from_version: art_ver_2.clone(),
+            to_version: art_ver_1.clone(),
+            rationale: "Second artifact quotes first artifact".to_owned(),
+            review_status: ReviewStatus::Unreviewed,
+        })?;
+        let job_recover = OpaqueId::new("job_recover_1")?;
+        store.enqueue_job(job_recover.clone(), None, "index_rebuild", Vec::new(), 2)?;
+        let active_lease =
+            store.acquire_job_lease(&job_recover, "worker_crash", 1_700_000_005_000)?;
+        assert_eq!(active_lease.lease_epoch, 1);
+
         store.migrate_schema(2, 1_700_000_001_000, "Upgrade to v2 job lease table")?;
         assert_eq!(store.schema_version(), 2);
         assert!(store.pre_migration_backup().is_some());
 
-        // 5. Reopen store from `dir` (`A1`) and verify schema_version, objects, migrations, and blobs survive!
-        let reopened = EvidenceStore::open(&dir, 1, StoreBudget::default())?;
+        // 5. Reopen store from `dir` (`A1`) and verify schema_version, objects, edges, jobs, migrations, and blobs survive!
+        let mut reopened = EvidenceStore::open(&dir, 1, StoreBudget::default())?;
         assert_eq!(reopened.schema_version(), 2);
         assert_eq!(reopened.migrations().len(), 1);
         assert!(reopened.graph().get_version(&art_ver_1).is_some());
+        assert!(
+            reopened
+                .graph()
+                .edges()
+                .iter()
+                .any(|e| e.edge_id.as_str() == "edge_cites_memo")
+        );
+        assert_eq!(
+            reopened.get_job(&job_recover).map(|j| j.state),
+            Some(JobState::Running)
+        );
+        let recovered_jobs = reopened.recover_interrupted_jobs(1_700_000_006_000, false)?;
+        assert_eq!(recovered_jobs, vec![job_recover.clone()]);
+        assert_eq!(
+            reopened.get_job(&job_recover).map(|j| j.state),
+            Some(JobState::Queued)
+        );
         assert_eq!(reopened.read_verified_blob(&hash)?, payload);
         drop(reopened);
+        // Reload recovered job state into `store`.
+        store = EvidenceStore::open(
+            &dir,
+            1,
+            StoreBudget {
+                max_total_blob_bytes: 1024,
+                max_single_blob_bytes: 512,
+            },
+        )?;
 
         // 6. Backup and restore verify SHA-256 integrity and reject corrupted backups.
         let mut backup = store.create_backup(1_700_000_002_000)?;
@@ -1895,6 +1994,11 @@ mod tests {
 
         // 8. Tombstoning first artifact keeps shared blob alive for `art_ver_2`, then tombstoning
         //    `art_ver_2` deletes bytes from disk AND purges `pre_migration_backup` (`A3`).
+        assert!(
+            store
+                .migrate_schema(2, 1_700_000_015_000, "No-op check")
+                .is_err()
+        ); // already at v2
         store.tombstone_artifact(
             &art_ver_1,
             actor.clone(),
@@ -1927,6 +2031,33 @@ mod tests {
                 .pre_migration_backup()
                 .is_none_or(|b| !b.blobs.contains_key(&hash))
         );
+
+        // 9. Verify tombstones survive reopen, torn `store.wal` is safely discarded without
+        //    corrupting `store.json`, valid `store.wal` is replayed, and tampered `store.json`
+        //    violating `B9` is rejected on open (`A1`, `B9`).
+        let valid_store_json = fs::read_to_string(dir.join("store.json"))?;
+        fs::write(dir.join("store.wal"), "{torn_json_after_crash")?;
+        let reopened_after_torn_wal = EvidenceStore::open(&dir, 1, StoreBudget::default())?;
+        assert_eq!(reopened_after_torn_wal.tombstones().len(), 2);
+        assert!(!dir.join("store.wal").exists());
+        drop(reopened_after_torn_wal);
+
+        // Valid WAL replay promotes `store.wal` when `store.json` is older.
+        fs::write(dir.join("store.wal"), &valid_store_json)?;
+        let reopened_after_valid_wal = EvidenceStore::open(&dir, 1, StoreBudget::default())?;
+        assert_eq!(reopened_after_valid_wal.tombstones().len(), 2);
+        drop(reopened_after_valid_wal);
+
+        // Tamper with `store.json` so `ver_art_memo_1` references an unknown `source_version_ids` entry (`B9`).
+        let tampered_json = valid_store_json.replace(
+            "\"source_version_ids\":[\"ver_sr_memo_1\"]",
+            "\"source_version_ids\":[\"ver_nonexistent_source\"]",
+        );
+        fs::write(dir.join("store.json"), tampered_json)?;
+        assert!(matches!(
+            EvidenceStore::open(&dir, 1, StoreBudget::default()),
+            Err(StoreError::Domain(DomainError::UnknownInputVersion(_)))
+        ));
 
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&restore_dir);

@@ -218,6 +218,63 @@ impl SlidingWindowRateLimiter {
     }
 }
 
+/// Incremental bounded payload sink that enforces `max_bytes` and checks a cancellation predicate
+/// as each chunk arrives (`D14`), adapted from God's Eye View (`server/providers/common/request.js`, MIT License).
+///
+/// Unlike pre-buffered chunk arrays, a streaming transport adapter feeds chunks into [`BoundedChunkSink::push_chunk`]
+/// one by one and stops reading from the network socket as soon as `push_chunk` returns
+/// [`Err(IngestError::PayloadTooLarge)`] or [`Err(IngestError::Cancelled)`].
+#[derive(Debug)]
+pub struct BoundedChunkSink<F> {
+    max_bytes: usize,
+    total_seen: usize,
+    buffer: Vec<u8>,
+    is_cancelled: F,
+}
+
+impl<F> BoundedChunkSink<F>
+where
+    F: FnMut() -> bool,
+{
+    /// Creates a new incremental sink with a hard `max_bytes` cap and per-chunk cancellation check.
+    pub fn new(max_bytes: usize, is_cancelled: F) -> Self {
+        Self {
+            max_bytes,
+            total_seen: 0,
+            buffer: Vec::new(),
+            is_cancelled,
+        }
+    }
+
+    /// Appends a single incoming chunk, aborting and clearing retained bytes immediately if
+    /// `is_cancelled` returns `true` or `total_seen` exceeds `max_bytes`.
+    pub fn push_chunk(&mut self, chunk: &[u8]) -> Result<(), IngestError> {
+        if (self.is_cancelled)() {
+            self.buffer.clear();
+            return Err(IngestError::Cancelled);
+        }
+        self.total_seen = self.total_seen.saturating_add(chunk.len());
+        if self.total_seen > self.max_bytes {
+            self.buffer.clear();
+            return Err(IngestError::PayloadTooLarge {
+                actual_or_seen: self.total_seen,
+                max_bytes: self.max_bytes,
+            });
+        }
+        self.buffer.extend_from_slice(chunk);
+        Ok(())
+    }
+
+    /// Finishes the stream after checking cancellation one final time.
+    pub fn finish(mut self) -> Result<Vec<u8>, IngestError> {
+        if (self.is_cancelled)() {
+            self.buffer.clear();
+            return Err(IngestError::Cancelled);
+        }
+        Ok(self.buffer)
+    }
+}
+
 /// Reads a sequence of incoming payload chunks under a hard byte cap and a dynamic per-chunk
 /// cancellation predicate (`D14`), adapted from God's Eye View (`server/providers/common/request.js`, MIT License).
 ///
@@ -226,32 +283,16 @@ impl SlidingWindowRateLimiter {
 pub fn read_bounded_chunks_with_cancel<F>(
     chunks: &[&[u8]],
     max_bytes: usize,
-    mut is_cancelled: F,
+    is_cancelled: F,
 ) -> Result<Vec<u8>, IngestError>
 where
     F: FnMut() -> bool,
 {
-    if is_cancelled() {
-        return Err(IngestError::Cancelled);
-    }
-    let mut total = 0usize;
-    let mut out = Vec::new();
+    let mut sink = BoundedChunkSink::new(max_bytes, is_cancelled);
     for &chunk in chunks {
-        if is_cancelled() {
-            out.clear();
-            return Err(IngestError::Cancelled);
-        }
-        total = total.saturating_add(chunk.len());
-        if total > max_bytes {
-            out.clear();
-            return Err(IngestError::PayloadTooLarge {
-                actual_or_seen: total,
-                max_bytes,
-            });
-        }
-        out.extend_from_slice(chunk);
+        sink.push_chunk(chunk)?;
     }
-    Ok(out)
+    sink.finish()
 }
 
 /// Reads a sequence of incoming payload chunks under a hard byte cap and static cancellation flag.
@@ -360,7 +401,7 @@ pub struct SourceRegistration {
     pub health: SourceHealthState,
 }
 
-/// Simulated or live transport response produced by an injected transport callback (`D14`).
+/// Simulated or pre-chunked transport response fixture (`D14`).
 #[derive(Debug, Clone)]
 pub enum TransportResponse {
     /// HTTP-like 200 OK with chunks and coverage flags.
@@ -374,6 +415,29 @@ pub enum TransportResponse {
         /// Blind spot note, if partial.
         blind_spot: Option<String>,
     },
+    /// Upstream returned 401/403 unauthorized.
+    Unauthorized,
+    /// Upstream returned 429 rate-limited.
+    UpstreamRateLimited,
+    /// Upstream endpoint unreachable or offline.
+    Unavailable(String),
+}
+
+/// Outcome returned by an incremental streaming transport callback after feeding chunks into
+/// [`BoundedChunkSink`] (`D14`).
+#[derive(Debug, Clone)]
+pub enum StreamingTransportOutcome {
+    /// Stream completed within `max_bytes` without cancellation.
+    Completed {
+        /// Upstream observation timestamp (UTC ms).
+        upstream_timestamp_ms: Option<i64>,
+        /// Whether pagination truncated additional items.
+        truncated: bool,
+        /// Blind spot note, if partial.
+        blind_spot: Option<String>,
+    },
+    /// Stream was aborted mid-transfer by [`BoundedChunkSink::push_chunk`].
+    Aborted(IngestError),
     /// Upstream returned 401/403 unauthorized.
     Unauthorized,
     /// Upstream returned 429 rate-limited.
@@ -463,11 +527,14 @@ impl SourceRegistry {
         *entry
     }
 
-    /// Executes a bounded source acquisition using a lazy transport callback `fetch_transport` that
-    /// is ONLY invoked after generation-epoch, registration, health, capability, URL allow-list,
-    /// idempotency cache, and rate-limit gates pass (`#13`, `D13`, `D14`).
+    /// Executes a bounded source acquisition using an incremental streaming callback `stream_transport`
+    /// that receives a [`BoundedChunkSink`] and is ONLY invoked after generation-epoch, registration,
+    /// health, capability, URL allow-list, idempotency cache, and rate-limit gates pass (`#13`, `D13`, `D14`).
+    ///
+    /// As the transport pushes each chunk into the [`BoundedChunkSink`], `max_payload_bytes` and
+    /// live cancellation are enforced before buffering subsequent chunks.
     #[allow(clippy::too_many_arguments)]
-    pub fn execute_acquisition_lazy<F>(
+    pub fn execute_acquisition_streaming<F, C>(
         &mut self,
         request_id: OpaqueId,
         context_id: &OpaqueId,
@@ -478,11 +545,13 @@ impl SourceRegistry {
         acquisition_key: &str,
         requested_window_ms: Option<(i64, i64)>,
         now_ms: i64,
-        fetch_transport: F,
+        is_cancelled_live: C,
+        stream_transport: F,
         mint_version_id: VersionId,
     ) -> QueryResultEnvelope<Vec<u8>>
     where
-        F: FnOnce(&str, usize) -> TransportResponse,
+        C: FnMut() -> bool,
+        F: FnOnce(&str, &mut BoundedChunkSink<C>) -> StreamingTransportOutcome,
     {
         let current_gen = self
             .active_generation_by_context
@@ -598,11 +667,12 @@ impl SourceRegistry {
         let max_bytes = reg.max_payload_bytes;
         let health = reg.health;
 
-        // Pre-fetch gates passed; now invoke lazy transport (`D14`).
-        let transport_response = fetch_transport(endpoint_url, max_bytes);
+        // Pre-fetch gates passed; now stream chunks incrementally into `BoundedChunkSink` (`D14`).
+        let mut sink = BoundedChunkSink::new(max_bytes, is_cancelled_live);
+        let outcome_step = stream_transport(endpoint_url, &mut sink);
 
-        match transport_response {
-            TransportResponse::Unauthorized => {
+        match outcome_step {
+            StreamingTransportOutcome::Unauthorized => {
                 if let Some(r) = self.sources.get_mut(source_id) {
                     r.health = SourceHealthState::Unavailable;
                 }
@@ -616,7 +686,7 @@ impl SourceRegistry {
                     Some("Upstream provider rejected authorization".to_owned()),
                 )
             }
-            TransportResponse::UpstreamRateLimited => Self::empty_envelope(
+            StreamingTransportOutcome::UpstreamRateLimited => Self::empty_envelope(
                 request_id,
                 source_id.clone(),
                 IngestOutcome::RateLimited,
@@ -625,7 +695,7 @@ impl SourceRegistry {
                 SourceHealthState::Degraded,
                 Some("Upstream provider returned rate-limit response".to_owned()),
             ),
-            TransportResponse::Unavailable(reason) => Self::empty_envelope(
+            StreamingTransportOutcome::Unavailable(reason) => Self::empty_envelope(
                 request_id,
                 source_id.clone(),
                 IngestOutcome::Unavailable,
@@ -634,21 +704,30 @@ impl SourceRegistry {
                 SourceHealthState::Unavailable,
                 Some(reason),
             ),
-            TransportResponse::Ok {
-                chunks,
+            StreamingTransportOutcome::Aborted(IngestError::Cancelled) => Self::empty_envelope(
+                request_id,
+                source_id.clone(),
+                IngestOutcome::Cancelled,
+                requested_window_ms,
+                now_ms,
+                health,
+                Some("Request cancelled mid-stream during payload read".to_owned()),
+            ),
+            StreamingTransportOutcome::Aborted(_) => Self::empty_envelope(
+                request_id,
+                source_id.clone(),
+                IngestOutcome::Malformed,
+                requested_window_ms,
+                now_ms,
+                health,
+                Some(format!("Payload exceeded max_payload_bytes ({max_bytes})")),
+            ),
+            StreamingTransportOutcome::Completed {
                 upstream_timestamp_ms,
                 truncated,
                 blind_spot,
             } => {
-                let slice_refs: Vec<&[u8]> = chunks.iter().map(Vec::as_slice).collect();
-                let active_gen_after_fetch = self
-                    .active_generation_by_context
-                    .get(context_id)
-                    .copied()
-                    .unwrap_or(request_generation);
-                let bytes = match read_bounded_chunks_with_cancel(&slice_refs, max_bytes, || {
-                    request_generation < active_gen_after_fetch
-                }) {
+                let bytes = match sink.finish() {
                     Ok(b) => b,
                     Err(IngestError::Cancelled) => {
                         return Self::empty_envelope(
@@ -727,6 +806,73 @@ impl SourceRegistry {
                 }
             }
         }
+    }
+
+    /// Executes a bounded source acquisition using a lazy transport callback `fetch_transport` that
+    /// is ONLY invoked after generation-epoch, registration, health, capability, URL allow-list,
+    /// idempotency cache, and rate-limit gates pass (`#13`, `D13`, `D14`).
+    ///
+    /// For true incremental chunk-by-chunk streaming and mid-transfer cancellation, prefer
+    /// [`Self::execute_acquisition_streaming`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_acquisition_lazy<F>(
+        &mut self,
+        request_id: OpaqueId,
+        context_id: &OpaqueId,
+        request_generation: u64,
+        source_id: &OpaqueId,
+        required_capability: SourceCapability,
+        endpoint_url: &str,
+        acquisition_key: &str,
+        requested_window_ms: Option<(i64, i64)>,
+        now_ms: i64,
+        fetch_transport: F,
+        mint_version_id: VersionId,
+    ) -> QueryResultEnvelope<Vec<u8>>
+    where
+        F: FnOnce(&str, usize) -> TransportResponse,
+    {
+        let max_bytes = self
+            .sources
+            .get(source_id)
+            .map_or(0, |r| r.max_payload_bytes);
+        self.execute_acquisition_streaming(
+            request_id,
+            context_id,
+            request_generation,
+            source_id,
+            required_capability,
+            endpoint_url,
+            acquisition_key,
+            requested_window_ms,
+            now_ms,
+            || false,
+            |url, sink| match fetch_transport(url, max_bytes) {
+                TransportResponse::Unauthorized => StreamingTransportOutcome::Unauthorized,
+                TransportResponse::UpstreamRateLimited => {
+                    StreamingTransportOutcome::UpstreamRateLimited
+                }
+                TransportResponse::Unavailable(r) => StreamingTransportOutcome::Unavailable(r),
+                TransportResponse::Ok {
+                    chunks,
+                    upstream_timestamp_ms,
+                    truncated,
+                    blind_spot,
+                } => {
+                    for chunk in &chunks {
+                        if let Err(e) = sink.push_chunk(chunk) {
+                            return StreamingTransportOutcome::Aborted(e);
+                        }
+                    }
+                    StreamingTransportOutcome::Completed {
+                        upstream_timestamp_ms,
+                        truncated,
+                        blind_spot,
+                    }
+                }
+            },
+            mint_version_id,
+        )
     }
 
     /// Convenience wrapper around [`Self::execute_acquisition_lazy`] for pre-built [`TransportResponse`] fixtures.
@@ -841,11 +987,12 @@ impl std::error::Error for IngestError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     /// Verifies distinct Partial, Empty, Unavailable, Unauthorized, RateLimited, Malformed,
     /// and Cancelled outcomes; source-scoped idempotent retries preserving Partial/blind-spots (`D13`);
-    /// lazy pre-fetch gating and mid-stream chunk cancellation (`D14`); CAM-01 home-interior exclusion
-    /// and restricted-source handling; and fail-safe rate-limit parsing (`#13`, `A01`, `A04`, `A09`).
+    /// lazy pre-fetch gating and incremental mid-stream chunk cancellation (`D14`); CAM-01 home-interior
+    /// exclusion and restricted-source handling; and fail-safe rate-limit parsing (`#13`, `A01`, `A04`, `A09`).
     #[test]
     fn source_outcomes_idempotency_cam01_and_rate_limits() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -975,7 +1122,43 @@ mod tests {
         assert_eq!(unavail_hist.outcome, IngestOutcome::Unavailable);
         assert!(!transport_called);
 
-        // Oversized payload (> 64 bytes) returns Malformed.
+        // Incremental streaming cancellation mid-transfer (`execute_acquisition_streaming`, `D14`):
+        // chunk #1 is pushed, then cancellation triggers before chunk #2, so chunk #3 is never read!
+        let live_cancel_flag = Cell::new(false);
+        let mut chunks_pushed = 0usize;
+        let mid_stream_cancelled = registry.execute_acquisition_streaming(
+            OpaqueId::new("req_mid_cancel")?,
+            &ctx_id,
+            gen1,
+            &src_id,
+            SourceCapability::LivePolling,
+            "https://dot.example/api/poll",
+            "key_mid_cancel",
+            None,
+            9_000,
+            || live_cancel_flag.get(),
+            |_, sink| {
+                for (idx, chunk) in [b"part1".as_slice(), b"part2", b"part3"].iter().enumerate() {
+                    if idx == 1 {
+                        live_cancel_flag.set(true);
+                    }
+                    chunks_pushed += 1;
+                    if let Err(e) = sink.push_chunk(chunk) {
+                        return StreamingTransportOutcome::Aborted(e);
+                    }
+                }
+                StreamingTransportOutcome::Completed {
+                    upstream_timestamp_ms: None,
+                    truncated: false,
+                    blind_spot: None,
+                }
+            },
+            VersionId::new("ver_mid_cancel")?,
+        );
+        assert_eq!(mid_stream_cancelled.outcome, IngestOutcome::Cancelled);
+        assert_eq!(chunks_pushed, 2); // stopped immediately on chunk #2 without reading chunk #3!
+
+        // Oversized payload (> 64 bytes) returns Malformed (at t = 70_000 ms, new rate-limit window).
         let malformed = registry.execute_acquisition(
             OpaqueId::new("req_big")?,
             &ctx_id,
@@ -985,10 +1168,10 @@ mod tests {
             "https://dot.example/api/poll",
             "key_big",
             None,
-            10_000,
+            70_000,
             TransportResponse::Ok {
                 chunks: vec![vec![b'x'; 100]],
-                upstream_timestamp_ms: Some(10_000),
+                upstream_timestamp_ms: Some(70_000),
                 truncated: false,
                 blind_spot: None,
             },
@@ -1008,10 +1191,10 @@ mod tests {
             "https://dot.example/api/poll",
             "key_1",
             None,
-            10_100,
+            70_100,
             TransportResponse::Ok {
                 chunks: vec![b"frame_meta".to_vec()],
-                upstream_timestamp_ms: Some(10_050),
+                upstream_timestamp_ms: Some(70_050),
                 truncated: true,
                 blind_spot: Some("North sector offline".to_owned()),
             },
@@ -1030,10 +1213,10 @@ mod tests {
             "https://dot.example/api/poll",
             "key_1",
             None,
-            10_200,
+            70_200,
             TransportResponse::Ok {
                 chunks: vec![b"frame_meta".to_vec()],
-                upstream_timestamp_ms: Some(10_050),
+                upstream_timestamp_ms: Some(70_050),
                 truncated: false,
                 blind_spot: None,
             },
@@ -1046,7 +1229,7 @@ mod tests {
             retry.coverage.blind_spots,
             vec!["North sector offline".to_owned()]
         );
-        assert_eq!(retry.freshness.upstream_timestamp_ms, Some(10_050));
+        assert_eq!(retry.freshness.upstream_timestamp_ms, Some(70_050));
         assert!(retry.freshness.is_cached_or_stale);
 
         // 3rd non-cached request within the same minute triggers RateLimited (cap = 2/min).
@@ -1059,7 +1242,7 @@ mod tests {
             "https://dot.example/api/poll",
             "key_3",
             None,
-            10_300,
+            70_300,
             TransportResponse::Ok {
                 chunks: vec![b"ok".to_vec()],
                 upstream_timestamp_ms: None,
@@ -1081,7 +1264,7 @@ mod tests {
             "https://dot.example/api/poll",
             "key_late",
             None,
-            10_400,
+            70_400,
             TransportResponse::Ok {
                 chunks: vec![b"late".to_vec()],
                 upstream_timestamp_ms: None,

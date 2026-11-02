@@ -113,13 +113,17 @@ impl EvidenceGraph {
         }
 
         // Check origin-class inheritance against existing upstream provenance versions (`B9`).
+        // Missing upstream versions are rejected so inserting a derived object before its source
+        // cannot bypass non-observational taint checks (`B9`).
         let mut upstream_classes = Vec::new();
         for src_ver in &env.provenance.source_version_ids {
-            if let Some(src_obj) = self.objects.get(src_ver) {
-                upstream_classes.push(src_obj.envelope().origin_class);
-                if self.has_non_observational_ancestor(src_ver) {
-                    upstream_classes.push(crate::records::OriginClass::AnalyticalInference);
-                }
+            let src_obj = self
+                .objects
+                .get(src_ver)
+                .ok_or_else(|| DomainError::UnknownInputVersion(src_ver.clone()))?;
+            upstream_classes.push(src_obj.envelope().origin_class);
+            if self.has_non_observational_ancestor(src_ver) {
+                upstream_classes.push(crate::records::OriginClass::AnalyticalInference);
             }
         }
         crate::records::OriginClass::validate_derivation(&upstream_classes, env.origin_class)?;
@@ -175,6 +179,79 @@ impl EvidenceGraph {
         self.objects.insert(version_id.clone(), object);
         self.recompute_latest_for_id(&env.id);
         Ok(version_id)
+    }
+
+    /// Atomically validates and inserts a batch of objects and edges (`C10`, `AddAnnotation`),
+    /// sorting objects topologically by `supersedes` and `source_version_ids` so multi-version
+    /// chains (e.g. `v10` superseding `v9`) and parent-before-child dependencies succeed regardless
+    /// of lexical [`VersionId`] order. If any object or edge fails validation, `self` is unchanged.
+    pub fn insert_batch_validated(
+        &mut self,
+        objects: Vec<(DomainObject, Option<String>)>,
+        edges: Vec<RelationEdge>,
+    ) -> Result<Vec<VersionId>, DomainError> {
+        let mut next = self.clone();
+        let ordered = Self::topological_sort_batch(objects)?;
+        let mut inserted = Vec::with_capacity(ordered.len());
+        for (obj, reason) in ordered {
+            let ver = next.insert_object(obj, reason.as_deref())?;
+            inserted.push(ver);
+        }
+        for edge in edges {
+            next.add_edge(edge)?;
+        }
+        *self = next;
+        Ok(inserted)
+    }
+
+    fn topological_sort_batch(
+        mut pending: Vec<(DomainObject, Option<String>)>,
+    ) -> Result<Vec<(DomainObject, Option<String>)>, DomainError> {
+        let batch_versions: BTreeSet<VersionId> = pending
+            .iter()
+            .map(|(o, _)| o.envelope().version_id.clone())
+            .collect();
+        if batch_versions.len() != pending.len() {
+            let mut seen = BTreeSet::new();
+            for (o, _) in &pending {
+                let v = o.envelope().version_id.clone();
+                if !seen.insert(v.clone()) {
+                    return Err(DomainError::DuplicateVersion(v));
+                }
+            }
+        }
+        let mut placed = BTreeSet::new();
+        let mut out = Vec::with_capacity(pending.len());
+        while !pending.is_empty() {
+            let mut progress = false;
+            let mut remaining = Vec::new();
+            for (obj, reason) in pending {
+                let env = obj.envelope();
+                let sup_ready = env
+                    .supersedes
+                    .as_ref()
+                    .is_none_or(|s| !batch_versions.contains(s) || placed.contains(s));
+                let src_ready = env
+                    .provenance
+                    .source_version_ids
+                    .iter()
+                    .all(|s| !batch_versions.contains(s) || placed.contains(s));
+                if sup_ready && src_ready {
+                    placed.insert(env.version_id.clone());
+                    out.push((obj, reason));
+                    progress = true;
+                } else {
+                    remaining.push((obj, reason));
+                }
+            }
+            if !progress {
+                // Break tie or cyclic dependency by letting `insert_object` report the exact DomainError.
+                out.extend(remaining);
+                break;
+            }
+            pending = remaining;
+        }
+        Ok(out)
     }
 
     fn recompute_latest_for_id(&mut self, id: &OpaqueId) {
@@ -259,19 +336,65 @@ impl EvidenceGraph {
         Ok(())
     }
 
-    /// Restores a previously persisted [`DomainObject`] into the graph without re-emitting
-    /// duplicate `Supersedes` edges or re-mutating processing history (`A1`).
-    pub fn restore_object_unchecked(&mut self, object: DomainObject) -> Result<(), DomainError> {
-        object.validate()?;
-        let env = object.envelope().clone();
-        self.objects.insert(env.version_id, object);
-        self.recompute_latest_for_id(&env.id);
-        Ok(())
-    }
-
-    /// Restores a previously persisted [`RelationEdge`] into the graph (`A1`).
-    pub fn restore_edge_unchecked(&mut self, edge: RelationEdge) {
-        self.edges.push(edge);
+    /// Restores and validates a complete set of persisted [`DomainObject`]s and [`RelationEdge`]s (`A1`, `B5`, `B6`, `B9`).
+    ///
+    /// Enforces:
+    /// - No duplicate [`VersionId`] (`DomainError::DuplicateVersion`, `B5`)
+    /// - Every `supersedes` target exists and has matching semantic `id` (`B6`)
+    /// - Every `source_version_ids` reference exists and satisfies transitive origin-class derivation rules (`B9`)
+    /// - Every `DerivedFrom` edge is acyclic and satisfies transitive origin-class derivation rules (`B9`)
+    pub fn restore_and_validate(
+        objects: Vec<DomainObject>,
+        edges: Vec<RelationEdge>,
+    ) -> Result<Self, DomainError> {
+        let mut graph = Self::new();
+        for object in objects {
+            object.validate()?;
+            let env = object.envelope().clone();
+            if graph.objects.contains_key(&env.version_id) {
+                return Err(DomainError::DuplicateVersion(env.version_id));
+            }
+            graph.objects.insert(env.version_id, object);
+        }
+        let ids: BTreeSet<OpaqueId> = graph
+            .objects
+            .values()
+            .map(|o| o.envelope().id.clone())
+            .collect();
+        for id in &ids {
+            graph.recompute_latest_for_id(id);
+        }
+        for edge in edges {
+            graph.add_edge(edge)?;
+        }
+        for obj in graph.objects.values() {
+            let env = obj.envelope();
+            if let Some(prev_version) = &env.supersedes {
+                let prev_obj = graph
+                    .objects
+                    .get(prev_version)
+                    .ok_or_else(|| DomainError::SupersedesMissingVersion(prev_version.clone()))?;
+                if prev_obj.envelope().id != env.id {
+                    return Err(DomainError::SupersedesMismatchedObjectId {
+                        expected_id: env.id.clone(),
+                        actual_id: prev_obj.envelope().id.clone(),
+                    });
+                }
+            }
+            let mut upstream_classes = Vec::new();
+            for src_ver in &env.provenance.source_version_ids {
+                let src_obj = graph
+                    .objects
+                    .get(src_ver)
+                    .ok_or_else(|| DomainError::UnknownInputVersion(src_ver.clone()))?;
+                upstream_classes.push(src_obj.envelope().origin_class);
+                if graph.has_non_observational_ancestor(src_ver) {
+                    upstream_classes.push(crate::records::OriginClass::AnalyticalInference);
+                }
+            }
+            crate::records::OriginClass::validate_derivation(&upstream_classes, env.origin_class)?;
+        }
+        Ok(graph)
     }
 
     /// Sets the [`crate::records::AvailabilityState`] of a stored version (used by `oia-store`

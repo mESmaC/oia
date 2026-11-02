@@ -1,7 +1,7 @@
 # ADR 0001: Deployment Model, Application Shell, and UI Boundary (D01)
 
 - **Date:** 2026-11-01
-- **Status:** Accepted for P0 foundation; graphical renderer selection deferred to P1/P2 (#16, #23)
+- **Status:** Proposed (P0 foundation implemented; awaiting project-owner confirmation; graphical renderer selection deferred to P1/P2 #16, #23)
 - **Decision ID:** D01
 - **Issues:** #9, #14, #16
 - **Requirements:** `CASE-01`–`CASE-05`, `UX-01`–`UX-05`
@@ -12,7 +12,7 @@
 
 ## Decision
 
-1. **Accepted for P0 (Local-First Rust Runtime & Strict Layering):**
+1. **Proposed for P0 (Local-First Rust Runtime & Strict Layering):**
    - OIA runs local-first as a single-process Rust workspace (`edition = "2024"`, pinned to `rustc 1.99.0` via `rust-toolchain.toml`) with zero mandatory cloud accounts for local case creation, document import, evidence inspection, search, or report/bundle export.
    - `oia-domain` and `oia-time-geo` contain pure domain contracts and calculations with `#![forbid(unsafe_code)]` and zero dependencies on UI toolkits, HTTP clients, database engines, or model SDKs.
    - `oia-app` defines the shared application service boundary separating read-only queries from state-changing commands, alongside a renderer-independent presentation state model (`WorkspaceShellState`, `VisualSystemConfig`, `AccessibilityConfig`, `ViewKind`, `NavigationHistory`, `SemanticAccent`).
@@ -29,4 +29,4 @@
 
 ## Validation
 
-- Verified by compiling the 12-crate workspace (`cargo clippy --workspace --all-targets --locked -- -D warnings`) and exercising `oia-app` workspace shell navigation, accessibility toggles, quality-setting isolation, and localhost transport protection in `crates/oia-app`.
+- Verified by compiling the 14-crate workspace (`cargo clippy --workspace --all-targets --locked -- -D warnings`) and exercising `oia-app` workspace shell navigation, accessibility toggles, quality-setting isolation, and localhost transport protection in `crates/oia-app`.

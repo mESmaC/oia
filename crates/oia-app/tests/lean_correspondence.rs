@@ -1,4 +1,4 @@
-//! Full workspace Rust-to-Lean correspondence fixture suite (`#15`, ADR 0005).
+//! Full workspace Rust-to-Lean correspondence fixture suite (`#15`, ADR 0004).
 //!
 //! Verifies that `oia_time_geo::select_frame_in_window`, `oia_forecast::is_admissible_at_cutoff`,
 //! `oia_analysis::compute_invalidated_nodes`, and `oia_domain::EvidenceGraph::propagate_reassessment`
@@ -56,10 +56,14 @@ fn lean_correspondence_all_targets_match_fixtures() -> Result<(), Box<dyn std::e
         500
     ));
 
+    // In `proofs/OiaProofs/Fixtures.lean`, `(invalidateClosure [(2, 1), (3, 2), (4, 1)] 3 [1]).eraseDups`
+    // includes the initial seed `[1]` and evaluates to `[1, 2, 4, 3]` (sorted deduplicated: `[1, 2, 3, 4]`).
     let edges = [(2, 1), (3, 2), (4, 1)];
-    assert_eq!(compute_invalidated_nodes(&edges, 1), vec![1, 2, 3, 4]);
+    let closure_with_seed = compute_invalidated_nodes(&edges, 1);
+    assert_eq!(closure_with_seed, vec![1, 2, 3, 4]);
 
-    // Also verify `EvidenceGraph::propagate_reassessment` directly on the identical 4-node fixture:
+    // `EvidenceGraph::propagate_reassessment` marks strictly downstream dependents
+    // (i.e. `closure_with_seed` minus the revised upstream seed `1` itself -> `[v-2, v-3, v-4]`):
     let mut graph = oia_domain::EvidenceGraph::new();
     let actor = oia_domain::ActorId::new("actor-1")?;
     for (idx, kind, src_vers) in [
@@ -123,14 +127,12 @@ fn lean_correspondence_all_targets_match_fixtures() -> Result<(), Box<dyn std::e
         2_000,
     );
     flagged.sort();
-    assert_eq!(
-        flagged,
-        vec![
-            oia_domain::VersionId::new("v-2")?,
-            oia_domain::VersionId::new("v-3")?,
-            oia_domain::VersionId::new("v-4")?,
-        ]
-    );
+    let expected_downstream: Vec<oia_domain::VersionId> = closure_with_seed
+        .into_iter()
+        .filter(|&id| id != 1)
+        .map(|id| oia_domain::VersionId::new(format!("v-{id}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(flagged, expected_downstream);
 
     Ok(())
 }

@@ -1,7 +1,7 @@
-# ADR 0008: First Lean 4 Verification Target and Rust Correspondence Method (D13)
+# ADR 0004: First Lean 4 Verification Target and Rust Correspondence Method (D13)
 
 - **Date:** 2026-11-01
-- **Status:** Accepted for P0
+- **Status:** Proposed (P0 proofs and Rust correspondence suite implemented; awaiting project-owner confirmation)
 - **Decision ID:** D13
 - **Issues:** #15
 - **Requirements:** `REASON-01`, `GEO-02`, `FORECAST-04`
@@ -21,10 +21,10 @@
      - Proves optimality (`selectLatestValid_optimal`: every valid candidate `c ∈ candidates` satisfies `c <= t`).
    - **Target 2 — Point-in-Time Forecast Cutoff Admissibility (`OiaProofs/CutoffAdmissibility.lean`):**
      Models strict prospective vs. retrospective admissibility of evidence records relative to an information cutoff `cutoffMs`.
-     - Proves strict cutoff soundness (`strictProspective_requires_known_avail_and_ingest`, `strictProspective_rejects_unknown_avail`, `strictProspective_rejects_late_ingest`, `retrospective_rejects_post_cutoff_observation`: a record admitted in strict prospective mode must have a known public availability timestamp `avail <= cutoffMs` AND an OIA ingestion timestamp `ingestedMs <= cutoffMs`; records with unknown availability are never admitted into strict prospective evaluations).
-   - **Target 3 — Dependency Invalidation Monotonicity and Closure (`OiaProofs/DependencyInvalidation.lean`):**
+     - Proves strict cutoff soundness (`unknown_availability_never_admissible`, `strict_admissible_no_leakage`, `strict_implies_retrospective`: a record admitted in strict prospective mode must have a known public availability timestamp `avail ≤ cutoffMs` AND an OIA ingestion timestamp `ingestedMs ≤ cutoffMs`, records with unknown availability `none` are never admitted, and any strict-prospective admissible record is also admissible in retrospective reconstruction).
+   - **Target 3 — Dependency Invalidation Monotonicity, Soundness, and Closure (`OiaProofs/DependencyInvalidation.lean`):**
      Models single-step (`stepInvalidation`) and multi-step bounded transitive closure (`invalidateClosure`) for marking direct and transitive downstream dependents as `NeedsReassessment` when an upstream source/claim/calibration version is revised or retracted, while preserving original version immutability.
-     - Proves single-step and multi-step monotonicity (`stepInvalidation_monotonic`, `invalidateClosure_monotonic`: reassessment flags are monotonic across propagation steps) and direct-edge closure (`stepInvalidation_includes_direct_dependent`: if `src ∈ flagged` and `(dep, src) ∈ edges`, then `dep ∈ stepInvalidation edges flagged`).
+     - Proves single-step and multi-step monotonicity (`stepInvalidation_monotonic`, `invalidateClosure_monotonic`), direct-edge closure (`stepInvalidation_includes_direct_dependent`), and reachability soundness (`stepInvalidation_sound`, `invalidateClosure_sound`: every node in `invalidateClosure edges fuel initial` is reachable from `initial` via `IsReachable edges`).
 
 2. **Toolchain and Trusted Base:**
    - Pinned in `proofs/lean-toolchain` to `leanprover/lean4:v4.35.0` (matching the local `Lean 4.35.0` / `Lake 5.0.0` toolchain).
@@ -35,9 +35,8 @@
    - The Lean functions operate over unbounded integer millisecond timestamps (`Int`) and explicit discrete state enums.
    - The corresponding Rust functions (`oia_time_geo::select_frame_in_window`, `oia_forecast::is_admissible_at_cutoff`, `oia_analysis::compute_invalidated_nodes`, and `oia_domain::EvidenceGraph::propagate_reassessment`) use `i64` millisecond timestamps and isomorphic state enums.
    - **Explicit Domain Preconditions:** `oia_time_geo::select_frame_in_window` enforces two runtime preconditions before delegating to the pure selection logic:
-     1. `window_start_ms < window_end_ms` (returning `Err(TimeGeoError::InvertedTimeWindow)` otherwise) and `max_gap_ms >= 0` (returning `Err(TimeGeoError::NegativeMaxGap)` otherwise).
-     2. Checked integer subtraction `target_ms.checked_sub(t)` (returning `Err(TimeGeoError::TimestampOverflow)` if `target_ms - t` overflows `i64`).
-     For all inputs satisfying `window_start_ms < window_end_ms`, `max_gap_ms >= 0`, and non-overflowing `i64` difference `target_ms - t`, `select_frame_in_window` is behaviorally equivalent to `OiaProofs.selectFrameInWindow`.
+     1. `window_start_ms <= window_end_ms` (returning `Err(TimeGeoError::InvalidTimeInterval { start_ms, end_ms })` otherwise) and `max_gap_ms >= 0` (returning `Err(TimeGeoError::NegativeMaxGap(max_gap_ms))` otherwise).
+     2. Saturating subtraction `target_ms.saturating_sub(t) <= max_gap_ms` after verifying `t <= target_ms`. For all inputs satisfying `window_start_ms <= window_end_ms`, `max_gap_ms >= 0`, and non-overflowing `i64` difference `target_ms - t`, `select_frame_in_window` is behaviorally equivalent to `OiaProofs.selectFrameInWindow`.
    - Correspondence is checked via deterministic cross-check fixtures (`crates/oia-time-geo/tests/lean_correspondence.rs`, `crates/oia-app/tests/lean_correspondence.rs`, and `proofs/OiaProofs/Fixtures.lean`) that evaluate identical boundary cases (empty catalogs, exact boundary timestamps `t == windowStart`, `t == windowEnd`, `target - t == maxGap`, unsorted/duplicate timestamps, unknown availability, post-cutoff ingestion, and 4-node transitive dependency chains) in both `lake build` (`#guard`) and `cargo test`.
    - Verification status in `oia-analysis` (`VerificationStatus`, `VerificationBadge`) distinguishes `VerificationStatus::ModelPropertyProved` and `VerificationStatus::RustCorrespondenceTested` from `VerificationStatus::FormalImplementationProof` (which is never claimed by differential testing alone).
 

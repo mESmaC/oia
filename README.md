@@ -37,13 +37,13 @@ The **P0: Evidence Foundation** workspace is implemented and verified locally:
 - **Lean 4 formal verification (`proofs/`, `leanprover/lean4:v4.35.0`)**:
   - Machine-checked theorems (zero `sorry`/`admit`/project axioms) for source frame selection (`OiaProofs.FrameSelection`), point-in-time forecast cutoff admissibility (`OiaProofs.CutoffAdmissibility`), and DAG dependency invalidation (`OiaProofs.DependencyInvalidation`), paired with Rust correspondence tests.
 - **Architecture Decision Records (`docs/adr/`)**:
-  - [ADR 0001 (D01): Deployment and UI boundary](docs/adr/0001-d01-deployment-and-ui-boundary.md)
+  - [ADR 0001 (D01): Deployment and UI boundary (Proposed)](docs/adr/0001-d01-deployment-and-ui-boundary.md)
   - [ADR 0002 (D02): Storage and indexing (Proposed)](docs/adr/0002-d02-storage-and-indexing.md)
   - [ADR 0003 (D14): Project licensing and distribution notices (Proposed)](docs/adr/0003-d14-licensing-and-distribution.md)
+  - [ADR 0004 (D13): Initial Lean 4 proof targets and Rust correspondence (Proposed)](docs/adr/0004-d13-lean-correspondence-target.md)
   - [ADR 0005 (D03): Seed corpus and news sources](docs/adr/0005-d03-seed-corpus-and-news-sources.md)
   - [ADR 0006 (D05): Report and bundle formats](docs/adr/0006-d05-report-and-bundle-formats.md)
   - [ADR 0007 (D04): AI execution and grounding](docs/adr/0007-d04-ai-execution-and-grounding.md)
-  - [ADR 0008 (D13): Initial Lean 4 proof targets and Rust correspondence](docs/adr/0008-d13-lean-correspondence-target.md)
 
 Phases P1–P5 (external source adapters, 3D globe/sky renderer, media forensics/hardware adapters, hosted collaboration, and market/analogue forecasting) remain open work packages in the [GitHub implementation backlog](docs/backlog.md):
 
@@ -67,25 +67,26 @@ The workspace provides the `oia` CLI in [`crates/oia-app`](crates/oia-app/src/ma
 
 Neither example imports, stores, or detects file types, parses PDFs, or runs OCR.
 
-**Requirements:** Rust 1.99.0 via [rustup](https://rustup.rs/) (`rustup toolchain install 1.99.0`). No network access is needed; the package has no third-party dependencies and builds with `--locked --offline`. Without rustup, the scripts warn and use whatever `cargo` is on `PATH`; only the pinned 1.99.0 toolchain has been checked.
+**Requirements:** Rust 1.99.0 via [rustup](https://rustup.rs/) (`rustup toolchain install 1.99.0`). No network access is needed; the workspace has no third-party dependencies and builds with `--locked --offline`. Without rustup, the scripts warn and use whatever `cargo` is on `PATH`; only the pinned 1.99.0 toolchain has been checked.
 
-The run scripts wrap the package-local Cargo commands. Use `scripts/run.sh` on Linux, macOS, or Git Bash and `scripts\run.ps1` in Windows PowerShell:
+The run scripts wrap the root workspace Cargo commands (and `lake build` in `proofs/` when `lake` is installed). Use `scripts/run.sh` on Linux, macOS, or Git Bash and `scripts\run.ps1` in Windows PowerShell:
 
 | Task | POSIX shell | Windows PowerShell |
 | --- | --- | --- |
-| Build | `scripts/run.sh build` | `.\scripts\run.ps1 build` |
+| Build workspace | `scripts/run.sh build` | `.\scripts\run.ps1 build` |
 | Inspect `README.md` | `scripts/run.sh run` | `.\scripts\run.ps1 run` |
 | Inspect a file | `scripts/run.sh run PATH [MAX_INPUT_BYTES] [MAX_PASSAGES]` | `.\scripts\run.ps1 run PATH [MAX_INPUT_BYTES] [MAX_PASSAGES]` |
 | Search a file | `scripts/run.sh search PATH QUERY [MAX_MATCHES] [MAX_INPUT_BYTES] [MAX_PASSAGES]` | `.\scripts\run.ps1 search PATH QUERY [MAX_MATCHES] [MAX_INPUT_BYTES] [MAX_PASSAGES]` |
-| Format, lint, and test | `scripts/run.sh check` | `.\scripts\run.ps1 check` |
+| Format, lint, test, and Lean check | `scripts/run.sh check` | `.\scripts\run.ps1 check` |
 
-Defaults are 1,048,576 input bytes, 10,000 passages, and (for search) 100 matches. Exit code `0` means complete (including empty input or zero matches), `2` means explicitly partial because a budget was reached, and `1` means an error. Oversized input is refused rather than truncated. A complete search with zero matches covers only the file that was read; it is not evidence that the text is absent from the source. Set `OIA_RUST_TOOLCHAIN` to use a different installed toolchain. If PowerShell blocks local scripts, run `powershell -ExecutionPolicy Bypass -File scripts\run.ps1 run`.
+Defaults for `run` and `search` are 1,048,576 input bytes, 10,000 passages, and (for search) 100 matches. Exit code `0` means complete (including empty input or zero matches), `2` means explicitly partial because a budget was reached, and `1` means an error. Oversized input is refused rather than truncated. A complete search with zero matches covers only the file that was read; it is not evidence that the text is absent from the source. Set `OIA_RUST_TOOLCHAIN` to use a different installed toolchain. If PowerShell blocks local scripts, run `powershell -ExecutionPolicy Bypass -File scripts\run.ps1 run`.
 
 The equivalent direct commands are:
 
 ```text
-cargo +1.99.0 run --manifest-path crates/oia-documents/Cargo.toml --example inspect-text --locked --offline -- README.md
-cargo +1.99.0 run --manifest-path crates/oia-documents/Cargo.toml --example find-text --locked --offline -- fixtures/documents/a03/originals/report-v1.txt "two lights"
+cargo +1.99.0 run -p oia-documents --example inspect-text --locked --offline -- README.md
+cargo +1.99.0 run -p oia-documents --example find-text --locked --offline -- fixtures/documents/a03/originals/report-v1.txt "two lights"
+cargo +1.99.0 run -p oia-app --bin oia --locked --offline -- status
 ```
 
-See [document text extraction](docs/implementation/document-text.md) and [document text search](docs/implementation/document-search.md) for the full contracts, limitations, and verification records. These scripts will change when the shared Rust workspace and application land ([#9](https://github.com/mESmaC/oia/issues/9)).
+See [document text extraction](docs/implementation/document-text.md) and [document text search](docs/implementation/document-search.md) for the full contracts, limitations, and verification records.

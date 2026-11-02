@@ -8,7 +8,8 @@ use std::fmt;
 
 use oia_domain::{
     AvailabilityState, CitationAnchor, ContentHash, DocumentReleaseKind, DomainError, DomainObject,
-    OmissionReason, OpaqueId, Report, VersionId, WorkspaceVisibility,
+    JsonValue, OmissionReason, OpaqueId, ReassessmentState, RelationEdge, RelationKind, Report,
+    VersionId, WorkspaceVisibility,
 };
 use oia_store::{EvidenceStore, RetentionClass, StoreError};
 
@@ -209,6 +210,8 @@ pub struct InvestigationBundle {
     pub manifest: BundleManifest,
     /// Domain objects included in `records/`.
     pub records: Vec<DomainObject>,
+    /// Explicit relation edges included in `records/edges.json`.
+    pub edges: Vec<RelationEdge>,
     /// Raw asset bytes keyed by relative path (`assets/<sha256>`).
     pub asset_payloads: BTreeMap<String, Vec<u8>>,
     /// Rendered reports keyed by relative path (`reports/<id>.md`).
@@ -278,7 +281,7 @@ pub fn validate_bundle_entry_path(path: &str) -> Result<(), BundleError> {
 /// - Enforces per-source `ReuseConditions::redistribution_allowed` (`Shared Research Rule 9`).
 /// - When `include_sensitive == false`, omits sensitive artifacts with `OmissionReason::RedactedSensitiveContent`
 ///   and redacts sensitive report blocks.
-/// - Populates `entry_inventory`, `records`, `asset_payloads`, `rendered_reports`, `omitted_assets`,
+/// - Populates `entry_inventory`, `records`, `edges`, `asset_payloads`, `rendered_reports`, `omitted_assets`,
 ///   and `attribution_notices`.
 pub fn export_case_bundle(
     store: &EvidenceStore,
@@ -288,15 +291,18 @@ pub fn export_case_bundle(
     include_sensitive: bool,
 ) -> Result<InvestigationBundle, BundleError> {
     let mut records = Vec::new();
+    let mut exported_versions = BTreeSet::new();
     let mut entry_inventory = Vec::new();
     let mut asset_payloads = BTreeMap::new();
     let mut rendered_reports = BTreeMap::new();
     let mut omitted_assets = Vec::new();
     let mut attribution_notices = Vec::new();
 
-    // Build lookup of Source redistribution rules and attribution notices.
+    // Build lookup of Source redistribution rules, attribution notices, and which Sources are
+    // actually referenced by `SourceRecord`s belonging to `case_id`.
     let mut source_redistribution: BTreeMap<OpaqueId, (bool, String)> = BTreeMap::new();
     let mut sr_to_source: BTreeMap<VersionId, OpaqueId> = BTreeMap::new();
+    let mut referenced_source_ids: BTreeSet<OpaqueId> = BTreeSet::new();
     for (ver, obj) in store.graph().all_versions() {
         match obj {
             DomainObject::Source(s) => {
@@ -310,6 +316,11 @@ pub fn export_case_bundle(
             }
             DomainObject::SourceRecord(sr) => {
                 sr_to_source.insert(ver.clone(), sr.source_id.clone());
+                if sr.envelope.visibility.case_id() == Some(case_id)
+                    && (include_sensitive || !sr.envelope.visibility.is_sensitive())
+                {
+                    referenced_source_ids.insert(sr.source_id.clone());
+                }
             }
             _ => {}
         }
@@ -317,7 +328,8 @@ pub fn export_case_bundle(
 
     for (ver, obj) in store.graph().all_versions() {
         let belongs_to_case = obj.envelope().visibility.case_id() == Some(case_id)
-            || matches!(obj, DomainObject::Source(_));
+            || (matches!(obj, DomainObject::Source(_))
+                && referenced_source_ids.contains(&obj.envelope().id));
         if !belongs_to_case {
             continue;
         }
@@ -408,7 +420,35 @@ pub fn export_case_bundle(
             content_hash: rec_hash,
             byte_len: rec_bytes.len() as u64,
         });
+        exported_versions.insert(ver.clone());
         records.push(obj.clone());
+    }
+
+    // Export explicit relation edges whose endpoints are both in `exported_versions`.
+    // Exclude auto-generated `RelationKind::Supersedes` edges because `insert_object` / `insert_batch_validated`
+    // reconstructs supersession edges from `envelope.supersedes`.
+    let mut edges = Vec::new();
+    for edge in store.graph().edges() {
+        if edge.kind != RelationKind::Supersedes
+            && exported_versions.contains(&edge.from_version)
+            && exported_versions.contains(&edge.to_version)
+        {
+            edges.push(edge.clone());
+        }
+    }
+    if !edges.is_empty() {
+        let edges_val = JsonValue::Array(edges.iter().map(RelationEdge::to_json_value).collect());
+        let edges_json = edges_val
+            .to_canonical_json()
+            .map_err(DomainError::Json)
+            .map_err(BundleError::Domain)?;
+        let edges_bytes = edges_json.into_bytes();
+        let edges_hash = ContentHash::compute(&edges_bytes);
+        entry_inventory.push(BundleEntry {
+            relative_path: "records/edges.json".to_owned(),
+            content_hash: edges_hash,
+            byte_len: edges_bytes.len() as u64,
+        });
     }
 
     Ok(InvestigationBundle {
@@ -421,6 +461,7 @@ pub fn export_case_bundle(
             attribution_notices,
         },
         records,
+        edges,
         asset_payloads,
         rendered_reports,
     })
@@ -450,6 +491,17 @@ fn ns_anchor(ns: &str, a: &CitationAnchor) -> Result<CitationAnchor, BundleError
     })
 }
 
+fn namespace_relation_edge(ns: &str, edge: &RelationEdge) -> Result<RelationEdge, BundleError> {
+    Ok(RelationEdge {
+        edge_id: ns_opaque(ns, &edge.edge_id)?,
+        kind: edge.kind,
+        from_version: ns_version(ns, &edge.from_version)?,
+        to_version: ns_version(ns, &edge.to_version)?,
+        rationale: edge.rationale.clone(),
+        review_status: edge.review_status,
+    })
+}
+
 fn namespace_domain_object(ns: &str, obj: &DomainObject) -> Result<DomainObject, BundleError> {
     let mut cloned = obj.clone();
     {
@@ -472,6 +524,17 @@ fn namespace_domain_object(ns: &str, obj: &DomainObject) -> Result<DomainObject,
         env.provenance
             .processing_history
             .push(format!("imported_from_origin_version:{origin_ver}"));
+        if let ReassessmentState::NeedsReassessment {
+            ref mut upstream_versions,
+            ..
+        } = env.reassessment
+        {
+            let mut mapped_up = Vec::with_capacity(upstream_versions.len());
+            for uv in upstream_versions.iter() {
+                mapped_up.push(ns_version(ns, uv)?);
+            }
+            *upstream_versions = mapped_up;
+        }
         env.visibility = match &env.visibility {
             WorkspaceVisibility::PrivateCase { case_id, sensitive } => {
                 WorkspaceVisibility::PrivateCase {
@@ -622,8 +685,9 @@ fn namespace_domain_object(ns: &str, obj: &DomainObject) -> Result<DomainObject,
 /// - Duplicate conflicting version IDs or collisions with existing objects/cases in `target_store`
 ///
 /// Persists verified asset payloads into `target_store` (`put_verified_blob`) and namespaces
-/// all imported IDs, versions, `supersedes`, and case references when `local_id_namespace` is `Some`
-/// so existing local cases and records can never be overwritten or superseded (`C10`).
+/// all imported IDs, versions, `supersedes`, `reassessment.upstream_versions`, edges, and case
+/// references when `local_id_namespace` is `Some` so existing local cases and records can never
+/// be overwritten or superseded (`C10`).
 pub fn validate_and_import_bundle(
     target_store: &mut EvidenceStore,
     bundle: &InvestigationBundle,
@@ -696,7 +760,7 @@ pub fn validate_and_import_bundle(
     // Pre-build local ID mapping and check that NO mapped version, ID, or case_id collides with
     // existing records in `target_store` (`C10`).
     let mut id_map = BTreeMap::new();
-    let mut mapped_records = Vec::with_capacity(bundle.records.len());
+    let mut mapped_records_with_reasons = Vec::with_capacity(bundle.records.len());
     for obj in &bundle.records {
         let origin_id = obj.envelope().id.clone();
         let mapped = match local_id_namespace {
@@ -709,17 +773,19 @@ pub fn validate_and_import_bundle(
         if target_store.graph().get_version(&local_ver).is_some() {
             return Err(BundleError::ExistingVersionCollision(local_ver));
         }
-        if target_store.graph().get_latest(&local_id).is_some()
-            && !id_map.values().any(|already| already == &local_id)
-        {
+        if target_store.graph().get_latest(&local_id).is_some() {
             return Err(BundleError::ExistingVersionCollision(local_ver));
         }
         if let Some(cid) = mapped.envelope().visibility.case_id()
             && target_store.graph().get_latest(cid).is_some()
-            && !bundle
-                .records
-                .iter()
-                .any(|r| matches!(r, DomainObject::Investigation(_)))
+        {
+            return Err(BundleError::ExistingVersionCollision(local_ver));
+        }
+        if let DomainObject::Report(rep) = &mapped
+            && target_store
+                .graph()
+                .get_latest(&rep.investigation_id)
+                .is_some()
         {
             return Err(BundleError::ExistingVersionCollision(local_ver));
         }
@@ -730,17 +796,25 @@ pub fn validate_and_import_bundle(
         }
 
         id_map.insert(origin_id, local_id);
-        mapped_records.push(mapped);
+        mapped_records_with_reasons.push((mapped, None));
     }
 
-    // Dry-run inserting all mapped objects on a cloned graph before mutating `target_store`!
+    let mut mapped_edges = Vec::with_capacity(bundle.edges.len());
+    for edge in &bundle.edges {
+        let mapped_edge = match local_id_namespace {
+            Some(ns) => namespace_relation_edge(ns, edge)?,
+            None => edge.clone(),
+        };
+        mapped_edges.push(mapped_edge);
+    }
+
+    // Dry-run inserting all mapped objects (topologically sorted over `supersedes` and
+    // `source_version_ids`) and edges on a cloned graph before mutating `target_store`!
     {
         let mut dry_graph = target_store.graph().clone();
-        for obj in &mapped_records {
-            dry_graph
-                .insert_object(obj.clone(), None)
-                .map_err(BundleError::Domain)?;
-        }
+        dry_graph
+            .insert_batch_validated(mapped_records_with_reasons.clone(), mapped_edges.clone())
+            .map_err(BundleError::Domain)?;
     }
 
     // Persist verified asset blobs into `target_store` (`C10`).
@@ -752,12 +826,10 @@ pub fn validate_and_import_bundle(
         imported_asset_count += 1;
     }
 
-    // Commit validated objects into `target_store`.
-    for obj in mapped_records {
-        target_store
-            .put_object(obj, None)
-            .map_err(BundleError::Store)?;
-    }
+    // Commit validated objects and edges atomically into `target_store`.
+    target_store
+        .put_objects_batch(mapped_records_with_reasons, mapped_edges)
+        .map_err(BundleError::Store)?;
 
     Ok(BundleImportReceipt {
         package_id: bundle.manifest.package_id.clone(),
@@ -880,6 +952,39 @@ mod tests {
         let case_id = OpaqueId::new("case_alpha")?;
         let secret_phrase = "SENSITIVE_WITNESS_HOME_ADDRESS_999";
 
+        let src_obj = DomainObject::Source(Source {
+            envelope: ObjectEnvelope {
+                id: OpaqueId::new("src_1")?,
+                version_id: VersionId::new("ver_src_1")?,
+                schema_version: SchemaVersion::V1,
+                object_type: DomainObjectType::Source,
+                created_at_ms: 1_700_000_000_000,
+                created_by: actor.clone(),
+                visibility: WorkspaceVisibility::LibraryPublic,
+                supersedes: None,
+                provenance: ProvenanceRecord {
+                    source_version_ids: Vec::new(),
+                    declared_origin_note: Some("Primary archive".to_owned()),
+                    processing_history: Vec::new(),
+                },
+                origin_class: OriginClass::AcquiredSourceMaterial,
+                review_status: ReviewStatus::Reviewed,
+                availability: AvailabilityState::Available,
+                reassessment: ReassessmentState::Current,
+            },
+            provider_name: "Archive".to_owned(),
+            capabilities: Vec::new(),
+            reuse_conditions: ReuseConditions {
+                ordinary_access_method: "web".to_owned(),
+                automated_processing_allowed: true,
+                retention_allowed: true,
+                redistribution_allowed: true,
+                attribution: "Archive Attribution".to_owned(),
+            },
+            credential_ref: None,
+            health: SourceHealthState::Available,
+        });
+
         let report = Report {
             envelope: ObjectEnvelope {
                 id: OpaqueId::new("rep_1")?,
@@ -901,7 +1006,11 @@ mod tests {
                 origin_class: OriginClass::AnalyticalInference,
                 review_status: ReviewStatus::Reviewed,
                 availability: AvailabilityState::Available,
-                reassessment: ReassessmentState::Current,
+                reassessment: ReassessmentState::NeedsReassessment {
+                    upstream_versions: vec![VersionId::new("ver_src_1")?],
+                    reasons: vec!["Source metadata updated".to_owned()],
+                    flagged_at_ms: 1_700_000_000_500,
+                },
             },
             investigation_id: case_id.clone(),
             title: "Alpha Investigation Report".to_owned(),
@@ -948,10 +1057,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&store_dir);
         let mut store = EvidenceStore::open(&store_dir, 2, StoreBudget::default())?;
 
-        let existing_case = DomainObject::Investigation(Investigation {
+        // Multi-version supersession chain where `v10` supersedes `v9` (so lexicographical order puts `v10` before `v9`).
+        let case_v9 = DomainObject::Investigation(Investigation {
             envelope: ObjectEnvelope {
                 id: case_id.clone(),
-                version_id: VersionId::new("ver_case_alpha_1")?,
+                version_id: VersionId::new("v9")?,
                 schema_version: SchemaVersion::V1,
                 object_type: DomainObjectType::Investigation,
                 created_at_ms: 1_700_000_000_000,
@@ -971,7 +1081,7 @@ mod tests {
                 availability: AvailabilityState::Available,
                 reassessment: ReassessmentState::Current,
             },
-            title: "Original Untouched Case".to_owned(),
+            title: "Original Untouched Case v9".to_owned(),
             question: "What happened?".to_owned(),
             geographic_scope: None,
             temporal_scope: None,
@@ -983,13 +1093,50 @@ mod tests {
             lead_versions: Vec::new(),
             is_published: false,
         });
-        store.put_object(existing_case.clone(), None)?;
+        let case_v10 = DomainObject::Investigation(Investigation {
+            envelope: ObjectEnvelope {
+                id: case_id.clone(),
+                version_id: VersionId::new("v10")?,
+                schema_version: SchemaVersion::V1,
+                object_type: DomainObjectType::Investigation,
+                created_at_ms: 1_700_000_001_000,
+                created_by: actor.clone(),
+                visibility: WorkspaceVisibility::PrivateCase {
+                    case_id: case_id.clone(),
+                    sensitive: false,
+                },
+                supersedes: Some(VersionId::new("v9")?),
+                provenance: ProvenanceRecord {
+                    source_version_ids: Vec::new(),
+                    declared_origin_note: Some("Revised case".to_owned()),
+                    processing_history: Vec::new(),
+                },
+                origin_class: OriginClass::AnalyticalInference,
+                review_status: ReviewStatus::Reviewed,
+                availability: AvailabilityState::Available,
+                reassessment: ReassessmentState::Current,
+            },
+            title: "Revised Case v10".to_owned(),
+            question: "What happened?".to_owned(),
+            geographic_scope: None,
+            temporal_scope: None,
+            topics: Vec::new(),
+            evidence_versions: Vec::new(),
+            saved_query_versions: Vec::new(),
+            annotation_versions: Vec::new(),
+            hypothesis_versions: Vec::new(),
+            lead_versions: Vec::new(),
+            is_published: false,
+        });
+        store.put_object(case_v9.clone(), None)?;
+        store.put_object(case_v10.clone(), Some("Revised title"))?;
 
         let asset_bytes = b"verified bundle asset bytes".to_vec();
         let asset_hash = ContentHash::compute(&asset_bytes);
         let mut asset_payloads = BTreeMap::new();
         asset_payloads.insert("assets/blob1".to_owned(), b"corrupted bytes".to_vec());
 
+        // Notice `case_v10` is placed BEFORE `case_v9` and `report` before `src_obj` to test topological sorting!
         let bad_bundle = InvestigationBundle {
             manifest: BundleManifest {
                 schema_version: 1,
@@ -1003,7 +1150,20 @@ mod tests {
                 omitted_assets: Vec::new(),
                 attribution_notices: Vec::new(),
             },
-            records: vec![existing_case, DomainObject::Report(report.clone())],
+            records: vec![
+                case_v10,
+                case_v9,
+                DomainObject::Report(report.clone()),
+                src_obj,
+            ],
+            edges: vec![RelationEdge {
+                edge_id: OpaqueId::new("edge_rep_cites_src")?,
+                kind: RelationKind::Quotes,
+                from_version: VersionId::new("ver_rep_1")?,
+                to_version: VersionId::new("ver_src_1")?,
+                rationale: "Report cites source".to_owned(),
+                review_status: ReviewStatus::Unreviewed,
+            }],
             asset_payloads,
             rendered_reports: BTreeMap::new(),
         };
@@ -1024,11 +1184,24 @@ mod tests {
                 .is_none()
         );
 
-        // Fix the asset bytes and verify clean import with full namespacing and verified blob storage (`C10`).
+        // Fix the asset bytes: first verify that importing with `local_id_namespace: None` into a store
+        // that already contains `case_alpha` is rejected with `ExistingVersionCollision` (`C10`).
         let mut good_bundle = bad_bundle;
         good_bundle
             .asset_payloads
             .insert("assets/blob1".to_owned(), asset_bytes.clone());
+        assert!(matches!(
+            validate_and_import_bundle(
+                &mut store,
+                &good_bundle,
+                BundleImportLimits::default(),
+                None
+            ),
+            Err(BundleError::ExistingVersionCollision(_))
+        ));
+
+        // Now verify clean import with `Some("imp")` namespacing, topological `v10 -> v9` ordering,
+        // `reassessment.upstream_versions` namespacing, edge import, and verified blob storage (`C10`).
         let receipt = validate_and_import_bundle(
             &mut store,
             &good_bundle,
@@ -1041,11 +1214,33 @@ mod tests {
             receipt.origin_to_local_id_map.get(&OpaqueId::new("rep_1")?),
             Some(&OpaqueId::new("imp:rep_1")?)
         );
-        // Existing local `ver_case_alpha_1` remains Reviewed (not Superseded by imported bundle).
+        // Verify `reassessment.upstream_versions` and `edges` were namespaced!
+        let imported_rep = store
+            .graph()
+            .get_version(&VersionId::new("imp:ver_rep_1")?)
+            .ok_or(DomainError::MissingProvenance)?;
+        assert_eq!(
+            imported_rep.envelope().reassessment,
+            ReassessmentState::NeedsReassessment {
+                upstream_versions: vec![VersionId::new("imp:ver_src_1")?],
+                reasons: vec!["Source metadata updated".to_owned()],
+                flagged_at_ms: 1_700_000_000_500,
+            }
+        );
+        assert!(
+            store
+                .graph()
+                .edges()
+                .iter()
+                .any(|e| e.edge_id.as_str() == "imp:edge_rep_cites_src"
+                    && e.from_version.as_str() == "imp:ver_rep_1"
+                    && e.to_version.as_str() == "imp:ver_src_1")
+        );
+        // Existing local `v10` remains Reviewed (not overwritten by imported bundle).
         assert_eq!(
             store
                 .graph()
-                .get_version(&VersionId::new("ver_case_alpha_1")?)
+                .get_version(&VersionId::new("v10")?)
                 .map(|o| o.envelope().review_status),
             Some(ReviewStatus::Reviewed)
         );

@@ -240,12 +240,13 @@ pub struct LeapSecondTable {
 
 impl LeapSecondTable {
     /// Returns the complete IERS leap-second table containing all 28 historical steps from
-    /// 1972-01-01 (`10 s`) through 2017-01-01 (`37 s`) with a Bulletin C validity horizon (`E16`).
+    /// 1972-01-01 (`10 s`) through 2017-01-01 (`37 s`) with the IERS Bulletin C 71 validity
+    /// horizon (`2026-12-28T00:00:00Z`, `E16`).
     #[must_use]
     pub fn iers_standard() -> Self {
         Self {
-            version: "IERS-Bulletin-C-1972-2027".to_owned(),
-            expires_at_utc_ms: 1_814_140_800_000, // 2027-06-28T00:00:00Z
+            version: "IERS-Bulletin-C-71".to_owned(),
+            expires_at_utc_ms: 1_798_416_000_000, // 2026-12-28T00:00:00Z (Bulletin C 71)
             entries: vec![
                 (63_072_000_000, 10),    // 1972-01-01T00:00:00Z
                 (78_796_800_000, 11),    // 1972-07-01T00:00:00Z
@@ -543,6 +544,18 @@ impl GeoPoint {
             horizontal_uncertainty_m,
         })
     }
+
+    /// Constructs a [`GeoPoint`] after wrapping any finite longitude into `[-180.0, 180.0)`
+    /// via [`normalize_longitude_deg`] (`F19`).
+    pub fn new_normalized(
+        lat_deg: f64,
+        lon_deg: f64,
+        altitude: Option<AltitudeValue>,
+        horizontal_uncertainty_m: Option<f64>,
+    ) -> Result<Self, TimeGeoError> {
+        let wrapped_lon = normalize_longitude_deg(lon_deg)?;
+        Self::new(lat_deg, wrapped_lon, altitude, horizontal_uncertainty_m)
+    }
 }
 
 /// Normalizes a finite longitude in degrees into the canonical half-open interval `[-180.0, 180.0)`
@@ -612,16 +625,26 @@ impl GeoBoundingBox {
         self.west_lon_deg > self.east_lon_deg
     }
 
-    /// Returns `true` if `point` lies within this bounding box, properly handling dateline crossing.
+    /// Returns `true` if `point` lies within this bounding box, properly handling dateline crossing
+    /// and canonical `[-180.0, 180.0)` longitude wrapping (`F19`).
     #[must_use]
     pub fn contains(&self, point: &GeoPoint) -> bool {
         if point.lat_deg < self.south_lat_deg || point.lat_deg > self.north_lat_deg {
             return false;
         }
+        let Ok(lon) = normalize_longitude_deg(point.lon_deg) else {
+            return false;
+        };
+        let Ok(west) = normalize_longitude_deg(self.west_lon_deg) else {
+            return false;
+        };
+        let Ok(east) = normalize_longitude_deg(self.east_lon_deg) else {
+            return false;
+        };
         if !self.crosses_dateline() {
-            point.lon_deg >= self.west_lon_deg && point.lon_deg <= self.east_lon_deg
+            lon >= west && lon <= east
         } else {
-            point.lon_deg >= self.west_lon_deg || point.lon_deg <= self.east_lon_deg
+            lon >= west || lon <= east
         }
     }
 }

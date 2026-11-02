@@ -1,0 +1,15 @@
+[package]
+name = "oia-jpeg-privacy"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+description = "Bounded JPEG marker/segment container privacy kernel for OIA media workers"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"

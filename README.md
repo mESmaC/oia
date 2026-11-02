@@ -34,7 +34,8 @@ The repository currently includes the **#9 Rust workspace bootstrap**, platform 
 
 - **Rust workspace** (`Cargo.toml`, `rustc 1.99.0`, `edition = "2024"`, `#![forbid(unsafe_code)]`, dual-licensed `MIT OR Apache-2.0`):
   - Implemented packages: `oia-documents` (bounded UTF-8 extraction and exact-text passage search), `oia-png-privacy` (bounded PNG metadata inspection and cleanup), `oia-jpeg-privacy` (bounded JPEG container metadata inspection and cleanup), `oia-domain` (validated identifiers and schema version primitives), and `oia-app` (bootstrap application CLI and crate boundary; shell state and service wiring follow in `#16` and `#14`).
-  - Workspace boundary stubs awaiting split P0–P6 implementation PRs (`#10`–`#15` and subsequent phases): `oia-time-geo`, `oia-store`, `oia-ingest`, `oia-query`, `oia-analysis`, `oia-models`, `oia-media`, `oia-devices`, `oia-forecast`, and `oia-export`.
+  - `oia-forecast` provides a standalone [binary scoring kernel](docs/implementation/forecast-scoring.md); forecast issuance, chronological validation, persistence, calibration, and application integration remain open in `#43`.
+  - Workspace boundary stubs awaiting split P0–P6 implementation PRs (`#10`–`#15` and subsequent phases): `oia-time-geo`, `oia-store`, `oia-ingest`, `oia-query`, `oia-analysis`, `oia-models`, `oia-media`, `oia-devices`, and `oia-export`.
 - **Architecture Decision Records (`docs/adr/`)**:
   - [ADR 0001 (D01): Deployment and UI boundary (Proposed)](docs/adr/0001-d01-deployment-and-ui-boundary.md)
   - [ADR 0002 (D02): Storage and indexing (Accepted: embedded SQLite + managed blobs)](docs/adr/0002-d02-storage-and-indexing.md)

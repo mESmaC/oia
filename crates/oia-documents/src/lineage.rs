@@ -83,6 +83,11 @@ pub enum LineageError {
     MissingUnknownTimeReason {
         record_version_id: String,
     },
+    InvalidTimestamp {
+        record_version_id: String,
+        field: &'static str,
+        value: String,
+    },
     InvalidRetentionState {
         record_version_id: String,
         reason: &'static str,
@@ -155,6 +160,14 @@ impl fmt::Display for LineageError {
             Self::MissingUnknownTimeReason { record_version_id } => write!(
                 formatter,
                 "record {record_version_id:?} with null timestamp must provide unknown_time_reason"
+            ),
+            Self::InvalidTimestamp {
+                record_version_id,
+                field,
+                value,
+            } => write!(
+                formatter,
+                "invalid RFC 3339 timestamp on {record_version_id:?} field {field}: {value:?}"
             ),
             Self::InvalidRetentionState {
                 record_version_id,
@@ -307,6 +320,13 @@ impl RelationKind {
             Self::Republishes | Self::Quotes | Self::Cites | Self::Translates
         )
     }
+
+    pub fn is_version_chain_edge(self) -> bool {
+        matches!(
+            self,
+            Self::Supersedes | Self::AlternateRedaction | Self::PreprintVersion
+        )
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -457,6 +477,165 @@ pub struct InvalidationPropagationReport {
     pub removed_not_auto_retracted_record_versions: Vec<String>,
 }
 
+/// Parse an RFC 3339 timestamp (`YYYY-MM-DDTHH:MM:SS[.fff](Z|+HH:MM|-HH:MM)`)
+/// into UTC nanoseconds from the Unix epoch, preserving original strings for display
+/// while rejecting malformed dates, missing offsets, or out-of-range fields.
+pub fn parse_rfc3339_utc_nanos(
+    record_version_id: &str,
+    field: &'static str,
+    input: &str,
+) -> Result<i128, LineageError> {
+    let err = || LineageError::InvalidTimestamp {
+        record_version_id: record_version_id.to_owned(),
+        field,
+        value: input.to_owned(),
+    };
+    if input.len() < 20 {
+        return Err(err());
+    }
+    let year: i64 = input
+        .get(0..4)
+        .ok_or_else(err)?
+        .parse()
+        .map_err(|_| err())?;
+    if input.get(4..5) != Some("-") {
+        return Err(err());
+    }
+    let month: u32 = input
+        .get(5..7)
+        .ok_or_else(err)?
+        .parse()
+        .map_err(|_| err())?;
+    if input.get(7..8) != Some("-") {
+        return Err(err());
+    }
+    let day: u32 = input
+        .get(8..10)
+        .ok_or_else(err)?
+        .parse()
+        .map_err(|_| err())?;
+    let sep = input.get(10..11).ok_or_else(err)?;
+    if sep != "T" && sep != "t" {
+        return Err(err());
+    }
+    let hour: u32 = input
+        .get(11..13)
+        .ok_or_else(err)?
+        .parse()
+        .map_err(|_| err())?;
+    if input.get(13..14) != Some(":") {
+        return Err(err());
+    }
+    let minute: u32 = input
+        .get(14..16)
+        .ok_or_else(err)?
+        .parse()
+        .map_err(|_| err())?;
+    if input.get(16..17) != Some(":") {
+        return Err(err());
+    }
+    let second: u32 = input
+        .get(17..19)
+        .ok_or_else(err)?
+        .parse()
+        .map_err(|_| err())?;
+
+    let max_day = days_in_month(year, month).ok_or_else(err)?;
+    if day == 0 || day > max_day || hour > 23 || minute > 59 || second > 60 {
+        return Err(err());
+    }
+
+    let tail = input.get(19..).ok_or_else(err)?;
+    let (nanos, tz_tail) = if let Some(after_dot) = tail.strip_prefix('.') {
+        let tz_pos = after_dot.find(['Z', 'z', '+', '-']).ok_or_else(err)?;
+        let frac = after_dot.get(..tz_pos).ok_or_else(err)?;
+        if frac.is_empty() || frac.len() > 9 || !frac.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(err());
+        }
+        let mut parsed_frac: i128 = frac.parse().map_err(|_| err())?;
+        for _ in frac.len()..9 {
+            parsed_frac *= 10;
+        }
+        (parsed_frac, after_dot.get(tz_pos..).ok_or_else(err)?)
+    } else {
+        (0i128, tail)
+    };
+
+    let offset_seconds: i64 = if tz_tail == "Z" || tz_tail == "z" {
+        0
+    } else {
+        if tz_tail.len() != 6 {
+            return Err(err());
+        }
+        let sign: i64 = match tz_tail.get(0..1) {
+            Some("+") => 1,
+            Some("-") => -1,
+            _ => return Err(err()),
+        };
+        if tz_tail.get(3..4) != Some(":") {
+            return Err(err());
+        }
+        let off_h: u32 = tz_tail
+            .get(1..3)
+            .ok_or_else(err)?
+            .parse()
+            .map_err(|_| err())?;
+        let off_m: u32 = tz_tail
+            .get(4..6)
+            .ok_or_else(err)?
+            .parse()
+            .map_err(|_| err())?;
+        if off_h > 23 || off_m > 59 {
+            return Err(err());
+        }
+        sign * (i64::from(off_h) * 3600 + i64::from(off_m) * 60)
+    };
+
+    let days = days_from_civil(year, month, day);
+    let local_seconds =
+        days * 86_400 + i64::from(hour) * 3600 + i64::from(minute) * 60 + i64::from(second.min(59));
+    let utc_seconds = local_seconds - offset_seconds;
+    Ok(i128::from(utc_seconds) * 1_000_000_000 + nanos)
+}
+
+fn is_leap_year(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+}
+
+fn days_in_month(year: i64, month: u32) -> Option<u32> {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => Some(31),
+        4 | 6 | 9 | 11 => Some(30),
+        2 => Some(if is_leap_year(year) { 29 } else { 28 }),
+        _ => None,
+    }
+}
+
+// Howard Hinnant's civil-to-days algorithm (days relative to 1970-01-01).
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let m = i64::from(month);
+    let d = i64::from(day);
+    let y = year - i64::from(m <= 2);
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+fn record_priority_key(
+    record: &SourceRecordDescriptor,
+) -> Result<(u8, i128, i128, String), LineageError> {
+    let retrieval_nanos =
+        parse_rfc3339_utc_nanos(&record.version_id, "retrieval_time", &record.retrieval_time)?;
+    if let Some(pub_time) = record.publication_time.as_deref() {
+        let pub_nanos = parse_rfc3339_utc_nanos(&record.version_id, "publication_time", pub_time)?;
+        Ok((0, pub_nanos, retrieval_nanos, record.version_id.clone()))
+    } else {
+        Ok((1, i128::MAX, retrieval_nanos, record.version_id.clone()))
+    }
+}
+
 /// Validate `SourceRecordDescriptor` invariants (`DOC-02`, `Architecture §2.4`, `§3.1`).
 pub fn validate_records(
     records: &[SourceRecordDescriptor],
@@ -481,6 +660,13 @@ pub fn validate_records(
                 id: record.version_id.clone(),
             });
         }
+        parse_rfc3339_utc_nanos(&record.version_id, "retrieval_time", &record.retrieval_time)?;
+        if let Some(event_time) = record.event_time.as_deref() {
+            parse_rfc3339_utc_nanos(&record.version_id, "event_time", event_time)?;
+        }
+        if let Some(pub_time) = record.publication_time.as_deref() {
+            parse_rfc3339_utc_nanos(&record.version_id, "publication_time", pub_time)?;
+        }
         if record.event_time.is_none() || record.publication_time.is_none() {
             let valid_reason = record
                 .unknown_time_reason
@@ -491,6 +677,12 @@ pub fn validate_records(
                     record_version_id: record.version_id.clone(),
                 });
             }
+        }
+        if record.predecessor_version_id.as_deref() == Some(record.version_id.as_str()) {
+            return Err(LineageError::InvalidLifecycleTransition {
+                record_version_id: record.version_id.clone(),
+                reason: "record cannot name itself as predecessor_version_id",
+            });
         }
         match record.retention {
             RetentionMode::ReferenceOnly => {
@@ -518,7 +710,14 @@ pub fn validate_records(
                         reason: "retained record must attach pages and have no omission_reason",
                     });
                 }
+                let mut seen_pages = BTreeSet::new();
                 for page in &record.pages {
+                    if page.number == 0 || !seen_pages.insert(page.number) {
+                        return Err(LineageError::InvalidRetentionState {
+                            record_version_id: record.version_id.clone(),
+                            reason: "page numbers must be positive and unique within a record",
+                        });
+                    }
                     let Some(art_id) = page.artifact_id.as_deref() else {
                         return Err(LineageError::InvalidRetentionState {
                             record_version_id: record.version_id.clone(),
@@ -552,6 +751,8 @@ pub fn validate_records(
 
 /// Compute `ExactDuplicateGroup`s by content SHA-256 while preserving distinct
 /// `SourceRecord` versions and `source_id`s (`DOC-02`, `A03`).
+/// Members are ordered deterministically by earliest verified `publication_time`
+/// instant, then `retrieval_time` instant, then lexical `version_id` (§2.2).
 pub fn compute_exact_duplicate_groups(
     records_in_order: &[SourceRecordDescriptor],
     artifacts: &BTreeMap<String, ArtifactDescriptor>,
@@ -566,12 +767,16 @@ pub fn compute_exact_duplicate_groups(
             max: limits.max_nodes,
         });
     }
-    let mut by_hash: BTreeMap<String, Vec<(String, String, String)>> = BTreeMap::new();
+    type MemberSortKey = (u8, i128, i128, String);
+    let mut by_hash: BTreeMap<String, Vec<(MemberSortKey, String, String, String)>> =
+        BTreeMap::new();
     for record in records_in_order {
         check_control().map_err(LineageError::Stopped)?;
         if record.retention != RetentionMode::Retained {
             continue;
         }
+        let sort_key = record_priority_key(record)?;
+        let mut seen_record_hashes = BTreeSet::new();
         for page in &record.pages {
             if let Some(art_id) = page.artifact_id.as_deref() {
                 let artifact =
@@ -581,11 +786,15 @@ pub fn compute_exact_duplicate_groups(
                             context: "artifact_id",
                             target_id: art_id.to_owned(),
                         })?;
+                if !seen_record_hashes.insert(artifact.sha256.clone()) {
+                    continue;
+                }
                 let entry = by_hash.entry(artifact.sha256.clone()).or_default();
                 entry
                     .try_reserve(1)
                     .map_err(|_| LineageError::AllocationFailed)?;
                 entry.push((
+                    sort_key.clone(),
                     art_id.to_owned(),
                     record.version_id.clone(),
                     record.source_id.clone(),
@@ -595,9 +804,10 @@ pub fn compute_exact_duplicate_groups(
     }
 
     let mut groups = Vec::new();
-    for (sha256, members) in by_hash {
+    for (sha256, mut members) in by_hash {
         check_control().map_err(LineageError::Stopped)?;
         if members.len() > 1 {
+            members.sort_by(|a, b| a.0.cmp(&b.0));
             let mut art_ids = BTreeSet::new();
             let mut seen_versions = BTreeSet::new();
             let mut seen_sources = BTreeSet::new();
@@ -609,7 +819,7 @@ pub fn compute_exact_duplicate_groups(
             distinct_source_ids
                 .try_reserve(members.len())
                 .map_err(|_| LineageError::AllocationFailed)?;
-            for (art_id, version_id, source_id) in members {
+            for (_, art_id, version_id, source_id) in members {
                 art_ids.insert(art_id);
                 if !seen_versions.insert(version_id.clone()) {
                     return Err(LineageError::DuplicateIdentifier {
@@ -716,7 +926,9 @@ pub fn verify_utf8_byte_citation(
 }
 
 /// Verify a `ReleaseRedactionComparison` between two distinct document versions,
-/// ensuring no hidden cleartext is stored inside redacted artifacts (`DOC-02`, `DOC-04`, `A03`).
+/// ensuring neither caller-declared `forbidden_cleartext_in_left` nor segment-derived
+/// disclosed/newly-redacted substrings leak inside the corresponding redacted artifact
+/// (`DOC-02`, `DOC-04`, `A03`).
 pub fn verify_release_comparison(
     comparison: &ReleaseRedactionComparison,
     records: &BTreeMap<String, SourceRecordDescriptor>,
@@ -773,7 +985,7 @@ pub fn verify_release_comparison(
                     reason: "left artifact payload is not valid UTF-8",
                 })?;
             for forbidden in &comparison.forbidden_cleartext_in_left {
-                if text.contains(forbidden.as_str()) {
+                if !forbidden.is_empty() && text.contains(forbidden.as_str()) {
                     return Err(LineageError::HiddenRedactionPayloadRejected {
                         comparison_id: comparison.comparison_id.clone(),
                         artifact_id: art_id.to_owned(),
@@ -788,6 +1000,16 @@ pub fn verify_release_comparison(
     for page in &right_record.pages {
         if let Some(art_id) = page.artifact_id.as_deref() {
             right_pages.insert(page.number, art_id.to_owned());
+            let raw = payloads
+                .get(art_id)
+                .ok_or_else(|| LineageError::UnknownReference {
+                    context: "right page artifact_id",
+                    target_id: art_id.to_owned(),
+                })?;
+            std::str::from_utf8(raw).map_err(|_| LineageError::InvalidReleaseComparison {
+                comparison_id: comparison.comparison_id.clone(),
+                reason: "right artifact payload is not valid UTF-8",
+            })?;
         }
     }
 
@@ -852,12 +1074,30 @@ pub fn verify_release_comparison(
                         reason: "newly_disclosed_in_right must transition from redaction marker to disclosed text",
                     });
                 }
+                let disclosed = right_slice.trim();
+                let left_full = full_artifact_str(left_art_id, payloads)?;
+                if !disclosed.is_empty() && left_full.contains(disclosed) {
+                    return Err(LineageError::HiddenRedactionPayloadRejected {
+                        comparison_id: comparison.comparison_id.clone(),
+                        artifact_id: left_art_id.clone(),
+                        forbidden_cleartext: disclosed.to_owned(),
+                    });
+                }
             }
             ComparisonSegmentKind::NewlyRedactedInRight => {
                 if has_redaction_marker(left_slice) || !has_redaction_marker(right_slice) {
                     return Err(LineageError::InvalidReleaseComparison {
                         comparison_id: comparison.comparison_id.clone(),
                         reason: "newly_redacted_in_right must transition from disclosed text to redaction marker",
+                    });
+                }
+                let newly_redacted = left_slice.trim();
+                let right_full = full_artifact_str(right_art_id, payloads)?;
+                if !newly_redacted.is_empty() && right_full.contains(newly_redacted) {
+                    return Err(LineageError::HiddenRedactionPayloadRejected {
+                        comparison_id: comparison.comparison_id.clone(),
+                        artifact_id: right_art_id.clone(),
+                        forbidden_cleartext: newly_redacted.to_owned(),
                     });
                 }
             }
@@ -892,6 +1132,24 @@ pub fn verify_release_comparison(
 
 fn has_redaction_marker(text: &str) -> bool {
     text.contains("REDACTED") || text.contains("WITHHELD")
+}
+
+fn full_artifact_str<'a>(
+    artifact_id: &str,
+    payloads: &'a BTreeMap<String, Vec<u8>>,
+) -> Result<&'a str, LineageError> {
+    let raw = payloads
+        .get(artifact_id)
+        .ok_or_else(|| LineageError::UnknownReference {
+            context: "artifact_id",
+            target_id: artifact_id.to_owned(),
+        })?;
+    std::str::from_utf8(raw).map_err(|_| LineageError::InvalidByteAnchorRange {
+        artifact_id: artifact_id.to_owned(),
+        start: 0,
+        end: raw.len(),
+        byte_length: raw.len(),
+    })
 }
 
 fn extract_verified_utf8_slice<'a>(
@@ -929,8 +1187,10 @@ fn extract_verified_utf8_slice<'a>(
         })
 }
 
-/// Run deterministic Tarjan strongly connected components decomposition over
+/// Run deterministic, iterative Tarjan strongly connected components decomposition over
 /// `{Republishes, Quotes, Cites, Translates}` edges (`INTEL-01`, `A08`).
+/// Uses an explicit heap-allocated call stack bounded by `limits.max_nodes` so deep
+/// lineage chains never overflow the thread call stack.
 pub fn compute_lineage_sccs(
     records: &BTreeMap<String, SourceRecordDescriptor>,
     relations: &[RecordRelation],
@@ -980,10 +1240,10 @@ pub fn compute_lineage_sccs(
 
     let mut state = TarjanState::default();
     let sorted_nodes: Vec<String> = adj.keys().cloned().collect();
-    for node in &sorted_nodes {
+    for root in &sorted_nodes {
         check_control().map_err(LineageError::Stopped)?;
-        if !state.indices.contains_key(node) {
-            strongconnect(node, &adj, &mut state, &mut check_control)?;
+        if !state.indices.contains_key(root) {
+            strongconnect_iterative(root, &adj, &mut state, &mut check_control)?;
         }
     }
 
@@ -997,7 +1257,7 @@ pub fn compute_lineage_sccs(
             comp.len() == 1 && adj.get(first).is_some_and(|outs| outs.contains(first));
         if comp.len() > 1 || has_self_edge {
             let comp_set: BTreeSet<String> = comp.iter().cloned().collect();
-            let witness_path = build_cycle_witness(first, &comp_set, &adj)?;
+            let witness_path = build_closed_cycle_witness(first, &comp_set, &adj)?;
             let has_external_outbound = comp.iter().any(|member| {
                 adj.get(member).is_some_and(|outs| {
                     outs.iter()
@@ -1034,13 +1294,17 @@ struct TarjanState {
     sccs: Vec<Vec<String>>,
 }
 
-fn strongconnect(
+struct TarjanFrame {
+    node: String,
+    neighbors: Vec<String>,
+    next_idx: usize,
+}
+
+fn enter_tarjan_node(
     node: &str,
     adj: &BTreeMap<String, BTreeSet<String>>,
     state: &mut TarjanState,
-    check_control: &mut impl FnMut() -> Result<(), StopReason>,
-) -> Result<(), LineageError> {
-    check_control().map_err(LineageError::Stopped)?;
+) -> Result<TarjanFrame, LineageError> {
     let current_index = state.index;
     state.index += 1;
     state.indices.insert(node.to_owned(), current_index);
@@ -1051,95 +1315,157 @@ fn strongconnect(
         .map_err(|_| LineageError::AllocationFailed)?;
     state.stack.push(node.to_owned());
     state.on_stack.insert(node.to_owned());
+    let neighbors = adj
+        .get(node)
+        .map(|set| set.iter().cloned().collect())
+        .unwrap_or_default();
+    Ok(TarjanFrame {
+        node: node.to_owned(),
+        neighbors,
+        next_idx: 0,
+    })
+}
 
-    if let Some(neighbors) = adj.get(node) {
-        for neighbor in neighbors {
-            if !state.indices.contains_key(neighbor) {
-                strongconnect(neighbor, adj, state, check_control)?;
-                let neighbor_low = state
-                    .lowlink
-                    .get(neighbor)
-                    .copied()
-                    .unwrap_or(current_index);
-                if let Some(node_low) = state.lowlink.get_mut(node) {
-                    *node_low = (*node_low).min(neighbor_low);
-                }
-            } else if state.on_stack.contains(neighbor) {
-                let neighbor_idx = state
-                    .indices
-                    .get(neighbor)
-                    .copied()
-                    .unwrap_or(current_index);
-                if let Some(node_low) = state.lowlink.get_mut(node) {
+fn strongconnect_iterative(
+    start_node: &str,
+    adj: &BTreeMap<String, BTreeSet<String>>,
+    state: &mut TarjanState,
+    check_control: &mut impl FnMut() -> Result<(), StopReason>,
+) -> Result<(), LineageError> {
+    let mut work_stack: Vec<TarjanFrame> = Vec::new();
+    work_stack
+        .try_reserve(1)
+        .map_err(|_| LineageError::AllocationFailed)?;
+    work_stack.push(enter_tarjan_node(start_node, adj, state)?);
+
+    while let Some(frame) = work_stack.last_mut() {
+        check_control().map_err(LineageError::Stopped)?;
+        if let Some(neighbor) = frame.neighbors.get(frame.next_idx).cloned() {
+            frame.next_idx += 1;
+            if !state.indices.contains_key(&neighbor) {
+                let child_frame = enter_tarjan_node(&neighbor, adj, state)?;
+                work_stack
+                    .try_reserve(1)
+                    .map_err(|_| LineageError::AllocationFailed)?;
+                work_stack.push(child_frame);
+            } else if state.on_stack.contains(&neighbor) {
+                let neighbor_idx = state.indices.get(&neighbor).copied().unwrap_or(0);
+                if let Some(node_low) = state.lowlink.get_mut(&frame.node) {
                     *node_low = (*node_low).min(neighbor_idx);
                 }
             }
-        }
-    }
-
-    let is_root = state.lowlink.get(node) == state.indices.get(node);
-    if is_root {
-        let mut component = Vec::new();
-        while let Some(w) = state.stack.pop() {
-            state.on_stack.remove(&w);
-            component
-                .try_reserve(1)
-                .map_err(|_| LineageError::AllocationFailed)?;
-            let done = w == node;
-            component.push(w);
-            if done {
+        } else {
+            let Some(finished) = work_stack.pop() else {
                 break;
+            };
+            let node_low = state.lowlink.get(&finished.node).copied().unwrap_or(0);
+            let node_idx = state.indices.get(&finished.node).copied().unwrap_or(0);
+            if node_low == node_idx {
+                let mut component = Vec::new();
+                while let Some(w) = state.stack.pop() {
+                    state.on_stack.remove(&w);
+                    component
+                        .try_reserve(1)
+                        .map_err(|_| LineageError::AllocationFailed)?;
+                    let done = w == finished.node;
+                    component.push(w);
+                    if done {
+                        break;
+                    }
+                }
+                component.sort();
+                state
+                    .sccs
+                    .try_reserve(1)
+                    .map_err(|_| LineageError::AllocationFailed)?;
+                state.sccs.push(component);
+            }
+            if let Some(parent) = work_stack.last()
+                && let Some(parent_low) = state.lowlink.get_mut(&parent.node)
+            {
+                *parent_low = (*parent_low).min(node_low);
             }
         }
-        component.sort();
-        state
-            .sccs
-            .try_reserve(1)
-            .map_err(|_| LineageError::AllocationFailed)?;
-        state.sccs.push(component);
     }
     Ok(())
 }
 
-fn build_cycle_witness(
+// Find a shortest deterministic closed cycle witness `start -> ... -> start`
+// inside the strongly connected component using BFS.
+fn build_closed_cycle_witness(
     start: &str,
     comp_set: &BTreeSet<String>,
     adj: &BTreeMap<String, BTreeSet<String>>,
 ) -> Result<Vec<String>, LineageError> {
-    let mut witness = Vec::new();
-    witness
-        .try_reserve(comp_set.len() + 1)
+    if adj.get(start).is_some_and(|outs| outs.contains(start)) {
+        return Ok(vec![start.to_owned(), start.to_owned()]);
+    }
+    let mut parent_map: BTreeMap<String, String> = BTreeMap::new();
+    let mut queue: Vec<String> = Vec::new();
+    queue
+        .try_reserve(comp_set.len())
         .map_err(|_| LineageError::AllocationFailed)?;
-    witness.push(start.to_owned());
-    let mut curr = start.to_owned();
-    let mut visited = BTreeSet::new();
-    visited.insert(start.to_owned());
+    let mut head = 0usize;
 
-    while let Some(outs) = adj.get(&curr) {
-        let candidates: Vec<&String> = outs.iter().filter(|nb| comp_set.contains(*nb)).collect();
-        let Some(first_candidate) = candidates.first() else {
-            break;
-        };
-        if candidates.iter().any(|nb| nb.as_str() == start) {
+    if let Some(outs) = adj.get(start) {
+        for nb in outs {
+            if comp_set.contains(nb) && nb != start {
+                parent_map.insert(nb.clone(), start.to_owned());
+                queue
+                    .try_reserve(1)
+                    .map_err(|_| LineageError::AllocationFailed)?;
+                queue.push(nb.clone());
+            }
+        }
+    }
+
+    let mut closing_pred: Option<String> = None;
+    'bfs: while let Some(curr) = queue.get(head).cloned() {
+        head += 1;
+        if let Some(outs) = adj.get(&curr) {
+            for nb in outs {
+                if !comp_set.contains(nb) {
+                    continue;
+                }
+                if nb == start {
+                    closing_pred = Some(curr);
+                    break 'bfs;
+                }
+                if !parent_map.contains_key(nb) {
+                    parent_map.insert(nb.clone(), curr.clone());
+                    queue
+                        .try_reserve(1)
+                        .map_err(|_| LineageError::AllocationFailed)?;
+                    queue.push(nb.clone());
+                }
+            }
+        }
+    }
+
+    let mut witness = Vec::new();
+    if let Some(last) = closing_pred {
+        let mut cur = last;
+        witness
+            .try_reserve(comp_set.len() + 1)
+            .map_err(|_| LineageError::AllocationFailed)?;
+        witness.push(start.to_owned());
+        loop {
             witness
                 .try_reserve(1)
                 .map_err(|_| LineageError::AllocationFailed)?;
-            witness.push(start.to_owned());
-            break;
+            witness.push(cur.clone());
+            if cur == start {
+                break;
+            }
+            let Some(prev) = parent_map.get(&cur) else {
+                break;
+            };
+            cur = prev.clone();
         }
-        let chosen = candidates
-            .iter()
-            .find(|nb| !visited.contains(nb.as_str()))
-            .copied()
-            .unwrap_or(*first_candidate);
-        witness
-            .try_reserve(1)
-            .map_err(|_| LineageError::AllocationFailed)?;
-        witness.push(chosen.clone());
-        if !visited.insert(chosen.clone()) {
-            break;
-        }
-        curr = chosen.clone();
+        witness.reverse();
+    } else {
+        witness.push(start.to_owned());
+        witness.push(start.to_owned());
     }
     Ok(witness)
 }
@@ -1156,6 +1482,13 @@ pub fn evaluate_corroboration(
     mut check_control: impl FnMut() -> Result<(), StopReason>,
 ) -> Result<CorroborationSummary, LineageError> {
     check_control().map_err(LineageError::Stopped)?;
+    if citing_inputs.len() > limits.max_nodes {
+        return Err(LineageError::LineageGraphBudgetExceeded {
+            limit: LineageLimit::Nodes,
+            actual: citing_inputs.len(),
+            max: limits.max_nodes,
+        });
+    }
     for version_id in records.keys() {
         if derivations.contains_key(version_id) {
             return Err(LineageError::DisjointVersionNamespaceViolation {
@@ -1174,20 +1507,14 @@ pub fn evaluate_corroboration(
         }
     }
 
-    let mut supporting_record_versions = Vec::new();
-    let mut excluded_derivative_runs = Vec::new();
+    let mut supporting_set = BTreeSet::new();
+    let mut excluded_set = BTreeSet::new();
     for item_id in citing_inputs {
         check_control().map_err(LineageError::Stopped)?;
         if derivations.contains_key(item_id) {
-            excluded_derivative_runs
-                .try_reserve(1)
-                .map_err(|_| LineageError::AllocationFailed)?;
-            excluded_derivative_runs.push(item_id.clone());
+            excluded_set.insert(item_id.clone());
         } else if records.contains_key(item_id) {
-            supporting_record_versions
-                .try_reserve(1)
-                .map_err(|_| LineageError::AllocationFailed)?;
-            supporting_record_versions.push(item_id.clone());
+            supporting_set.insert(item_id.clone());
         } else {
             return Err(LineageError::UnknownReference {
                 context: "corroboration citing_input",
@@ -1195,8 +1522,8 @@ pub fn evaluate_corroboration(
             });
         }
     }
-    supporting_record_versions.sort();
-    excluded_derivative_runs.sort();
+    let supporting_record_versions: Vec<String> = supporting_set.into_iter().collect();
+    let excluded_derivative_runs: Vec<String> = excluded_set.into_iter().collect();
 
     let mut circular_only_record_versions = Vec::new();
     let mut upstream_roots = BTreeSet::new();
@@ -1249,10 +1576,44 @@ pub fn evaluate_corroboration(
         .first()
         .and_then(|member| cycle_witness_by_member.get(member).cloned());
 
-    // Collapse exact-byte duplicates among upstream roots by SHA-256 signature.
+    // Build version-chain equivalence classes over `{Supersedes, AlternateRedaction, PreprintVersion}`,
+    // `predecessor_version_id`, and shared document `id`.
+    let version_chain_rep = build_version_chain_representatives(records, relations)?;
+
+    // Sort candidate upstream roots by earliest verified publication instant -> retrieval instant -> lexical version_id
+    // before collapsing version chains, shared `source_id`, and shared-hash duplicate groups.
+    let mut prioritized_roots: Vec<((u8, i128, i128, String), String)> = Vec::new();
+    prioritized_roots
+        .try_reserve(upstream_roots.len())
+        .map_err(|_| LineageError::AllocationFailed)?;
+    for root_id in upstream_roots {
+        let rec = records
+            .get(&root_id)
+            .ok_or_else(|| LineageError::UnknownReference {
+                context: "upstream root record",
+                target_id: root_id.clone(),
+            })?;
+        if rec.publication_time.is_none() {
+            let has_reason = rec
+                .unknown_time_reason
+                .as_deref()
+                .is_some_and(|text| !text.trim().is_empty());
+            if !has_reason {
+                return Err(LineageError::MissingUnknownTimeReason {
+                    record_version_id: root_id.clone(),
+                });
+            }
+        }
+        let key = record_priority_key(rec)?;
+        prioritized_roots.push((key, root_id));
+    }
+    prioritized_roots.sort_by(|a, b| a.0.cmp(&b.0));
+
     let mut independent_supporting_roots = Vec::new();
     let mut seen_hashes = BTreeSet::new();
-    for root_id in upstream_roots {
+    let mut seen_version_chains = BTreeSet::new();
+    let mut seen_source_ids = BTreeSet::new();
+    for (_, root_id) in prioritized_roots {
         check_control().map_err(LineageError::Stopped)?;
         let rec = records
             .get(&root_id)
@@ -1280,15 +1641,28 @@ pub fn evaluate_corroboration(
         } else {
             page_hashes.join("|")
         };
-        if seen_hashes.insert(hash_key) {
+        let chain_key = version_chain_rep
+            .get(&root_id)
+            .cloned()
+            .unwrap_or_else(|| root_id.clone());
+        let source_key = rec.source_id.clone();
+
+        if !seen_hashes.contains(&hash_key)
+            && !seen_version_chains.contains(&chain_key)
+            && !seen_source_ids.contains(&source_key)
+        {
+            seen_hashes.insert(hash_key);
+            seen_version_chains.insert(chain_key);
+            seen_source_ids.insert(source_key);
             independent_supporting_roots
                 .try_reserve(1)
                 .map_err(|_| LineageError::AllocationFailed)?;
             independent_supporting_roots.push(root_id);
         }
     }
+    independent_supporting_roots.sort();
 
-    let mut dated_roots: Vec<(String, String)> = Vec::new();
+    let mut dated_roots: Vec<(i128, String)> = Vec::new();
     let mut undated_candidate_roots: Vec<String> = Vec::new();
     for root_id in &independent_supporting_roots {
         let rec = records
@@ -1297,21 +1671,13 @@ pub fn evaluate_corroboration(
                 context: "independent root record",
                 target_id: root_id.clone(),
             })?;
-        if let Some(pub_time) = rec.publication_time.as_ref() {
+        if let Some(pub_time) = rec.publication_time.as_deref() {
+            let pub_nanos = parse_rfc3339_utc_nanos(root_id, "publication_time", pub_time)?;
             dated_roots
                 .try_reserve(1)
                 .map_err(|_| LineageError::AllocationFailed)?;
-            dated_roots.push((pub_time.clone(), root_id.clone()));
+            dated_roots.push((pub_nanos, root_id.clone()));
         } else {
-            let has_reason = rec
-                .unknown_time_reason
-                .as_deref()
-                .is_some_and(|text| !text.trim().is_empty());
-            if !has_reason {
-                return Err(LineageError::MissingUnknownTimeReason {
-                    record_version_id: root_id.clone(),
-                });
-            }
             undated_candidate_roots
                 .try_reserve(1)
                 .map_err(|_| LineageError::AllocationFailed)?;
@@ -1320,9 +1686,13 @@ pub fn evaluate_corroboration(
     }
     dated_roots.sort();
     let earliest_dated_root = dated_roots.first().map(|(_, id)| id.clone());
+    let has_earliest_tie = match (dated_roots.first(), dated_roots.get(1)) {
+        (Some((first_ts, _)), Some((second_ts, _))) => first_ts == second_ts,
+        _ => false,
+    };
     let resolution = if independent_supporting_roots.is_empty() {
         EarliestSourceResolution::NoIndependentRoots
-    } else if !undated_candidate_roots.is_empty() {
+    } else if !undated_candidate_roots.is_empty() || has_earliest_tie {
         EarliestSourceResolution::AmbiguousCandidates
     } else {
         EarliestSourceResolution::SingleEarliestDated
@@ -1357,9 +1727,75 @@ pub fn evaluate_corroboration(
     })
 }
 
-/// Validate that `derived_from` forms a strict DAG (`DerivationCycleDetected`) and
-/// propagate `needs_reassessment` across downstream derivations without auto-retracting
-/// removed endpoints (`DOC-05`, `NEWS-05`, `A03`, `A06`).
+fn build_version_chain_representatives(
+    records: &BTreeMap<String, SourceRecordDescriptor>,
+    relations: &[RecordRelation],
+) -> Result<BTreeMap<String, String>, LineageError> {
+    let mut parent: BTreeMap<String, String> =
+        records.keys().map(|k| (k.clone(), k.clone())).collect();
+
+    fn find_rep(node: &str, parent: &mut BTreeMap<String, String>) -> String {
+        let mut curr = node.to_owned();
+        while let Some(next) = parent.get(&curr).cloned() {
+            if next == curr {
+                break;
+            }
+            if let Some(grand) = parent.get(&next).cloned() {
+                parent.insert(curr.clone(), grand.clone());
+                curr = grand;
+            } else {
+                break;
+            }
+        }
+        curr
+    }
+
+    fn union_rep(a: &str, b: &str, parent: &mut BTreeMap<String, String>) {
+        let ra = find_rep(a, parent);
+        let rb = find_rep(b, parent);
+        if ra != rb {
+            if ra < rb {
+                parent.insert(rb, ra);
+            } else {
+                parent.insert(ra, rb);
+            }
+        }
+    }
+
+    let mut by_doc_id: BTreeMap<String, String> = BTreeMap::new();
+    for (ver_id, rec) in records {
+        if let Some(existing) = by_doc_id.get(&rec.id).cloned() {
+            union_rep(ver_id, &existing, &mut parent);
+        } else {
+            by_doc_id.insert(rec.id.clone(), ver_id.clone());
+        }
+        if let Some(pred) = rec.predecessor_version_id.as_deref()
+            && records.contains_key(pred)
+        {
+            union_rep(ver_id, pred, &mut parent);
+        }
+    }
+    for rel in relations {
+        if rel.kind.is_version_chain_edge()
+            && records.contains_key(&rel.from)
+            && records.contains_key(&rel.to)
+        {
+            union_rep(&rel.from, &rel.to, &mut parent);
+        }
+    }
+
+    let keys: Vec<String> = parent.keys().cloned().collect();
+    let mut resolved = BTreeMap::new();
+    for key in keys {
+        let rep = find_rep(&key, &mut parent);
+        resolved.insert(key, rep);
+    }
+    Ok(resolved)
+}
+
+/// Validate that `derived_from` forms a strict DAG (`DerivationCycleDetected`) using an
+/// explicit iterative DFS stack and propagate `needs_reassessment` across downstream
+/// derivations without auto-retracting removed endpoints (`DOC-05`, `NEWS-05`, `A03`, `A06`).
 pub fn compute_invalidation_propagation(
     records: &BTreeMap<String, SourceRecordDescriptor>,
     derivations_in_order: &[DerivationNode],
@@ -1376,10 +1812,15 @@ pub fn compute_invalidation_propagation(
             max: limits.max_nodes,
         });
     }
-    if relations.len() > limits.max_edges {
+    let derived_edge_count: usize = derivations_in_order
+        .iter()
+        .map(|d| d.derived_from.len())
+        .sum();
+    let total_edges = relations.len().saturating_add(derived_edge_count);
+    if total_edges > limits.max_edges {
         return Err(LineageError::LineageGraphBudgetExceeded {
             limit: LineageLimit::Edges,
-            actual: relations.len(),
+            actual: total_edges,
             max: limits.max_edges,
         });
     }
@@ -1407,22 +1848,12 @@ pub fn compute_invalidation_propagation(
         derivations.insert(deriv.version_id.clone(), deriv.clone());
     }
 
-    // 1. Verify derived_from forms a strict DAG (no cycles allowed in derivations).
-    let mut visiting = BTreeSet::new();
-    let mut visited = BTreeSet::new();
-    for deriv_id in derivations.keys() {
-        check_dag_node(
-            deriv_id,
-            records,
-            &derivations,
-            &mut visiting,
-            &mut visited,
-            &mut check_control,
-        )?;
-    }
+    // 1. Verify derived_from forms a strict DAG (iterative three-color DFS; no recursion).
+    validate_dag_iterative(records, &derivations, &mut check_control)?;
 
-    // 2. Identify invalidating transitions on SourceRecords (Supersedes and RetractedBy).
-    let mut triggers: BTreeMap<String, (String, InvalidationReason, bool)> = BTreeMap::new();
+    // 2. Identify invalidating transitions on SourceRecords (Supersedes, RetractedBy, and lifecycle_state).
+    type TriggerEntry = (String, InvalidationReason, bool);
+    let mut triggers: BTreeMap<String, Vec<TriggerEntry>> = BTreeMap::new();
     for rel in relations {
         check_control().map_err(LineageError::Stopped)?;
         match rel.kind {
@@ -1446,14 +1877,14 @@ pub fn compute_invalidation_propagation(
                         reason: "superseded record must have lifecycle_state SupersededByCorrection",
                     });
                 }
-                triggers.insert(
-                    old_rec.version_id.clone(),
-                    (
-                        rel.from.clone(),
-                        InvalidationReason::SourceCorrected,
-                        old_rec.retention == RetentionMode::Retained,
-                    ),
-                );
+                let list = triggers.entry(old_rec.version_id.clone()).or_default();
+                list.try_reserve(1)
+                    .map_err(|_| LineageError::AllocationFailed)?;
+                list.push((
+                    rel.from.clone(),
+                    InvalidationReason::SourceCorrected,
+                    old_rec.retention == RetentionMode::Retained,
+                ));
             }
             RelationKind::RetractedBy => {
                 let old_rec =
@@ -1475,27 +1906,31 @@ pub fn compute_invalidation_propagation(
                         reason: "retracted record must have lifecycle_state Retracted",
                     });
                 }
-                triggers.insert(
-                    old_rec.version_id.clone(),
-                    (
-                        rel.from.clone(),
-                        InvalidationReason::SourceRetracted,
-                        old_rec.retention == RetentionMode::Retained,
-                    ),
-                );
+                let list = triggers.entry(old_rec.version_id.clone()).or_default();
+                list.try_reserve(1)
+                    .map_err(|_| LineageError::AllocationFailed)?;
+                list.push((
+                    rel.from.clone(),
+                    InvalidationReason::SourceRetracted,
+                    old_rec.retention == RetentionMode::Retained,
+                ));
             }
             _ => {}
         }
     }
 
-    // 3. Verify removed endpoints are NEVER auto-marked retracted (DOC-05, NEWS-05, A06).
+    // 3. Verify removed endpoints are NEVER auto-marked retracted (DOC-05, NEWS-05, A06),
+    // and ensure any record in Retracted or SupersededByCorrection state triggers reassessment
+    // even when retracted in-place without a separate notice record (Contract §6.1(2)).
     let mut removed_not_auto_retracted_record_versions = Vec::new();
     for rec in records.values() {
         check_control().map_err(LineageError::Stopped)?;
+        let has_retraction_trigger = triggers.get(&rec.version_id).is_some_and(|list| {
+            list.iter()
+                .any(|(_, reason, _)| *reason == InvalidationReason::SourceRetracted)
+        });
         if rec.availability == AvailabilityState::Removed {
-            if rec.lifecycle_state == SourceLifecycleState::Retracted
-                || triggers.contains_key(&rec.version_id)
-            {
+            if rec.lifecycle_state == SourceLifecycleState::Retracted || has_retraction_trigger {
                 return Err(LineageError::RemovedEndpointAutoRetracted {
                     record_version_id: rec.version_id.clone(),
                 });
@@ -1505,6 +1940,29 @@ pub fn compute_invalidation_propagation(
                 .map_err(|_| LineageError::AllocationFailed)?;
             removed_not_auto_retracted_record_versions.push(rec.version_id.clone());
         }
+        match rec.lifecycle_state {
+            SourceLifecycleState::Retracted => {
+                if !triggers.contains_key(&rec.version_id) {
+                    let list = triggers.entry(rec.version_id.clone()).or_default();
+                    list.try_reserve(1)
+                        .map_err(|_| LineageError::AllocationFailed)?;
+                    list.push((
+                        rec.version_id.clone(),
+                        InvalidationReason::SourceRetracted,
+                        rec.retention == RetentionMode::Retained,
+                    ));
+                }
+            }
+            SourceLifecycleState::SupersededByCorrection => {
+                if !triggers.contains_key(&rec.version_id) {
+                    return Err(LineageError::InvalidLifecycleTransition {
+                        record_version_id: rec.version_id.clone(),
+                        reason: "record with lifecycle_state SupersededByCorrection requires a Supersedes relation",
+                    });
+                }
+            }
+            SourceLifecycleState::Active => {}
+        }
     }
     removed_not_auto_retracted_record_versions.sort();
 
@@ -1513,7 +1971,7 @@ pub fn compute_invalidation_propagation(
     let mut unaffected_fresh_versions = Vec::new();
     for deriv in derivations_in_order {
         check_control().map_err(LineageError::Stopped)?;
-        let mut found_triggers = BTreeMap::new();
+        let mut found_triggers: BTreeMap<String, Vec<TriggerEntry>> = BTreeMap::new();
         let mut stack = Vec::new();
         stack
             .try_reserve(1)
@@ -1526,8 +1984,8 @@ pub fn compute_invalidation_propagation(
             if !seen.insert(curr.clone()) {
                 continue;
             }
-            if let Some(trig) = triggers.get(&curr) {
-                found_triggers.insert(curr.clone(), trig.clone());
+            if let Some(trig_list) = triggers.get(&curr) {
+                found_triggers.insert(curr.clone(), trig_list.clone());
             }
             if let Some(node) = derivations.get(&curr) {
                 for parent in &node.derived_from {
@@ -1545,17 +2003,19 @@ pub fn compute_invalidation_propagation(
                 .map_err(|_| LineageError::AllocationFailed)?;
             unaffected_fresh_versions.push(deriv.version_id.clone());
         } else {
-            for (trigger_id, (replacement_id, reason, preserve_old_citations)) in found_triggers {
-                needs_reassessment
-                    .try_reserve(1)
-                    .map_err(|_| LineageError::AllocationFailed)?;
-                needs_reassessment.push(InvalidationNotice {
-                    target_version_id: deriv.version_id.clone(),
-                    trigger_record_version_id: trigger_id,
-                    replacement_record_version_id: replacement_id,
-                    reason,
-                    preserve_old_citations,
-                });
+            for (trigger_id, trig_list) in found_triggers {
+                for (replacement_id, reason, preserve_old_citations) in trig_list {
+                    needs_reassessment
+                        .try_reserve(1)
+                        .map_err(|_| LineageError::AllocationFailed)?;
+                    needs_reassessment.push(InvalidationNotice {
+                        target_version_id: deriv.version_id.clone(),
+                        trigger_record_version_id: trigger_id.clone(),
+                        replacement_record_version_id: replacement_id,
+                        reason,
+                        preserve_old_citations,
+                    });
+                }
             }
         }
     }
@@ -1568,42 +2028,78 @@ pub fn compute_invalidation_propagation(
     })
 }
 
-fn check_dag_node(
-    node_id: &str,
+struct DagFrame {
+    node_id: String,
+    parents: Vec<String>,
+    next_idx: usize,
+}
+
+fn validate_dag_iterative(
     records: &BTreeMap<String, SourceRecordDescriptor>,
     derivations: &BTreeMap<String, DerivationNode>,
-    visiting: &mut BTreeSet<String>,
-    visited: &mut BTreeSet<String>,
     check_control: &mut impl FnMut() -> Result<(), StopReason>,
 ) -> Result<(), LineageError> {
-    check_control().map_err(LineageError::Stopped)?;
-    if visited.contains(node_id) {
-        return Ok(());
-    }
-    if !visiting.insert(node_id.to_owned()) {
-        return Err(LineageError::DerivationCycleDetected {
-            version_id: node_id.to_owned(),
+    let mut visiting = BTreeSet::new();
+    let mut visited = BTreeSet::new();
+    let mut work_stack: Vec<DagFrame> = Vec::new();
+
+    for start_id in derivations.keys() {
+        check_control().map_err(LineageError::Stopped)?;
+        if visited.contains(start_id) {
+            continue;
+        }
+        let Some(start_node) = derivations.get(start_id) else {
+            continue;
+        };
+        visiting.insert(start_id.clone());
+        work_stack
+            .try_reserve(1)
+            .map_err(|_| LineageError::AllocationFailed)?;
+        work_stack.push(DagFrame {
+            node_id: start_id.clone(),
+            parents: start_node.derived_from.clone(),
+            next_idx: 0,
         });
-    }
-    if let Some(deriv) = derivations.get(node_id) {
-        for parent_id in &deriv.derived_from {
-            if !records.contains_key(parent_id) && !derivations.contains_key(parent_id) {
-                return Err(LineageError::UnknownReference {
-                    context: "derived_from target",
-                    target_id: parent_id.clone(),
-                });
+
+        while let Some(frame) = work_stack.last_mut() {
+            check_control().map_err(LineageError::Stopped)?;
+            if let Some(parent_id) = frame.parents.get(frame.next_idx).cloned() {
+                frame.next_idx += 1;
+                if !records.contains_key(&parent_id) && !derivations.contains_key(&parent_id) {
+                    return Err(LineageError::UnknownReference {
+                        context: "derived_from target",
+                        target_id: parent_id,
+                    });
+                }
+                if visited.contains(&parent_id) {
+                    continue;
+                }
+                if visiting.contains(&parent_id) {
+                    return Err(LineageError::DerivationCycleDetected {
+                        version_id: parent_id,
+                    });
+                }
+                if let Some(parent_deriv) = derivations.get(&parent_id) {
+                    visiting.insert(parent_id.clone());
+                    work_stack
+                        .try_reserve(1)
+                        .map_err(|_| LineageError::AllocationFailed)?;
+                    work_stack.push(DagFrame {
+                        node_id: parent_id,
+                        parents: parent_deriv.derived_from.clone(),
+                        next_idx: 0,
+                    });
+                } else {
+                    visited.insert(parent_id);
+                }
+            } else {
+                let Some(done) = work_stack.pop() else {
+                    break;
+                };
+                visiting.remove(&done.node_id);
+                visited.insert(done.node_id);
             }
-            check_dag_node(
-                parent_id,
-                records,
-                derivations,
-                visiting,
-                visited,
-                check_control,
-            )?;
         }
     }
-    visiting.remove(node_id);
-    visited.insert(node_id.to_owned());
     Ok(())
 }

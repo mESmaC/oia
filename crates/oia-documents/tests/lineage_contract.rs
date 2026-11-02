@@ -894,11 +894,268 @@ fn adversarial_lineage_violations_and_control_stops_are_rejected() -> Result<(),
         })
     );
 
-    // 6. Cooperative cancellation at every check boundary.
+    // 6. B1: Version chains (`Supersedes`, `AlternateRedaction`, `PreprintVersion`) and
+    // shared `source_id` / document `id` collapse to 1 independent root (selecting earliest).
     let derivations_map: BTreeMap<String, DerivationNode> = derivations_list
         .iter()
         .map(|d| (d.version_id.clone(), d.clone()))
         .collect();
+    let foia_corroboration = evaluate_corroboration(
+        &[
+            "foia-release-2024-v1".to_owned(),
+            "foia-release-2026-v1".to_owned(),
+            "foia-release-partner-v1".to_owned(),
+        ],
+        &records,
+        &derivations_map,
+        &relations,
+        &artifacts,
+        limits,
+        || Ok(()),
+    )?;
+    assert_eq!(
+        foia_corroboration.independent_supporting_roots,
+        vec!["foia-release-2024-v1"]
+    );
+    assert_eq!(foia_corroboration.independent_root_count, 1);
+
+    let dispatch_corroboration = evaluate_corroboration(
+        &[
+            "dispatch-primary-v1".to_owned(),
+            "dispatch-primary-v2".to_owned(),
+        ],
+        &records,
+        &derivations_map,
+        &relations,
+        &artifacts,
+        limits,
+        || Ok(()),
+    )?;
+    assert_eq!(
+        dispatch_corroboration.independent_supporting_roots,
+        vec!["dispatch-primary-v1"]
+    );
+    assert_eq!(dispatch_corroboration.independent_root_count, 1);
+
+    // 7. B3: Segment-derived hidden cleartext detection even when `forbidden_cleartext_in_left`
+    // is empty (`NewlyDisclosedInRight`) or when newly redacted text leaks into the right artifact
+    // (`NewlyRedactedInRight`).
+    let mut empty_forbidden_comp = first_comparison.clone();
+    empty_forbidden_comp.forbidden_cleartext_in_left.clear();
+    assert_eq!(
+        verify_release_comparison(
+            &empty_forbidden_comp,
+            &records,
+            &bad_payloads,
+            limits,
+            || Ok(())
+        ),
+        Err(LineageError::HiddenRedactionPayloadRejected {
+            comparison_id: "foia-2024-vs-2026".to_owned(),
+            artifact_id: "foia-release-2024-redacted.txt".to_owned(),
+            forbidden_cleartext: "Sector-7 Telemetry".to_owned(),
+        })
+    );
+    let partner_comparison = comparisons
+        .get(1)
+        .ok_or("missing partner release comparison")?;
+    let mut leaked_right_payloads = payloads.clone();
+    if let Some(partner_raw) = leaked_right_payloads.get_mut("foia-release-partner-redacted.txt") {
+        partner_raw.extend_from_slice(b"\n<!-- Operator Callsign Kestrel-4 -->\n");
+    }
+    assert_eq!(
+        verify_release_comparison(
+            partner_comparison,
+            &records,
+            &leaked_right_payloads,
+            limits,
+            || Ok(())
+        ),
+        Err(LineageError::HiddenRedactionPayloadRejected {
+            comparison_id: "foia-2024-vs-partner".to_owned(),
+            artifact_id: "foia-release-partner-redacted.txt".to_owned(),
+            forbidden_cleartext: "Operator Callsign Kestrel-4".to_owned(),
+        })
+    );
+
+    // 8. B4: A record in `SourceLifecycleState::Retracted` with no `RetractedBy` relation
+    // still triggers `needs_reassessment` on its downstream dependents.
+    let relations_without_retracted_by: Vec<RecordRelation> = relations
+        .iter()
+        .filter(|rel| rel.kind != RelationKind::RetractedBy)
+        .cloned()
+        .collect();
+    let inv_without_rel = compute_invalidation_propagation(
+        &records,
+        &derivations_list,
+        &relations_without_retracted_by,
+        limits,
+        || Ok(()),
+    )?;
+    assert!(inv_without_rel.needs_reassessment.iter().any(|n| {
+        n.target_version_id == "claim-sensor-fault-v1"
+            && n.trigger_record_version_id == "retracted-advisory-v1"
+            && n.reason == InvalidationReason::SourceRetracted
+    }));
+
+    // 9. B5: Shared-hash collapse selects the earliest instant (not lexical order),
+    // RFC 3339 timezone offsets are normalized to UTC instants, ties report
+    // `AmbiguousCandidates`, and malformed timestamps are rejected.
+    let mut custom_records = records.clone();
+    if let Some(base_rec) = records.get("dispatch-primary-v1").cloned() {
+        let mut late_a = base_rec.clone();
+        late_a.id = "doc-late-a".to_owned();
+        late_a.version_id = "a-late-copy".to_owned();
+        late_a.source_id = "source-a".to_owned();
+        late_a.lifecycle_state = SourceLifecycleState::Active;
+        late_a.publication_time = Some("2026-10-05T12:00:00Z".to_owned());
+        late_a.retrieval_time = "2026-10-05T12:05:00Z".to_owned();
+
+        let mut early_z = base_rec.clone();
+        early_z.id = "doc-early-z".to_owned();
+        early_z.version_id = "z-early-original".to_owned();
+        early_z.source_id = "source-z".to_owned();
+        early_z.lifecycle_state = SourceLifecycleState::Active;
+        // 2026-10-01T05:00:00+09:00 == 2026-09-30T20:00:00Z (earlier than 2026-10-01T04:15:00Z)
+        early_z.publication_time = Some("2026-10-01T05:00:00+09:00".to_owned());
+        early_z.retrieval_time = "2026-10-01T05:05:00+09:00".to_owned();
+
+        custom_records.insert(late_a.version_id.clone(), late_a);
+        custom_records.insert(early_z.version_id.clone(), early_z);
+
+        let hash_winner = evaluate_corroboration(
+            &["a-late-copy".to_owned(), "z-early-original".to_owned()],
+            &custom_records,
+            &BTreeMap::new(),
+            &[],
+            &artifacts,
+            limits,
+            || Ok(()),
+        )?;
+        assert_eq!(
+            hash_winner.independent_supporting_roots,
+            vec!["z-early-original"]
+        );
+        assert_eq!(
+            hash_winner
+                .earliest_known_source_view
+                .earliest_dated_root
+                .as_deref(),
+            Some("z-early-original")
+        );
+        assert_eq!(
+            hash_winner.earliest_known_source_view.resolution,
+            EarliestSourceResolution::SingleEarliestDated
+        );
+
+        // Exact publication-instant tie between two independent roots reports AmbiguousCandidates.
+        let mut tie_other = base_rec.clone();
+        tie_other.id = "doc-tie-other".to_owned();
+        tie_other.version_id = "tie-other-v1".to_owned();
+        tie_other.source_id = "source-tie".to_owned();
+        tie_other.lifecycle_state = SourceLifecycleState::Active;
+        tie_other.publication_time = Some("2026-09-30T20:00:00Z".to_owned());
+        tie_other.pages = vec![PageAttachment {
+            number: 1,
+            artifact_id: Some("independent-log-v1.txt".to_owned()),
+        }];
+        custom_records.insert(tie_other.version_id.clone(), tie_other);
+
+        let tie_corr = evaluate_corroboration(
+            &["z-early-original".to_owned(), "tie-other-v1".to_owned()],
+            &custom_records,
+            &BTreeMap::new(),
+            &[],
+            &artifacts,
+            limits,
+            || Ok(()),
+        )?;
+        assert_eq!(
+            tie_corr.earliest_known_source_view.resolution,
+            EarliestSourceResolution::AmbiguousCandidates
+        );
+
+        let mut bad_time_rec = base_rec;
+        bad_time_rec.version_id = "bad-time-v1".to_owned();
+        bad_time_rec.publication_time = Some("garbage-not-a-time".to_owned());
+        assert_eq!(
+            validate_records(&[bad_time_rec], &artifacts, limits, || Ok(())),
+            Err(LineageError::InvalidTimestamp {
+                record_version_id: "bad-time-v1".to_owned(),
+                field: "publication_time",
+                value: "garbage-not-a-time".to_owned(),
+            })
+        );
+    }
+
+    // 10. B2: Deep lineage and `derived_from` chains (2,500 nodes) execute iteratively
+    // without overflowing the thread stack.
+    let chain_len = 2_500usize;
+    let deep_limits = LineageLimits::new(chain_len + 10, chain_len + 10, 10)?;
+    let mut deep_records = BTreeMap::new();
+    let mut deep_relations = Vec::new();
+    let mut deep_derivations = Vec::new();
+    for i in 0..chain_len {
+        let ver_id = format!("chain-rec-{i:04}");
+        deep_records.insert(
+            ver_id.clone(),
+            SourceRecordDescriptor {
+                id: ver_id.clone(),
+                version_id: ver_id.clone(),
+                source_id: format!("src-{i:04}"),
+                availability: AvailabilityState::Available,
+                lifecycle_state: SourceLifecycleState::Active,
+                predecessor_version_id: None,
+                event_time: Some("2026-10-01T00:00:00Z".to_owned()),
+                publication_time: Some("2026-10-01T00:00:00Z".to_owned()),
+                retrieval_time: "2026-10-01T00:05:00Z".to_owned(),
+                unknown_time_reason: None,
+                retention: RetentionMode::Retained,
+                omission_reason: None,
+                pages: vec![PageAttachment {
+                    number: 1,
+                    artifact_id: Some("dispatch-root-v1.txt".to_owned()),
+                }],
+            },
+        );
+        if i + 1 < chain_len {
+            deep_relations.push(RecordRelation {
+                from: ver_id,
+                to: format!("chain-rec-{:04}", i + 1),
+                kind: RelationKind::Cites,
+            });
+        }
+        let deriv_id = format!("chain-deriv-{i:04}");
+        let parent_id = if i == 0 {
+            "chain-rec-0000".to_owned()
+        } else {
+            format!("chain-deriv-{:04}", i - 1)
+        };
+        deep_derivations.push(DerivationNode {
+            version_id: deriv_id,
+            origin_class: DerivationOriginClass::AnalyticalInference,
+            derived_from: vec![parent_id],
+        });
+    }
+    let (_, deep_scc) =
+        compute_lineage_sccs(&deep_records, &deep_relations, deep_limits, || Ok(()))?;
+    assert!(deep_scc.detected_cycles.is_empty());
+    let single_record_map: BTreeMap<String, SourceRecordDescriptor> = deep_records
+        .get("chain-rec-0000")
+        .cloned()
+        .into_iter()
+        .map(|r| (r.version_id.clone(), r))
+        .collect();
+    let deep_inv = compute_invalidation_propagation(
+        &single_record_map,
+        &deep_derivations,
+        &[],
+        deep_limits,
+        || Ok(()),
+    )?;
+    assert_eq!(deep_inv.unaffected_fresh_versions.len(), chain_len);
+
+    // 11. Cooperative cancellation at every check boundary.
     let mut checks = 0;
     evaluate_corroboration(
         &citing_inputs,

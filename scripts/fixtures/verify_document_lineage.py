@@ -11,12 +11,31 @@ import argparse
 import copy
 import hashlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 MAX_FILE_BYTES = 1024 * 1024
 MAX_GRAPH_NODES = 200
 MAX_GRAPH_EDGES = 500
 LINEAGE_EDGE_KINDS = ("republishes", "quotes", "cites", "translates")
+VERSION_CHAIN_KINDS = ("supersedes", "alternate_redaction", "preprint_version")
+
+
+def parse_rfc3339_instant(value: str) -> float:
+    require(isinstance(value, str) and ("T" in value or "t" in value), f"Invalid RFC 3339 timestamp: {value!r}")
+    normalized = value[:-1] + "+00:00" if value.endswith(("Z", "z")) else value
+    dt = datetime.fromisoformat(normalized)
+    require(dt.tzinfo is not None, f"Timestamp missing timezone offset: {value!r}")
+    return dt.astimezone(timezone.utc).timestamp()
+
+
+def record_priority_key(rec: dict) -> tuple[int, float, float, str]:
+    pub = rec.get("publication_time")
+    ret = rec["retrieval_time"]
+    ret_ts = parse_rfc3339_instant(ret)
+    if pub is not None:
+        return (0, parse_rfc3339_instant(pub), ret_ts, rec["version_id"])
+    return (1, 0.0, ret_ts, rec["version_id"])
 
 
 def require(condition: bool, message: str) -> None:
@@ -303,10 +322,44 @@ def evaluate_corroboration_query(
             f"Cycle witness mismatch: {witness} != {query['expected_cycle_witness']}",
         )
 
-    # Collapse any exact-byte duplicates among upstream roots by SHA-256
+    # Collapse version chains, shared document/source identities, and exact-byte duplicates
+    # among upstream roots after ordering by earliest publication instant -> retrieval instant -> lexical ID.
+    ordered_roots = sorted(upstream_roots, key=lambda r: record_priority_key(records[r]))
+    version_parent: dict[str, str] = {r: r for r in records}
+
+    def find_rep(x: str) -> str:
+        while version_parent[x] != x:
+            version_parent[x] = version_parent[version_parent[x]]
+            x = version_parent[x]
+        return x
+
+    def union_rep(a: str, b: str) -> None:
+        ra, rb = find_rep(a), find_rep(b)
+        if ra != rb:
+            if ra < rb:
+                version_parent[rb] = ra
+            else:
+                version_parent[ra] = rb
+
+    by_doc_id: dict[str, str] = {}
+    for ver_id, rec in sorted(records.items()):
+        doc_id = rec["id"]
+        if doc_id in by_doc_id:
+            union_rep(ver_id, by_doc_id[doc_id])
+        else:
+            by_doc_id[doc_id] = ver_id
+        pred = rec.get("predecessor_version_id")
+        if pred in records:
+            union_rep(ver_id, pred)
+    for rel in relations:
+        if rel["kind"] in VERSION_CHAIN_KINDS and rel["from"] in records and rel["to"] in records:
+            union_rep(rel["from"], rel["to"])
+
     deduped_roots: list[str] = []
     seen_hashes: set[str] = set()
-    for root_id in sorted(upstream_roots):
+    seen_chains: set[str] = set()
+    seen_sources: set[str] = set()
+    for root_id in ordered_roots:
         rec = records[root_id]
         page_hashes = tuple(
             artifacts[p["artifact_id"]]["sha256"]
@@ -314,9 +367,18 @@ def evaluate_corroboration_query(
             if p["artifact_id"] is not None
         )
         hash_key = "|".join(page_hashes) if page_hashes else f"no-bytes:{root_id}"
-        if hash_key not in seen_hashes:
+        chain_key = find_rep(root_id)
+        source_key = rec["source_id"]
+        if (
+            hash_key not in seen_hashes
+            and chain_key not in seen_chains
+            and source_key not in seen_sources
+        ):
             seen_hashes.add(hash_key)
+            seen_chains.add(chain_key)
+            seen_sources.add(source_key)
             deduped_roots.append(root_id)
+    deduped_roots.sort()
 
     require(
         deduped_roots == query["expected_independent_supporting_roots"],
@@ -339,7 +401,7 @@ def evaluate_corroboration_query(
             bool(records[u]["unknown_time_reason"]),
             f"Undated root {u} missing unknown_time_reason",
         )
-    dated_roots.sort(key=lambda r: (records[r]["publication_time"], r))
+    dated_roots.sort(key=lambda r: (parse_rfc3339_instant(records[r]["publication_time"]), r))
     earliest_view = query["earliest_known_source_view"]
     if undated_roots and dated_roots:
         require(

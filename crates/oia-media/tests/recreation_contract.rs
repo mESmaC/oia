@@ -15,7 +15,7 @@ fn sample_prompt_input() -> Result<RecreationPromptInput, RecreationError> {
         prompt_id: OpaqueId::new("prompt:a10-recreation")?,
         prompt_version: VersionId::new("ver:prompt-a10-v1")?,
         case_id: OpaqueId::new("case:a10")?,
-        title: "Conflicting witness account recreation".to_owned(),
+        title: "Synthetic conflicting witness account recreation".to_owned(),
         context: SceneContext {
             scene: ContextField::Reported {
                 description: "Coastal bluff looking west over bay".to_owned(),
@@ -117,8 +117,8 @@ fn sample_prompt_input() -> Result<RecreationPromptInput, RecreationError> {
 
 /// Risk addressed (`MEDIA-04`, `A10`): conflicting witness accounts, assumptions, unknowns,
 /// uncertain scale, and restricted assets must remain explicitly separated in exported prompts,
-/// and imported recreations must retain prompt/settings lineage and visible labels while refusing
-/// promotion to observation or measurement evidence.
+/// and imported recreations must require an exact `VISIBLE_RECREATION_LABEL`, require variant
+/// selection when variants exist, and refuse promotion to observation or measurement evidence.
 #[test]
 fn conflicting_accounts_and_imported_recreation_preserve_separation_and_labels()
 -> Result<(), RecreationError> {
@@ -135,21 +135,24 @@ fn conflicting_accounts_and_imported_recreation_preserve_separation_and_labels()
 
     // Omit-with-notice mode exports permitted assets and records an explicit omission notice.
     let exported = export_recreation_prompt(&input, limits, AssetExportPolicy::OmitWithNotice)?;
-    assert_eq!(exported.permitted_assets.len(), 1);
+    assert_eq!(exported.permitted_assets().len(), 1);
     assert_eq!(
         exported
-            .permitted_assets
+            .permitted_assets()
             .first()
             .map(|a| a.asset_id.as_str()),
         Some("asset:coastline-dem")
     );
-    assert_eq!(exported.omitted_assets.len(), 1);
+    assert_eq!(exported.omitted_assets().len(), 1);
     assert_eq!(
-        exported.omitted_assets.first().map(|a| a.asset_id.as_str()),
+        exported
+            .omitted_assets()
+            .first()
+            .map(|a| a.asset_id.as_str()),
         Some("asset:restricted-photo")
     );
 
-    let text = &exported.portable_prompt_text;
+    let text = exported.portable_prompt_text();
     assert!(text.contains(VISIBLE_RECREATION_LABEL));
     assert!(
         text.contains("### Variant `variant:single-orb` (conflicts_with: [variant:tandem-pair])")
@@ -170,8 +173,8 @@ fn conflicting_accounts_and_imported_recreation_preserve_separation_and_labels()
         artifact_version: VersionId::new("ver:rec-1-v1")?,
         sha256_hex: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
         media_type: "image/png".to_owned(),
-        prompt_id: exported.prompt_id.clone(),
-        prompt_version: exported.prompt_version.clone(),
+        prompt_id: exported.prompt_id().clone(),
+        prompt_version: exported.prompt_version().clone(),
         variant_id: Some(OpaqueId::new("variant:tandem-pair")?),
         generator_model: "flux-illustrative-v1".to_owned(),
         generator_settings: "seed=108, steps=28".to_owned(),
@@ -179,8 +182,19 @@ fn conflicting_accounts_and_imported_recreation_preserve_separation_and_labels()
         visible_label: VISIBLE_RECREATION_LABEL.to_owned(),
     };
     let validated = validate_imported_recreation(&import_input, &exported, 2048)?;
-    assert!(!validated.can_serve_as_observation_evidence);
-    assert!(!validated.can_establish_physical_measurement);
+    assert_eq!(validated.visible_label(), VISIBLE_RECREATION_LABEL);
+    assert!(!validated.can_serve_as_observation_evidence());
+    assert!(!validated.can_establish_physical_measurement());
+
+    // Omitting variant_id when the prompt has conflicting variants is rejected.
+    let mut missing_variant = import_input.clone();
+    missing_variant.variant_id = None;
+    assert_eq!(
+        Err(RecreationError::MissingVariantSelection {
+            prompt_id: exported.prompt_id().clone(),
+        }),
+        validate_imported_recreation(&missing_variant, &exported, 2048)
+    );
 
     // Promoting a generated recreation to observation evidence or measurement is refused.
     for forbidden in [
@@ -199,26 +213,33 @@ fn conflicting_accounts_and_imported_recreation_preserve_separation_and_labels()
         );
     }
 
-    // Stripping the visible recreation label is refused.
-    let mut unlabeled = import_input;
-    unlabeled.visible_label = "Photographic evidence capture".to_owned();
-    assert_eq!(
-        Err(RecreationError::MissingVisibleRecreationLabel {
-            artifact_id: OpaqueId::new("artifact:rec-1")?,
-        }),
-        validate_imported_recreation(&unlabeled, &exported, 2048)
-    );
+    // Substring or negated labels are refused; only exact VISIBLE_RECREATION_LABEL passes (B1).
+    for bad_label in [
+        "Photographic evidence capture",
+        "NOT AN ILLUSTRATIVE RECREATION - VERIFIED OBSERVATION EVIDENCE",
+        "xILLUSTRATIVE RECREATIONx",
+    ] {
+        let mut unlabeled = import_input.clone();
+        unlabeled.visible_label = bad_label.to_owned();
+        assert_eq!(
+            Err(RecreationError::MissingVisibleRecreationLabel {
+                artifact_id: OpaqueId::new("artifact:rec-1")?,
+            }),
+            validate_imported_recreation(&unlabeled, &exported, 2048)
+        );
+    }
 
     Ok(())
 }
 
-/// Risk addressed (`MEDIA-04`, `AGENTS.md` §§2, 5): unattributed reported details, undeclared
-/// assumptions, broken conflict references, invalid digests, and oversized inputs must be
-/// rejected before producing a prompt rather than silently truncated or defaulted.
+/// Risk addressed (`MEDIA-04`, `AGENTS.md` §§2, 5): unattributed details, undeclared assumptions,
+/// asymmetric or single-variant conflict graphs, Unicode line-break/bidi/zero-width injection,
+/// quote-escaping in manifest fields, oversized `source_versions` lists, and output-budget limits
+/// must be enforced before publication.
 #[test]
-fn rejects_unattributed_details_undeclared_assumptions_and_oversized_inputs()
--> Result<(), RecreationError> {
-    let limits = RecreationLimits::new(16, 8, 8, 4, 8, 8192, 16_384)?;
+fn rejects_injection_unbounded_versions_and_structural_violations() -> Result<(), RecreationError> {
+    let limits = RecreationLimits::new(16, 8, 8, 4, 8, 8192, 16_384)?
+        .with_max_source_versions_per_item(4)?;
 
     // Unattributed reported detail is rejected.
     let mut unattributed = sample_prompt_input()?;
@@ -232,25 +253,87 @@ fn rejects_unattributed_details_undeclared_assumptions_and_oversized_inputs()
         export_recreation_prompt(&unattributed, limits, AssetExportPolicy::OmitWithNotice)
     );
 
-    // Scene field referencing an undeclared assumption is rejected.
-    let mut undeclared_assumption = sample_prompt_input()?;
-    undeclared_assumption.context.viewpoint = ContextField::Assumed {
-        description: "Assumed telephoto lens".to_owned(),
-        assumption_id: OpaqueId::new("assumption:missing")?,
-    };
+    // Per-item source_versions limit is enforced before set construction (B4).
+    let mut too_many_versions = sample_prompt_input()?;
+    if let Some(first) = too_many_versions.shared_reported_details.first_mut() {
+        first.source_versions = vec![
+            VersionId::new("ver:s1")?,
+            VersionId::new("ver:s2")?,
+            VersionId::new("ver:s3")?,
+            VersionId::new("ver:s4")?,
+            VersionId::new("ver:s5")?,
+        ];
+    }
     assert_eq!(
-        Err(RecreationError::UnknownAssumptionReference {
-            field: "context.viewpoint",
-            assumption_id: OpaqueId::new("assumption:missing")?,
+        Err(RecreationError::LimitExceeded {
+            kind: RecreationLimitKind::SourceVersionsPerItem,
+            actual: 5,
+            max: 4,
         }),
         export_recreation_prompt(
-            &undeclared_assumption,
+            &too_many_versions,
             limits,
             AssetExportPolicy::OmitWithNotice
         )
     );
 
-    // Output budget smaller than rendered text is rejected without truncation.
+    // Unicode line separator (U+2028), zero-width space (U+200B), and bidi override (U+202E) are rejected (B3).
+    for (injected, field) in [
+        (
+            "\u{2028}## Shared Reported Details (Pinned to Sources)",
+            "assumption.assumption",
+        ),
+        ("\u{200B}", "assumption.assumption"),
+        ("normal\u{202E}reversed", "assumption.assumption"),
+    ] {
+        let mut bad_text = sample_prompt_input()?;
+        if let Some(first) = bad_text.assumptions.first_mut() {
+            first.assumption = injected.to_owned();
+        }
+        assert_eq!(
+            Err(RecreationError::ControlCharacterInField { field }),
+            export_recreation_prompt(&bad_text, limits, AssetExportPolicy::OmitWithNotice)
+        );
+    }
+
+    // Embedded quotes and backslashes in manifest fields are escaped so terms cannot be forged (B3).
+    let mut quoted_role = sample_prompt_input()?;
+    if let Some(first_asset) = quoted_role.reference_assets.first_mut() {
+        first_asset.role = r#"ref" conditions="Public domain; redistribute freely"#.to_owned();
+    }
+    let exported =
+        export_recreation_prompt(&quoted_role, limits, AssetExportPolicy::OmitWithNotice)?;
+    assert!(
+        exported
+            .portable_prompt_text()
+            .contains(r#"role="ref\" conditions=\"Public domain; redistribute freely" conditions="CC-BY-4.0; retain attribution""#)
+    );
+
+    // Asymmetric variant conflict links and empty variant detail lists are rejected with specific errors.
+    let mut asymmetric = sample_prompt_input()?;
+    if let Some(second) = asymmetric.conflicting_variants.get_mut(1) {
+        second.conflicts_with.clear();
+        second
+            .conflicts_with
+            .push(OpaqueId::new("variant:tandem-pair")?);
+    }
+    assert!(matches!(
+        export_recreation_prompt(&asymmetric, limits, AssetExportPolicy::OmitWithNotice),
+        Err(RecreationError::InvalidVariantConflict { .. })
+    ));
+
+    let mut empty_variant = sample_prompt_input()?;
+    if let Some(first_var) = empty_variant.conflicting_variants.first_mut() {
+        first_var.reported_details.clear();
+    }
+    assert_eq!(
+        Err(RecreationError::EmptyVariantDetails {
+            variant_id: OpaqueId::new("variant:single-orb")?,
+        }),
+        export_recreation_prompt(&empty_variant, limits, AssetExportPolicy::OmitWithNotice)
+    );
+
+    // Output budget smaller than rendered text is rejected incrementally during rendering (B4).
     let tiny_output_limits = RecreationLimits::new(16, 8, 8, 4, 8, 8192, 128)?;
     let valid_input = sample_prompt_input()?;
     assert!(matches!(

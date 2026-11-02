@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OIA workspace shell — design mockup (fixture data)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/* OIA workspace shell mockup. Static page, no application behind it. Every value shown is fixture content.
+   Tokens follow docs/design/workspace-ui-ux.md §7. Layout follows §3: a full-bleed black evidence canvas with
+   floating glass instruments, in the manner of God's Eye View's shell (see §7.7), not a tiled grid of panels. */
+:root {
+  --canvas: #000000;
+  --canvas-raised: #07090c;
+  --glass-1: rgba(6, 9, 12, 0.66);
+  --glass-2: rgba(8, 12, 16, 0.80);
+  --glass-3: rgba(10, 14, 19, 0.94);
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.18);
+  --text: #e6edf3;
+  --text-2: rgba(230, 237, 243, 0.55);
+  --text-3: rgba(230, 237, 243, 0.32);
+  --cyan: #45d1ff;
+  --cyan-dim: rgba(69, 209, 255, 0.16);
+  --cyan-glow: rgba(69, 209, 255, 0.35);
+  --green: #5fe08a;
+  --amber: #f59e2e;
+  --red: #ff6b6b;
+  --violet: #b59cff;
+  --grid: rgba(69, 209, 255, 0.05);
+  --blur: 18px;
+  --radius: 14px;
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-reduced-transparency: reduce) { :root { --glass-1: #0a0d11; --glass-2: #0c1014; --glass-3: #0e1318; --blur: 0px; } }
+:root[data-reduce-transparency="true"] { --glass-1: #0a0d11; --glass-2: #0c1014; --glass-3: #0e1318; --blur: 0px; }
+@media (prefers-reduced-motion: reduce) { :root { --dur-1: 0ms; --dur-2: 0ms; } }
+:root[data-reduce-motion="true"] { --dur-1: 0ms; --dur-2: 0ms; }
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--canvas); color: var(--text); font: 13px/1.4 var(--sans); -webkit-font-smoothing: antialiased; }
+
+/* Stage: 1440×900. The canvas fills it; instruments float over it. */
+.stage { position: relative; width: 1440px; height: 900px; margin: 0 auto; overflow: hidden; background: var(--canvas); }
+.stage::before { /* fine technical grid, decoration only */
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background:
+    repeating-linear-gradient(0deg, var(--grid) 0 1px, transparent 1px 60px),
+    repeating-linear-gradient(90deg, var(--grid) 0 1px, transparent 1px 60px);
+  mask-image: radial-gradient(900px 600px at 50% 50%, #000 40%, transparent 100%);
+  -webkit-mask-image: radial-gradient(900px 600px at 50% 50%, #000 40%, transparent 100%);
+}
+svg text { font-family: var(--mono); }
+
+/* Type scale */
+.k { font: 500 9px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-2); }
+.v { font: 500 12px/1.2 var(--mono); color: var(--text); }
+.v.big { font-size: 20px; letter-spacing: -0.01em; }
+.dim { color: var(--text-3); }
+.mono { font-family: var(--mono); }
+
+/* Glass */
+.glass { background: var(--glass-1); -webkit-backdrop-filter: blur(var(--blur)); backdrop-filter: blur(var(--blur)); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 10px 30px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05); }
+.glass.strong { background: var(--glass-2); }
+button { font: inherit; color: var(--text); background: rgba(255,255,255,0.04); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; cursor: default; }
+button.primary { border-color: rgba(69,209,255,0.55); background: var(--cyan-dim); box-shadow: 0 0 14px rgba(69,209,255,0.12); }
+button:focus-visible, [tabindex]:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; box-shadow: 0 0 0 2px var(--canvas); }
+
+/* State badges: glyph + label, color as the fourth cue */
+.badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); font: 500 9px/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-2); white-space: nowrap; }
+.badge .g { font-size: 10px; letter-spacing: 0; color: var(--text-2); }
+.badge.ok { border-color: rgba(95,224,138,0.45); } .badge.ok .g { color: var(--green); }
+.badge.warn { border-color: rgba(245,158,46,0.5); } .badge.warn .g { color: var(--amber); }
+.badge.bad { border-color: rgba(255,107,107,0.5); } .badge.bad .g { color: var(--red); }
+.badge.gen { border-color: rgba(181,156,255,0.5); border-style: dashed; } .badge.gen .g { color: var(--violet); }
+.badge.sel { border-color: rgba(69,209,255,0.55); color: var(--text); } .badge.sel .g { color: var(--cyan); }
+
+/* ── Fixture strip (about the page, not the product) ── */
+.fixture { position: absolute; top: 0; left: 50%; transform: translateX(-50%); z-index: 20; padding: 4px 14px; border: 1px dashed rgba(181,156,255,0.6); border-top: 0; border-radius: 0 0 8px 8px; font: 500 9px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--violet); background: rgba(0,0,0,0.7); display: flex; gap: 14px; align-items: center; }
+.fixture label { color: var(--text-2); display: inline-flex; gap: 5px; align-items: center; text-transform: none; letter-spacing: 0.04em; font-family: var(--sans); font-size: 10px; }
+
+/* ── Canvas SVG ── */
+.canvas { position: absolute; inset: 0; }
+
+/* ── Top-left: identity + case ── */
+.ident { position: absolute; left: 24px; top: 22px; z-index: 10; display: grid; gap: 10px; }
+.wordmark { display: flex; align-items: center; gap: 10px; }
+.wordmark .mark { width: 26px; height: 26px; border: 1px solid rgba(69,209,255,0.7); border-radius: 50%; position: relative; box-shadow: 0 0 12px var(--cyan-glow); }
+.wordmark .mark::before { content: ""; position: absolute; inset: 7px; border-radius: 50%; background: var(--cyan); }
+.wordmark .mark::after { content: ""; position: absolute; left: -6px; right: -6px; top: 50%; height: 1px; background: rgba(69,209,255,0.7); }
+.wordmark b { font: 700 14px/1 var(--sans); letter-spacing: 0.22em; }
+.wordmark small { font: 500 9px/1 var(--mono); letter-spacing: 0.14em; color: var(--text-2); margin-left: 4px; }
+.wordmark small i { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--green); margin-right: 5px; vertical-align: 1px; }
+.case { padding: 12px 14px; width: 330px; display: grid; gap: 8px; }
+.case .q { font: 500 14px/1.3 var(--sans); color: var(--text); }
+.case .row { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* ── Left rail: icons only, labels on hover/focus ── */
+.rail { position: absolute; left: 24px; top: 190px; z-index: 10; padding: 8px 6px; display: grid; gap: 4px; width: 48px; }
+.rail a { position: relative; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 9px; color: var(--text-2); text-decoration: none; font: 500 14px/1 var(--mono); border: 1px solid transparent; }
+.rail a.active { color: var(--cyan); border-color: rgba(69,209,255,0.35); background: var(--cyan-dim); box-shadow: 0 0 12px rgba(69,209,255,0.15); }
+.rail a.off { color: var(--text-3); }
+.rail a .tip { position: absolute; left: 44px; top: 50%; transform: translateY(-50%); padding: 4px 8px; border-radius: 6px; background: var(--glass-3); border: 1px solid var(--line); font: 500 9px/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--text); white-space: nowrap; opacity: 0; pointer-events: none; }
+.rail a:hover .tip, .rail a:focus-visible .tip, .rail a.show .tip { opacity: 1; }
+.rail a .tip small { color: var(--text-3); margin-left: 6px; }
+.rail hr { width: 22px; border: 0; border-top: 1px solid var(--line); margin: 4px auto; }
+
+/* ── Top-right: clock + mode ── */
+.clock { position: absolute; right: 24px; top: 22px; z-index: 10; padding: 10px 14px; display: grid; grid-auto-flow: column; gap: 18px; align-items: end; }
+.clock .cell { display: grid; gap: 5px; }
+.clock .mode { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border: 1px solid var(--line-strong); border-radius: 6px; font: 600 10px/1 var(--mono); letter-spacing: 0.16em; }
+.clock .mode .g { color: var(--text-2); }
+
+/* ── Right inspector ── */
+.inspector { position: absolute; right: 24px; top: 92px; width: 312px; z-index: 10; padding: 12px 14px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; overflow: hidden; }
+.inspector .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin: -4px -4px 0; }
+.inspector .tabs button { background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 8px 7px; white-space: nowrap; font: 500 9px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-2); }
+.inspector .tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--cyan); }
+.kv { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 6px 10px; align-items: center; }
+.kv > span:nth-child(even) { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.kv .k { line-height: 1.2; }
+.kv .v { font-size: 11px; }
+.viz { display: grid; gap: 6px; }
+.viz .head { display: flex; justify-content: space-between; align-items: baseline; }
+.legend { display: flex; gap: 10px; flex-wrap: wrap; font: 500 9px/1 var(--mono); letter-spacing: 0.08em; color: var(--text-2); }
+.legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; vertical-align: -1px; margin-right: 5px; }
+.actions { display: flex; gap: 6px; }
+.actions button { font-size: 11px; padding: 5px 9px; }
+
+/* ── Bottom: timeline + command dock + jobs ── */
+.timeline { position: absolute; left: 212px; right: 360px; bottom: 86px; height: 92px; z-index: 10; padding: 10px 16px 8px; display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 18px; align-items: center; }
+.timeline .left { display: grid; gap: 6px; white-space: nowrap; }
+.dock { position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 10; display: flex; align-items: center; gap: 10px; padding: 8px 10px 8px 14px; width: 760px; border-radius: 999px; }
+.dock .scope { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border: 1px solid rgba(69,209,255,0.45); border-radius: 999px; font: 500 9px/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--text); white-space: nowrap; }
+.dock input { flex: 1; background: transparent; border: 0; color: var(--text); font: 13px var(--sans); min-width: 0; }
+.dock input::placeholder { color: var(--text-3); }
+.dock kbd { font: 500 10px/1 var(--mono); color: var(--text-3); border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px; }
+.dock .save { border-radius: 999px; padding: 6px 12px; font-size: 12px; }
+.jobs { position: absolute; right: 24px; bottom: 22px; z-index: 10; padding: 8px 12px; display: grid; gap: 6px; width: 312px; }
+.job { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: center; }
+.job .name { font: 500 11px/1.2 var(--mono); color: var(--text); }
+.job .sub { grid-column: 1 / -1; font: 500 9px/1 var(--mono); letter-spacing: 0.08em; color: var(--text-2); }
+.job .bar { grid-column: 1 / -1; height: 3px; background: rgba(255,255,255,0.08); border-radius: 2px; overflow: hidden; }
+.job .bar i { display: block; height: 100%; background: var(--cyan); }
+.job button { font: 500 9px/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; padding: 4px 8px; }
+
+/* ── Canvas readout (bottom-left): facts about the current view only ── */
+.readout { position: absolute; left: 24px; bottom: 22px; z-index: 10; padding: 10px 12px; display: grid; gap: 6px; width: 170px; }
+.readout .row { display: flex; justify-content: space-between; gap: 8px; }
+.readout .v { font-size: 10px; }
+</style>
+</head>
+<body>
+<div class="stage">
+
+  <div class="fixture" role="note">
+    Fixture · synthetic case · no live sources
+    <label><input type="checkbox" id="rt"> reduced transparency</label>
+    <label><input type="checkbox" id="rm"> reduced motion</label>
+  </div>
+
+  <!-- Evidence canvas: reported geometry only. No basemap, no imagery, no terrain. -->
+  <svg class="canvas" viewBox="0 0 1440 900" aria-label="Case canvas: reported positions, bearings, and regions. No basemap.">
+    <defs>
+      <radialGradient id="vig" cx="50%" cy="50%" r="70%"><stop offset="55%" stop-color="#000" stop-opacity="0"/><stop offset="100%" stop-color="#000" stop-opacity="0.75"/></radialGradient>
+      <pattern id="hatch" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="8" stroke="rgba(245,158,46,0.35)" stroke-width="1"/></pattern>
+      <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#45d1ff"/></marker>
+      <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    </defs>
+
+    <!-- Range rings around the reported region centre at the fixture scale (1 km ≈ 42 px). The reported region is ≈12 km across, so its edge is the 6 km ring. -->
+    <g fill="none" stroke="rgba(69,209,255,0.14)" stroke-width="1">
+      <circle cx="740" cy="450" r="126"/>
+      <circle cx="740" cy="450" r="252" stroke-dasharray="3 6" stroke="rgba(69,209,255,0.3)"/>
+      <circle cx="740" cy="450" r="378"/>
+    </g>
+    <g fill="rgba(230,237,243,0.32)" font-size="9" letter-spacing="1.5">
+      <text x="608" y="446" text-anchor="end">3 KM</text><text x="356" y="446" text-anchor="end">9 KM</text>
+      <text x="930" y="650">≈ 6 KM · EDGE OF REPORTED REGION</text>
+    </g>
+    <!-- Cardinal ticks -->
+    <g stroke="rgba(69,209,255,0.35)" stroke-width="1"><line x1="740" y1="-10" x2="740" y2="40"/><line x1="740" y1="860" x2="740" y2="910"/><line x1="180" y1="450" x2="230" y2="450"/><line x1="1250" y1="450" x2="1300" y2="450"/></g>
+    <g fill="rgba(230,237,243,0.55)" font-size="10" letter-spacing="2" text-anchor="middle"><text x="754" y="52">N</text><text x="754" y="856">S</text><text x="244" y="440">W</text><text x="1312" y="440">E</text></g>
+
+    <!-- Reported ridge line: a sketch derived from the accounts, labeled as such. -->
+    <path d="M520 700 C 600 600, 660 560, 700 470 S 760 300, 830 200" fill="none" stroke="rgba(230,237,243,0.5)" stroke-width="1.5" stroke-dasharray="6 5"/>
+    <text x="838" y="190" fill="rgba(230,237,243,0.55)" font-size="9" letter-spacing="1.5">RIDGE LINE · SKETCH FROM ACCOUNTS</text>
+
+    <!-- Account C: "two lights, east of the ridge", no bearing, no time -> a region, not a point. -->
+    <path d="M760 320 L 1010 300 L 1040 560 L 720 560 C 740 480, 750 400, 760 320 Z" fill="url(#hatch)" stroke="rgba(245,158,46,0.6)" stroke-width="1" stroke-dasharray="4 4"/>
+    <g font-size="9" letter-spacing="1.5"><text x="880" y="586" fill="#f59e2e">C · "EAST OF THE RIDGE"</text><text x="880" y="600" fill="rgba(230,237,243,0.45)">2 LIGHTS · NO BEARING · NO TIME</text></g>
+
+    <!-- Account A: observer on the eastern road, light NW→SE over ~8 min. Track is reported, not measured. -->
+    <g filter="url(#glow)">
+      <line x1="560" y1="250" x2="860" y2="500" stroke="#45d1ff" stroke-width="1.5" stroke-dasharray="10 6" marker-end="url(#arrow)"/>
+    </g>
+    <g font-size="9" letter-spacing="1.5"><text x="548" y="236" fill="#45d1ff">A · NW → SE · ≈ 8 MIN</text><text x="548" y="250" fill="rgba(230,237,243,0.45)">REPORTED TRACK · NOT MEASURED</text></g>
+    <!-- Observer A position and view wedge -->
+    <path d="M930 545 L 760 350 L 790 320 Z" fill="rgba(69,209,255,0.06)" stroke="rgba(69,209,255,0.35)" stroke-width="1"/>
+    <g transform="translate(930 545)">
+      <circle r="5" fill="#45d1ff"/><circle r="11" fill="none" stroke="#45d1ff" stroke-width="1"/>
+      <text x="16" y="-6" fill="#e6edf3" font-size="10" letter-spacing="1.5">A</text>
+      <text x="16" y="7" fill="rgba(230,237,243,0.55)" font-size="9" letter-spacing="1.2">EASTERN ROAD · 21:40 ±15</text>
+    </g>
+
+    <!-- Account B: position unknown -> drawn as an open question at the region edge, not at a guessed point. -->
+    <g transform="translate(470 620)">
+      <circle r="11" fill="none" stroke="rgba(230,237,243,0.5)" stroke-width="1" stroke-dasharray="3 3"/>
+      <text x="-3.5" y="4" fill="rgba(230,237,243,0.7)" font-size="11">?</text>
+      <text x="18" y="-4" fill="#e6edf3" font-size="10" letter-spacing="1.5">B</text>
+      <text x="18" y="9" fill="rgba(230,237,243,0.55)" font-size="9" letter-spacing="1.2">POSITION NOT RECORDED</text>
+    </g>
+
+    <!-- Region centre (reported, approximate) -->
+    <g transform="translate(740 450)"><line x1="-8" y1="0" x2="8" y2="0" stroke="#45d1ff"/><line x1="0" y1="-8" x2="0" y2="8" stroke="#45d1ff"/></g>
+
+    <!-- Selection brackets around the selected observation (A's track) -->
+    <g fill="none" stroke="#45d1ff" stroke-width="1.2">
+      <path d="M540 220 h14 M540 220 v14"/><path d="M880 220 h-14 M880 220 v14"/><path d="M540 520 h14 M540 520 v-14"/><path d="M880 520 h-14 M880 520 v-14"/>
+    </g>
+
+    <!-- Canvas caption -->
+    <g font-size="9" letter-spacing="1.5" fill="rgba(230,237,243,0.4)"><text x="212" y="706">REPORTED GEOMETRY · NO BASEMAP · SCALE FROM REPORTED REGION SIZE (APPROX.)</text></g>
+
+    <!-- Edge frame lines: decoration only, in the manner of a HUD frame -->
+    <g fill="none" stroke="rgba(69,209,255,0.28)" stroke-width="1"><path d="M400 14 H 1040 M 400 886 H 1040"/><path d="M14 300 V 600 M 1426 300 V 600"/></g>
+    <rect width="1440" height="900" fill="url(#vig)" pointer-events="none"/>
+  </svg>
+
+  <!-- Identity and case -->
+  <div class="ident">
+    <div class="wordmark"><span class="mark" aria-hidden="true"></span><b>OIA</b><small><i aria-hidden="true"></i>LOCAL · PRIVATE</small></div>
+    <div class="case glass">
+      <div class="k">Case · 1994 valley accounts</div>
+      <div class="q">Why do the three accounts disagree on direction?</div>
+      <div class="row"><span class="badge"><span class="g">◉</span>3 accounts</span><span class="badge"><span class="g">▣</span>1 source</span><span class="badge warn"><span class="g">◇</span>1 hypothesis</span><span class="badge"><span class="g">…</span>2 open</span></div>
+    </div>
+  </div>
+
+  <!-- Instruments -->
+  <nav class="rail glass" aria-label="Instruments">
+    <a href="#" class="active show"><span aria-hidden="true">◎</span><span class="tip">Case</span></a>
+    <a href="#"><span aria-hidden="true">▣</span><span class="tip">Library <small>1</small></span></a>
+    <a href="#"><span aria-hidden="true">≋</span><span class="tip">News</span></a>
+    <a href="#"><span aria-hidden="true">¶</span><span class="tip">Report <small>2 uncited</small></span></a>
+    <a href="#"><span aria-hidden="true">⇪</span><span class="tip">Export</span></a>
+    <hr>
+    <a href="#" class="off" aria-disabled="true"><span aria-hidden="true">◍</span><span class="tip">Globe <small>not in build</small></span></a>
+    <a href="#" class="off" aria-disabled="true"><span aria-hidden="true">✦</span><span class="tip">Sky <small>not in build</small></span></a>
+    <a href="#" class="off" aria-disabled="true"><span aria-hidden="true">▦</span><span class="tip">Media <small>not in build</small></span></a>
+    <hr>
+    <a href="#"><span aria-hidden="true">⟳</span><span class="tip">Jobs <small>2 running</small></span></a>
+    <a href="#"><span aria-hidden="true">⚙</span><span class="tip">Settings</span></a>
+  </nav>
+
+  <!-- Clock -->
+  <div class="clock glass" aria-label="Investigation clock">
+    <div class="cell"><span class="k">Mode</span><span class="mode"><span class="g">▮</span>HISTORICAL</span></div>
+    <div class="cell"><span class="k">Investigation clock</span><span class="v big">21:40 <span class="dim" style="font-size:12px">±15 MIN</span></span></div>
+    <div class="cell"><span class="k">Reference</span><span class="v">1994-03-14 · America/Denver · reported local</span></div>
+  </div>
+
+  <!-- Inspector -->
+  <aside class="inspector glass" aria-label="Inspector">
+    <div class="tabs" role="tablist"><button role="tab" aria-selected="true">Selected</button><button role="tab">Source</button><button role="tab">Claims</button><button role="tab">Notes</button><button role="tab">Lineage</button></div>
+
+    <div class="kv">
+      <span class="k">Object</span><span class="v">Account A · observation</span>
+      <span class="k">Origin</span><span><span class="badge"><span class="g">◉</span>testimony</span></span>
+      <span class="k">Anchor</span><span class="v">FIXTURE-DOC-0007 · v2 · p3.¶3</span>
+      <span class="k">Assessment</span><span><span class="badge"><span class="g">○</span>unsupported</span> <span class="badge"><span class="g">◻</span>unreviewed</span></span>
+      <span class="k">Conflicts</span><span><span class="badge bad"><span class="g">✕</span>1 · account C</span></span>
+    </div>
+
+    <!-- Visualization 1: bearings by account -->
+    <div class="viz">
+      <div class="head"><span class="k">Reported direction of travel</span><span class="k dim">3 accounts</span></div>
+      <svg viewBox="0 0 284 120" width="284" height="120" aria-label="Compass rose: account A reports travel toward the south-east; account C gives no bearing; account B gives no bearing or position.">
+        <g transform="translate(60 60)">
+          <circle r="48" fill="none" stroke="rgba(255,255,255,0.12)"/>
+          <circle r="30" fill="none" stroke="rgba(255,255,255,0.08)"/>
+          <g stroke="rgba(255,255,255,0.25)"><line x1="0" y1="-52" x2="0" y2="-44"/><line x1="0" y1="52" x2="0" y2="44"/><line x1="-52" y1="0" x2="-44" y2="0"/><line x1="52" y1="0" x2="44" y2="0"/></g>
+          <text x="0" y="-55" text-anchor="middle" font-size="8" fill="rgba(230,237,243,0.55)">N</text>
+          <!-- A: NW -> SE, drawn as a wedge of ±15° around 135° to show the stated imprecision -->
+          <path d="M0 0 L -22 -40 A 46 46 0 0 1 22 -40 Z" transform="rotate(135)" fill="rgba(69,209,255,0.18)" stroke="#45d1ff" stroke-width="1"/>
+          <line x1="0" y1="0" x2="0" y2="-46" transform="rotate(135)" stroke="#45d1ff" stroke-width="1.5" marker-end="url(#arrow)"/>
+          <text x="30" y="36" font-size="8" fill="#45d1ff" letter-spacing="1">A</text>
+          <!-- C: no bearing -> dashed full ring -->
+          <circle r="40" fill="none" stroke="#f59e2e" stroke-width="1" stroke-dasharray="2 5"/>
+          <text x="-48" y="-40" font-size="8" fill="#f59e2e" letter-spacing="1">C</text>
+          <circle r="2" fill="#e6edf3"/>
+        </g>
+        <g font-size="8" letter-spacing="1">
+          <text x="130" y="30" fill="#45d1ff">A</text><text x="144" y="30" fill="rgba(230,237,243,0.7)">NW → SE · ±15° · "approx."</text>
+          <text x="130" y="52" fill="#f59e2e">C</text><text x="144" y="52" fill="rgba(230,237,243,0.7)">no bearing · E of ridge</text>
+          <text x="130" y="74" fill="rgba(230,237,243,0.55)">B</text><text x="144" y="74" fill="rgba(230,237,243,0.7)">no bearing · no position</text>
+          <text x="130" y="104" fill="rgba(230,237,243,0.4)">1 of 3 gives a direction</text>
+        </g>
+      </svg>
+    </div>
+
+    <!-- Visualization 2: when each time kind is known, per account -->
+    <div class="viz">
+      <div class="head"><span class="k">Time coverage by account</span><span class="k dim">known · unknown</span></div>
+      <svg viewBox="0 0 284 54" width="284" height="54" aria-label="Three rows: account A has event time ±15 min and a receipt date; B has a receipt date only; C has a receipt date only.">
+        <g font-size="8" fill="rgba(230,237,243,0.55)"><text x="0" y="12">A</text><text x="0" y="30">B</text><text x="0" y="48">C</text></g>
+        <g font-size="7" fill="rgba(230,237,243,0.4)" text-anchor="middle"><text x="70" y="7">EVENT</text><text x="160" y="7">RECEIVED</text><text x="240" y="7">POSITION</text></g>
+        <!-- A -->
+        <rect x="46" y="9" width="48" height="5" rx="2" fill="#45d1ff"/><rect x="136" y="9" width="48" height="5" rx="2" fill="#5fe08a"/><rect x="216" y="9" width="48" height="5" rx="2" fill="#5fe08a"/>
+        <!-- B -->
+        <rect x="46" y="27" width="48" height="5" rx="2" fill="none" stroke="rgba(255,255,255,0.25)" stroke-dasharray="2 2"/><rect x="136" y="27" width="48" height="5" rx="2" fill="#5fe08a"/><rect x="216" y="27" width="48" height="5" rx="2" fill="none" stroke="rgba(255,255,255,0.25)" stroke-dasharray="2 2"/>
+        <!-- C -->
+        <rect x="46" y="45" width="48" height="5" rx="2" fill="none" stroke="rgba(255,255,255,0.25)" stroke-dasharray="2 2"/><rect x="136" y="45" width="48" height="5" rx="2" fill="#5fe08a"/><rect x="216" y="45" width="48" height="5" rx="2" fill="url(#hatch)" stroke="rgba(245,158,46,0.6)"/>
+      </svg>
+      <div class="legend"><span><i style="background:#45d1ff"></i>approximate</span><span><i style="background:#5fe08a"></i>recorded</span><span><i style="background:transparent;border:1px dashed rgba(255,255,255,0.4)"></i>not recorded</span><span><i style="background:rgba(245,158,46,0.5)"></i>region only</span></div>
+    </div>
+
+    <div class="actions"><button class="primary">Cite</button><button>Assess</button><button>Discriminating evidence</button></div>
+  </aside>
+
+  <!-- Shared timeline over the case interval -->
+  <section class="timeline glass" aria-label="Shared timeline">
+    <div class="left">
+      <span class="k">Shared timeline</span>
+      <span class="v">20:00 → 23:00</span>
+      <span class="k dim">1994-03-14 · 1 est</span>
+    </div>
+    <svg viewBox="0 0 760 70" width="100%" height="70" preserveAspectRatio="none" aria-label="Timeline from 20:00 to 23:00 with the reported event window at 21:25 to 21:55 and the clock at 21:40.">
+      <line x1="0" y1="44" x2="760" y2="44" stroke="rgba(255,255,255,0.2)"/>
+      <g stroke="rgba(255,255,255,0.2)"><line x1="0" y1="40" x2="0" y2="48"/><line x1="253" y1="40" x2="253" y2="48"/><line x1="507" y1="40" x2="507" y2="48"/><line x1="760" y1="40" x2="760" y2="48"/></g>
+      <g font-size="9" fill="rgba(230,237,243,0.45)" letter-spacing="1"><text x="2" y="62">20:00</text><text x="240" y="62">21:00</text><text x="494" y="62">22:00</text><text x="722" y="62">23:00</text></g>
+      <!-- event window 21:25–21:55 -->
+      <rect x="359" y="38" width="127" height="12" rx="3" fill="rgba(69,209,255,0.18)" stroke="rgba(69,209,255,0.6)"/>
+      <text x="422" y="30" text-anchor="middle" font-size="9" fill="#45d1ff" letter-spacing="1">◆ A · EVENT ≈ 21:40 ±15</text>
+      <!-- clock cursor -->
+      <line x1="422" y1="14" x2="422" y2="56" stroke="#45d1ff" stroke-width="1.5"/>
+      <!-- no-data rows: explicit absence -->
+      <text x="548" y="30" font-size="9" fill="rgba(230,237,243,0.4)" letter-spacing="1">B, C · NO EVENT TIME</text>
+    </svg>
+  </section>
+
+  <!-- Command dock -->
+  <div class="dock glass strong" role="search">
+    <span class="scope">Scope · this case ▾</span>
+    <input type="text" aria-label="Search, identifier, place, or date" placeholder="Search, or id:  near:  t:  in:">
+    <kbd>Ctrl K</kbd>
+    <button class="save">Save <span class="dim">· private</span></button>
+  </div>
+
+  <!-- Jobs -->
+  <div class="jobs glass" aria-label="Jobs">
+    <div class="job"><span class="name">OCR · FIXTURE-DOC-0007</span><button>Cancel</button><div class="bar"><i style="width:78%"></i></div><span class="sub">running · 7 / 9 pages</span></div>
+    <div class="job"><span class="name">Acquire · release-2</span><button>Retry</button><span class="sub" style="color:var(--red)">✕ failed · unavailable · 503 · attempt 2/3</span></div>
+    <div class="job"><span class="name dim">Search · "ridge light 1994"</span><button>Open</button><span class="sub">⤳ superseded · not applied</span></div>
+  </div>
+
+  <!-- View readout -->
+  <div class="readout glass" aria-label="View state">
+    <div class="row"><span class="k">View</span><span class="v">case · geometry</span></div>
+    <div class="row"><span class="k">Basemap</span><span class="v">none</span></div>
+    <div class="row"><span class="k">Scale</span><span class="v">≈ 42 px / km</span></div>
+    <div class="row"><span class="k">Selected</span><span class="v">account A</span></div>
+    <div class="row"><span class="k">Overlays</span><span class="v">on</span></div>
+  </div>
+
+</div>
+<script>
+  document.getElementById('rt').addEventListener('change', e => document.documentElement.setAttribute('data-reduce-transparency', e.target.checked));
+  document.getElementById('rm').addEventListener('change', e => document.documentElement.setAttribute('data-reduce-motion', e.target.checked));
+</script>
+</body>
+</html>

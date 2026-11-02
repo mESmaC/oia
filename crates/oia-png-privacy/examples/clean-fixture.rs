@@ -3,7 +3,13 @@ use std::error::Error;
 use std::io::{self, Write};
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let hex = include_str!("../tests/fixtures/rgba.hex").trim();
+    // Synthetic fixtures only: no argument selects rgba.hex, `exif` selects rgba-exif.hex.
+    let hex = match std::env::args().nth(1).as_deref() {
+        None => include_str!("../tests/fixtures/rgba.hex"),
+        Some("exif") => include_str!("../tests/fixtures/rgba-exif.hex"),
+        Some(_) => return Err("usage: clean-fixture [exif]".into()),
+    }
+    .trim();
     if !hex.len().is_multiple_of(2) {
         return Err("synthetic fixture has an odd hex length".into());
     }
@@ -19,6 +25,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Selection {
             text: true,
             modification_time: true,
+            exif: true,
         },
         Limits {
             input_bytes: 1024,

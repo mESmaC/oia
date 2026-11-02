@@ -1,8 +1,10 @@
 # PNG container privacy kernel (temporary standalone package)
 
 Implements only the byte/container slice of PRIVACY-01 / issue #46: bounded
-inspection and explicitly selected removal of uncompressed text and embedded
-modification-time chunks from a conservative static RGBA8 PNG profile.
+inspection and explicitly selected removal of uncompressed text, embedded
+modification-time and Exif chunks from a conservative static RGBA8 PNG profile.
+An Exif chunk with a non-default orientation is retained, and selecting it for
+removal is refused, because removing it would change rendering.
 
 See [the implemented profile, guarantees and limitations](../../docs/implementation/png-privacy.md).
 The kernel has no filesystem, network, model, storage or publication authority.

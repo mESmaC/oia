@@ -6,7 +6,7 @@ This draft covers requirements CASE-01 to CASE-05 and UX-01 to UX-05 from the [p
 
 Companion artifacts:
 
-- [Shell mockup](mockups/workspace-shell.html): a static, self-contained HTML page showing the P1 shell with the document reader as the central canvas. All content is labeled fixture data; nothing is live.
+- [Shell mockup](mockups/workspace-shell.html): a static, self-contained HTML page showing the P1 shell with the case geometry view as the central canvas: reported positions, bearings, and regions drawn without a basemap, with floating instruments over a black canvas. All content is labeled fixture data; nothing is live.
 
 ## 1. Design principles
 
@@ -239,16 +239,16 @@ Proposed values for the default dark theme. A light theme is not in P1 scope; re
 
 | Token | Value | Use |
 | --- | --- | --- |
-| `canvas` | `#0b0f14` | Workspace background |
-| `canvas-deep` | `#070a0e` | Behind the evidence canvas when imagery needs a frame |
-| `glass-1` | `rgba(16, 22, 30, 0.72)` | Panels (rail, inspector, timeline) |
-| `glass-2` | `rgba(22, 30, 40, 0.82)` | Floating surfaces (menus, job tray expanded) |
-| `glass-3` | `rgba(26, 35, 46, 0.94)` | Modal and reading surfaces over imagery |
-| `line` | `rgba(255, 255, 255, 0.10)` | Hairline borders |
-| `line-strong` | `rgba(255, 255, 255, 0.22)` | Focused or selected borders |
+| `canvas` | `#000000` | Workspace background. True black so OLED displays switch pixels off and glass reads as glass. |
+| `canvas-raised` | `#07090c` | Opaque surface where a panel cannot be translucent |
+| `glass-1` | `rgba(6, 9, 12, 0.66)` | Floating instruments (rail, inspector, timeline, readout) |
+| `glass-2` | `rgba(8, 12, 16, 0.80)` | Command dock, menus, expanded job tray |
+| `glass-3` | `rgba(10, 14, 19, 0.94)` | Modal and reading surfaces over imagery |
+| `line` | `rgba(255, 255, 255, 0.08)` | Hairline borders |
+| `line-strong` | `rgba(255, 255, 255, 0.18)` | Focused or selected borders |
 | `text` | `#e6edf3` | Primary text |
-| `text-2` | `#9fb0c0` | Secondary text and labels |
-| `text-3` | `#6b7a8a` | Disabled, hints |
+| `text-2` | `rgba(230, 237, 243, 0.55)` | Secondary text and labels |
+| `text-3` | `rgba(230, 237, 243, 0.32)` | Disabled, hints |
 | `accent-cyan` | `#45d1ff` | Selection, focus ring, current context, interactive emphasis |
 | `accent-green` | `#5fe08a` | Confirmed, available, succeeded, supported |
 | `accent-amber` | `#f59e2e` | Caution: stale, partial, degraded, needs reassessment, disputed, estimate |
@@ -257,7 +257,7 @@ Proposed values for the default dark theme. A light theme is not in P1 scope; re
 
 Semantic roles are fixed. Cyan is the only interactive color; green, amber, and red are never used for emphasis or decoration; violet is reserved for the three generated classes.
 
-**Palette check (measured, 2026-11-01).** The five accents were run through the dataviz palette validator (`scripts/validate_palette.js`, Node 24.18.0) in dark mode against `#0b0f14`:
+**Palette check (measured, 2026-11-01).** The five accents were run through the dataviz palette validator (`scripts/validate_palette.js`, Node 24.18.0) in dark mode against `#0b0f14`. The canvas was later moved to `#000000`; contrast against pure black is higher than against the tested surface, so the contrast result holds, and hue separation does not depend on the surface:
 
 - Contrast against the canvas: all five at or above 3:1 (pass). Body text tokens are separately targeted at 4.5:1.
 - Colorblind separation: the weakest adjacent pair is green and amber at ΔE 8.6 under deutan simulation, at the recommended floor. Red and amber under tritan simulation separate at only ΔE 3.0.
@@ -268,9 +268,11 @@ Conclusion: green, amber, and red cannot be distinguished by color alone for a m
 
 ### 7.2 Materials and depth
 
-- Four elevation levels: canvas (0), panel (1), floating (2), modal or reading surface (3), mapped to the three glass tokens and the canvas.
-- Glass uses background blur between 12 px and 20 px with the tokens above. Blur is a display effect and is the first thing removed by reduced transparency and by lower effects settings.
-- Reduced transparency replaces each glass token with an opaque equivalent (`#121922`, `#182230`, `#1c2733`) and removes blur. Layout, borders, and text are unchanged.
+- The canvas is full-bleed and black. Instruments float over it as separate glass objects with space between them; they do not tile the screen into a grid of bordered boxes. The evidence (map, sky, document, media) is the largest thing on screen.
+- Four elevation levels: canvas (0), floating instrument (1), dock and menus (2), modal or reading surface (3), mapped to the canvas and the three glass tokens.
+- Glass uses background blur between 14 px and 20 px with the tokens above, a 1 px hairline, a faint top highlight, and a deep soft shadow so panels read as objects over the black canvas. Blur is a display effect and is the first thing removed by reduced transparency and by lower effects settings.
+- Reduced transparency replaces each glass token with an opaque equivalent (`#0a0d11`, `#0c1014`, `#0e1318`) and removes blur. Layout, borders, and text are unchanged.
+- Cyan may carry a soft outer glow on the single active element (selected marker, active rail item, primary action). Glow is never applied to status colors and never to more than one element per instrument.
 - Reading surfaces (document text, report editor) use `glass-3` or its opaque equivalent so prose remains legible over bright imagery (A02). When the canvas behind a reading surface is imagery, a dark scrim at 40 percent sits between them.
 - Borders are 1 px hairlines. Selection and focus use `line-strong` plus the cyan focus ring, never a glow alone.
 - Shadows are soft and low (0 8 px 24 px at 35 percent black). No colored glows except the focus ring.
@@ -295,7 +297,32 @@ Conclusion: green, amber, and red cannot be distinguished by color alone for a m
 - Progress indicators move only when progress is reported. Live mode shows a subtle "receiving" pulse only while samples arrive.
 - Sound is off by default. The only optional sounds are completion of a job the user started and an actual alert rule firing. No ambient audio.
 
-### 7.6 Identity
+### 7.6 Visual first, words second
+
+The first draft of the shell mockup was reviewed as too word-dense. The rule that follows applies to every instrument:
+
+- Each instrument leads with a visualization of the selected evidence: geometry, bearings, coverage, time, lineage, or media. Prose is confined to the inspector and the reader, and the inspector shows short key-value rows and small charts before any paragraph.
+- Labels are 9 px uppercase monospace at reduced opacity, in the manner of a HUD. Values are monospace. Sentences appear only in reading surfaces and tooltips.
+- Absence is drawn, not described: an unknown position is a dashed open marker with a question mark; an unknown bearing is a dashed full ring; an unknown time is a dashed empty bar. The word "unknown" accompanies the mark but is not the primary cue.
+- Counts belong in badges and charts, not in sentences.
+- A view that cannot yet show a visualization (an empty case) shows the empty canvas with its grid and a single short prompt, not a block of explanatory text.
+
+### 7.7 Reference: God's Eye View shell patterns
+
+Inspected on 2026-11-01 at `0d1a6816` in the local checkout listed in [prior-art](../prior-art.md). These are the UI patterns taken as reference; the code was not copied.
+
+| Pattern | Where seen | Taken into OIA | Not taken |
+| --- | --- | --- | --- |
+| Full-bleed globe with floating glass panels | `index.html`, `src/ui/styles/foundation.css` (`--glass-bg`, `--panel-radius: 16px`) | Full-bleed canvas, floating instruments, 14 px radius | Cesium as a decided renderer (D01 is open) |
+| Tiny uppercase mono labels at half opacity | `foundation.css` `--dock-label-*`, `status-badge.css` (8 to 9 px, 1.3 px tracking) | 9 px uppercase mono labels, badges with glyph plus label | Color-only badges |
+| Bottom command dock with collapsible trays | `src/ui/templates/command-dock.html` | A single pill-shaped command dock at the bottom center | Multiple trays in P1 |
+| Cyan accent with soft glow, text secondary at 50 percent | `foundation.css` `--accent`, `--accent-glow`, `--text-secondary` | One glowing active element per instrument; secondary text as alpha over the canvas | Glow on status colors |
+| HUD frame lines kept decorative and separate from telemetry | `src/ui/templates/cockpit.html` comment "Decorative only; telemetry and interactive panels remain separate" | Edge frame lines and corner brackets as decoration; readouts only from view state | Simulated pitch and roll scales outside the Devices instrument |
+| Alternate theme with clipped polygon panel frames and a technical grid | `src/ui/styles/cyber.css` `--cyber-panel-frame`, `--cyber-grid` | Faint technical grid masked toward the canvas edges | Red accent, 1 px radius theme |
+
+The reference project's "Apple meets Blade Runner" direction and OIA's "military terminal with refined glass" direction overlap on black canvas, glass, mono instrumentation, and restraint. OIA differs in keeping every readout bound to a record or a labeled estimate, in giving status glyph and label cues, and in drawing absence explicitly.
+
+### 7.8 Identity
 
 The wordmark is "OIA" in the sans-serif with "Open Intelligence Agency" in label caps beneath it on the case home. The existing repository icon (`assets/icon.svg`) is a placeholder blue tile and does not match this palette; replacing it is an open item (§13), not part of this draft.
 

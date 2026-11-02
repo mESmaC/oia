@@ -7,6 +7,7 @@ pub enum LimitKind {
     Sources,
     SourceRecords,
     PassagesPerRecord,
+    LineageEdges,
     Claims,
     EvidenceLinksPerClaim,
     Invalidations,
@@ -19,6 +20,7 @@ pub struct AssessmentLimits {
     max_sources: usize,
     max_source_records: usize,
     max_passages_per_record: usize,
+    max_lineage_edges: usize,
     max_claims: usize,
     max_evidence_links_per_claim: usize,
     max_invalidations: usize,
@@ -32,6 +34,7 @@ impl AssessmentLimits {
         max_sources: usize,
         max_source_records: usize,
         max_passages_per_record: usize,
+        max_lineage_edges: usize,
         max_claims: usize,
         max_evidence_links_per_claim: usize,
         max_invalidations: usize,
@@ -46,6 +49,9 @@ impl AssessmentLimits {
         }
         if max_passages_per_record == 0 {
             return Err(ClaimCheckError::ZeroLimit(LimitKind::PassagesPerRecord));
+        }
+        if max_lineage_edges == 0 {
+            return Err(ClaimCheckError::ZeroLimit(LimitKind::LineageEdges));
         }
         if max_claims == 0 {
             return Err(ClaimCheckError::ZeroLimit(LimitKind::Claims));
@@ -66,6 +72,7 @@ impl AssessmentLimits {
             max_sources,
             max_source_records,
             max_passages_per_record,
+            max_lineage_edges,
             max_claims,
             max_evidence_links_per_claim,
             max_invalidations,
@@ -84,6 +91,10 @@ impl AssessmentLimits {
 
     pub fn max_passages_per_record(self) -> usize {
         self.max_passages_per_record
+    }
+
+    pub fn max_lineage_edges(self) -> usize {
+        self.max_lineage_edges
     }
 
     pub fn max_claims(self) -> usize {
@@ -173,6 +184,23 @@ pub enum DependentObjectKind {
     Report,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LineageRelationKind {
+    Quotes,
+    Republishes,
+    Supersedes,
+    Supports,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LineageEdgeInput<'a> {
+    pub edge_id: &'a str,
+    pub relation_kind: LineageRelationKind,
+    pub from_version_id: &'a str,
+    pub to_version_id: &'a str,
+    pub preserves_independent_corroboration: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PassageAnchor<'a> {
     pub passage_id: &'a str,
@@ -196,7 +224,7 @@ pub struct SourceRecordInput<'a> {
     pub independent_lineage_root_id: &'a str,
     pub is_syndicated_reprint: bool,
     pub raw_bytes: &'a [u8],
-    pub expected_sha256_hex: &'a str,
+    pub declared_sha256_hex: &'a str,
     pub expected_char_length: usize,
     pub passages: &'a [PassageAnchor<'a>],
 }
@@ -296,6 +324,7 @@ pub struct PublisherSummaryInput<'a> {
 pub struct CorpusAssessmentInput<'a> {
     pub source_ids: &'a [&'a str],
     pub records: &'a [SourceRecordInput<'a>],
+    pub lineage_edges: &'a [LineageEdgeInput<'a>],
     pub candidates: &'a [EventCandidateInput<'a>],
     pub claims: &'a [ClaimInput<'a>],
     pub invalidations: &'a [DependencyInvalidationInput<'a>],
@@ -304,7 +333,7 @@ pub struct CorpusAssessmentInput<'a> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum QuotationFidelityStatus {
-    NoVerbatimQuoteInPassage,
+    NoCheckedQuotationFound,
     ExactUpstreamSubstringMatch,
     DistortedQuoteDetectedAndFlagged,
 }
@@ -332,6 +361,7 @@ pub struct CorpusVerificationReport<'a> {
     validated_source_count: usize,
     validated_record_count: usize,
     validated_passage_count: usize,
+    validated_lineage_edge_count: usize,
     validated_invalidation_count: usize,
     validated_publisher_summary_count: usize,
     limits: AssessmentLimits,
@@ -352,6 +382,10 @@ impl<'a> CorpusVerificationReport<'a> {
 
     pub fn validated_passage_count(&self) -> usize {
         self.validated_passage_count
+    }
+
+    pub fn validated_lineage_edge_count(&self) -> usize {
+        self.validated_lineage_edge_count
     }
 
     pub fn validated_invalidation_count(&self) -> usize {
@@ -387,7 +421,7 @@ pub enum ClaimCheckError {
         record_version_id: String,
         valid_up_to: usize,
     },
-    ByteLengthMismatch {
+    CharLengthMismatch {
         record_version_id: String,
         actual_chars: usize,
         expected_chars: usize,
@@ -398,6 +432,10 @@ pub enum ClaimCheckError {
     InvalidPassageAnchor {
         record_version_id: String,
         passage_id: String,
+        reason: &'static str,
+    },
+    InvalidLineageEdge {
+        edge_id: String,
         reason: &'static str,
     },
     RemovedPageAutoRetracted {
@@ -466,7 +504,7 @@ impl fmt::Display for ClaimCheckError {
                 f,
                 "record {record_version_id} has malformed UTF-8 at byte {valid_up_to}"
             ),
-            Self::ByteLengthMismatch {
+            Self::CharLengthMismatch {
                 record_version_id,
                 actual_chars,
                 expected_chars,
@@ -486,6 +524,9 @@ impl fmt::Display for ClaimCheckError {
                 f,
                 "invalid passage anchor {record_version_id}:{passage_id}: {reason}"
             ),
+            Self::InvalidLineageEdge { edge_id, reason } => {
+                write!(f, "invalid lineage edge {edge_id}: {reason}")
+            }
             Self::RemovedPageAutoRetracted { record_version_id } => write!(
                 f,
                 "removed record {record_version_id} must not be auto-marked retracted (NEWS-04 / A06)"
@@ -556,6 +597,26 @@ fn is_valid_lower_hex_sha256(hex: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// Validates strict 20-byte RFC 3339 UTC timestamp format `YYYY-MM-DDTHH:MM:SSZ`.
+fn is_valid_rfc3339_utc_second(ts: &str) -> bool {
+    let bytes = ts.as_bytes();
+    if bytes.len() != 20 {
+        return false;
+    }
+    let digit_indices = [0usize, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18];
+    for idx in digit_indices {
+        if !bytes.get(idx).is_some_and(u8::is_ascii_digit) {
+            return false;
+        }
+    }
+    bytes.get(4) == Some(&b'-')
+        && bytes.get(7) == Some(&b'-')
+        && bytes.get(10) == Some(&b'T')
+        && bytes.get(13) == Some(&b':')
+        && bytes.get(16) == Some(&b':')
+        && bytes.get(19) == Some(&b'Z')
+}
+
 fn find_record<'a, 'b>(
     records: &'b [SourceRecordInput<'a>],
     version_id: &str,
@@ -570,7 +631,7 @@ fn find_passage<'a, 'b>(
     record.passages.iter().find(|p| p.passage_id == passage_id)
 }
 
-/// Extracts double-quoted verbatim spans (`"..."`) of at least 12 bytes from a passage quote.
+/// Extracts ASCII double-quoted verbatim spans (`"..."`) of at least 12 bytes from a passage quote.
 fn extract_double_quoted_spans(text: &str) -> Result<Vec<&str>, ClaimCheckError> {
     let mut spans = Vec::new();
     let mut rest = text;
@@ -592,8 +653,49 @@ fn extract_double_quoted_spans(text: &str) -> Result<Vec<&str>, ClaimCheckError>
     Ok(spans)
 }
 
-/// Evaluates and validates a corpus of source records, event candidates, passage-level claims,
-/// dependency invalidations, and publisher summaries under `NEWS-03`, `NEWS-04`, `NEWS-05`, and `A06`.
+/// Collects all `SourceRecord` versions reachable strictly upstream from `start_version_id`
+/// by traversing outbound `Quotes` and `Republishes` lineage edges (`from -> to`).
+/// Does not include `start_version_id` itself, downstream reprints, or parallel siblings.
+fn collect_upstream_quote_or_republish_versions<'a>(
+    start_version_id: &'a str,
+    lineage_edges: &[LineageEdgeInput<'a>],
+) -> Result<Vec<&'a str>, ClaimCheckError> {
+    let mut reachable: Vec<&'a str> = Vec::new();
+    let mut frontier: Vec<&'a str> = Vec::new();
+    frontier
+        .try_reserve(1)
+        .map_err(|_| ClaimCheckError::AllocationFailed)?;
+    frontier.push(start_version_id);
+
+    let mut cursor = 0usize;
+    while let Some(&current) = frontier.get(cursor) {
+        cursor += 1;
+        for edge in lineage_edges {
+            if edge.from_version_id == current
+                && matches!(
+                    edge.relation_kind,
+                    LineageRelationKind::Quotes | LineageRelationKind::Republishes
+                )
+                && edge.to_version_id != start_version_id
+                && !reachable.contains(&edge.to_version_id)
+            {
+                reachable
+                    .try_reserve(1)
+                    .map_err(|_| ClaimCheckError::AllocationFailed)?;
+                reachable.push(edge.to_version_id);
+                frontier
+                    .try_reserve(1)
+                    .map_err(|_| ClaimCheckError::AllocationFailed)?;
+                frontier.push(edge.to_version_id);
+            }
+        }
+    }
+    Ok(reachable)
+}
+
+/// Checks consistency of a corpus of source records, lineage edges, event candidates,
+/// passage-level claim assessments, dependency invalidations, and publisher summaries
+/// under `NEWS-03`, `NEWS-04`, `NEWS-05`, and `A06`.
 pub fn verify_corpus<'a>(
     input: &CorpusAssessmentInput<'a>,
     limits: AssessmentLimits,
@@ -613,6 +715,13 @@ pub fn verify_corpus<'a>(
             kind: LimitKind::SourceRecords,
             actual: input.records.len(),
             limit: limits.max_source_records,
+        });
+    }
+    if input.lineage_edges.len() > limits.max_lineage_edges {
+        return Err(ClaimCheckError::BudgetExceeded {
+            kind: LimitKind::LineageEdges,
+            actual: input.lineage_edges.len(),
+            limit: limits.max_lineage_edges,
         });
     }
     if input.claims.len() > limits.max_claims {
@@ -688,7 +797,7 @@ pub fn verify_corpus<'a>(
                 limit: limits.max_passages_per_record,
             });
         }
-        if !is_valid_lower_hex_sha256(rec.expected_sha256_hex) {
+        if !is_valid_lower_hex_sha256(rec.declared_sha256_hex) {
             return Err(ClaimCheckError::InvalidSha256Format {
                 record_version_id: rec.version_id.to_owned(),
             });
@@ -709,7 +818,7 @@ pub fn verify_corpus<'a>(
             })?;
         let actual_chars = decoded.chars().count();
         if actual_chars != rec.expected_char_length {
-            return Err(ClaimCheckError::ByteLengthMismatch {
+            return Err(ClaimCheckError::CharLengthMismatch {
                 record_version_id: rec.version_id.to_owned(),
                 actual_chars,
                 expected_chars: rec.expected_char_length,
@@ -774,7 +883,53 @@ pub fn verify_corpus<'a>(
         }
     }
 
-    // 3. Validate EventCandidates (NEWS-02 guard)
+    // 3. Validate LineageEdges (NEWS-01, INTEL-01)
+    for (idx, edge) in input.lineage_edges.iter().enumerate() {
+        check_control().map_err(ClaimCheckError::Stopped)?;
+        if edge.edge_id.is_empty()
+            || input
+                .lineage_edges
+                .get(..idx)
+                .is_some_and(|prior| prior.iter().any(|e| e.edge_id == edge.edge_id))
+        {
+            return Err(ClaimCheckError::DuplicateIdentifier {
+                kind: "edge_id",
+                id: edge.edge_id.to_owned(),
+            });
+        }
+        if find_record(input.records, edge.from_version_id).is_none() {
+            return Err(ClaimCheckError::UnknownReference {
+                context: format!("lineage edge {}", edge.edge_id),
+                target: edge.from_version_id.to_owned(),
+            });
+        }
+        if find_record(input.records, edge.to_version_id).is_none() {
+            return Err(ClaimCheckError::UnknownReference {
+                context: format!("lineage edge {}", edge.edge_id),
+                target: edge.to_version_id.to_owned(),
+            });
+        }
+        if edge.from_version_id == edge.to_version_id {
+            return Err(ClaimCheckError::InvalidLineageEdge {
+                edge_id: edge.edge_id.to_owned(),
+                reason: "self-referential lineage edge is not permitted",
+            });
+        }
+        if matches!(
+            edge.relation_kind,
+            LineageRelationKind::Quotes
+                | LineageRelationKind::Republishes
+                | LineageRelationKind::Supersedes
+        ) && edge.preserves_independent_corroboration
+        {
+            return Err(ClaimCheckError::InvalidLineageEdge {
+                edge_id: edge.edge_id.to_owned(),
+                reason: "quotes, republishes, and supersedes edges must not count as independent corroboration",
+            });
+        }
+    }
+
+    // 4. Validate EventCandidates (NEWS-02 guard)
     for cand in input.candidates {
         check_control().map_err(ClaimCheckError::Stopped)?;
         if cand.movement_establishes_intent_or_mission {
@@ -790,7 +945,7 @@ pub fn verify_corpus<'a>(
         }
     }
 
-    // 4. Validate Claims and Assessments (NEWS-03, NEWS-04)
+    // 5. Validate Claims and Assessments (NEWS-03, NEWS-04)
     let mut verified_claims = Vec::new();
     verified_claims
         .try_reserve(input.claims.len())
@@ -958,19 +1113,24 @@ pub fn verify_corpus<'a>(
             });
         }
 
-        // Quotation fidelity verification (NEWS-03)
+        // Quotation fidelity verification (NEWS-03): check only against upstream records
+        // reachable via {Quotes, Republishes} edges, never against sibling or downstream reprints.
         let quoted_spans = extract_double_quoted_spans(claim_passage.quote)?;
         let quotation_status = if quoted_spans.is_empty() {
-            QuotationFidelityStatus::NoVerbatimQuoteInPassage
+            QuotationFidelityStatus::NoCheckedQuotationFound
         } else {
+            let upstream_versions = collect_upstream_quote_or_republish_versions(
+                source_rec.version_id,
+                input.lineage_edges,
+            )?;
             let mut all_present_upstream = true;
             for span in &quoted_spans {
-                let present_in_contrary_or_upstream = input.records.iter().any(|r| {
-                    r.version_id != source_rec.version_id
-                        && r.independent_lineage_root_id == source_rec.independent_lineage_root_id
-                        && r.passages.iter().any(|p| p.quote.contains(span))
+                let present_in_upstream = upstream_versions.iter().any(|up_vid| {
+                    find_record(input.records, up_vid).is_some_and(|up_rec| {
+                        up_rec.passages.iter().any(|p| p.quote.contains(span))
+                    })
                 });
-                if !present_in_contrary_or_upstream {
+                if !present_in_upstream {
                     all_present_upstream = false;
                     if !claim
                         .fault_categories
@@ -1009,7 +1169,7 @@ pub fn verify_corpus<'a>(
         });
     }
 
-    // 5. Validate DependencyInvalidations and correction propagation (NEWS-05)
+    // 6. Validate DependencyInvalidations and correction propagation (NEWS-05)
     for inv in input.invalidations {
         check_control().map_err(ClaimCheckError::Stopped)?;
         if find_record(input.records, inv.trigger_version_id).is_none() {
@@ -1069,10 +1229,7 @@ pub fn verify_corpus<'a>(
                     }
                 }
                 DependentObjectKind::Claim => {
-                    let Some(clm) = input
-                        .claims
-                        .iter()
-                        .find(|c| c.version_id == obj.object_id || c.claim_id == obj.object_id)
+                    let Some(clm) = input.claims.iter().find(|c| c.version_id == obj.object_id)
                     else {
                         return Err(ClaimCheckError::UnknownReference {
                             context: format!("invalidation {}", inv.invalidation_id),
@@ -1083,7 +1240,7 @@ pub fn verify_corpus<'a>(
                         return Err(ClaimCheckError::UnpropagatedCorrection {
                             invalidation_id: inv.invalidation_id.to_owned(),
                             object_id: obj.object_id.to_owned(),
-                            reason: "dependent Claim is not marked needs_reassessment",
+                            reason: "dependent Claim version is not marked needs_reassessment",
                         });
                     }
                 }
@@ -1092,7 +1249,7 @@ pub fn verify_corpus<'a>(
         }
     }
 
-    // 6. Validate PublisherSummaries and volume guards (NEWS-05, A06)
+    // 7. Validate PublisherSummaries and volume guards (NEWS-05, A06)
     for ps in input.publisher_summaries {
         check_control().map_err(ClaimCheckError::Stopped)?;
         if !input.source_ids.contains(&ps.source_id) {
@@ -1107,26 +1264,30 @@ pub fn verify_corpus<'a>(
             });
         }
         if ps.sampling_method.trim().is_empty()
-            || ps.window_start_utc.trim().is_empty()
-            || ps.window_end_utc.trim().is_empty()
+            || !is_valid_rfc3339_utc_second(ps.window_start_utc)
+            || !is_valid_rfc3339_utc_second(ps.window_end_utc)
             || ps.window_start_utc > ps.window_end_utc
         {
             return Err(ClaimCheckError::PublisherSummarySampleMismatch {
                 summary_id: ps.summary_id.to_owned(),
-                reason: "missing sampling_method or invalid time_window bounds",
+                reason: "missing sampling_method or invalid RFC 3339 UTC time_window bounds",
             });
         }
+        let requires_full_window_sample =
+            ps.sampling_method == "complete_case_corpus_within_window";
         if ps.sample_size == 0
             || ps.sample_size != ps.evaluated_source_record_versions.len()
-            || ps.article_count_in_window != ps.sample_size
+            || ps.sample_size > ps.article_count_in_window
+            || (requires_full_window_sample && ps.sample_size != ps.article_count_in_window)
             || ps.distinct_underlying_incidents == 0
         {
             return Err(ClaimCheckError::PublisherSummarySampleMismatch {
                 summary_id: ps.summary_id.to_owned(),
-                reason: "sample_size must be non-zero and match evaluated_source_record_versions and article_count_in_window",
+                reason: "sample_size must be non-zero, match evaluated_source_record_versions, and satisfy sampling_method/article_count_in_window bounds",
             });
         }
 
+        let mut expected_uncorrected_upstream: Vec<&str> = Vec::new();
         for vid in ps.evaluated_source_record_versions {
             let Some(rec) = find_record(input.records, vid) else {
                 return Err(ClaimCheckError::UnknownReference {
@@ -1140,6 +1301,35 @@ pub fn verify_corpus<'a>(
                     reason: "evaluated_source_record_version belongs to a different source_id",
                 });
             }
+            if rec.superseded_by_version_id.is_none() {
+                for edge in input.lineage_edges {
+                    if edge.from_version_id == rec.version_id
+                        && matches!(
+                            edge.relation_kind,
+                            LineageRelationKind::Quotes | LineageRelationKind::Republishes
+                        )
+                        && let Some(up_rec) = find_record(input.records, edge.to_version_id)
+                        && up_rec.superseded_by_version_id.is_some()
+                        && !expected_uncorrected_upstream.contains(&up_rec.version_id)
+                    {
+                        expected_uncorrected_upstream
+                            .try_reserve(1)
+                            .map_err(|_| ClaimCheckError::AllocationFailed)?;
+                        expected_uncorrected_upstream.push(up_rec.version_id);
+                    }
+                }
+            }
+        }
+
+        if ps.uncorrected_upstream_dependencies.len() != expected_uncorrected_upstream.len()
+            || !expected_uncorrected_upstream
+                .iter()
+                .all(|req| ps.uncorrected_upstream_dependencies.contains(req))
+        {
+            return Err(ClaimCheckError::PublisherSummarySampleMismatch {
+                summary_id: ps.summary_id.to_owned(),
+                reason: "uncorrected_upstream_dependencies does not match superseded upstream records referenced by this publisher",
+            });
         }
 
         // Cross-check assessment_counts against claims in evaluated_source_record_versions
@@ -1194,11 +1384,12 @@ pub fn verify_corpus<'a>(
             };
             if orig_rec.superseded_by_version_id != Some(corr.corrected_version_id)
                 || corr_rec.predecessor_version_id != Some(corr.original_version_id)
+                || !is_valid_rfc3339_utc_second(corr.corrected_at)
                 || corr.summary.trim().is_empty()
             {
                 return Err(ClaimCheckError::PublisherSummarySampleMismatch {
                     summary_id: ps.summary_id.to_owned(),
-                    reason: "correction_history entry does not match SourceRecord supersession links",
+                    reason: "correction_history entry does not match SourceRecord supersession links or RFC 3339 UTC timestamp",
                 });
             }
         }
@@ -1211,6 +1402,7 @@ pub fn verify_corpus<'a>(
         validated_source_count: input.source_ids.len(),
         validated_record_count: input.records.len(),
         validated_passage_count,
+        validated_lineage_edge_count: input.lineage_edges.len(),
         validated_invalidation_count: input.invalidations.len(),
         validated_publisher_summary_count: input.publisher_summaries.len(),
         limits,

@@ -5,8 +5,8 @@ use oia_news_claims::{
     AffectedObjectInput, AssessmentCounts, AssessmentLimits, AvailabilityState,
     ClaimAssessmentState, ClaimInput, CorpusAssessmentInput, CorrectionHistoryEntry,
     DependencyInvalidationInput, DependentObjectKind, EventCandidateInput, FaultCategory,
-    PassageAnchor, PassageRef, PublisherSummaryInput, RetractionStatus, ReviewStatus,
-    SourceRecordInput, StopReason, verify_corpus,
+    LineageEdgeInput, LineageRelationKind, PassageAnchor, PassageRef, PublisherSummaryInput,
+    RetractionStatus, ReviewStatus, SourceRecordInput, StopReason, verify_corpus,
 };
 
 const PELAGIC_NOTICE_V1: &[u8] =
@@ -29,7 +29,7 @@ const BLOG_V1: &[u8] =
     include_bytes!("../../../fixtures/news/a06/blobs/regional_blog_mirror_v1.txt");
 
 fn main() -> ExitCode {
-    let Ok(limits) = AssessmentLimits::new(32, 32, 16, 32, 16, 16, 16, 65_536) else {
+    let Ok(limits) = AssessmentLimits::new(32, 32, 16, 32, 32, 16, 16, 16, 65_536) else {
         eprintln!("invalid assessment limits");
         return ExitCode::from(1);
     };
@@ -221,7 +221,7 @@ fn main() -> ExitCode {
             independent_lineage_root_id: "lineage-root-pelagic-notice-0041",
             is_syndicated_reprint: false,
             raw_bytes: PELAGIC_NOTICE_V1,
-            expected_sha256_hex: "d123c806bdaf7dd6f4cb5b6f6acf75d89347d301c7f7082266a41eb3723100e2",
+            declared_sha256_hex: "d123c806bdaf7dd6f4cb5b6f6acf75d89347d301c7f7082266a41eb3723100e2",
             expected_char_length: 1063,
             passages: &pelagic_passages,
         },
@@ -238,7 +238,7 @@ fn main() -> ExitCode {
             independent_lineage_root_id: "lineage-root-vesper-harbor-log",
             is_syndicated_reprint: false,
             raw_bytes: HARBOR_LOG_V1,
-            expected_sha256_hex: "dfd794a92436f6f3d4b9ce89911b24ac7dbd7d5c3aedac633dda8325b95d19f2",
+            declared_sha256_hex: "dfd794a92436f6f3d4b9ce89911b24ac7dbd7d5c3aedac633dda8325b95d19f2",
             expected_char_length: 1385,
             passages: &harbor_passages,
         },
@@ -255,7 +255,7 @@ fn main() -> ExitCode {
             independent_lineage_root_id: "lineage-root-vesper-harbor-log",
             is_syndicated_reprint: false,
             raw_bytes: WIRE_V1,
-            expected_sha256_hex: "71d1711b01827bbc4aeb0c8de436915740c801eda1884c1d5704622e0bae9394",
+            declared_sha256_hex: "71d1711b01827bbc4aeb0c8de436915740c801eda1884c1d5704622e0bae9394",
             expected_char_length: 1157,
             passages: &wire_v1_passages,
         },
@@ -272,7 +272,7 @@ fn main() -> ExitCode {
             independent_lineage_root_id: "lineage-root-vesper-harbor-log",
             is_syndicated_reprint: false,
             raw_bytes: WIRE_V2,
-            expected_sha256_hex: "09c22c65e113c8450f10c89f5db6b1ca6b39a563202de56281a5dd6f542452af",
+            declared_sha256_hex: "09c22c65e113c8450f10c89f5db6b1ca6b39a563202de56281a5dd6f542452af",
             expected_char_length: 1659,
             passages: &wire_v2_passages,
         },
@@ -289,7 +289,7 @@ fn main() -> ExitCode {
             independent_lineage_root_id: "lineage-root-vesper-harbor-log",
             is_syndicated_reprint: true,
             raw_bytes: TRIBUNE_V1,
-            expected_sha256_hex: "0aa57f0179675ce54e7ae68836a007bfd47fdb98d7d800a4c2279da43d88d258",
+            declared_sha256_hex: "0aa57f0179675ce54e7ae68836a007bfd47fdb98d7d800a4c2279da43d88d258",
             expected_char_length: 1074,
             passages: &tribune_passages,
         },
@@ -306,7 +306,7 @@ fn main() -> ExitCode {
             independent_lineage_root_id: "lineage-root-vesper-harbor-log",
             is_syndicated_reprint: true,
             raw_bytes: MARITIME_DAILY_V1,
-            expected_sha256_hex: "b9744a0a5c2193d3715d8663b402b57d496bc77c199ce6024fb6ede88fd26438",
+            declared_sha256_hex: "b9744a0a5c2193d3715d8663b402b57d496bc77c199ce6024fb6ede88fd26438",
             expected_char_length: 957,
             passages: &maritime_passages,
         },
@@ -323,7 +323,7 @@ fn main() -> ExitCode {
             independent_lineage_root_id: "lineage-root-vesper-enforcement-0412",
             is_syndicated_reprint: false,
             raw_bytes: PORT_SAFETY_V1,
-            expected_sha256_hex: "36ee5ebf6240e1f278e7c811f53ebb5fe7d9214918250654490c32bd95426d70",
+            declared_sha256_hex: "36ee5ebf6240e1f278e7c811f53ebb5fe7d9214918250654490c32bd95426d70",
             expected_char_length: 1218,
             passages: &port_passages,
         },
@@ -340,7 +340,7 @@ fn main() -> ExitCode {
             independent_lineage_root_id: "lineage-root-vesper-enforcement-0412",
             is_syndicated_reprint: false,
             raw_bytes: DOCKET_V1,
-            expected_sha256_hex: "0fe614b291d6076ed31cba1496cbdfcbc635fb55b924967ca2c487f2756e9574",
+            declared_sha256_hex: "0fe614b291d6076ed31cba1496cbdfcbc635fb55b924967ca2c487f2756e9574",
             expected_char_length: 960,
             passages: &docket_passages,
         },
@@ -357,9 +357,54 @@ fn main() -> ExitCode {
             independent_lineage_root_id: "lineage-root-sable-shore-notebook",
             is_syndicated_reprint: false,
             raw_bytes: BLOG_V1,
-            expected_sha256_hex: "bc04385fc998a3465416211754e3b4233d70d6a73e22b0b5bb3d857c2bd38b2e",
+            declared_sha256_hex: "bc04385fc998a3465416211754e3b4233d70d6a73e22b0b5bb3d857c2bd38b2e",
             expected_char_length: 762,
             passages: &blog_passages,
+        },
+    ];
+
+    let lineage_edges = [
+        LineageEdgeInput {
+            edge_id: "edge-wire-quotes-harbor-log",
+            from_version_id: "sr-meridian-wire-884@v1",
+            to_version_id: "sr-vesper-harbor-log@v1",
+            relation_kind: LineageRelationKind::Quotes,
+            preserves_independent_corroboration: false,
+        },
+        LineageEdgeInput {
+            edge_id: "edge-tribune-republishes-wire-v1",
+            from_version_id: "sr-archipelago-chronicle-884@v1",
+            to_version_id: "sr-meridian-wire-884@v1",
+            relation_kind: LineageRelationKind::Republishes,
+            preserves_independent_corroboration: false,
+        },
+        LineageEdgeInput {
+            edge_id: "edge-maritime-daily-republishes-wire-v1",
+            from_version_id: "sr-pelagic-digest-884@v1",
+            to_version_id: "sr-meridian-wire-884@v1",
+            relation_kind: LineageRelationKind::Republishes,
+            preserves_independent_corroboration: false,
+        },
+        LineageEdgeInput {
+            edge_id: "edge-wire-v2-supersedes-v1",
+            from_version_id: "sr-meridian-wire-884@v2",
+            to_version_id: "sr-meridian-wire-884@v1",
+            relation_kind: LineageRelationKind::Supersedes,
+            preserves_independent_corroboration: false,
+        },
+        LineageEdgeInput {
+            edge_id: "edge-docket-updates-port-bulletin",
+            from_version_id: "sr-maritime-adj-panel-0412@v1",
+            to_version_id: "sr-vesper-port-safety-0412@v1",
+            relation_kind: LineageRelationKind::Supersedes,
+            preserves_independent_corroboration: false,
+        },
+        LineageEdgeInput {
+            edge_id: "edge-blog-corroborates-harbor-tugs",
+            from_version_id: "sr-sable-shore-notebook@v1",
+            to_version_id: "sr-vesper-harbor-log@v1",
+            relation_kind: LineageRelationKind::Supports,
+            preserves_independent_corroboration: true,
         },
     ];
 
@@ -795,6 +840,7 @@ fn main() -> ExitCode {
     let input = CorpusAssessmentInput {
         source_ids: &source_ids,
         records: &records,
+        lineage_edges: &lineage_edges,
         candidates: &candidates,
         claims: &claims,
         invalidations: &invalidations,

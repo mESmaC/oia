@@ -2,9 +2,9 @@ use oia_news_claims::{
     AffectedObjectInput, AssessmentCounts, AssessmentLimits, AvailabilityState,
     ClaimAssessmentState, ClaimCheckError, ClaimInput, CorpusAssessmentInput,
     CorrectionHistoryEntry, DependencyInvalidationInput, DependentObjectKind, EventCandidateInput,
-    FaultCategory, LimitKind, PassageAnchor, PassageRef, PublisherSummaryInput,
-    QuotationFidelityStatus, RetractionStatus, ReviewStatus, SourceRecordInput, StopReason,
-    verify_corpus,
+    FaultCategory, LimitKind, LineageEdgeInput, LineageRelationKind, PassageAnchor, PassageRef,
+    PublisherSummaryInput, QuotationFidelityStatus, RetractionStatus, ReviewStatus,
+    SourceRecordInput, StopReason, verify_corpus,
 };
 
 const PELAGIC_NOTICE_V1: &[u8] =
@@ -37,6 +37,7 @@ struct A06FixtureData {
     port_passages: Vec<PassageAnchor<'static>>,
     docket_passages: Vec<PassageAnchor<'static>>,
     blog_passages: Vec<PassageAnchor<'static>>,
+    lineage_edges: Vec<LineageEdgeInput<'static>>,
     candidates: Vec<EventCandidateInput<'static>>,
     claim1_sup: Vec<PassageRef<'static>>,
     claim2_con: Vec<PassageRef<'static>>,
@@ -225,6 +226,50 @@ impl A06FixtureData {
                 char_range: 403..604,
                 quote: "Readers on the fictional Sable Shore headland reported seeing two harbor tugs idling near the Vesper Harbor entrance buoy around 9:20 a.m. KST today while an inbound barge waited outside the reef line.",
             }],
+            lineage_edges: vec![
+                LineageEdgeInput {
+                    edge_id: "edge-wire-quotes-harbor-log",
+                    from_version_id: "sr-meridian-wire-884@v1",
+                    to_version_id: "sr-vesper-harbor-log@v1",
+                    relation_kind: LineageRelationKind::Quotes,
+                    preserves_independent_corroboration: false,
+                },
+                LineageEdgeInput {
+                    edge_id: "edge-tribune-republishes-wire-v1",
+                    from_version_id: "sr-archipelago-chronicle-884@v1",
+                    to_version_id: "sr-meridian-wire-884@v1",
+                    relation_kind: LineageRelationKind::Republishes,
+                    preserves_independent_corroboration: false,
+                },
+                LineageEdgeInput {
+                    edge_id: "edge-maritime-daily-republishes-wire-v1",
+                    from_version_id: "sr-pelagic-digest-884@v1",
+                    to_version_id: "sr-meridian-wire-884@v1",
+                    relation_kind: LineageRelationKind::Republishes,
+                    preserves_independent_corroboration: false,
+                },
+                LineageEdgeInput {
+                    edge_id: "edge-wire-v2-supersedes-v1",
+                    from_version_id: "sr-meridian-wire-884@v2",
+                    to_version_id: "sr-meridian-wire-884@v1",
+                    relation_kind: LineageRelationKind::Supersedes,
+                    preserves_independent_corroboration: false,
+                },
+                LineageEdgeInput {
+                    edge_id: "edge-docket-updates-port-bulletin",
+                    from_version_id: "sr-maritime-adj-panel-0412@v1",
+                    to_version_id: "sr-vesper-port-safety-0412@v1",
+                    relation_kind: LineageRelationKind::Supersedes,
+                    preserves_independent_corroboration: false,
+                },
+                LineageEdgeInput {
+                    edge_id: "edge-blog-corroborates-harbor-tugs",
+                    from_version_id: "sr-sable-shore-notebook@v1",
+                    to_version_id: "sr-vesper-harbor-log@v1",
+                    relation_kind: LineageRelationKind::Supports,
+                    preserves_independent_corroboration: true,
+                },
+            ],
             candidates: vec![
                 EventCandidateInput {
                     candidate_id: "cand-cx9-calibration-plan",
@@ -420,7 +465,7 @@ impl A06FixtureData {
                 independent_lineage_root_id: "lineage-root-pelagic-notice-0041",
                 is_syndicated_reprint: false,
                 raw_bytes: PELAGIC_NOTICE_V1,
-                expected_sha256_hex: "d123c806bdaf7dd6f4cb5b6f6acf75d89347d301c7f7082266a41eb3723100e2",
+                declared_sha256_hex: "d123c806bdaf7dd6f4cb5b6f6acf75d89347d301c7f7082266a41eb3723100e2",
                 expected_char_length: 1063,
                 passages: &self.pelagic_passages,
             },
@@ -437,7 +482,7 @@ impl A06FixtureData {
                 independent_lineage_root_id: "lineage-root-vesper-harbor-log",
                 is_syndicated_reprint: false,
                 raw_bytes: HARBOR_LOG_V1,
-                expected_sha256_hex: "dfd794a92436f6f3d4b9ce89911b24ac7dbd7d5c3aedac633dda8325b95d19f2",
+                declared_sha256_hex: "dfd794a92436f6f3d4b9ce89911b24ac7dbd7d5c3aedac633dda8325b95d19f2",
                 expected_char_length: 1385,
                 passages: &self.harbor_passages,
             },
@@ -454,7 +499,7 @@ impl A06FixtureData {
                 independent_lineage_root_id: "lineage-root-vesper-harbor-log",
                 is_syndicated_reprint: false,
                 raw_bytes: WIRE_V1,
-                expected_sha256_hex: "71d1711b01827bbc4aeb0c8de436915740c801eda1884c1d5704622e0bae9394",
+                declared_sha256_hex: "71d1711b01827bbc4aeb0c8de436915740c801eda1884c1d5704622e0bae9394",
                 expected_char_length: 1157,
                 passages: &self.wire_v1_passages,
             },
@@ -471,7 +516,7 @@ impl A06FixtureData {
                 independent_lineage_root_id: "lineage-root-vesper-harbor-log",
                 is_syndicated_reprint: false,
                 raw_bytes: WIRE_V2,
-                expected_sha256_hex: "09c22c65e113c8450f10c89f5db6b1ca6b39a563202de56281a5dd6f542452af",
+                declared_sha256_hex: "09c22c65e113c8450f10c89f5db6b1ca6b39a563202de56281a5dd6f542452af",
                 expected_char_length: 1659,
                 passages: &self.wire_v2_passages,
             },
@@ -488,7 +533,7 @@ impl A06FixtureData {
                 independent_lineage_root_id: "lineage-root-vesper-harbor-log",
                 is_syndicated_reprint: true,
                 raw_bytes: TRIBUNE_V1,
-                expected_sha256_hex: "0aa57f0179675ce54e7ae68836a007bfd47fdb98d7d800a4c2279da43d88d258",
+                declared_sha256_hex: "0aa57f0179675ce54e7ae68836a007bfd47fdb98d7d800a4c2279da43d88d258",
                 expected_char_length: 1074,
                 passages: &self.tribune_passages,
             },
@@ -505,7 +550,7 @@ impl A06FixtureData {
                 independent_lineage_root_id: "lineage-root-vesper-harbor-log",
                 is_syndicated_reprint: true,
                 raw_bytes: MARITIME_DAILY_V1,
-                expected_sha256_hex: "b9744a0a5c2193d3715d8663b402b57d496bc77c199ce6024fb6ede88fd26438",
+                declared_sha256_hex: "b9744a0a5c2193d3715d8663b402b57d496bc77c199ce6024fb6ede88fd26438",
                 expected_char_length: 957,
                 passages: &self.maritime_passages,
             },
@@ -522,7 +567,7 @@ impl A06FixtureData {
                 independent_lineage_root_id: "lineage-root-vesper-enforcement-0412",
                 is_syndicated_reprint: false,
                 raw_bytes: PORT_SAFETY_V1,
-                expected_sha256_hex: "36ee5ebf6240e1f278e7c811f53ebb5fe7d9214918250654490c32bd95426d70",
+                declared_sha256_hex: "36ee5ebf6240e1f278e7c811f53ebb5fe7d9214918250654490c32bd95426d70",
                 expected_char_length: 1218,
                 passages: &self.port_passages,
             },
@@ -539,7 +584,7 @@ impl A06FixtureData {
                 independent_lineage_root_id: "lineage-root-vesper-enforcement-0412",
                 is_syndicated_reprint: false,
                 raw_bytes: DOCKET_V1,
-                expected_sha256_hex: "0fe614b291d6076ed31cba1496cbdfcbc635fb55b924967ca2c487f2756e9574",
+                declared_sha256_hex: "0fe614b291d6076ed31cba1496cbdfcbc635fb55b924967ca2c487f2756e9574",
                 expected_char_length: 960,
                 passages: &self.docket_passages,
             },
@@ -556,7 +601,7 @@ impl A06FixtureData {
                 independent_lineage_root_id: "lineage-root-sable-shore-notebook",
                 is_syndicated_reprint: false,
                 raw_bytes: BLOG_V1,
-                expected_sha256_hex: "bc04385fc998a3465416211754e3b4233d70d6a73e22b0b5bb3d857c2bd38b2e",
+                declared_sha256_hex: "bc04385fc998a3465416211754e3b4233d70d6a73e22b0b5bb3d857c2bd38b2e",
                 expected_char_length: 762,
                 passages: &self.blog_passages,
             },
@@ -820,7 +865,7 @@ impl A06FixtureData {
 }
 
 fn default_limits() -> AssessmentLimits {
-    AssessmentLimits::new(32, 32, 16, 32, 16, 16, 16, 65_536).unwrap_or_else(|_| unreachable!())
+    AssessmentLimits::new(32, 32, 16, 32, 32, 16, 16, 16, 65_536).unwrap_or_else(|_| unreachable!())
 }
 
 #[test]
@@ -834,6 +879,7 @@ fn verifies_a06_claims_distorted_quotes_and_independent_roots() {
     let input = CorpusAssessmentInput {
         source_ids: &fixture.source_ids,
         records: &records,
+        lineage_edges: &fixture.lineage_edges,
         candidates: &fixture.candidates,
         claims: &claims,
         invalidations: &invalidations,
@@ -860,7 +906,7 @@ fn verifies_a06_claims_distorted_quotes_and_independent_roots() {
     assert_eq!(c1.independent_supporting_root_count, 2);
     assert_eq!(
         c1.quotation_status,
-        QuotationFidelityStatus::NoVerbatimQuoteInPassage
+        QuotationFidelityStatus::NoCheckedQuotationFound
     );
 
     // Claim 3 is an attributed allegation ("quotes_claim_without_endorsing") that remains
@@ -925,6 +971,7 @@ fn rejects_removed_page_auto_retracted_and_unfounded_contradiction() {
     let bad_removed_input = CorpusAssessmentInput {
         source_ids: &fixture.source_ids,
         records: &records,
+        lineage_edges: &fixture.lineage_edges,
         candidates: &fixture.candidates,
         claims: &claims,
         invalidations: &invalidations,
@@ -948,6 +995,7 @@ fn rejects_removed_page_auto_retracted_and_unfounded_contradiction() {
     let bad_contradicted_input = CorpusAssessmentInput {
         source_ids: &fixture.source_ids,
         records: &clean_records,
+        lineage_edges: &fixture.lineage_edges,
         candidates: &fixture.candidates,
         claims: &bad_claims,
         invalidations: &invalidations,
@@ -971,6 +1019,7 @@ fn rejects_removed_page_auto_retracted_and_unfounded_contradiction() {
     let unflagged_quote_input = CorpusAssessmentInput {
         source_ids: &fixture.source_ids,
         records: &clean_records,
+        lineage_edges: &fixture.lineage_edges,
         candidates: &fixture.candidates,
         claims: &unflagged_quote_claims,
         invalidations: &invalidations,
@@ -978,6 +1027,35 @@ fn rejects_removed_page_auto_retracted_and_unfounded_contradiction() {
     };
     assert_eq!(
         verify_corpus(&unflagged_quote_input, default_limits(), || Ok(())),
+        Err(ClaimCheckError::DistortedQuoteNotFlagged {
+            claim_id: "claim-04-tribune-blockade-and-distorted-quote".to_owned(),
+            quoted_text: "harbor control confirmed a full corridor lockdown".to_owned(),
+        })
+    );
+
+    // Verify B1: a sibling syndicated reprint sharing the same independent_lineage_root_id
+    // cannot vouch for Tribune's fabricated quote when it is not upstream via {Quotes, Republishes}.
+    let mut sibling_reprint_records = fixture.build_records();
+    for rec in &mut sibling_reprint_records {
+        if rec.version_id == "sr-pelagic-digest-884@v1" {
+            rec.raw_bytes = TRIBUNE_V1;
+            rec.declared_sha256_hex =
+                "0aa57f0179675ce54e7ae68836a007bfd47fdb98d7d800a4c2279da43d88d258";
+            rec.expected_char_length = 1074;
+            rec.passages = &fixture.tribune_passages;
+        }
+    }
+    let sibling_reprint_input = CorpusAssessmentInput {
+        source_ids: &fixture.source_ids,
+        records: &sibling_reprint_records,
+        lineage_edges: &fixture.lineage_edges,
+        candidates: &fixture.candidates,
+        claims: &unflagged_quote_claims,
+        invalidations: &invalidations,
+        publisher_summaries: &summaries,
+    };
+    assert_eq!(
+        verify_corpus(&sibling_reprint_input, default_limits(), || Ok(())),
         Err(ClaimCheckError::DistortedQuoteNotFlagged {
             claim_id: "claim-04-tribune-blockade-and-distorted-quote".to_owned(),
             quoted_text: "harbor control confirmed a full corridor lockdown".to_owned(),
@@ -1002,6 +1080,7 @@ fn rejects_unpropagated_corrections_and_publisher_volume_or_sample_violations() 
     let unpropagated_input = CorpusAssessmentInput {
         source_ids: &fixture.source_ids,
         records: &records,
+        lineage_edges: &fixture.lineage_edges,
         candidates: &fixture.candidates,
         claims: &claims,
         invalidations: &invalidations,
@@ -1028,6 +1107,7 @@ fn rejects_unpropagated_corrections_and_publisher_volume_or_sample_violations() 
     let bad_volume_input = CorpusAssessmentInput {
         source_ids: &fixture.source_ids,
         records: &clean_records,
+        lineage_edges: &fixture.lineage_edges,
         candidates: &fixture.candidates,
         claims: &claims,
         invalidations: &invalidations,
@@ -1050,6 +1130,7 @@ fn rejects_unpropagated_corrections_and_publisher_volume_or_sample_violations() 
     let bad_sample_input = CorpusAssessmentInput {
         source_ids: &fixture.source_ids,
         records: &clean_records,
+        lineage_edges: &fixture.lineage_edges,
         candidates: &fixture.candidates,
         claims: &claims,
         invalidations: &invalidations,
@@ -1062,6 +1143,30 @@ fn rejects_unpropagated_corrections_and_publisher_volume_or_sample_violations() 
             ..
         }) if summary_id == "pubsum-meridian-wire-2024w11"
     ));
+
+    // Omit uncorrected_upstream_dependencies when an evaluated active record republishes a superseded version
+    let mut missing_uncorrected_summaries = fixture.build_publisher_summaries();
+    for ps in &mut missing_uncorrected_summaries {
+        if ps.summary_id == "pubsum-archipelago-chronicle-2024w11" {
+            ps.uncorrected_upstream_dependencies = &[];
+        }
+    }
+    let missing_uncorrected_input = CorpusAssessmentInput {
+        source_ids: &fixture.source_ids,
+        records: &clean_records,
+        lineage_edges: &fixture.lineage_edges,
+        candidates: &fixture.candidates,
+        claims: &claims,
+        invalidations: &invalidations,
+        publisher_summaries: &missing_uncorrected_summaries,
+    };
+    assert_eq!(
+        verify_corpus(&missing_uncorrected_input, default_limits(), || Ok(())),
+        Err(ClaimCheckError::PublisherSummarySampleMismatch {
+            summary_id: "pubsum-archipelago-chronicle-2024w11".to_owned(),
+            reason: "uncorrected_upstream_dependencies does not match superseded upstream records referenced by this publisher",
+        })
+    );
 }
 
 #[test]
@@ -1082,6 +1187,7 @@ fn enforces_multibyte_anchors_budgets_and_cooperative_stop() {
     let bad_anchor_input = CorpusAssessmentInput {
         source_ids: &fixture.source_ids,
         records: &records,
+        lineage_edges: &fixture.lineage_edges,
         candidates: &fixture.candidates,
         claims: &claims,
         invalidations: &invalidations,
@@ -1098,7 +1204,7 @@ fn enforces_multibyte_anchors_budgets_and_cooperative_stop() {
 
     // Zero limit rejection
     assert_eq!(
-        AssessmentLimits::new(0, 1, 1, 1, 1, 1, 1, 1),
+        AssessmentLimits::new(0, 1, 1, 1, 1, 1, 1, 1, 1),
         Err(ClaimCheckError::ZeroLimit(LimitKind::Sources))
     );
 
@@ -1111,13 +1217,14 @@ fn enforces_multibyte_anchors_budgets_and_cooperative_stop() {
     let clean_input = CorpusAssessmentInput {
         source_ids: &clean_fixture.source_ids,
         records: &clean_records,
+        lineage_edges: &clean_fixture.lineage_edges,
         candidates: &clean_fixture.candidates,
         claims: &clean_claims,
         invalidations: &clean_invalidations,
         publisher_summaries: &clean_summaries,
     };
-    let tight_limits =
-        AssessmentLimits::new(32, 32, 16, 3, 16, 16, 16, 65_536).unwrap_or_else(|_| unreachable!());
+    let tight_limits = AssessmentLimits::new(32, 32, 16, 32, 3, 16, 16, 16, 65_536)
+        .unwrap_or_else(|_| unreachable!());
     assert_eq!(
         verify_corpus(&clean_input, tight_limits, || Ok(())),
         Err(ClaimCheckError::BudgetExceeded {
@@ -1128,7 +1235,7 @@ fn enforces_multibyte_anchors_budgets_and_cooperative_stop() {
     );
 
     // Cooperative stop rejection at every callback step
-    for stop_step in 0..45 {
+    for stop_step in 0..51 {
         let mut calls = 0usize;
         let res = verify_corpus(&clean_input, default_limits(), || {
             let current = calls;

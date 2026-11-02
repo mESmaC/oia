@@ -1,9 +1,11 @@
 # oia-news-claims
 
-Temporary standalone Rust validation package for the dependency-independent
-claim-assessment, correction-propagation, and publisher-summary slice of
+Workspace validation package for the dependency-independent
+claim-assessment, quotation-fidelity, correction-propagation, and
+publisher-summary consistency-checking kernel slice of
 [issue #21](https://github.com/mESmaC/oia/issues/21) (`NEWS-03`, `NEWS-04`,
-`NEWS-05`, and the claim-assessment subset of `A06`).
+`NEWS-05`, and the claim-assessment subset of `A06`). Dependency locking is
+managed by the root workspace `Cargo.lock`.
 
 See:
 
@@ -13,8 +15,8 @@ See:
 ## Local verification
 
 ```text
-cargo +1.99.0 fmt --manifest-path crates/oia-news-claims/Cargo.toml --all -- --check
-cargo +1.99.0 clippy --manifest-path crates/oia-news-claims/Cargo.toml --workspace --all-targets --locked --offline -- -D warnings
-cargo +1.99.0 test --manifest-path crates/oia-news-claims/Cargo.toml --workspace --locked --offline
-cargo +1.99.0 run --manifest-path crates/oia-news-claims/Cargo.toml --example check-a06-claims --locked --offline
+cargo +1.99.0 fmt --all -- --check
+cargo +1.99.0 clippy --workspace --all-targets --locked --offline -- -D warnings
+cargo +1.99.0 test --workspace --locked --offline
+cargo +1.99.0 run -p oia-news-claims --example check-a06-claims --locked --offline
 ```

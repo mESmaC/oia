@@ -25,7 +25,7 @@ Every evaluated claim or presentation fault must reference an immutable `SourceR
 
 1. **Dual UTF-8 and Unicode codepoint spans:** Each passage anchor carries half-open UTF-8 byte offsets `[byte_start, byte_end)` and half-open Unicode scalar value (codepoint) offsets `[char_start, char_end)` into the retained UTF-8 source payload (`raw_bytes`), plus the exact `quote` string.
 2. **Multibyte safety:** Both offsets must satisfy `0 <= byte_start < byte_end <= byte_length` and `0 <= char_start < char_end <= char_length`, land on valid UTF-8 character boundaries, and slice to the exact `quote`. Multibyte passages (such as the Japanese VHF log entry `p-harbor-ja-1` in `sr-vesper-harbor-log@v1`) cause byte and character offsets to diverge on that passage and all subsequent passages; validators must verify both coordinate spaces independently.
-3. **Optional headline/caption anchor:** When a presentation assessment involves a headline or media caption mismatch (`headline_caption_mismatch`), the claim record may additionally pin `headline_passage_id` (or `caption_passage_id`) within the same `source_record_version_id` so the headline/caption and body passage can be inspected side by side.
+3. **Optional headline/caption anchor:** When a presentation assessment involves a headline or media caption mismatch (`headline_caption_mismatch`), the claim record must pin `headline_passage_id` (or `caption_passage_id`) within the same `source_record_version_id` so the headline/caption and body passage can be inspected side by side.
 
 ### 2.2 Fault taxonomy (`FaultCategory`)
 
@@ -43,10 +43,11 @@ Presentation and factual fault annotations use explicit machine-readable categor
 
 ### 2.3 Quotation fidelity verification
 
-When a downstream passage encloses an attributed quotation in double quotes (`"..."`) or single/CJK quotation marks and links via `quotes` or `republishes` to an upstream `SourceRecord` version:
+When a downstream passage contains a checked verbatim quotation and its `SourceRecord` version links via `quotes` or `republishes` to one or more upstream `SourceRecord` versions:
 
-1. **Exact substring check:** The quotation verifier extracts the quoted span and checks whether it appears verbatim (or after documented whitespace normalization) in the upstream record's passages.
-2. **Distortion detection:** If a downstream record attributes a verbatim quote to a named speaker or upstream record, and the quoted substring is absent from the upstream record while conflicting with the speaker's recorded passage (`p-harbor-kealoha-quote`), the verifier flags a `distorted_quotation` fault and requires the upstream passage to be linked in `contrary_evidence`.
+1. **Checked quotation profile and status:** The deterministic kernel profile (`oia-news-claims`) extracts ASCII double-quoted spans (`"..."`) of at least 12 UTF-8 bytes without whitespace normalization. Passages without a matching ASCII double-quoted span of $\ge 12$ bytes (including passages using single quotes, typographic quotes, or CJK brackets `「…」`) return `QuotationFidelityStatus::NoCheckedQuotationFound` so an uninspected quote delimiter or short span is never misrepresented as verified absence of quotation (`AGENTS.md §2`).
+2. **Upstream-only reachability:** Quoted spans are checked exclusively against passages in `SourceRecord` versions reachable **upstream** from the claim's `source_record_version_id` along `{quotes, republishes}` lineage edges (bounded by `max_lineage_edges`), and **never** against downstream or parallel syndicated reprints sharing the same `independent_lineage_root_id`. A second syndicated reprint repeating a fabricated quote cannot vouch for that quote.
+3. **Distortion detection:** If a claim's passage contains a checked ASCII double-quoted span and that exact substring is absent from all upstream `SourceRecord` versions reachable via `{quotes, republishes}` edges, the claim must flag `FaultCategory::DistortedQuotation` and link the upstream passage in `contrary_evidence` (`QuotationFidelityStatus::DistortedQuoteDetectedAndFlagged`), or verification fails with `DistortedQuoteNotFlagged`.
 
 ## 3. Claim assessment states, attribution, and lifecycle separation (`NEWS-04`)
 
@@ -83,24 +84,24 @@ Implementations and validators must enforce these invariants before persisting o
 When a `SourceRecord` version is superseded by a corrected dispatch (`sr-meridian-wire-884@v2` superseding `sr-meridian-wire-884@v1`) or updated by an official case outcome (`sr-maritime-adj-panel-0412@v1` updating `sr-vesper-port-safety-0412@v1`):
 
 1. **Deterministic dependency walk:** Every downstream `SourceRecord` that republished the uncorrected version (`sr-archipelago-chronicle-884@v1`, `sr-pelagic-digest-884@v1`), every `EventCandidate` derived from the superseded claim/charge (`cand-contractor-payload-allegation`, `cand-reef-scanner-charges`), every affected `Claim` version (`claim-06-willful-fairway-obstruction@v2`), and every dependent `Report` version (`report-vesper-harbor-brief@v1`) must be flagged `needs_reassessment: true`.
-2. **Preservation of issued versions:** Flagging `needs_reassessment: true` records an immutable `DependencyInvalidation` entry (`prior_issued_version_preserved: true`) and never overwrites the prior `SourceRecord`, `Claim`, or `Report` version in place.
-3. **Uncorrected downstream tracking:** If a downstream publisher (`src-archipelago-chronicle`) continues to display a syndicated story derived from `sr-meridian-wire-884@v1` after `v2` was issued, its publisher summary must list `sr-meridian-wire-884@v1` under `uncorrected_upstream_dependencies`.
+2. **Preservation of issued versions:** Flagging `needs_reassessment: true` records an immutable `DependencyInvalidation` entry (`prior_issued_version_preserved: true`) pinned to exact `version_id`s and never overwrites the prior `SourceRecord`, `Claim`, or `Report` version in place.
+3. **Uncorrected downstream tracking:** If a downstream publisher (`src-archipelago-chronicle`) continues to display a syndicated story derived from an upstream `SourceRecord` version (`sr-meridian-wire-884@v1`) that has `superseded_by_version_id.is_some()` without issuing a downstream correction, its publisher summary must list that superseded upstream `version_id` under `uncorrected_upstream_dependencies`.
 
 ### 4.2 Publisher-level summary contract (`PublisherSummary`)
 
 A publisher summary aggregates claim and revision behavior for a single registered `source_id` over an explicit evaluation scope. To satisfy `NEWS-05` and `A06`, every `PublisherSummary` must include:
 
 - `summary_id`, `source_id`, and `publisher_name`.
-- `time_window`: Explicit `start_utc` and `end_utc` bounds (`start_utc <= end_utc`).
+- `time_window`: Explicit RFC 3339 UTC `start_utc` and `end_utc` bounds (`start_utc <= end_utc`).
 - `evaluated_source_record_versions`: Non-empty list of exact `SourceRecord` `version_id`s belonging to `source_id` included in the sample.
-- `sample_size`: Exact count of `evaluated_source_record_versions` (`sample_size == len(evaluated_source_record_versions)`).
-- `sampling_method`: Explicit description of how the sample was selected (for example, `"complete_case_corpus_within_window"`).
+- `sample_size`: Exact count of `evaluated_source_record_versions` (`sample_size == len(evaluated_source_record_versions)` and `1 <= sample_size <= article_count_in_window`).
+- `sampling_method`: Explicit description of how the sample was selected (for example, `"complete_case_corpus_within_window"`). When `sampling_method == "complete_case_corpus_within_window"`, `sample_size` must equal `article_count_in_window`.
 - `assessment_counts`: Per-state counts across the six `NEWS-04` assessment states for claims originating in `evaluated_source_record_versions`.
-- `unresolved_assessment_count`: Explicit count of `unresolved` (plus any `disputed`) assessments so readers can see how much of the sample remains unsettled; must match `assessment_counts.unresolved`.
+- `unresolved_assessment_count`: Explicit count of unsettled assessments in the sample, defined as `assessment_counts.unresolved + assessment_counts.disputed`.
 - `correction_history`: Chronological list of `(original_version_id, corrected_version_id, corrected_at, summary)` records for revisions issued by that publisher within the window.
-- `uncorrected_upstream_dependencies`: Any upstream `SourceRecord` versions superseded by a correction that this publisher's evaluated records still depend on without a matching downstream correction.
+- `uncorrected_upstream_dependencies`: Exact list of upstream `SourceRecord` `version_id`s that have been superseded by a correction (`superseded_by_version_id.is_some()`) and are still referenced via `{quotes, republishes}` by this publisher's active (non-superseded) evaluated records.
 - `volume_interpretation_guard`:
-  - `article_count_in_window`: Total evaluated article versions in the window (`== sample_size`).
+  - `article_count_in_window`: Total published article versions by this publisher in the window (`sample_size <= article_count_in_window`).
   - `distinct_underlying_incidents`: Count of distinct underlying event clusters or incidents represented.
   - `represents_incident_frequency_or_crime_rate`: **Must be `false`.** Any summary that sets this flag to `true` or omits `methodology_note` is rejected (`VolumeEquatedWithCrimeRate`).
   - `methodology_note`: Non-empty human-readable explanation stating how the sample was constructed and why publication volume does not measure incident frequency or crime rate.
@@ -109,14 +110,15 @@ A publisher summary aggregates claim and revision behavior for a single register
 
 Implementations of this contract must validate sizes, counts, and invariants before allocation or graph traversal (`AGENTS.md §5`):
 
-- `ZeroLimit`: Any configured budget in `AssessmentLimits` (`max_sources`, `max_records`, `max_passages_per_record`, `max_claims`, `max_evidence_links_per_claim`, `max_invalidations`, `max_publisher_summaries`, `max_blob_bytes`) is zero.
+- `ZeroLimit`: Any configured budget in `AssessmentLimits` (`max_sources`, `max_source_records`, `max_passages_per_record`, `max_lineage_edges`, `max_claims`, `max_evidence_links_per_claim`, `max_invalidations`, `max_publisher_summaries`, `max_blob_bytes`) is zero.
 - `BudgetExceeded`: Input collection or blob byte length exceeds the caller's configured `AssessmentLimits`.
 - `InvalidPassageAnchor`: A passage's `byte_start..byte_end` or `char_start..char_end` is out of bounds, splits a UTF-8 codepoint, or does not match `quote` in the retained blob bytes.
 - `RemovedPageAutoRetracted`: A record with `availability == "removed"` is marked `retraction_status == "retracted"` without an explicit retraction record (`NEWS-04`, `A06`).
 - `UnsupportedAutomaticallyFalse`: A claim without contrary evidence is marked `contradicted`, or a `contradicted`/`materially_misleading` claim omits `contrary_evidence` or `criteria_and_reasoning` (`NEWS-03`, `NEWS-04`).
 - `SupportedWithoutEvidence`: A claim is marked `supported` with empty `supporting_evidence`.
-- `UnpropagatedCorrection`: A `supersedes` edge or `DependencyInvalidation` fails to mark an affected downstream record, candidate, or claim `needs_reassessment: true`, or fails to preserve prior issued versions (`NEWS-05`).
-- `PublisherSummarySampleMismatch`: A `PublisherSummary` omits `sampling_method`, mismatches `sample_size` vs. `evaluated_source_record_versions`, mismatches `assessment_counts` against evaluated claims for that publisher, or mismatches `unresolved_assessment_count`.
+- `DistortedQuoteNotFlagged`: A claim's passage contains a checked ASCII double-quoted span (`>= 12` bytes) that does not appear in any upstream record reachable via `{quotes, republishes}` lineage edges, and the claim omits `FaultCategory::DistortedQuotation` or `contrary_evidence`.
+- `UnpropagatedCorrection`: A `supersedes` edge or `DependencyInvalidation` fails to mark an affected downstream record, candidate, or claim `version_id` as `needs_reassessment: true`, or fails to preserve prior issued versions (`NEWS-05`).
+- `PublisherSummarySampleMismatch`: A `PublisherSummary` omits `sampling_method`, has invalid RFC 3339 UTC `time_window` bounds, violates `1 <= sample_size <= article_count_in_window` (or `sample_size == article_count_in_window` for `"complete_case_corpus_within_window"`), mismatches `sample_size` vs. `evaluated_source_record_versions`, mismatches `assessment_counts` against evaluated claims for that publisher, mismatches `unresolved_assessment_count != assessment_counts.unresolved + assessment_counts.disputed`, or omits required `uncorrected_upstream_dependencies`.
 - `VolumeEquatedWithCrimeRate`: A `PublisherSummary` sets `represents_incident_frequency_or_crime_rate: true` or omits `methodology_note` (`NEWS-05`, `A06`).
 - `AllocationFailed`: Fallible vector reservation (`try_reserve`) fails.
 - `Stopped`: Cooperative cancellation, deadline expiry, or supersession callback fired.

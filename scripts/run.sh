@@ -1,18 +1,19 @@
 #!/usr/bin/env sh
-# Build, check, and launch the runnable OIA code that exists on main.
+# Build, check, and launch the OIA Rust workspace and CLI/examples.
 #
-# There is no root Cargo workspace or OIA application binary yet. The runnable
-# entry points are the two read-only examples of the standalone
-# `crates/oia-documents` package (#17): `inspect-text` (DOC-02 extraction) and
-# `find-text` (exact-text search). Update this script when the P0 workspace
-# (#9) lands.
+# Runs Cargo against the root 15-crate OIA workspace (`Cargo.toml`) using the
+# pinned Rust toolchain (1.99.0), and runs `lake build` in `proofs/` during
+# `check` when the `proofs/` directory exists and `lake` is available on PATH.
 #
-# Usage: scripts/run.sh [build|check|run|search] [-- ARGS...]
-#   build             Build the package and both examples.
-#   check             Run the package-local fmt, clippy, and test checks.
-#   run [ARGS...]     Run inspect-text: PATH [MAX_INPUT_BYTES] [MAX_PASSAGES].
+# Usage: scripts/run.sh [build|fmt|lint|test|check|run|search] [-- ARGS...]
+#   build             Build the entire workspace (`--workspace --all-targets`).
+#   fmt               Check formatting across the workspace.
+#   lint              Run clippy across the workspace (`-D warnings`).
+#   test              Run all workspace tests.
+#   check             Run workspace fmt, clippy, test, and (when `proofs/` exists) `lake build`.
+#   run [ARGS...]     Run `oia-documents` inspect-text: PATH [MAX_INPUT_BYTES] [MAX_PASSAGES].
 #                     Defaults to inspecting README.md when no PATH is given.
-#   search ARGS...    Run find-text: PATH QUERY [MAX_MATCHES] [MAX_INPUT_BYTES]
+#   search ARGS...    Run `oia-documents` find-text: PATH QUERY [MAX_MATCHES] [MAX_INPUT_BYTES]
 #                     [MAX_PASSAGES]. Zero matches cover only the file read,
 #                     not absence from the source.
 #
@@ -20,7 +21,8 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-MANIFEST="$ROOT/crates/oia-documents/Cargo.toml"
+MANIFEST="$ROOT/Cargo.toml"
+PROOFS_DIR="$ROOT/proofs"
 TOOLCHAIN=${OIA_RUST_TOOLCHAIN:-1.99.0}
 
 if ! command -v cargo >/dev/null 2>&1; then
@@ -37,8 +39,8 @@ else
     echo "run.sh: rustup not found; using $(command cargo --version) instead of pinned $TOOLCHAIN" >&2
 fi
 
-# The package lockfile has no third-party packages, so builds stay offline.
-pkg() {
+# The workspace lockfile has no third-party packages, so builds stay offline.
+ws() {
     subcommand=$1
     shift
     cargo "$subcommand" --manifest-path "$MANIFEST" --locked --offline "$@"
@@ -50,28 +52,40 @@ action=${1:-run}
 
 case $action in
     build)
-        pkg build --all-targets
+        ws build --workspace --all-targets
+        ;;
+    fmt)
+        cargo fmt --manifest-path "$MANIFEST" --all -- --check
+        ;;
+    lint)
+        ws clippy --workspace --all-targets -- -D warnings
+        ;;
+    test)
+        ws test --workspace
         ;;
     check)
         cargo fmt --manifest-path "$MANIFEST" --all -- --check
-        pkg clippy --workspace --all-targets -- -D warnings
-        pkg test --workspace
+        ws clippy --workspace --all-targets -- -D warnings
+        ws test --workspace
+        if [ -d "$PROOFS_DIR" ] && command -v lake >/dev/null 2>&1; then
+            (cd "$PROOFS_DIR" && lake build)
+        fi
         ;;
     run)
         [ $# -eq 0 ] && set -- "$ROOT/README.md"
         # Exit codes pass through: 0 complete/empty, 2 partial, 1 error.
-        pkg run --quiet --example inspect-text -- "$@"
+        ws run --quiet -p oia-documents --example inspect-text -- "$@"
         ;;
     search)
         # Exit codes pass through: 0 complete (including zero matches),
         # 2 partial, 1 error. find-text reports its own usage errors.
-        pkg run --quiet --example find-text -- "$@"
+        ws run --quiet -p oia-documents --example find-text -- "$@"
         ;;
     -h|--help|help)
-        sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
         ;;
     *)
-        echo "run.sh: unknown command '$action'; use build, check, run, or search" >&2
+        echo "run.sh: unknown command '$action'; use build, fmt, lint, test, check, run, or search" >&2
         exit 1
         ;;
 esac

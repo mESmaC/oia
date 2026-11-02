@@ -1,0 +1,17 @@
+[package]
+name = "oia-export"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+oia-domain = { path = "../oia-domain" }
+oia-time-geo = { path = "../oia-time-geo" }
+oia-analysis = { path = "../oia-analysis" }
+oia-forecast = { path = "../oia-forecast" }
+oia-media = { path = "../oia-media" }
+oia-store = { path = "../oia-store" }
+
+[lints]
+workspace = true

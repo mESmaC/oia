@@ -1,0 +1,3 @@
+SYNTHETIC LINEAGE FIXTURE — NOT OBSERVED EVIDENCE
+Document: Calibration Advisory 2026-07 Retraction Notice
+Notice: Retracts Advisory 2026-07; bench test confirmed thermal sensor latch operated nominally.

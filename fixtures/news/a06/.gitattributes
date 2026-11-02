@@ -1,0 +1,5 @@
+# Retained fixture blobs are exact bytes, including their original line endings.
+blobs/** -text
+# Keep deterministic generated metadata and docs stable across platform checkouts.
+manifest.json text eol=lf
+README.md text eol=lf

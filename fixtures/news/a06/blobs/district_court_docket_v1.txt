@@ -1,0 +1,10 @@
+SYNTHETIC A06 FIXTURE - NOT OBSERVED EVIDENCE
+ARCHIPELAGO MARITIME ADJUDICATION PANEL (SYNTHETIC) -- VESPER HARBOR DIVISION
+DOCKET NO: SYNTH-AMAP-0412-FINAL (RELATES TO ENFORCEMENT CASE SYNTH-VPSB-0412)
+ORIGIN URL: https://dockets.archipelago.invalid/maritime/SYNTH-AMAP-0412-FINAL
+ENTERED: 2024-03-18T00:30:00Z
+
+FINAL ADMINISTRATIVE ORDER AND JUDGMENT:
+1. Count 2 (Provisional Charge: Willful obstruction of a commercial pilotage fairway) is DISMISSED WITH PREJUDICE following verification of onboard electrical bus logs showing an uncommanded 12V navigation/AIS breaker trip at 2024-03-15T19:09:00Z.
+2. Count 1 (Civil Equipment & Fairway Notice Violation) is SUSTAINED as a non-criminal civil infraction; a $1,250 civil equipment penalty is entered against fictional Coastal Bathymetry LLC.
+3. Operators and downstream safety summaries citing SYNTH-VPSB-0412 must record that the willful-obstruction charge was dismissed and no criminal conviction occurred.

@@ -4,6 +4,7 @@
 
 pub mod multilingual;
 pub mod records_request;
+pub mod triangulation;
 
 /// Crate boundary marker for `oia-analysis` (`docs/architecture.md` §1.2, `#9`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

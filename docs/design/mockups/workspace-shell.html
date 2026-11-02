@@ -112,6 +112,19 @@ dt { color: var(--muted); } dd { margin: 0; }
 .result-list { display: grid; gap: 8px; list-style: none; margin: 0; padding: 0; }
 .result-list button { width: 100%; text-align: left; }
 .result-list small { display: block; }
+.case-summary, .inventory { padding: 20px; }
+.case-summary { border-top: 2px solid var(--cyan); }
+.case-summary h3 { font-size: 22px; font-weight: 500; max-width: 32ch; }
+.case-facts { display: flex; flex-wrap: wrap; gap: 12px 28px; }
+.case-facts > div { display: grid; gap: 4px; }
+.inventory-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+.inventory-item { border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: grid; gap: 10px; overflow-wrap: anywhere; }
+.inventory-item[data-selected="true"] { border-left: 3px solid var(--cyan); }
+.inventory-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.inventory-filter { border: 0; padding: 0; margin: 0; min-width: 0; }
+.inventory-filter legend { margin-bottom: 8px; }
+.local-filter { color: var(--amber); border-left: 2px solid var(--amber); padding-left: 10px; }
+@media print { .inventory-filter, .inventory-item button, #show-geometry, #clear-inventory-filter { display: none; } }
 [data-clean="true"] .overlay { display: none; }
 .stage[data-focused="true"] { grid-template-columns: minmax(0,1fr) 332px; grid-template-areas: "fixture fixture" "identity clock" "workspace inspector" "workspace inspector" "dock jobs"; }
 .stage[data-focused="true"] .rail, .stage[data-focused="true"] .timeline, .stage[data-focused="true"] .readout { display: none; }
@@ -157,7 +170,7 @@ dt { color: var(--muted); } dd { margin: 0; }
   </div>
   <header class="ident">
     <b class="wordmark">OIA</b>
-    <div class="case"><span class="k">Case / 1994 valley accounts</span><h1>Why do the three accounts disagree on direction?</h1><div class="row"><span class="badge">3 accounts · 1 source</span><span class="badge fixture-badge">◇ Synthetic testimony</span></div></div>
+    <div class="case"><span class="k">Case / 1994 valley accounts</span><h1>What do the valley accounts establish?</h1><div class="row"><span class="badge">3 accounts · 1 source</span><span class="badge fixture-badge">◇ Synthetic testimony</span></div></div>
   </header>
   <section class="clock glass" aria-label="Investigation clock">
     <span class="k">▮ Historical · reported local time</span><span class="v">21:40 <small>±15 min · Account A</small></span><small>1994-03-14 · America/Denver</small>
@@ -172,7 +185,32 @@ dt { color: var(--muted); } dd { margin: 0; }
     <button type="button" disabled>Globe / sky<small>Not in prototype</small></button>
   </nav>
   <main class="workspace" id="workspace" tabindex="-1">
-    <div class="toolbar"><h2 id="view-title">Case geometry</h2><button type="button" id="back" disabled>← Back</button><button type="button" id="clean" aria-pressed="false">Clean evidence</button><button type="button" id="focus" aria-pressed="false">Focus view</button></div>
+    <div class="toolbar"><h2 id="view-title">Case overview</h2><button type="button" id="back" disabled>← Back</button><button type="button" id="clean" aria-pressed="false">Clean evidence</button><button type="button" id="focus" aria-pressed="false">Focus view</button></div>
+    <div id="home-view" class="stack">
+      <section class="case-summary glass stack" aria-labelledby="case-question">
+        <div class="row"><span class="k">Investigation brief</span><span class="badge fixture-badge">◇ Synthetic case</span></div>
+        <h3 id="case-question">Do the accounts establish a disagreement?</h3>
+        <p class="muted">Compare what each account actually reports before treating missing direction or time as a contradiction.</p>
+        <div class="case-facts">
+          <div><span class="k">Scope</span><span>3 accounts / 1 source version</span></div>
+          <div><span class="k">Case interval</span><span>14 Mar 1994 · 20:00–23:00</span><small>America/Denver</small></div>
+          <div><span class="k">Evidence limits</span><span>2 event times unrecorded</span><small>No independent corroboration established</small></div>
+        </div>
+        <div class="row"><button type="button" id="show-geometry">Explore case geometry →</button><small>Schematic only · no measured scale</small></div>
+      </section>
+      <section class="inventory glass stack" aria-labelledby="inventory-title">
+        <div class="inventory-heading"><h3 id="inventory-title">Evidence inventory</h3><span class="badge">Pinned source · v2</span></div>
+        <fieldset class="inventory-filter"><legend class="k">Filter this inventory</legend><div class="row">
+          <button type="button" data-inventory-filter="all" aria-pressed="true">All accounts</button>
+          <button type="button" data-inventory-filter="missing-time" aria-pressed="false">Time not recorded</button>
+          <button type="button" data-inventory-filter="missing-position" aria-pressed="false">Position not recorded</button>
+        </div></fieldset>
+        <div id="inventory-local-filter" class="row local-filter" hidden><span id="inventory-filter-description"></span><button type="button" id="clear-inventory-filter">Clear filter</button></div>
+        <p id="inventory-coverage" class="muted" role="status" aria-live="polite" aria-atomic="true"></p>
+        <ul id="inventory-list" class="inventory-list"></ul>
+        <small>All entries are synthetic testimony from FIXTURE-DOC-0007 v2. Three accounts are not three independent sources. Selecting or filtering does not assess a claim.</small>
+      </section>
+    </div>
     <div class="account-list" role="group" aria-label="Select a synthetic account">
       <button type="button" data-account="A" aria-pressed="true"><strong>Account A</strong><small>Reported track</small></button>
       <button type="button" data-account="B" aria-pressed="false"><strong>Account B</strong><small>Position unknown</small></button>
@@ -280,9 +318,72 @@ const accounts = {
   B: { direction: 'Not recorded', location: 'Not recorded · not plotted', time: 'Not recorded', anchor: 'p3.¶4', note: 'Missing position and time cannot be filled from another account. The investigation clock stays at 21:40.', bracket: '' },
   C: { direction: 'Not recorded', location: 'East of ridge · region only', time: 'Not recorded', anchor: 'p3.¶5', note: 'Two lights east of a ridge does not specify travel direction. A disagreement with A has not been established.', bracket: 'M710 290h14 M710 290v14 M1050 290h-14 M1050 290v14 M710 570h14 M710 570v-14 M1050 570h-14 M1050 570v-14' }
 };
-let state = { account: 'A', view: 'geometry', tab: 'overview', query: '', clean: false, focused: false };
+let state = { account: 'A', view: 'home', tab: 'overview', query: '', inventoryFilter: 'all', clean: false, focused: false };
 const history = [];
 const announce = message => { byId('announcement').textContent = message; };
+const inventoryFilters = {
+  all: { label: 'All accounts', matches: () => true },
+  'missing-time': { label: 'Time not recorded', matches: key => key === 'B' || key === 'C' },
+  'missing-position': { label: 'Position not recorded', matches: key => key === 'B' }
+};
+// Keep inventory controls mounted so Back can restore the exact keyboard target.
+Object.entries(accounts).forEach(([key, record]) => {
+  const item = document.createElement('li');
+  item.className = 'inventory-item';
+  item.id = `inventory-${key}`;
+  const heading = document.createElement('div');
+  heading.className = 'inventory-heading';
+  const title = document.createElement('h3');
+  title.textContent = `Account ${key}`;
+  const origin = document.createElement('span');
+  origin.className = 'badge fixture-badge';
+  origin.textContent = '◇ Synthetic testimony';
+  heading.append(title, origin);
+  const summary = document.createElement('p');
+  summary.textContent = record.note;
+  const details = document.createElement('p');
+  details.className = 'muted';
+  details.textContent = `Event: ${record.time} / Location: ${record.location}`;
+  const anchor = document.createElement('small');
+  anchor.className = 'mono';
+  anchor.textContent = `FIXTURE-DOC-0007 · v2 · ${record.anchor}`;
+  const actions = document.createElement('div');
+  actions.className = 'row';
+  const inspect = document.createElement('button');
+  inspect.type = 'button';
+  inspect.id = `inspect-${key}`;
+  inspect.textContent = `Inspect account ${key}`;
+  inspect.addEventListener('click', () => {
+    transition({ account: key, tab: 'overview' });
+    byId('panel-overview').focus();
+    announce(`Account ${key} selected. ${record.time}. ${record.location}.`);
+  });
+  const read = document.createElement('button');
+  read.type = 'button';
+  read.id = `read-${key}`;
+  read.textContent = `Read passage ${record.anchor}`;
+  read.addEventListener('click', () => openPassage(key));
+  actions.append(inspect, read);
+  item.append(heading, summary, details, anchor, actions);
+  byId('inventory-list').append(item);
+});
+function renderInventory() {
+  const filter = inventoryFilters[state.inventoryFilter];
+  let count = 0;
+  Object.keys(accounts).forEach(key => {
+    const visible = filter.matches(key);
+    byId(`inventory-${key}`).hidden = !visible;
+    byId(`inventory-${key}`).dataset.selected = state.account === key;
+    byId(`inspect-${key}`).setAttribute('aria-pressed', state.account === key);
+    if (visible) count++;
+  });
+  document.querySelectorAll('[data-inventory-filter]').forEach(button => {
+    button.setAttribute('aria-pressed', button.dataset.inventoryFilter === state.inventoryFilter);
+  });
+  byId('inventory-local-filter').hidden = state.inventoryFilter === 'all';
+  byId('inventory-filter-description').textContent = `Local filter: ${filter.label}. Case scope unchanged.`;
+  byId('inventory-coverage').textContent = `${count} of 3 accounts shown · 1 shared source version. ${filter.matches(state.account) ? `Selected: Account ${state.account}.` : `Selected Account ${state.account} is outside this filter; inspector and clock unchanged.`}`;
+}
 function transition(change) {
   if (Object.entries(change).every(([key, value]) => state[key] === value)) return;
   // Bounded route history includes presentation and scroll state, never inferred evidence.
@@ -322,10 +423,11 @@ function render() {
   byId('focus').textContent = state.focused ? 'Exit focus view' : 'Focus view';
   byId('clean').textContent = state.clean ? 'Show overlays' : 'Clean evidence';
   byId('back').disabled = history.length === 0;
-  byId('view-title').textContent = { geometry: 'Case geometry', reader: 'Source reader', search: 'Case search' }[state.view];
-  ['geometry', 'reader', 'search'].forEach(view => { byId(`${view}-view`).hidden = view !== state.view; });
+  byId('view-title').textContent = { home: 'Case overview', geometry: 'Case geometry', reader: 'Source reader', search: 'Case search' }[state.view];
+  ['home', 'geometry', 'reader', 'search'].forEach(view => { byId(`${view}-view`).hidden = view !== state.view; });
+  document.querySelector('.account-list').hidden = state.view === 'home';
   ['case', 'library'].forEach(nav => {
-    const selected = nav === 'library' ? state.view === 'reader' : state.view === 'geometry';
+    const selected = nav === 'library' ? state.view === 'reader' : ['home', 'geometry'].includes(state.view);
     if (selected) byId(`nav-${nav}`).setAttribute('aria-current', 'page');
     else byId(`nav-${nav}`).removeAttribute('aria-current');
   });
@@ -354,6 +456,7 @@ function render() {
     byId(`panel-${tab}`).hidden = !selected;
   });
   byId('query').value = state.query;
+  renderInventory();
   if (state.view === 'search') renderResults();
 }
 function openPassage(account = state.account) {
@@ -377,7 +480,15 @@ document.querySelectorAll('[data-account]').forEach(button => button.addEventLis
   transition({ account: button.dataset.account });
   announce(`Account ${state.account} selected. ${accounts[state.account].time}. ${accounts[state.account].location}.`);
 }));
-byId('nav-case').addEventListener('click', () => { transition({ view: 'geometry' }); byId('workspace').focus(); });
+byId('nav-case').addEventListener('click', () => { transition({ view: 'home' }); byId('workspace').focus(); });
+byId('show-geometry').addEventListener('click', () => { transition({ view: 'geometry' }); byId('workspace').focus(); });
+document.querySelectorAll('[data-inventory-filter]').forEach(button => {
+  button.addEventListener('click', () => transition({ inventoryFilter: button.dataset.inventoryFilter }));
+});
+byId('clear-inventory-filter').addEventListener('click', () => {
+  transition({ inventoryFilter: 'all' });
+  document.querySelector('[data-inventory-filter="all"]').focus();
+});
 byId('nav-library').addEventListener('click', () => openPassage());
 byId('open-source').addEventListener('click', () => openPassage());
 byId('back').addEventListener('click', goBack);

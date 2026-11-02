@@ -1,6 +1,6 @@
 # Observer sky geometry kernel
 
-Status: implemented in the temporary standalone `oia-sky` package. It is not
+Status: implemented in the `oia-sky` workspace package, which has no dependencies. It is not
 integrated with application services, the investigation clock, or any
 ephemeris. This record covers the provider-independent observer-geometry slice
 of [#25](https://github.com/mESmaC/oia/issues/25). It supports
@@ -122,10 +122,10 @@ uncertainty separately from this budget.
 
 ## Run locally
 
-From the repository root, with Rust 1.99.0:
+From the repository root. `rust-toolchain.toml` pins Rust 1.99.0.
 
 ```text
-cargo +1.99.0 run --manifest-path crates/oia-sky/Cargo.toml --example sky-position --locked --offline -- 2460409.25 2460409.250800760 32.7767 -96.7970 139 17.577209049 7.814867384 359780.726 1010 10
+cargo run -p oia-sky --example sky-position --locked --offline -- 2460409.25 2460409.250800760 32.7767 -96.7970 139 17.577209049 7.814867384 359780.726 1010 10
 ```
 
 The arguments, in order:
@@ -150,17 +150,18 @@ read-only calculator, not a supported application command.
 
 **Environment:**
 - Windows 11 Pro x86_64, Rust 1.99.0 (`x86_64-pc-windows-msvc`), offline.
-- Base `main` at `3a9d5d3`.
+- Developed on `main` at `3a9d5d3`. Rechecked after merging `main` at `b3b0479`, which includes the root workspace from #56.
 - Fixtures: `fixtures/sky` as merged in #52 (Horizons API 1.2, DE441, EOP
   `eop.261030.p270126`), read in place and not modified.
 
 **Commands:**
 
 ```text
-cargo +1.99.0 fmt --manifest-path crates/oia-sky/Cargo.toml --all -- --check
-cargo +1.99.0 clippy --manifest-path crates/oia-sky/Cargo.toml --all-targets --locked --offline -- -D warnings
-cargo +1.99.0 test --manifest-path crates/oia-sky/Cargo.toml --locked --offline
-cargo +1.99.0 test --manifest-path crates/oia-sky/Cargo.toml --locked --offline -- --nocapture --test-threads 1
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked --offline -- -D warnings
+cargo test --workspace --locked --offline
+cargo test -p oia-sky --locked --offline -- --nocapture --test-threads 1
+scripts/run.sh check
 python -I scripts/sky/verify_sky.py
 ```
 
@@ -202,10 +203,9 @@ apparent place, so it can't be used without an ephemeris. It is not covered.
 
 ## Integration still required
 
-- Move the kernel into the P0 time and geometry module chosen in #9 and #12,
-  and take UT1, TT and their uncertainties from #12's time primitives instead
-  of raw Julian dates.
-- Discard this package's `Cargo.lock` when it joins the root workspace.
+- Move the kernel into `oia-time-geo`, or depend on it, once #12 implements
+  its time primitives. Then take UT1, TT and their uncertainties from those
+  primitives instead of raw Julian dates.
 - Choose the ephemeris under D06 and record its versions with each result,
   next to `MODEL_ID`.
 - Propagate observer position and time uncertainty, which the kernel does not

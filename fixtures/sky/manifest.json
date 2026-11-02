@@ -1,0 +1,2887 @@
+{
+  "schema": "oia.fixture.sky-reference/1",
+  "origin_class": "external_reference",
+  "description": "Unmodified JPL Horizons API responses used as an independent reference for sky and solar-system calculations. Not observations; not OIA output.",
+  "provider": {
+    "name": "NASA/JPL Solar System Dynamics Group, Horizons On-Line Ephemeris System",
+    "documentation": "https://ssd-api.jpl.nasa.gov/doc/horizons.html",
+    "manual": "https://ssd.jpl.nasa.gov/horizons/manual.html",
+    "retrieved_on_utc": "2026-11-02",
+    "citation": "Giorgini, JD and JPL Solar System Dynamics Group, NASA/JPL Horizons On-Line Ephemeris System, <https://ssd.jpl.nasa.gov/horizons/>, data retrieved 2026-Nov-02.",
+    "ssd_citation": "Solar System Dynamics. (Downloaded 2026, November 2). (Horizons System). https://ssd.jpl.nasa.gov",
+    "terms": {
+      "checked_on_utc": "2026-11-02",
+      "urls": [
+        "https://ssd.jpl.nasa.gov/horizons/manual.html",
+        "https://ssd.jpl.nasa.gov/about/"
+      ],
+      "summary": "The Horizons manual (References for the Horizons system) asks users to cite Giorgini and the JPL Solar System Dynamics Group with the system URL and retrieval date; the SSD About page gives a citation template for downloaded data. Neither page states a copyright notice, license, or redistribution restriction. The manual calls user-produced files informal releases that must not be used for purposes affecting spacecraft safety or mission success without contacting the JPL Solar System Dynamics Group. Formal third-party notices remain to be settled with D06/#9."
+    }
+  },
+  "generator": "scripts/sky/fetch_horizons.py",
+  "cases": [
+    {
+      "id": "geo-moon-eclipse",
+      "purpose": "Geocentric Moon: astrometric (ICRF) versus airless apparent RA/Dec, illumination, angular diameter, range/range-rate, light time, S-T-O angle, TDB-UT.",
+      "requirements": [
+        "SPACE-04",
+        "SPACE-05"
+      ],
+      "scenarios": [
+        "A05"
+      ],
+      "expected_outcome": "ephemeris",
+      "request": {
+        "method": "GET",
+        "endpoint": "https://ssd.jpl.nasa.gov/api/horizons.api",
+        "parameters": {
+          "EPHEM_TYPE": "OBSERVER",
+          "ANG_FORMAT": "DEG",
+          "EXTRA_PREC": "YES",
+          "CSV_FORMAT": "YES",
+          "OBJ_DATA": "NO",
+          "TIME_DIGITS": "SECONDS",
+          "TIME_TYPE": "UT",
+          "START_TIME": "2024-04-08 17:00",
+          "STOP_TIME": "2024-04-08 19:00",
+          "STEP_SIZE": "30m",
+          "COMMAND": "301",
+          "CENTER": "500@399",
+          "QUANTITIES": "1,2,10,13,20,21,24,30",
+          "APPARENT": "AIRLESS"
+        },
+        "query": "format=json&MAKE_EPHEM=YES&EPHEM_TYPE=%27OBSERVER%27&ANG_FORMAT=%27DEG%27&EXTRA_PREC=%27YES%27&CSV_FORMAT=%27YES%27&OBJ_DATA=%27NO%27&TIME_DIGITS=%27SECONDS%27&TIME_TYPE=%27UT%27&START_TIME=%272024-04-08%2017%3A00%27&STOP_TIME=%272024-04-08%2019%3A00%27&STEP_SIZE=%2730m%27&COMMAND=%27301%27&CENTER=%27500%40399%27&QUANTITIES=%271%2C2%2C10%2C13%2C20%2C21%2C24%2C30%27&APPARENT=%27AIRLESS%27"
+      },
+      "retrieval": {
+        "requested_at_utc": "2026-11-02T02:22:54Z",
+        "http_date": "Mon, 02 Nov 2026 02:22:55 GMT"
+      },
+      "artifact": {
+        "path": "originals/geo-moon-eclipse.json",
+        "media_type": "application/json",
+        "byte_length": 9589,
+        "sha256": "78fec45b23b012db530e09d50422bbd67bd1e0a3644aaf46f04aea15eddedbef"
+      },
+      "extracted": {
+        "api_version": "1.2",
+        "api_source": "NASA/JPL Horizons API",
+        "outcome": "ephemeris",
+        "provider_banner": "Ephemeris / API_USER Sun Nov  1 18:22:55 2026 Pasadena, USA      / Horizons",
+        "ephemeris_sources": [
+          "DE441"
+        ],
+        "header_fields": [
+          [
+            "Target body name",
+            "Moon (301)                      {source: DE441}"
+          ],
+          [
+            "Center body name",
+            "Earth (399)                     {source: DE441}"
+          ],
+          [
+            "Center-site name",
+            "GEOCENTRIC"
+          ],
+          [
+            "Start time",
+            "A.D. 2024-Apr-08 17:00:00.0000 UT"
+          ],
+          [
+            "Stop  time",
+            "A.D. 2024-Apr-08 19:00:00.0000 UT"
+          ],
+          [
+            "Step-size",
+            "30 minutes"
+          ],
+          [
+            "Target pole/equ",
+            "MOON_ME                         {East-longitude positive}"
+          ],
+          [
+            "Target radii",
+            "1737.4, 1737.4, 1737.4 km       {Equator_a, b, pole_c}"
+          ],
+          [
+            "Center geodetic",
+            "0.0, 0.0, -6378.137             {E-lon(deg),Lat(deg),Alt(km)}"
+          ],
+          [
+            "Center cylindric",
+            "0.0, 0.0, 0.0                   {E-lon(deg),Dxy(km),Dz(km)}"
+          ],
+          [
+            "Center pole/equ",
+            "ITRF93                          {East-longitude positive}"
+          ],
+          [
+            "Center radii",
+            "6378.137, 6378.137, 6356.752 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Target primary",
+            "Earth"
+          ],
+          [
+            "Vis. interferer",
+            "MOON (R_eq= 1737.400) km        {source: DE441}"
+          ],
+          [
+            "Rel. light bend",
+            "Sun                             {source: DE441}"
+          ],
+          [
+            "Rel. lght bnd GM",
+            "1.3271E+11 km^3/s^2"
+          ],
+          [
+            "Atmos refraction",
+            "NO (AIRLESS)"
+          ],
+          [
+            "RA format",
+            "DEG"
+          ],
+          [
+            "Time format",
+            "CAL"
+          ],
+          [
+            "Calendar mode",
+            "Mixed Julian/Gregorian"
+          ],
+          [
+            "EOP file",
+            "eop.261030.p270126"
+          ],
+          [
+            "EOP coverage",
+            "DATA-BASED 1962-JAN-20 TO 2026-OCT-30. PREDICTS-> 2027-JAN-25"
+          ],
+          [
+            "Units conversion",
+            "1 au= 149597870.700 km, c= 299792.458 km/s, 1 day= 86400.0 s"
+          ],
+          [
+            "Table cut-offs 1",
+            "Elevation (-90.0deg=NO ),Airmass (>38.000=NO), Daylight (NO )"
+          ],
+          [
+            "Table cut-offs 2",
+            "Solar elongation (  0.0,180.0=NO ),Local Hour Angle( 0.0=NO )"
+          ],
+          [
+            "Table cut-offs 3",
+            "RA/DEC angular rate (     0.0=NO )"
+          ],
+          [
+            "Table format",
+            "Comma Separated Values (spreadsheet)"
+          ]
+        ],
+        "columns": [
+          "Date__(UT)__HR:MN:SS",
+          "",
+          "",
+          "R.A.___(ICRF)",
+          "DEC____(ICRF)",
+          "R.A.__(a-app)",
+          "DEC___(a-app)",
+          "Illu%",
+          "Ang-diam",
+          "delta",
+          "deldot",
+          "1-way_down_LT",
+          "S-T-O",
+          "TDB-UT"
+        ],
+        "row_count": 5,
+        "first_row_label": "2024-Apr-08 17:00:00",
+        "last_row_label": "2024-Apr-08 19:00:00"
+      }
+    },
+    {
+      "id": "geo-sun-eclipse",
+      "purpose": "Geocentric Sun: astrometric versus airless apparent RA/Dec, angular diameter, range, light time, TDB-UT.",
+      "requirements": [
+        "SPACE-04",
+        "SPACE-05"
+      ],
+      "scenarios": [
+        "A05"
+      ],
+      "expected_outcome": "ephemeris",
+      "request": {
+        "method": "GET",
+        "endpoint": "https://ssd.jpl.nasa.gov/api/horizons.api",
+        "parameters": {
+          "EPHEM_TYPE": "OBSERVER",
+          "ANG_FORMAT": "DEG",
+          "EXTRA_PREC": "YES",
+          "CSV_FORMAT": "YES",
+          "OBJ_DATA": "NO",
+          "TIME_DIGITS": "SECONDS",
+          "TIME_TYPE": "UT",
+          "START_TIME": "2024-04-08 17:00",
+          "STOP_TIME": "2024-04-08 19:00",
+          "STEP_SIZE": "30m",
+          "COMMAND": "10",
+          "CENTER": "500@399",
+          "QUANTITIES": "1,2,13,20,21,30",
+          "APPARENT": "AIRLESS"
+        },
+        "query": "format=json&MAKE_EPHEM=YES&EPHEM_TYPE=%27OBSERVER%27&ANG_FORMAT=%27DEG%27&EXTRA_PREC=%27YES%27&CSV_FORMAT=%27YES%27&OBJ_DATA=%27NO%27&TIME_DIGITS=%27SECONDS%27&TIME_TYPE=%27UT%27&START_TIME=%272024-04-08%2017%3A00%27&STOP_TIME=%272024-04-08%2019%3A00%27&STEP_SIZE=%2730m%27&COMMAND=%2710%27&CENTER=%27500%40399%27&QUANTITIES=%271%2C2%2C13%2C20%2C21%2C30%27&APPARENT=%27AIRLESS%27"
+      },
+      "retrieval": {
+        "requested_at_utc": "2026-11-02T02:22:56Z",
+        "http_date": "Mon, 02 Nov 2026 02:22:56 GMT"
+      },
+      "artifact": {
+        "path": "originals/geo-sun-eclipse.json",
+        "media_type": "application/json",
+        "byte_length": 8754,
+        "sha256": "f3f1d7b7399783df0c3b398ce6cc01a8450465c59ecd0693c985c9a511509ead"
+      },
+      "extracted": {
+        "api_version": "1.2",
+        "api_source": "NASA/JPL Horizons API",
+        "outcome": "ephemeris",
+        "provider_banner": "Ephemeris / API_USER Sun Nov  1 18:22:56 2026 Pasadena, USA      / Horizons",
+        "ephemeris_sources": [
+          "DE441"
+        ],
+        "header_fields": [
+          [
+            "Target body name",
+            "Sun (10)                        {source: DE441}"
+          ],
+          [
+            "Center body name",
+            "Earth (399)                     {source: DE441}"
+          ],
+          [
+            "Center-site name",
+            "GEOCENTRIC"
+          ],
+          [
+            "Start time",
+            "A.D. 2024-Apr-08 17:00:00.0000 UT"
+          ],
+          [
+            "Stop  time",
+            "A.D. 2024-Apr-08 19:00:00.0000 UT"
+          ],
+          [
+            "Step-size",
+            "30 minutes"
+          ],
+          [
+            "Target pole/equ",
+            "IAU_SUN                         {East-longitude positive}"
+          ],
+          [
+            "Target radii",
+            "695700.0, 695700.0, 695700.0 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Center geodetic",
+            "0.0, 0.0, -6378.137             {E-lon(deg),Lat(deg),Alt(km)}"
+          ],
+          [
+            "Center cylindric",
+            "0.0, 0.0, 0.0                   {E-lon(deg),Dxy(km),Dz(km)}"
+          ],
+          [
+            "Center pole/equ",
+            "ITRF93                          {East-longitude positive}"
+          ],
+          [
+            "Center radii",
+            "6378.137, 6378.137, 6356.752 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Target primary",
+            "Sun"
+          ],
+          [
+            "Vis. interferer",
+            "MOON (R_eq= 1737.400) km        {source: DE441}"
+          ],
+          [
+            "Rel. light bend",
+            "Sun                             {source: DE441}"
+          ],
+          [
+            "Rel. lght bnd GM",
+            "1.3271E+11 km^3/s^2"
+          ],
+          [
+            "Atmos refraction",
+            "NO (AIRLESS)"
+          ],
+          [
+            "RA format",
+            "DEG"
+          ],
+          [
+            "Time format",
+            "CAL"
+          ],
+          [
+            "Calendar mode",
+            "Mixed Julian/Gregorian"
+          ],
+          [
+            "EOP file",
+            "eop.261030.p270126"
+          ],
+          [
+            "EOP coverage",
+            "DATA-BASED 1962-JAN-20 TO 2026-OCT-30. PREDICTS-> 2027-JAN-25"
+          ],
+          [
+            "Units conversion",
+            "1 au= 149597870.700 km, c= 299792.458 km/s, 1 day= 86400.0 s"
+          ],
+          [
+            "Table cut-offs 1",
+            "Elevation (-90.0deg=NO ),Airmass (>38.000=NO), Daylight (NO )"
+          ],
+          [
+            "Table cut-offs 2",
+            "Solar elongation (  0.0,180.0=NO ),Local Hour Angle( 0.0=NO )"
+          ],
+          [
+            "Table cut-offs 3",
+            "RA/DEC angular rate (     0.0=NO )"
+          ],
+          [
+            "Table format",
+            "Comma Separated Values (spreadsheet)"
+          ]
+        ],
+        "columns": [
+          "Date__(UT)__HR:MN:SS",
+          "",
+          "",
+          "R.A.___(ICRF)",
+          "DEC____(ICRF)",
+          "R.A.__(a-app)",
+          "DEC___(a-app)",
+          "Ang-diam",
+          "delta",
+          "deldot",
+          "1-way_down_LT",
+          "TDB-UT"
+        ],
+        "row_count": 5,
+        "first_row_label": "2024-Apr-08 17:00:00",
+        "last_row_label": "2024-Apr-08 19:00:00"
+      }
+    },
+    {
+      "id": "geo-mars-eclipse",
+      "purpose": "Geocentric Mars: astrometric versus apparent RA/Dec with multi-minute light time, illumination, S-T-O angle.",
+      "requirements": [
+        "SPACE-04",
+        "SPACE-05"
+      ],
+      "scenarios": [
+        "A05"
+      ],
+      "expected_outcome": "ephemeris",
+      "request": {
+        "method": "GET",
+        "endpoint": "https://ssd.jpl.nasa.gov/api/horizons.api",
+        "parameters": {
+          "EPHEM_TYPE": "OBSERVER",
+          "ANG_FORMAT": "DEG",
+          "EXTRA_PREC": "YES",
+          "CSV_FORMAT": "YES",
+          "OBJ_DATA": "NO",
+          "TIME_DIGITS": "SECONDS",
+          "TIME_TYPE": "UT",
+          "START_TIME": "2024-04-08 17:00",
+          "STOP_TIME": "2024-04-08 19:00",
+          "STEP_SIZE": "30m",
+          "COMMAND": "499",
+          "CENTER": "500@399",
+          "QUANTITIES": "1,2,10,13,20,21,24,30",
+          "APPARENT": "AIRLESS"
+        },
+        "query": "format=json&MAKE_EPHEM=YES&EPHEM_TYPE=%27OBSERVER%27&ANG_FORMAT=%27DEG%27&EXTRA_PREC=%27YES%27&CSV_FORMAT=%27YES%27&OBJ_DATA=%27NO%27&TIME_DIGITS=%27SECONDS%27&TIME_TYPE=%27UT%27&START_TIME=%272024-04-08%2017%3A00%27&STOP_TIME=%272024-04-08%2019%3A00%27&STEP_SIZE=%2730m%27&COMMAND=%27499%27&CENTER=%27500%40399%27&QUANTITIES=%271%2C2%2C10%2C13%2C20%2C21%2C24%2C30%27&APPARENT=%27AIRLESS%27"
+      },
+      "retrieval": {
+        "requested_at_utc": "2026-11-02T02:22:57Z",
+        "http_date": "Mon, 02 Nov 2026 02:22:58 GMT"
+      },
+      "artifact": {
+        "path": "originals/geo-mars-eclipse.json",
+        "media_type": "application/json",
+        "byte_length": 9588,
+        "sha256": "1882e7795c8a557f6945e643549c078b709137465b56526d9515c159f7b96633"
+      },
+      "extracted": {
+        "api_version": "1.2",
+        "api_source": "NASA/JPL Horizons API",
+        "outcome": "ephemeris",
+        "provider_banner": "Ephemeris / API_USER Sun Nov  1 18:22:58 2026 Pasadena, USA      / Horizons",
+        "ephemeris_sources": [
+          "DE441",
+          "mar099"
+        ],
+        "header_fields": [
+          [
+            "Target body name",
+            "Mars (499)                      {source: mar099}"
+          ],
+          [
+            "Center body name",
+            "Earth (399)                     {source: DE441}"
+          ],
+          [
+            "Center-site name",
+            "GEOCENTRIC"
+          ],
+          [
+            "Start time",
+            "A.D. 2024-Apr-08 17:00:00.0000 UT"
+          ],
+          [
+            "Stop  time",
+            "A.D. 2024-Apr-08 19:00:00.0000 UT"
+          ],
+          [
+            "Step-size",
+            "30 minutes"
+          ],
+          [
+            "Target pole/equ",
+            "IAU_MARS                        {West-longitude positive}"
+          ],
+          [
+            "Target radii",
+            "3396.19, 3396.19, 3376.2 km     {Equator_a, b, pole_c}"
+          ],
+          [
+            "Center geodetic",
+            "0.0, 0.0, -6378.137             {E-lon(deg),Lat(deg),Alt(km)}"
+          ],
+          [
+            "Center cylindric",
+            "0.0, 0.0, 0.0                   {E-lon(deg),Dxy(km),Dz(km)}"
+          ],
+          [
+            "Center pole/equ",
+            "ITRF93                          {East-longitude positive}"
+          ],
+          [
+            "Center radii",
+            "6378.137, 6378.137, 6356.752 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Target primary",
+            "Sun"
+          ],
+          [
+            "Vis. interferer",
+            "MOON (R_eq= 1737.400) km        {source: DE441}"
+          ],
+          [
+            "Rel. light bend",
+            "Sun                             {source: DE441}"
+          ],
+          [
+            "Rel. lght bnd GM",
+            "1.3271E+11 km^3/s^2"
+          ],
+          [
+            "Atmos refraction",
+            "NO (AIRLESS)"
+          ],
+          [
+            "RA format",
+            "DEG"
+          ],
+          [
+            "Time format",
+            "CAL"
+          ],
+          [
+            "Calendar mode",
+            "Mixed Julian/Gregorian"
+          ],
+          [
+            "EOP file",
+            "eop.261030.p270126"
+          ],
+          [
+            "EOP coverage",
+            "DATA-BASED 1962-JAN-20 TO 2026-OCT-30. PREDICTS-> 2027-JAN-25"
+          ],
+          [
+            "Units conversion",
+            "1 au= 149597870.700 km, c= 299792.458 km/s, 1 day= 86400.0 s"
+          ],
+          [
+            "Table cut-offs 1",
+            "Elevation (-90.0deg=NO ),Airmass (>38.000=NO), Daylight (NO )"
+          ],
+          [
+            "Table cut-offs 2",
+            "Solar elongation (  0.0,180.0=NO ),Local Hour Angle( 0.0=NO )"
+          ],
+          [
+            "Table cut-offs 3",
+            "RA/DEC angular rate (     0.0=NO )"
+          ],
+          [
+            "Table format",
+            "Comma Separated Values (spreadsheet)"
+          ]
+        ],
+        "columns": [
+          "Date__(UT)__HR:MN:SS",
+          "",
+          "",
+          "R.A.___(ICRF)",
+          "DEC____(ICRF)",
+          "R.A.__(a-app)",
+          "DEC___(a-app)",
+          "Illu%",
+          "Ang-diam",
+          "delta",
+          "deldot",
+          "1-way_down_LT",
+          "S-T-O",
+          "TDB-UT"
+        ],
+        "row_count": 5,
+        "first_row_label": "2024-Apr-08 17:00:00",
+        "last_row_label": "2024-Apr-08 19:00:00"
+      }
+    },
+    {
+      "id": "topo-dallas-moon-airless",
+      "purpose": "Topocentric Moon from Dallas through totality: lunar parallax versus the geocentric case; airless Az/El.",
+      "requirements": [
+        "SPACE-05",
+        "GEO-05"
+      ],
+      "scenarios": [
+        "A05",
+        "A04"
+      ],
+      "expected_outcome": "ephemeris",
+      "request": {
+        "method": "GET",
+        "endpoint": "https://ssd.jpl.nasa.gov/api/horizons.api",
+        "parameters": {
+          "EPHEM_TYPE": "OBSERVER",
+          "ANG_FORMAT": "DEG",
+          "EXTRA_PREC": "YES",
+          "CSV_FORMAT": "YES",
+          "OBJ_DATA": "NO",
+          "TIME_DIGITS": "SECONDS",
+          "TIME_TYPE": "UT",
+          "START_TIME": "2024-04-08 18:00",
+          "STOP_TIME": "2024-04-08 19:00",
+          "STEP_SIZE": "6m",
+          "CENTER": "coord@399",
+          "COORD_TYPE": "GEODETIC",
+          "SITE_COORD": "-96.7970,32.7767,0.139",
+          "COMMAND": "301",
+          "QUANTITIES": "1,2,4,10,13,20,30",
+          "APPARENT": "AIRLESS"
+        },
+        "query": "format=json&MAKE_EPHEM=YES&EPHEM_TYPE=%27OBSERVER%27&ANG_FORMAT=%27DEG%27&EXTRA_PREC=%27YES%27&CSV_FORMAT=%27YES%27&OBJ_DATA=%27NO%27&TIME_DIGITS=%27SECONDS%27&TIME_TYPE=%27UT%27&START_TIME=%272024-04-08%2018%3A00%27&STOP_TIME=%272024-04-08%2019%3A00%27&STEP_SIZE=%276m%27&CENTER=%27coord%40399%27&COORD_TYPE=%27GEODETIC%27&SITE_COORD=%27-96.7970%2C32.7767%2C0.139%27&COMMAND=%27301%27&QUANTITIES=%271%2C2%2C4%2C10%2C13%2C20%2C30%27&APPARENT=%27AIRLESS%27"
+      },
+      "retrieval": {
+        "requested_at_utc": "2026-11-02T02:22:59Z",
+        "http_date": "Mon, 02 Nov 2026 02:22:59 GMT"
+      },
+      "artifact": {
+        "path": "originals/topo-dallas-moon-airless.json",
+        "media_type": "application/json",
+        "byte_length": 12067,
+        "sha256": "ad175ec88b5db39d53d3dbd0d57a230088a1454230cca09f34c6e8a645828bc5"
+      },
+      "extracted": {
+        "api_version": "1.2",
+        "api_source": "NASA/JPL Horizons API",
+        "outcome": "ephemeris",
+        "provider_banner": "Ephemeris / API_USER Sun Nov  1 18:22:59 2026 Pasadena, USA      / Horizons",
+        "ephemeris_sources": [
+          "DE441"
+        ],
+        "header_fields": [
+          [
+            "Target body name",
+            "Moon (301)                      {source: DE441}"
+          ],
+          [
+            "Center body name",
+            "Earth (399)                     {source: DE441}"
+          ],
+          [
+            "Center-site name",
+            "(user defined site below)"
+          ],
+          [
+            "Start time",
+            "A.D. 2024-Apr-08 18:00:00.0000 UT"
+          ],
+          [
+            "Stop  time",
+            "A.D. 2024-Apr-08 19:00:00.0000 UT"
+          ],
+          [
+            "Step-size",
+            "6 minutes"
+          ],
+          [
+            "Target pole/equ",
+            "MOON_ME                         {East-longitude positive}"
+          ],
+          [
+            "Target radii",
+            "1737.4, 1737.4, 1737.4 km       {Equator_a, b, pole_c}"
+          ],
+          [
+            "Center geodetic",
+            "263.203, 32.7767, .139          {E-lon(deg),Lat(deg),Alt(km)}"
+          ],
+          [
+            "Center cylindric",
+            "263.203, 5368.03888, 3433.23838 {E-lon(deg),Dxy(km),Dz(km)}"
+          ],
+          [
+            "Center pole/equ",
+            "ITRF93                          {East-longitude positive}"
+          ],
+          [
+            "Center radii",
+            "6378.137, 6378.137, 6356.752 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Target primary",
+            "Earth"
+          ],
+          [
+            "Vis. interferer",
+            "MOON (R_eq= 1737.400) km        {source: DE441}"
+          ],
+          [
+            "Rel. light bend",
+            "Sun                             {source: DE441}"
+          ],
+          [
+            "Rel. lght bnd GM",
+            "1.3271E+11 km^3/s^2"
+          ],
+          [
+            "Atmos refraction",
+            "NO (AIRLESS)"
+          ],
+          [
+            "RA format",
+            "DEG"
+          ],
+          [
+            "Time format",
+            "CAL"
+          ],
+          [
+            "Calendar mode",
+            "Mixed Julian/Gregorian"
+          ],
+          [
+            "RTS-only print",
+            "NO"
+          ],
+          [
+            "EOP file",
+            "eop.261030.p270126"
+          ],
+          [
+            "EOP coverage",
+            "DATA-BASED 1962-JAN-20 TO 2026-OCT-30. PREDICTS-> 2027-JAN-25"
+          ],
+          [
+            "Units conversion",
+            "1 au= 149597870.700 km, c= 299792.458 km/s, 1 day= 86400.0 s"
+          ],
+          [
+            "Table cut-offs 1",
+            "Elevation (-90.0deg=NO ),Airmass (>38.000=NO), Daylight (NO )"
+          ],
+          [
+            "Table cut-offs 2",
+            "Solar elongation (  0.0,180.0=NO ),Local Hour Angle( 0.0=NO )"
+          ],
+          [
+            "Table cut-offs 3",
+            "RA/DEC angular rate (     0.0=NO )"
+          ],
+          [
+            "Table format",
+            "Comma Separated Values (spreadsheet)"
+          ]
+        ],
+        "columns": [
+          "Date__(UT)__HR:MN:SS",
+          "",
+          "",
+          "R.A.___(ICRF)",
+          "DEC____(ICRF)",
+          "R.A.__(a-app)",
+          "DEC___(a-app)",
+          "Azimuth_(a-app)",
+          "Elevation_(a-app)",
+          "Illu%",
+          "Ang-diam",
+          "delta",
+          "deldot",
+          "TDB-UT"
+        ],
+        "row_count": 11,
+        "first_row_label": "2024-Apr-08 18:00:00",
+        "last_row_label": "2024-Apr-08 19:00:00"
+      }
+    },
+    {
+      "id": "topo-dallas-sun-airless",
+      "purpose": "Topocentric Sun from Dallas through totality, airless Az/El.",
+      "requirements": [
+        "SPACE-05",
+        "GEO-05"
+      ],
+      "scenarios": [
+        "A05",
+        "A04"
+      ],
+      "expected_outcome": "ephemeris",
+      "request": {
+        "method": "GET",
+        "endpoint": "https://ssd.jpl.nasa.gov/api/horizons.api",
+        "parameters": {
+          "EPHEM_TYPE": "OBSERVER",
+          "ANG_FORMAT": "DEG",
+          "EXTRA_PREC": "YES",
+          "CSV_FORMAT": "YES",
+          "OBJ_DATA": "NO",
+          "TIME_DIGITS": "SECONDS",
+          "TIME_TYPE": "UT",
+          "START_TIME": "2024-04-08 18:00",
+          "STOP_TIME": "2024-04-08 19:00",
+          "STEP_SIZE": "6m",
+          "CENTER": "coord@399",
+          "COORD_TYPE": "GEODETIC",
+          "SITE_COORD": "-96.7970,32.7767,0.139",
+          "COMMAND": "10",
+          "QUANTITIES": "1,2,4,13,20,30",
+          "APPARENT": "AIRLESS"
+        },
+        "query": "format=json&MAKE_EPHEM=YES&EPHEM_TYPE=%27OBSERVER%27&ANG_FORMAT=%27DEG%27&EXTRA_PREC=%27YES%27&CSV_FORMAT=%27YES%27&OBJ_DATA=%27NO%27&TIME_DIGITS=%27SECONDS%27&TIME_TYPE=%27UT%27&START_TIME=%272024-04-08%2018%3A00%27&STOP_TIME=%272024-04-08%2019%3A00%27&STEP_SIZE=%276m%27&CENTER=%27coord%40399%27&COORD_TYPE=%27GEODETIC%27&SITE_COORD=%27-96.7970%2C32.7767%2C0.139%27&COMMAND=%2710%27&QUANTITIES=%271%2C2%2C4%2C13%2C20%2C30%27&APPARENT=%27AIRLESS%27"
+      },
+      "retrieval": {
+        "requested_at_utc": "2026-11-02T02:23:00Z",
+        "http_date": "Mon, 02 Nov 2026 02:23:01 GMT"
+      },
+      "artifact": {
+        "path": "originals/topo-dallas-sun-airless.json",
+        "media_type": "application/json",
+        "byte_length": 11729,
+        "sha256": "a2a1f50cc2fca357d63bfc858be8a9bca52bd46342e7f554943d918cf0936333"
+      },
+      "extracted": {
+        "api_version": "1.2",
+        "api_source": "NASA/JPL Horizons API",
+        "outcome": "ephemeris",
+        "provider_banner": "Ephemeris / API_USER Sun Nov  1 18:23:01 2026 Pasadena, USA      / Horizons",
+        "ephemeris_sources": [
+          "DE441"
+        ],
+        "header_fields": [
+          [
+            "Target body name",
+            "Sun (10)                        {source: DE441}"
+          ],
+          [
+            "Center body name",
+            "Earth (399)                     {source: DE441}"
+          ],
+          [
+            "Center-site name",
+            "(user defined site below)"
+          ],
+          [
+            "Start time",
+            "A.D. 2024-Apr-08 18:00:00.0000 UT"
+          ],
+          [
+            "Stop  time",
+            "A.D. 2024-Apr-08 19:00:00.0000 UT"
+          ],
+          [
+            "Step-size",
+            "6 minutes"
+          ],
+          [
+            "Target pole/equ",
+            "IAU_SUN                         {East-longitude positive}"
+          ],
+          [
+            "Target radii",
+            "695700.0, 695700.0, 695700.0 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Center geodetic",
+            "263.203, 32.7767, .139          {E-lon(deg),Lat(deg),Alt(km)}"
+          ],
+          [
+            "Center cylindric",
+            "263.203, 5368.03888, 3433.23838 {E-lon(deg),Dxy(km),Dz(km)}"
+          ],
+          [
+            "Center pole/equ",
+            "ITRF93                          {East-longitude positive}"
+          ],
+          [
+            "Center radii",
+            "6378.137, 6378.137, 6356.752 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Target primary",
+            "Sun"
+          ],
+          [
+            "Vis. interferer",
+            "MOON (R_eq= 1737.400) km        {source: DE441}"
+          ],
+          [
+            "Rel. light bend",
+            "Sun                             {source: DE441}"
+          ],
+          [
+            "Rel. lght bnd GM",
+            "1.3271E+11 km^3/s^2"
+          ],
+          [
+            "Atmos refraction",
+            "NO (AIRLESS)"
+          ],
+          [
+            "RA format",
+            "DEG"
+          ],
+          [
+            "Time format",
+            "CAL"
+          ],
+          [
+            "Calendar mode",
+            "Mixed Julian/Gregorian"
+          ],
+          [
+            "RTS-only print",
+            "NO"
+          ],
+          [
+            "EOP file",
+            "eop.261030.p270126"
+          ],
+          [
+            "EOP coverage",
+            "DATA-BASED 1962-JAN-20 TO 2026-OCT-30. PREDICTS-> 2027-JAN-25"
+          ],
+          [
+            "Units conversion",
+            "1 au= 149597870.700 km, c= 299792.458 km/s, 1 day= 86400.0 s"
+          ],
+          [
+            "Table cut-offs 1",
+            "Elevation (-90.0deg=NO ),Airmass (>38.000=NO), Daylight (NO )"
+          ],
+          [
+            "Table cut-offs 2",
+            "Solar elongation (  0.0,180.0=NO ),Local Hour Angle( 0.0=NO )"
+          ],
+          [
+            "Table cut-offs 3",
+            "RA/DEC angular rate (     0.0=NO )"
+          ],
+          [
+            "Table format",
+            "Comma Separated Values (spreadsheet)"
+          ]
+        ],
+        "columns": [
+          "Date__(UT)__HR:MN:SS",
+          "",
+          "",
+          "R.A.___(ICRF)",
+          "DEC____(ICRF)",
+          "R.A.__(a-app)",
+          "DEC___(a-app)",
+          "Azimuth_(a-app)",
+          "Elevation_(a-app)",
+          "Ang-diam",
+          "delta",
+          "deldot",
+          "TDB-UT"
+        ],
+        "row_count": 11,
+        "first_row_label": "2024-Apr-08 18:00:00",
+        "last_row_label": "2024-Apr-08 19:00:00"
+      }
+    },
+    {
+      "id": "topo-dallas-sun-refracted",
+      "purpose": "Same request as topo-dallas-sun-airless with Horizons refraction model enabled, isolating the refraction assumption.",
+      "requirements": [
+        "SPACE-05",
+        "GEO-05"
+      ],
+      "scenarios": [
+        "A05",
+        "A04"
+      ],
+      "expected_outcome": "ephemeris",
+      "request": {
+        "method": "GET",
+        "endpoint": "https://ssd.jpl.nasa.gov/api/horizons.api",
+        "parameters": {
+          "EPHEM_TYPE": "OBSERVER",
+          "ANG_FORMAT": "DEG",
+          "EXTRA_PREC": "YES",
+          "CSV_FORMAT": "YES",
+          "OBJ_DATA": "NO",
+          "TIME_DIGITS": "SECONDS",
+          "TIME_TYPE": "UT",
+          "START_TIME": "2024-04-08 18:00",
+          "STOP_TIME": "2024-04-08 19:00",
+          "STEP_SIZE": "6m",
+          "CENTER": "coord@399",
+          "COORD_TYPE": "GEODETIC",
+          "SITE_COORD": "-96.7970,32.7767,0.139",
+          "COMMAND": "10",
+          "QUANTITIES": "1,2,4,13,20,30",
+          "APPARENT": "REFRACTED"
+        },
+        "query": "format=json&MAKE_EPHEM=YES&EPHEM_TYPE=%27OBSERVER%27&ANG_FORMAT=%27DEG%27&EXTRA_PREC=%27YES%27&CSV_FORMAT=%27YES%27&OBJ_DATA=%27NO%27&TIME_DIGITS=%27SECONDS%27&TIME_TYPE=%27UT%27&START_TIME=%272024-04-08%2018%3A00%27&STOP_TIME=%272024-04-08%2019%3A00%27&STEP_SIZE=%276m%27&CENTER=%27coord%40399%27&COORD_TYPE=%27GEODETIC%27&SITE_COORD=%27-96.7970%2C32.7767%2C0.139%27&COMMAND=%2710%27&QUANTITIES=%271%2C2%2C4%2C13%2C20%2C30%27&APPARENT=%27REFRACTED%27"
+      },
+      "retrieval": {
+        "requested_at_utc": "2026-11-02T02:23:02Z",
+        "http_date": "Mon, 02 Nov 2026 02:23:02 GMT"
+      },
+      "artifact": {
+        "path": "originals/topo-dallas-sun-refracted.json",
+        "media_type": "application/json",
+        "byte_length": 11889,
+        "sha256": "a8450374e347638ea4120bd9de612485882cd12feeecf0024ebca65ef1ea4ae4"
+      },
+      "extracted": {
+        "api_version": "1.2",
+        "api_source": "NASA/JPL Horizons API",
+        "outcome": "ephemeris",
+        "provider_banner": "Ephemeris / API_USER Sun Nov  1 18:23:02 2026 Pasadena, USA      / Horizons",
+        "ephemeris_sources": [
+          "DE441"
+        ],
+        "header_fields": [
+          [
+            "Target body name",
+            "Sun (10)                        {source: DE441}"
+          ],
+          [
+            "Center body name",
+            "Earth (399)                     {source: DE441}"
+          ],
+          [
+            "Center-site name",
+            "(user defined site below)"
+          ],
+          [
+            "Start time",
+            "A.D. 2024-Apr-08 18:00:00.0000 UT"
+          ],
+          [
+            "Stop  time",
+            "A.D. 2024-Apr-08 19:00:00.0000 UT"
+          ],
+          [
+            "Step-size",
+            "6 minutes"
+          ],
+          [
+            "Target pole/equ",
+            "IAU_SUN                         {East-longitude positive}"
+          ],
+          [
+            "Target radii",
+            "695700.0, 695700.0, 695700.0 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Center geodetic",
+            "263.203, 32.7767, .139          {E-lon(deg),Lat(deg),Alt(km)}"
+          ],
+          [
+            "Center cylindric",
+            "263.203, 5368.03888, 3433.23838 {E-lon(deg),Dxy(km),Dz(km)}"
+          ],
+          [
+            "Center pole/equ",
+            "ITRF93                          {East-longitude positive}"
+          ],
+          [
+            "Center radii",
+            "6378.137, 6378.137, 6356.752 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Target primary",
+            "Sun"
+          ],
+          [
+            "Vis. interferer",
+            "MOON (R_eq= 1737.400) km        {source: DE441}"
+          ],
+          [
+            "Rel. light bend",
+            "Sun                             {source: DE441}"
+          ],
+          [
+            "Rel. lght bnd GM",
+            "1.3271E+11 km^3/s^2"
+          ],
+          [
+            "Atmos refraction",
+            "YES (Earth refraction model)"
+          ],
+          [
+            "RA format",
+            "DEG"
+          ],
+          [
+            "Time format",
+            "CAL"
+          ],
+          [
+            "Calendar mode",
+            "Mixed Julian/Gregorian"
+          ],
+          [
+            "RTS-only print",
+            "NO"
+          ],
+          [
+            "EOP file",
+            "eop.261030.p270126"
+          ],
+          [
+            "EOP coverage",
+            "DATA-BASED 1962-JAN-20 TO 2026-OCT-30. PREDICTS-> 2027-JAN-25"
+          ],
+          [
+            "Units conversion",
+            "1 au= 149597870.700 km, c= 299792.458 km/s, 1 day= 86400.0 s"
+          ],
+          [
+            "Table cut-offs 1",
+            "Elevation (-90.0deg=NO ),Airmass (>38.000=NO), Daylight (NO )"
+          ],
+          [
+            "Table cut-offs 2",
+            "Solar elongation (  0.0,180.0=NO ),Local Hour Angle( 0.0=NO )"
+          ],
+          [
+            "Table cut-offs 3",
+            "RA/DEC angular rate (     0.0=NO )"
+          ],
+          [
+            "Table format",
+            "Comma Separated Values (spreadsheet)"
+          ]
+        ],
+        "columns": [
+          "Date__(UT)__HR:MN:SS",
+          "",
+          "",
+          "R.A.___(ICRF)",
+          "DEC____(ICRF)",
+          "R.A._(rfct-app)",
+          "DEC_(rfct-app)",
+          "Azimuth_(r-app)",
+          "Elevation_(r-app)",
+          "Ang-diam",
+          "delta",
+          "deldot",
+          "TDB-UT"
+        ],
+        "row_count": 11,
+        "first_row_label": "2024-Apr-08 18:00:00",
+        "last_row_label": "2024-Apr-08 19:00:00"
+      }
+    },
+    {
+      "id": "topo-alert-sun-solstice",
+      "purpose": "Polar observer (Alert, Nunavut) over 24 h near the June solstice: the Sun stays above the horizon; refracted Az/El.",
+      "requirements": [
+        "SPACE-05",
+        "GEO-05"
+      ],
+      "scenarios": [
+        "A04"
+      ],
+      "expected_outcome": "ephemeris",
+      "request": {
+        "method": "GET",
+        "endpoint": "https://ssd.jpl.nasa.gov/api/horizons.api",
+        "parameters": {
+          "EPHEM_TYPE": "OBSERVER",
+          "ANG_FORMAT": "DEG",
+          "EXTRA_PREC": "YES",
+          "CSV_FORMAT": "YES",
+          "OBJ_DATA": "NO",
+          "TIME_DIGITS": "SECONDS",
+          "TIME_TYPE": "UT",
+          "CENTER": "coord@399",
+          "COORD_TYPE": "GEODETIC",
+          "SITE_COORD": "-62.3481,82.5018,0.030",
+          "COMMAND": "10",
+          "START_TIME": "2024-06-20 00:00",
+          "STOP_TIME": "2024-06-21 00:00",
+          "STEP_SIZE": "3h",
+          "QUANTITIES": "4,30",
+          "APPARENT": "REFRACTED"
+        },
+        "query": "format=json&MAKE_EPHEM=YES&EPHEM_TYPE=%27OBSERVER%27&ANG_FORMAT=%27DEG%27&EXTRA_PREC=%27YES%27&CSV_FORMAT=%27YES%27&OBJ_DATA=%27NO%27&TIME_DIGITS=%27SECONDS%27&TIME_TYPE=%27UT%27&CENTER=%27coord%40399%27&COORD_TYPE=%27GEODETIC%27&SITE_COORD=%27-62.3481%2C82.5018%2C0.030%27&COMMAND=%2710%27&START_TIME=%272024-06-20%2000%3A00%27&STOP_TIME=%272024-06-21%2000%3A00%27&STEP_SIZE=%273h%27&QUANTITIES=%274%2C30%27&APPARENT=%27REFRACTED%27"
+      },
+      "retrieval": {
+        "requested_at_utc": "2026-11-02T02:23:03Z",
+        "http_date": "Mon, 02 Nov 2026 02:23:04 GMT"
+      },
+      "artifact": {
+        "path": "originals/topo-alert-sun-solstice.json",
+        "media_type": "application/json",
+        "byte_length": 7649,
+        "sha256": "40309661dd6db131bf015c4dfb969235fd62198eaeaef73c6cf7ecfc44840791"
+      },
+      "extracted": {
+        "api_version": "1.2",
+        "api_source": "NASA/JPL Horizons API",
+        "outcome": "ephemeris",
+        "provider_banner": "Ephemeris / API_USER Sun Nov  1 18:23:04 2026 Pasadena, USA      / Horizons",
+        "ephemeris_sources": [
+          "DE441"
+        ],
+        "header_fields": [
+          [
+            "Target body name",
+            "Sun (10)                        {source: DE441}"
+          ],
+          [
+            "Center body name",
+            "Earth (399)                     {source: DE441}"
+          ],
+          [
+            "Center-site name",
+            "(user defined site below)"
+          ],
+          [
+            "Start time",
+            "A.D. 2024-Jun-20 00:00:00.0000 UT"
+          ],
+          [
+            "Stop  time",
+            "A.D. 2024-Jun-21 00:00:00.0000 UT"
+          ],
+          [
+            "Step-size",
+            "180 minutes"
+          ],
+          [
+            "Target pole/equ",
+            "IAU_SUN                         {East-longitude positive}"
+          ],
+          [
+            "Target radii",
+            "695700.0, 695700.0, 695700.0 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Center geodetic",
+            "297.6519, 82.5018, .030         {E-lon(deg),Lat(deg),Alt(km)}"
+          ],
+          [
+            "Center cylindric",
+            "297.6519, 835.07126, 6302.0636  {E-lon(deg),Dxy(km),Dz(km)}"
+          ],
+          [
+            "Center pole/equ",
+            "ITRF93                          {East-longitude positive}"
+          ],
+          [
+            "Center radii",
+            "6378.137, 6378.137, 6356.752 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Target primary",
+            "Sun"
+          ],
+          [
+            "Vis. interferer",
+            "MOON (R_eq= 1737.400) km        {source: DE441}"
+          ],
+          [
+            "Rel. light bend",
+            "Sun                             {source: DE441}"
+          ],
+          [
+            "Rel. lght bnd GM",
+            "1.3271E+11 km^3/s^2"
+          ],
+          [
+            "Atmos refraction",
+            "YES (Earth refraction model)"
+          ],
+          [
+            "RA format",
+            "DEG"
+          ],
+          [
+            "Time format",
+            "CAL"
+          ],
+          [
+            "Calendar mode",
+            "Mixed Julian/Gregorian"
+          ],
+          [
+            "EOP file",
+            "eop.261030.p270126"
+          ],
+          [
+            "EOP coverage",
+            "DATA-BASED 1962-JAN-20 TO 2026-OCT-30. PREDICTS-> 2027-JAN-25"
+          ],
+          [
+            "Units conversion",
+            "1 au= 149597870.700 km, c= 299792.458 km/s, 1 day= 86400.0 s"
+          ],
+          [
+            "Table cut-offs 1",
+            "Elevation (-90.0deg=NO ),Airmass (>38.000=NO), Daylight (NO )"
+          ],
+          [
+            "Table cut-offs 2",
+            "Solar elongation (  0.0,180.0=NO ),Local Hour Angle( 0.0=NO )"
+          ],
+          [
+            "Table cut-offs 3",
+            "RA/DEC angular rate (     0.0=NO )"
+          ],
+          [
+            "Table format",
+            "Comma Separated Values (spreadsheet)"
+          ]
+        ],
+        "columns": [
+          "Date__(UT)__HR:MN:SS",
+          "",
+          "",
+          "Azimuth_(r-app)",
+          "Elevation_(r-app)",
+          "TDB-UT"
+        ],
+        "row_count": 9,
+        "first_row_label": "2024-Jun-20 00:00:00",
+        "last_row_label": "2024-Jun-21 00:00:00"
+      }
+    },
+    {
+      "id": "topo-dateline-east-sun",
+      "purpose": "Observer 0.1 deg east of the antimeridian near local sunrise; pair with topo-dateline-west-sun at the same UTC instants (civil dates differ, sky does not).",
+      "requirements": [
+        "SPACE-05",
+        "GEO-05"
+      ],
+      "scenarios": [
+        "A04"
+      ],
+      "expected_outcome": "ephemeris",
+      "request": {
+        "method": "GET",
+        "endpoint": "https://ssd.jpl.nasa.gov/api/horizons.api",
+        "parameters": {
+          "EPHEM_TYPE": "OBSERVER",
+          "ANG_FORMAT": "DEG",
+          "EXTRA_PREC": "YES",
+          "CSV_FORMAT": "YES",
+          "OBJ_DATA": "NO",
+          "TIME_DIGITS": "SECONDS",
+          "TIME_TYPE": "UT",
+          "START_TIME": "2024-04-08 17:00",
+          "STOP_TIME": "2024-04-08 19:00",
+          "STEP_SIZE": "30m",
+          "CENTER": "coord@399",
+          "COORD_TYPE": "GEODETIC",
+          "SITE_COORD": "179.9000,-16.8000,0.000",
+          "COMMAND": "10",
+          "QUANTITIES": "2,4,30",
+          "APPARENT": "REFRACTED"
+        },
+        "query": "format=json&MAKE_EPHEM=YES&EPHEM_TYPE=%27OBSERVER%27&ANG_FORMAT=%27DEG%27&EXTRA_PREC=%27YES%27&CSV_FORMAT=%27YES%27&OBJ_DATA=%27NO%27&TIME_DIGITS=%27SECONDS%27&TIME_TYPE=%27UT%27&START_TIME=%272024-04-08%2017%3A00%27&STOP_TIME=%272024-04-08%2019%3A00%27&STEP_SIZE=%2730m%27&CENTER=%27coord%40399%27&COORD_TYPE=%27GEODETIC%27&SITE_COORD=%27179.9000%2C-16.8000%2C0.000%27&COMMAND=%2710%27&QUANTITIES=%272%2C4%2C30%27&APPARENT=%27REFRACTED%27"
+      },
+      "retrieval": {
+        "requested_at_utc": "2026-11-02T02:23:05Z",
+        "http_date": "Mon, 02 Nov 2026 02:23:05 GMT"
+      },
+      "artifact": {
+        "path": "originals/topo-dateline-east-sun.json",
+        "media_type": "application/json",
+        "byte_length": 9139,
+        "sha256": "7579d00d4ab34cfe42a2ef6c7e6a4f4544aa1c0c034cd59e184c2e7e2738e398"
+      },
+      "extracted": {
+        "api_version": "1.2",
+        "api_source": "NASA/JPL Horizons API",
+        "outcome": "ephemeris",
+        "provider_banner": "Ephemeris / API_USER Sun Nov  1 18:23:05 2026 Pasadena, USA      / Horizons",
+        "ephemeris_sources": [
+          "DE441"
+        ],
+        "header_fields": [
+          [
+            "Target body name",
+            "Sun (10)                        {source: DE441}"
+          ],
+          [
+            "Center body name",
+            "Earth (399)                     {source: DE441}"
+          ],
+          [
+            "Center-site name",
+            "(user defined site below)"
+          ],
+          [
+            "Start time",
+            "A.D. 2024-Apr-08 17:00:00.0000 UT"
+          ],
+          [
+            "Stop  time",
+            "A.D. 2024-Apr-08 19:00:00.0000 UT"
+          ],
+          [
+            "Step-size",
+            "30 minutes"
+          ],
+          [
+            "Target pole/equ",
+            "IAU_SUN                         {East-longitude positive}"
+          ],
+          [
+            "Target radii",
+            "695700.0, 695700.0, 695700.0 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Center geodetic",
+            "179.9, -16.8, 0.0               {E-lon(deg),Lat(deg),Alt(km)}"
+          ],
+          [
+            "Center cylindric",
+            "179.9, 6107.62297, -1831.65566  {E-lon(deg),Dxy(km),Dz(km)}"
+          ],
+          [
+            "Center pole/equ",
+            "ITRF93                          {East-longitude positive}"
+          ],
+          [
+            "Center radii",
+            "6378.137, 6378.137, 6356.752 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Target primary",
+            "Sun"
+          ],
+          [
+            "Vis. interferer",
+            "MOON (R_eq= 1737.400) km        {source: DE441}"
+          ],
+          [
+            "Rel. light bend",
+            "Sun                             {source: DE441}"
+          ],
+          [
+            "Rel. lght bnd GM",
+            "1.3271E+11 km^3/s^2"
+          ],
+          [
+            "Atmos refraction",
+            "YES (Earth refraction model)"
+          ],
+          [
+            "RA format",
+            "DEG"
+          ],
+          [
+            "Time format",
+            "CAL"
+          ],
+          [
+            "Calendar mode",
+            "Mixed Julian/Gregorian"
+          ],
+          [
+            "RTS-only print",
+            "NO"
+          ],
+          [
+            "EOP file",
+            "eop.261030.p270126"
+          ],
+          [
+            "EOP coverage",
+            "DATA-BASED 1962-JAN-20 TO 2026-OCT-30. PREDICTS-> 2027-JAN-25"
+          ],
+          [
+            "Units conversion",
+            "1 au= 149597870.700 km, c= 299792.458 km/s, 1 day= 86400.0 s"
+          ],
+          [
+            "Table cut-offs 1",
+            "Elevation (-90.0deg=NO ),Airmass (>38.000=NO), Daylight (NO )"
+          ],
+          [
+            "Table cut-offs 2",
+            "Solar elongation (  0.0,180.0=NO ),Local Hour Angle( 0.0=NO )"
+          ],
+          [
+            "Table cut-offs 3",
+            "RA/DEC angular rate (     0.0=NO )"
+          ],
+          [
+            "Table format",
+            "Comma Separated Values (spreadsheet)"
+          ]
+        ],
+        "columns": [
+          "Date__(UT)__HR:MN:SS",
+          "",
+          "",
+          "R.A._(rfct-app)",
+          "DEC_(rfct-app)",
+          "Azimuth_(r-app)",
+          "Elevation_(r-app)",
+          "TDB-UT"
+        ],
+        "row_count": 5,
+        "first_row_label": "2024-Apr-08 17:00:00",
+        "last_row_label": "2024-Apr-08 19:00:00"
+      }
+    },
+    {
+      "id": "topo-dateline-west-sun",
+      "purpose": "Observer 0.1 deg west of the antimeridian; counterpart of topo-dateline-east-sun.",
+      "requirements": [
+        "SPACE-05",
+        "GEO-05"
+      ],
+      "scenarios": [
+        "A04"
+      ],
+      "expected_outcome": "ephemeris",
+      "request": {
+        "method": "GET",
+        "endpoint": "https://ssd.jpl.nasa.gov/api/horizons.api",
+        "parameters": {
+          "EPHEM_TYPE": "OBSERVER",
+          "ANG_FORMAT": "DEG",
+          "EXTRA_PREC": "YES",
+          "CSV_FORMAT": "YES",
+          "OBJ_DATA": "NO",
+          "TIME_DIGITS": "SECONDS",
+          "TIME_TYPE": "UT",
+          "START_TIME": "2024-04-08 17:00",
+          "STOP_TIME": "2024-04-08 19:00",
+          "STEP_SIZE": "30m",
+          "CENTER": "coord@399",
+          "COORD_TYPE": "GEODETIC",
+          "SITE_COORD": "-179.9000,-16.8000,0.000",
+          "COMMAND": "10",
+          "QUANTITIES": "2,4,30",
+          "APPARENT": "REFRACTED"
+        },
+        "query": "format=json&MAKE_EPHEM=YES&EPHEM_TYPE=%27OBSERVER%27&ANG_FORMAT=%27DEG%27&EXTRA_PREC=%27YES%27&CSV_FORMAT=%27YES%27&OBJ_DATA=%27NO%27&TIME_DIGITS=%27SECONDS%27&TIME_TYPE=%27UT%27&START_TIME=%272024-04-08%2017%3A00%27&STOP_TIME=%272024-04-08%2019%3A00%27&STEP_SIZE=%2730m%27&CENTER=%27coord%40399%27&COORD_TYPE=%27GEODETIC%27&SITE_COORD=%27-179.9000%2C-16.8000%2C0.000%27&COMMAND=%2710%27&QUANTITIES=%272%2C4%2C30%27&APPARENT=%27REFRACTED%27"
+      },
+      "retrieval": {
+        "requested_at_utc": "2026-11-02T02:23:06Z",
+        "http_date": "Mon, 02 Nov 2026 02:23:07 GMT"
+      },
+      "artifact": {
+        "path": "originals/topo-dateline-west-sun.json",
+        "media_type": "application/json",
+        "byte_length": 9139,
+        "sha256": "acf2b76823603b919ae42c0c9e00a692ddab70d76562d6bc690e841c0989ead1"
+      },
+      "extracted": {
+        "api_version": "1.2",
+        "api_source": "NASA/JPL Horizons API",
+        "outcome": "ephemeris",
+        "provider_banner": "Ephemeris / API_USER Sun Nov  1 18:23:07 2026 Pasadena, USA      / Horizons",
+        "ephemeris_sources": [
+          "DE441"
+        ],
+        "header_fields": [
+          [
+            "Target body name",
+            "Sun (10)                        {source: DE441}"
+          ],
+          [
+            "Center body name",
+            "Earth (399)                     {source: DE441}"
+          ],
+          [
+            "Center-site name",
+            "(user defined site below)"
+          ],
+          [
+            "Start time",
+            "A.D. 2024-Apr-08 17:00:00.0000 UT"
+          ],
+          [
+            "Stop  time",
+            "A.D. 2024-Apr-08 19:00:00.0000 UT"
+          ],
+          [
+            "Step-size",
+            "30 minutes"
+          ],
+          [
+            "Target pole/equ",
+            "IAU_SUN                         {East-longitude positive}"
+          ],
+          [
+            "Target radii",
+            "695700.0, 695700.0, 695700.0 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Center geodetic",
+            "180.1, -16.8, 0.0               {E-lon(deg),Lat(deg),Alt(km)}"
+          ],
+          [
+            "Center cylindric",
+            "180.1, 6107.62297, -1831.65566  {E-lon(deg),Dxy(km),Dz(km)}"
+          ],
+          [
+            "Center pole/equ",
+            "ITRF93                          {East-longitude positive}"
+          ],
+          [
+            "Center radii",
+            "6378.137, 6378.137, 6356.752 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Target primary",
+            "Sun"
+          ],
+          [
+            "Vis. interferer",
+            "MOON (R_eq= 1737.400) km        {source: DE441}"
+          ],
+          [
+            "Rel. light bend",
+            "Sun                             {source: DE441}"
+          ],
+          [
+            "Rel. lght bnd GM",
+            "1.3271E+11 km^3/s^2"
+          ],
+          [
+            "Atmos refraction",
+            "YES (Earth refraction model)"
+          ],
+          [
+            "RA format",
+            "DEG"
+          ],
+          [
+            "Time format",
+            "CAL"
+          ],
+          [
+            "Calendar mode",
+            "Mixed Julian/Gregorian"
+          ],
+          [
+            "RTS-only print",
+            "NO"
+          ],
+          [
+            "EOP file",
+            "eop.261030.p270126"
+          ],
+          [
+            "EOP coverage",
+            "DATA-BASED 1962-JAN-20 TO 2026-OCT-30. PREDICTS-> 2027-JAN-25"
+          ],
+          [
+            "Units conversion",
+            "1 au= 149597870.700 km, c= 299792.458 km/s, 1 day= 86400.0 s"
+          ],
+          [
+            "Table cut-offs 1",
+            "Elevation (-90.0deg=NO ),Airmass (>38.000=NO), Daylight (NO )"
+          ],
+          [
+            "Table cut-offs 2",
+            "Solar elongation (  0.0,180.0=NO ),Local Hour Angle( 0.0=NO )"
+          ],
+          [
+            "Table cut-offs 3",
+            "RA/DEC angular rate (     0.0=NO )"
+          ],
+          [
+            "Table format",
+            "Comma Separated Values (spreadsheet)"
+          ]
+        ],
+        "columns": [
+          "Date__(UT)__HR:MN:SS",
+          "",
+          "",
+          "R.A._(rfct-app)",
+          "DEC_(rfct-app)",
+          "Azimuth_(r-app)",
+          "Elevation_(r-app)",
+          "TDB-UT"
+        ],
+        "row_count": 5,
+        "first_row_label": "2024-Apr-08 17:00:00",
+        "last_row_label": "2024-Apr-08 19:00:00"
+      }
+    },
+    {
+      "id": "topo-washington-mars-1952",
+      "purpose": "Historical pre-1962 epoch where Horizons time tags are UT1, not UTC; refracted Az/El of Mars from Washington National Airport as it sets (~04:50 UT1).",
+      "requirements": [
+        "SPACE-05",
+        "GEO-05"
+      ],
+      "scenarios": [
+        "A04"
+      ],
+      "expected_outcome": "ephemeris",
+      "request": {
+        "method": "GET",
+        "endpoint": "https://ssd.jpl.nasa.gov/api/horizons.api",
+        "parameters": {
+          "EPHEM_TYPE": "OBSERVER",
+          "ANG_FORMAT": "DEG",
+          "EXTRA_PREC": "YES",
+          "CSV_FORMAT": "YES",
+          "OBJ_DATA": "NO",
+          "TIME_DIGITS": "SECONDS",
+          "TIME_TYPE": "UT",
+          "CENTER": "coord@399",
+          "COORD_TYPE": "GEODETIC",
+          "SITE_COORD": "-77.0402,38.8512,0.005",
+          "COMMAND": "499",
+          "START_TIME": "1952-07-20 02:00",
+          "STOP_TIME": "1952-07-20 05:00",
+          "STEP_SIZE": "30m",
+          "QUANTITIES": "1,2,4,10,30",
+          "APPARENT": "REFRACTED"
+        },
+        "query": "format=json&MAKE_EPHEM=YES&EPHEM_TYPE=%27OBSERVER%27&ANG_FORMAT=%27DEG%27&EXTRA_PREC=%27YES%27&CSV_FORMAT=%27YES%27&OBJ_DATA=%27NO%27&TIME_DIGITS=%27SECONDS%27&TIME_TYPE=%27UT%27&CENTER=%27coord%40399%27&COORD_TYPE=%27GEODETIC%27&SITE_COORD=%27-77.0402%2C38.8512%2C0.005%27&COMMAND=%27499%27&START_TIME=%271952-07-20%2002%3A00%27&STOP_TIME=%271952-07-20%2005%3A00%27&STEP_SIZE=%2730m%27&QUANTITIES=%271%2C2%2C4%2C10%2C30%27&APPARENT=%27REFRACTED%27"
+      },
+      "retrieval": {
+        "requested_at_utc": "2026-11-02T02:23:08Z",
+        "http_date": "Mon, 02 Nov 2026 02:23:08 GMT"
+      },
+      "artifact": {
+        "path": "originals/topo-washington-mars-1952.json",
+        "media_type": "application/json",
+        "byte_length": 10403,
+        "sha256": "06185d533d2168fe586c6b7cf1755a7e18ca0678a3c345af6a945b7a7de2e349"
+      },
+      "extracted": {
+        "api_version": "1.2",
+        "api_source": "NASA/JPL Horizons API",
+        "outcome": "ephemeris",
+        "provider_banner": "Ephemeris / API_USER Sun Nov  1 18:23:08 2026 Pasadena, USA      / Horizons",
+        "ephemeris_sources": [
+          "DE441",
+          "mar099"
+        ],
+        "header_fields": [
+          [
+            "Target body name",
+            "Mars (499)                      {source: mar099}"
+          ],
+          [
+            "Center body name",
+            "Earth (399)                     {source: DE441}"
+          ],
+          [
+            "Center-site name",
+            "(user defined site below)"
+          ],
+          [
+            "Start time",
+            "A.D. 1952-Jul-20 02:00:00.0000 UT"
+          ],
+          [
+            "Stop  time",
+            "A.D. 1952-Jul-20 05:00:00.0000 UT"
+          ],
+          [
+            "Step-size",
+            "30 minutes"
+          ],
+          [
+            "Target pole/equ",
+            "IAU_MARS                        {West-longitude positive}"
+          ],
+          [
+            "Target radii",
+            "3396.19, 3396.19, 3376.2 km     {Equator_a, b, pole_c}"
+          ],
+          [
+            "Center geodetic",
+            "282.9598, 38.8512, .005         {E-lon(deg),Lat(deg),Alt(km)}"
+          ],
+          [
+            "Center cylindric",
+            "282.9598,4973.71023,3979.46908  {E-lon(deg),Dxy(km),Dz(km)}"
+          ],
+          [
+            "Center pole/equ",
+            "ITRF93                          {East-longitude positive}"
+          ],
+          [
+            "Center radii",
+            "6378.137, 6378.137, 6356.752 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Target primary",
+            "Sun"
+          ],
+          [
+            "Vis. interferer",
+            "MOON (R_eq= 1737.400) km        {source: DE441}"
+          ],
+          [
+            "Rel. light bend",
+            "Sun                             {source: DE441}"
+          ],
+          [
+            "Rel. lght bnd GM",
+            "1.3271E+11 km^3/s^2"
+          ],
+          [
+            "Atmos refraction",
+            "YES (Earth refraction model)"
+          ],
+          [
+            "RA format",
+            "DEG"
+          ],
+          [
+            "Time format",
+            "CAL"
+          ],
+          [
+            "Calendar mode",
+            "Mixed Julian/Gregorian"
+          ],
+          [
+            "RTS-only print",
+            "NO"
+          ],
+          [
+            "EOP file",
+            "eop.261030.p270126"
+          ],
+          [
+            "EOP coverage",
+            "DATA-BASED 1962-JAN-20 TO 2026-OCT-30. PREDICTS-> 2027-JAN-25"
+          ],
+          [
+            "Units conversion",
+            "1 au= 149597870.700 km, c= 299792.458 km/s, 1 day= 86400.0 s"
+          ],
+          [
+            "Table cut-offs 1",
+            "Elevation (-90.0deg=NO ),Airmass (>38.000=NO), Daylight (NO )"
+          ],
+          [
+            "Table cut-offs 2",
+            "Solar elongation (  0.0,180.0=NO ),Local Hour Angle( 0.0=NO )"
+          ],
+          [
+            "Table cut-offs 3",
+            "RA/DEC angular rate (     0.0=NO )"
+          ],
+          [
+            "Table format",
+            "Comma Separated Values (spreadsheet)"
+          ]
+        ],
+        "columns": [
+          "Date__(UT)__HR:MN:SS",
+          "",
+          "",
+          "R.A.___(ICRF)",
+          "DEC____(ICRF)",
+          "R.A._(rfct-app)",
+          "DEC_(rfct-app)",
+          "Azimuth_(r-app)",
+          "Elevation_(r-app)",
+          "Illu%",
+          "TDB-UT"
+        ],
+        "row_count": 7,
+        "first_row_label": "1952-Jul-20 02:00:00",
+        "last_row_label": "1952-Jul-20 05:00:00"
+      }
+    },
+    {
+      "id": "moon-phase-lunation",
+      "purpose": "Geocentric lunar illumination and phase angle across one lunation (daily, 2024-04-01 to 2024-05-01 UT).",
+      "requirements": [
+        "SPACE-04"
+      ],
+      "scenarios": [
+        "A05"
+      ],
+      "expected_outcome": "ephemeris",
+      "request": {
+        "method": "GET",
+        "endpoint": "https://ssd.jpl.nasa.gov/api/horizons.api",
+        "parameters": {
+          "EPHEM_TYPE": "OBSERVER",
+          "ANG_FORMAT": "DEG",
+          "EXTRA_PREC": "YES",
+          "CSV_FORMAT": "YES",
+          "OBJ_DATA": "NO",
+          "TIME_DIGITS": "SECONDS",
+          "TIME_TYPE": "UT",
+          "COMMAND": "301",
+          "CENTER": "500@399",
+          "START_TIME": "2024-04-01 00:00",
+          "STOP_TIME": "2024-05-01 00:00",
+          "STEP_SIZE": "1d",
+          "QUANTITIES": "10,24,43",
+          "APPARENT": "AIRLESS"
+        },
+        "query": "format=json&MAKE_EPHEM=YES&EPHEM_TYPE=%27OBSERVER%27&ANG_FORMAT=%27DEG%27&EXTRA_PREC=%27YES%27&CSV_FORMAT=%27YES%27&OBJ_DATA=%27NO%27&TIME_DIGITS=%27SECONDS%27&TIME_TYPE=%27UT%27&COMMAND=%27301%27&CENTER=%27500%40399%27&START_TIME=%272024-04-01%2000%3A00%27&STOP_TIME=%272024-05-01%2000%3A00%27&STEP_SIZE=%271d%27&QUANTITIES=%2710%2C24%2C43%27&APPARENT=%27AIRLESS%27"
+      },
+      "retrieval": {
+        "requested_at_utc": "2026-11-02T02:23:09Z",
+        "http_date": "Mon, 02 Nov 2026 02:23:10 GMT"
+      },
+      "artifact": {
+        "path": "originals/moon-phase-lunation.json",
+        "media_type": "application/json",
+        "byte_length": 8854,
+        "sha256": "f9e3208f617acbca1f7b8de935dcecb481021f7dcafa20fe1e92955e6048c88e"
+      },
+      "extracted": {
+        "api_version": "1.2",
+        "api_source": "NASA/JPL Horizons API",
+        "outcome": "ephemeris",
+        "provider_banner": "Ephemeris / API_USER Sun Nov  1 18:23:10 2026 Pasadena, USA      / Horizons",
+        "ephemeris_sources": [
+          "DE441"
+        ],
+        "header_fields": [
+          [
+            "Target body name",
+            "Moon (301)                      {source: DE441}"
+          ],
+          [
+            "Center body name",
+            "Earth (399)                     {source: DE441}"
+          ],
+          [
+            "Center-site name",
+            "GEOCENTRIC"
+          ],
+          [
+            "Start time",
+            "A.D. 2024-Apr-01 00:00:00.0000 UT"
+          ],
+          [
+            "Stop  time",
+            "A.D. 2024-May-01 00:00:00.0000 UT"
+          ],
+          [
+            "Step-size",
+            "1440 minutes"
+          ],
+          [
+            "Target pole/equ",
+            "MOON_ME                         {East-longitude positive}"
+          ],
+          [
+            "Target radii",
+            "1737.4, 1737.4, 1737.4 km       {Equator_a, b, pole_c}"
+          ],
+          [
+            "Center geodetic",
+            "0.0, 0.0, -6378.137             {E-lon(deg),Lat(deg),Alt(km)}"
+          ],
+          [
+            "Center cylindric",
+            "0.0, 0.0, 0.0                   {E-lon(deg),Dxy(km),Dz(km)}"
+          ],
+          [
+            "Center pole/equ",
+            "ITRF93                          {East-longitude positive}"
+          ],
+          [
+            "Center radii",
+            "6378.137, 6378.137, 6356.752 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Target primary",
+            "Earth"
+          ],
+          [
+            "Vis. interferer",
+            "MOON (R_eq= 1737.400) km        {source: DE441}"
+          ],
+          [
+            "Rel. light bend",
+            "Sun                             {source: DE441}"
+          ],
+          [
+            "Rel. lght bnd GM",
+            "1.3271E+11 km^3/s^2"
+          ],
+          [
+            "Atmos refraction",
+            "NO (AIRLESS)"
+          ],
+          [
+            "RA format",
+            "DEG"
+          ],
+          [
+            "Time format",
+            "CAL"
+          ],
+          [
+            "Calendar mode",
+            "Mixed Julian/Gregorian"
+          ],
+          [
+            "EOP file",
+            "eop.261030.p270126"
+          ],
+          [
+            "EOP coverage",
+            "DATA-BASED 1962-JAN-20 TO 2026-OCT-30. PREDICTS-> 2027-JAN-25"
+          ],
+          [
+            "Units conversion",
+            "1 au= 149597870.700 km, c= 299792.458 km/s, 1 day= 86400.0 s"
+          ],
+          [
+            "Table cut-offs 1",
+            "Elevation (-90.0deg=NO ),Airmass (>38.000=NO), Daylight (NO )"
+          ],
+          [
+            "Table cut-offs 2",
+            "Solar elongation (  0.0,180.0=NO ),Local Hour Angle( 0.0=NO )"
+          ],
+          [
+            "Table cut-offs 3",
+            "RA/DEC angular rate (     0.0=NO )"
+          ],
+          [
+            "Table format",
+            "Comma Separated Values (spreadsheet)"
+          ]
+        ],
+        "columns": [
+          "Date__(UT)__HR:MN:SS",
+          "",
+          "",
+          "Illu%",
+          "S-T-O",
+          "phi",
+          "PAB-LON",
+          "PAB-LAT"
+        ],
+        "row_count": 31,
+        "first_row_label": "2024-Apr-01 00:00:00",
+        "last_row_label": "2024-May-01 00:00:00"
+      }
+    },
+    {
+      "id": "earth-subsolar-point",
+      "purpose": "Sub-solar point on Earth (Earth seen from the Sun's centre) for illumination/terminator checks across the eclipse window.",
+      "requirements": [
+        "SPACE-04"
+      ],
+      "scenarios": [
+        "A05"
+      ],
+      "expected_outcome": "ephemeris",
+      "request": {
+        "method": "GET",
+        "endpoint": "https://ssd.jpl.nasa.gov/api/horizons.api",
+        "parameters": {
+          "EPHEM_TYPE": "OBSERVER",
+          "ANG_FORMAT": "DEG",
+          "EXTRA_PREC": "YES",
+          "CSV_FORMAT": "YES",
+          "OBJ_DATA": "NO",
+          "TIME_DIGITS": "SECONDS",
+          "TIME_TYPE": "UT",
+          "START_TIME": "2024-04-08 17:00",
+          "STOP_TIME": "2024-04-08 19:00",
+          "STEP_SIZE": "30m",
+          "COMMAND": "399",
+          "CENTER": "500@10",
+          "QUANTITIES": "14,30",
+          "APPARENT": "AIRLESS"
+        },
+        "query": "format=json&MAKE_EPHEM=YES&EPHEM_TYPE=%27OBSERVER%27&ANG_FORMAT=%27DEG%27&EXTRA_PREC=%27YES%27&CSV_FORMAT=%27YES%27&OBJ_DATA=%27NO%27&TIME_DIGITS=%27SECONDS%27&TIME_TYPE=%27UT%27&START_TIME=%272024-04-08%2017%3A00%27&STOP_TIME=%272024-04-08%2019%3A00%27&STEP_SIZE=%2730m%27&COMMAND=%27399%27&CENTER=%27500%4010%27&QUANTITIES=%2714%2C30%27&APPARENT=%27AIRLESS%27"
+      },
+      "retrieval": {
+        "requested_at_utc": "2026-11-02T02:23:11Z",
+        "http_date": "Mon, 02 Nov 2026 02:23:11 GMT"
+      },
+      "artifact": {
+        "path": "originals/earth-subsolar-point.json",
+        "media_type": "application/json",
+        "byte_length": 6753,
+        "sha256": "2795acae0b5572791f23206178b4f4defffec631e7f4448bad06d03820c08626"
+      },
+      "extracted": {
+        "api_version": "1.2",
+        "api_source": "NASA/JPL Horizons API",
+        "outcome": "ephemeris",
+        "provider_banner": "Ephemeris / API_USER Sun Nov  1 18:23:11 2026 Pasadena, USA      / Horizons",
+        "ephemeris_sources": [
+          "DE441"
+        ],
+        "header_fields": [
+          [
+            "Target body name",
+            "Earth (399)                     {source: DE441}"
+          ],
+          [
+            "Center body name",
+            "Sun (10)                        {source: DE441}"
+          ],
+          [
+            "Center-site name",
+            "BODYCENTRIC"
+          ],
+          [
+            "Start time",
+            "A.D. 2024-Apr-08 17:00:00.0000 UT"
+          ],
+          [
+            "Stop  time",
+            "A.D. 2024-Apr-08 19:00:00.0000 UT"
+          ],
+          [
+            "Step-size",
+            "30 minutes"
+          ],
+          [
+            "Target pole/equ",
+            "ITRF93 (high precision)         {East-longitude positive}"
+          ],
+          [
+            "Target radii",
+            "6378.137, 6378.137, 6356.752 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Center geodetic",
+            "0.0, 0.0, -695700.0             {E-lon(deg),Lat(deg),Alt(km)}"
+          ],
+          [
+            "Center cylindric",
+            "0.0, 0.0, 0.0                   {E-lon(deg),Dxy(km),Dz(km)}"
+          ],
+          [
+            "Center pole/equ",
+            "IAU_SUN                         {East-longitude positive}"
+          ],
+          [
+            "Center radii",
+            "695700.0, 695700.0, 695700.0 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Target primary",
+            "Sun"
+          ],
+          [
+            "Vis. interferer",
+            "None"
+          ],
+          [
+            "Rel. light bend",
+            "Sun                             {source: DE441}"
+          ],
+          [
+            "Rel. lght bnd GM",
+            "1.3271E+11 km^3/s^2"
+          ],
+          [
+            "Atmos refraction",
+            "NO (AIRLESS)"
+          ],
+          [
+            "RA format",
+            "DEG"
+          ],
+          [
+            "Time format",
+            "CAL"
+          ],
+          [
+            "Calendar mode",
+            "Mixed Julian/Gregorian"
+          ],
+          [
+            "EOP file",
+            "eop.261030.p270126"
+          ],
+          [
+            "EOP coverage",
+            "DATA-BASED 1962-JAN-20 TO 2026-OCT-30. PREDICTS-> 2027-JAN-25"
+          ],
+          [
+            "Units conversion",
+            "1 au= 149597870.700 km, c= 299792.458 km/s, 1 day= 86400.0 s"
+          ],
+          [
+            "Table cut-offs 1",
+            "Elevation (-90.0deg=NO ),Airmass     n.a.    , Daylight (NO )"
+          ],
+          [
+            "Table cut-offs 2",
+            "Solar elongation (  0.0,180.0=NO ),Local Hour Angle( 0.0=NO )"
+          ],
+          [
+            "Table cut-offs 3",
+            "RA/DEC angular rate (     0.0=NO )"
+          ],
+          [
+            "Table format",
+            "Comma Separated Values (spreadsheet)"
+          ]
+        ],
+        "columns": [
+          "Date__(UT)__HR:MN:SS",
+          "",
+          "",
+          "ObsSub-LON",
+          "ObsSub-LAT",
+          "TDB-UT"
+        ],
+        "row_count": 5,
+        "first_row_label": "2024-Apr-08 17:00:00",
+        "last_row_label": "2024-Apr-08 19:00:00"
+      }
+    },
+    {
+      "id": "vec-helio-earth-geometric",
+      "purpose": "Heliocentric geometric (no light-time correction) ICRF ecliptic state vector of Earth; TDB epochs.",
+      "requirements": [
+        "SPACE-04",
+        "SPACE-05"
+      ],
+      "scenarios": [
+        "A05"
+      ],
+      "expected_outcome": "ephemeris",
+      "request": {
+        "method": "GET",
+        "endpoint": "https://ssd.jpl.nasa.gov/api/horizons.api",
+        "parameters": {
+          "EPHEM_TYPE": "VECTORS",
+          "REF_SYSTEM": "ICRF",
+          "REF_PLANE": "ECLIPTIC",
+          "VEC_TABLE": "3",
+          "OUT_UNITS": "AU-D",
+          "VEC_LABELS": "YES",
+          "CSV_FORMAT": "YES",
+          "OBJ_DATA": "NO",
+          "TIME_DIGITS": "SECONDS",
+          "START_TIME": "2024-04-08 18:00 TDB",
+          "STOP_TIME": "2024-04-08 19:00",
+          "STEP_SIZE": "1h",
+          "COMMAND": "399",
+          "CENTER": "500@10",
+          "VEC_CORR": "NONE"
+        },
+        "query": "format=json&MAKE_EPHEM=YES&EPHEM_TYPE=%27VECTORS%27&REF_SYSTEM=%27ICRF%27&REF_PLANE=%27ECLIPTIC%27&VEC_TABLE=%273%27&OUT_UNITS=%27AU-D%27&VEC_LABELS=%27YES%27&CSV_FORMAT=%27YES%27&OBJ_DATA=%27NO%27&TIME_DIGITS=%27SECONDS%27&START_TIME=%272024-04-08%2018%3A00%20TDB%27&STOP_TIME=%272024-04-08%2019%3A00%27&STEP_SIZE=%271h%27&COMMAND=%27399%27&CENTER=%27500%4010%27&VEC_CORR=%27NONE%27"
+      },
+      "retrieval": {
+        "requested_at_utc": "2026-11-02T02:23:12Z",
+        "http_date": "Mon, 02 Nov 2026 02:23:13 GMT"
+      },
+      "artifact": {
+        "path": "originals/vec-helio-earth-geometric.json",
+        "media_type": "application/json",
+        "byte_length": 5874,
+        "sha256": "ef27dd998cb631064a78da5efa00540a659a9ae3c27437920952871ba2d6716e"
+      },
+      "extracted": {
+        "api_version": "1.2",
+        "api_source": "NASA/JPL Horizons API",
+        "outcome": "ephemeris",
+        "provider_banner": "Ephemeris / API_USER Sun Nov  1 18:23:13 2026 Pasadena, USA      / Horizons",
+        "ephemeris_sources": [
+          "DE441"
+        ],
+        "header_fields": [
+          [
+            "Target body name",
+            "Earth (399)                     {source: DE441}"
+          ],
+          [
+            "Center body name",
+            "Sun (10)                        {source: DE441}"
+          ],
+          [
+            "Center-site name",
+            "BODY CENTER"
+          ],
+          [
+            "Start time",
+            "A.D. 2024-Apr-08 18:00:00.0000 TDB"
+          ],
+          [
+            "Stop  time",
+            "A.D. 2024-Apr-08 19:00:00.0000 TDB"
+          ],
+          [
+            "Step-size",
+            "60 minutes"
+          ],
+          [
+            "Center geodetic",
+            "0.0, 0.0, 0.0                   {E-lon(deg),Lat(deg),Alt(km)}"
+          ],
+          [
+            "Center cylindric",
+            "0.0, 0.0, 0.0                   {E-lon(deg),Dxy(km),Dz(km)}"
+          ],
+          [
+            "Center radii",
+            "695700.0, 695700.0, 695700.0 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Output units",
+            "AU-D"
+          ],
+          [
+            "Calendar mode",
+            "Mixed Julian/Gregorian"
+          ],
+          [
+            "Output type",
+            "GEOMETRIC cartesian states"
+          ],
+          [
+            "Output format",
+            "3 (position, velocity, LT, range, range-rate)"
+          ],
+          [
+            "Reference frame",
+            "Ecliptic of J2000.0"
+          ]
+        ],
+        "columns": [
+          "JDTDB",
+          "Calendar Date (TDB)",
+          "X",
+          "Y",
+          "Z",
+          "VX",
+          "VY",
+          "VZ",
+          "LT",
+          "RG",
+          "RR"
+        ],
+        "row_count": 2,
+        "first_row_label": "2460409.250000000",
+        "last_row_label": "2460409.291666667"
+      }
+    },
+    {
+      "id": "vec-helio-mars-geometric",
+      "purpose": "Heliocentric geometric (no light-time correction) ICRF ecliptic state vector of Mars; TDB epochs.",
+      "requirements": [
+        "SPACE-04",
+        "SPACE-05"
+      ],
+      "scenarios": [
+        "A05"
+      ],
+      "expected_outcome": "ephemeris",
+      "request": {
+        "method": "GET",
+        "endpoint": "https://ssd.jpl.nasa.gov/api/horizons.api",
+        "parameters": {
+          "EPHEM_TYPE": "VECTORS",
+          "REF_SYSTEM": "ICRF",
+          "REF_PLANE": "ECLIPTIC",
+          "VEC_TABLE": "3",
+          "OUT_UNITS": "AU-D",
+          "VEC_LABELS": "YES",
+          "CSV_FORMAT": "YES",
+          "OBJ_DATA": "NO",
+          "TIME_DIGITS": "SECONDS",
+          "START_TIME": "2024-04-08 18:00 TDB",
+          "STOP_TIME": "2024-04-08 19:00",
+          "STEP_SIZE": "1h",
+          "COMMAND": "499",
+          "CENTER": "500@10",
+          "VEC_CORR": "NONE"
+        },
+        "query": "format=json&MAKE_EPHEM=YES&EPHEM_TYPE=%27VECTORS%27&REF_SYSTEM=%27ICRF%27&REF_PLANE=%27ECLIPTIC%27&VEC_TABLE=%273%27&OUT_UNITS=%27AU-D%27&VEC_LABELS=%27YES%27&CSV_FORMAT=%27YES%27&OBJ_DATA=%27NO%27&TIME_DIGITS=%27SECONDS%27&START_TIME=%272024-04-08%2018%3A00%20TDB%27&STOP_TIME=%272024-04-08%2019%3A00%27&STEP_SIZE=%271h%27&COMMAND=%27499%27&CENTER=%27500%4010%27&VEC_CORR=%27NONE%27"
+      },
+      "retrieval": {
+        "requested_at_utc": "2026-11-02T02:23:14Z",
+        "http_date": "Mon, 02 Nov 2026 02:23:14 GMT"
+      },
+      "artifact": {
+        "path": "originals/vec-helio-mars-geometric.json",
+        "media_type": "application/json",
+        "byte_length": 5875,
+        "sha256": "2cf585deca67f6dd368152d9efd01ad6cdaa475166bdff33ae0045c3df5f586a"
+      },
+      "extracted": {
+        "api_version": "1.2",
+        "api_source": "NASA/JPL Horizons API",
+        "outcome": "ephemeris",
+        "provider_banner": "Ephemeris / API_USER Sun Nov  1 18:23:14 2026 Pasadena, USA      / Horizons",
+        "ephemeris_sources": [
+          "DE441",
+          "mar099"
+        ],
+        "header_fields": [
+          [
+            "Target body name",
+            "Mars (499)                      {source: mar099}"
+          ],
+          [
+            "Center body name",
+            "Sun (10)                        {source: DE441}"
+          ],
+          [
+            "Center-site name",
+            "BODY CENTER"
+          ],
+          [
+            "Start time",
+            "A.D. 2024-Apr-08 18:00:00.0000 TDB"
+          ],
+          [
+            "Stop  time",
+            "A.D. 2024-Apr-08 19:00:00.0000 TDB"
+          ],
+          [
+            "Step-size",
+            "60 minutes"
+          ],
+          [
+            "Center geodetic",
+            "0.0, 0.0, 0.0                   {E-lon(deg),Lat(deg),Alt(km)}"
+          ],
+          [
+            "Center cylindric",
+            "0.0, 0.0, 0.0                   {E-lon(deg),Dxy(km),Dz(km)}"
+          ],
+          [
+            "Center radii",
+            "695700.0, 695700.0, 695700.0 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Output units",
+            "AU-D"
+          ],
+          [
+            "Calendar mode",
+            "Mixed Julian/Gregorian"
+          ],
+          [
+            "Output type",
+            "GEOMETRIC cartesian states"
+          ],
+          [
+            "Output format",
+            "3 (position, velocity, LT, range, range-rate)"
+          ],
+          [
+            "Reference frame",
+            "Ecliptic of J2000.0"
+          ]
+        ],
+        "columns": [
+          "JDTDB",
+          "Calendar Date (TDB)",
+          "X",
+          "Y",
+          "Z",
+          "VX",
+          "VY",
+          "VZ",
+          "LT",
+          "RG",
+          "RR"
+        ],
+        "row_count": 2,
+        "first_row_label": "2460409.250000000",
+        "last_row_label": "2460409.291666667"
+      }
+    },
+    {
+      "id": "vec-helio-jupiter-geometric",
+      "purpose": "Heliocentric geometric (no light-time correction) ICRF ecliptic state vector of Jupiter; TDB epochs.",
+      "requirements": [
+        "SPACE-04",
+        "SPACE-05"
+      ],
+      "scenarios": [
+        "A05"
+      ],
+      "expected_outcome": "ephemeris",
+      "request": {
+        "method": "GET",
+        "endpoint": "https://ssd.jpl.nasa.gov/api/horizons.api",
+        "parameters": {
+          "EPHEM_TYPE": "VECTORS",
+          "REF_SYSTEM": "ICRF",
+          "REF_PLANE": "ECLIPTIC",
+          "VEC_TABLE": "3",
+          "OUT_UNITS": "AU-D",
+          "VEC_LABELS": "YES",
+          "CSV_FORMAT": "YES",
+          "OBJ_DATA": "NO",
+          "TIME_DIGITS": "SECONDS",
+          "START_TIME": "2024-04-08 18:00 TDB",
+          "STOP_TIME": "2024-04-08 19:00",
+          "STEP_SIZE": "1h",
+          "COMMAND": "599",
+          "CENTER": "500@10",
+          "VEC_CORR": "NONE"
+        },
+        "query": "format=json&MAKE_EPHEM=YES&EPHEM_TYPE=%27VECTORS%27&REF_SYSTEM=%27ICRF%27&REF_PLANE=%27ECLIPTIC%27&VEC_TABLE=%273%27&OUT_UNITS=%27AU-D%27&VEC_LABELS=%27YES%27&CSV_FORMAT=%27YES%27&OBJ_DATA=%27NO%27&TIME_DIGITS=%27SECONDS%27&START_TIME=%272024-04-08%2018%3A00%20TDB%27&STOP_TIME=%272024-04-08%2019%3A00%27&STEP_SIZE=%271h%27&COMMAND=%27599%27&CENTER=%27500%4010%27&VEC_CORR=%27NONE%27"
+      },
+      "retrieval": {
+        "requested_at_utc": "2026-11-02T02:23:15Z",
+        "http_date": "Mon, 02 Nov 2026 02:23:16 GMT"
+      },
+      "artifact": {
+        "path": "originals/vec-helio-jupiter-geometric.json",
+        "media_type": "application/json",
+        "byte_length": 5890,
+        "sha256": "996563fea53511447f8789a157ce4613dc901b50ce4abf64835a0ff77ee6ca52"
+      },
+      "extracted": {
+        "api_version": "1.2",
+        "api_source": "NASA/JPL Horizons API",
+        "outcome": "ephemeris",
+        "provider_banner": "Ephemeris / API_USER Sun Nov  1 18:23:16 2026 Pasadena, USA      / Horizons",
+        "ephemeris_sources": [
+          "jup365_merged"
+        ],
+        "header_fields": [
+          [
+            "Target body name",
+            "Jupiter (599)                   {source: jup365_merged}"
+          ],
+          [
+            "Center body name",
+            "Sun (10)                        {source: jup365_merged}"
+          ],
+          [
+            "Center-site name",
+            "BODY CENTER"
+          ],
+          [
+            "Start time",
+            "A.D. 2024-Apr-08 18:00:00.0000 TDB"
+          ],
+          [
+            "Stop  time",
+            "A.D. 2024-Apr-08 19:00:00.0000 TDB"
+          ],
+          [
+            "Step-size",
+            "60 minutes"
+          ],
+          [
+            "Center geodetic",
+            "0.0, 0.0, 0.0                   {E-lon(deg),Lat(deg),Alt(km)}"
+          ],
+          [
+            "Center cylindric",
+            "0.0, 0.0, 0.0                   {E-lon(deg),Dxy(km),Dz(km)}"
+          ],
+          [
+            "Center radii",
+            "695700.0, 695700.0, 695700.0 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Output units",
+            "AU-D"
+          ],
+          [
+            "Calendar mode",
+            "Mixed Julian/Gregorian"
+          ],
+          [
+            "Output type",
+            "GEOMETRIC cartesian states"
+          ],
+          [
+            "Output format",
+            "3 (position, velocity, LT, range, range-rate)"
+          ],
+          [
+            "Reference frame",
+            "Ecliptic of J2000.0"
+          ]
+        ],
+        "columns": [
+          "JDTDB",
+          "Calendar Date (TDB)",
+          "X",
+          "Y",
+          "Z",
+          "VX",
+          "VY",
+          "VZ",
+          "LT",
+          "RG",
+          "RR"
+        ],
+        "row_count": 2,
+        "first_row_label": "2460409.250000000",
+        "last_row_label": "2460409.291666667"
+      }
+    },
+    {
+      "id": "vec-helio-mars-lt",
+      "purpose": "Same as vec-helio-mars-geometric with one-way light-time correction, separating geometric from light-time-corrected position.",
+      "requirements": [
+        "SPACE-05"
+      ],
+      "scenarios": [
+        "A05"
+      ],
+      "expected_outcome": "ephemeris",
+      "request": {
+        "method": "GET",
+        "endpoint": "https://ssd.jpl.nasa.gov/api/horizons.api",
+        "parameters": {
+          "EPHEM_TYPE": "VECTORS",
+          "REF_SYSTEM": "ICRF",
+          "REF_PLANE": "ECLIPTIC",
+          "VEC_TABLE": "3",
+          "OUT_UNITS": "AU-D",
+          "VEC_LABELS": "YES",
+          "CSV_FORMAT": "YES",
+          "OBJ_DATA": "NO",
+          "TIME_DIGITS": "SECONDS",
+          "START_TIME": "2024-04-08 18:00 TDB",
+          "STOP_TIME": "2024-04-08 19:00",
+          "STEP_SIZE": "1h",
+          "COMMAND": "499",
+          "CENTER": "500@10",
+          "VEC_CORR": "LT"
+        },
+        "query": "format=json&MAKE_EPHEM=YES&EPHEM_TYPE=%27VECTORS%27&REF_SYSTEM=%27ICRF%27&REF_PLANE=%27ECLIPTIC%27&VEC_TABLE=%273%27&OUT_UNITS=%27AU-D%27&VEC_LABELS=%27YES%27&CSV_FORMAT=%27YES%27&OBJ_DATA=%27NO%27&TIME_DIGITS=%27SECONDS%27&START_TIME=%272024-04-08%2018%3A00%20TDB%27&STOP_TIME=%272024-04-08%2019%3A00%27&STEP_SIZE=%271h%27&COMMAND=%27499%27&CENTER=%27500%4010%27&VEC_CORR=%27LT%27"
+      },
+      "retrieval": {
+        "requested_at_utc": "2026-11-02T02:23:17Z",
+        "http_date": "Mon, 02 Nov 2026 02:23:17 GMT"
+      },
+      "artifact": {
+        "path": "originals/vec-helio-mars-lt.json",
+        "media_type": "application/json",
+        "byte_length": 5897,
+        "sha256": "45ee704e85c5c599f600374dd89948b462c8bde1639de4781c775c0058301c4e"
+      },
+      "extracted": {
+        "api_version": "1.2",
+        "api_source": "NASA/JPL Horizons API",
+        "outcome": "ephemeris",
+        "provider_banner": "Ephemeris / API_USER Sun Nov  1 18:23:17 2026 Pasadena, USA      / Horizons",
+        "ephemeris_sources": [
+          "DE441",
+          "mar099"
+        ],
+        "header_fields": [
+          [
+            "Target body name",
+            "Mars (499)                      {source: mar099}"
+          ],
+          [
+            "Center body name",
+            "Sun (10)                        {source: DE441}"
+          ],
+          [
+            "Center-site name",
+            "BODY CENTER"
+          ],
+          [
+            "Start time",
+            "A.D. 2024-Apr-08 18:00:00.0000 TDB"
+          ],
+          [
+            "Stop  time",
+            "A.D. 2024-Apr-08 19:00:00.0000 TDB"
+          ],
+          [
+            "Step-size",
+            "60 minutes"
+          ],
+          [
+            "Center geodetic",
+            "0.0, 0.0, 0.0                   {E-lon(deg),Lat(deg),Alt(km)}"
+          ],
+          [
+            "Center cylindric",
+            "0.0, 0.0, 0.0                   {E-lon(deg),Dxy(km),Dz(km)}"
+          ],
+          [
+            "Center radii",
+            "695700.0, 695700.0, 695700.0 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Output units",
+            "AU-D"
+          ],
+          [
+            "Calendar mode",
+            "Mixed Julian/Gregorian"
+          ],
+          [
+            "Output type",
+            "LT CORRECTED cartesian states"
+          ],
+          [
+            "Output format",
+            "3 (position, velocity, LT, range, range-rate)"
+          ],
+          [
+            "Reference frame",
+            "Ecliptic of J2000.0"
+          ]
+        ],
+        "columns": [
+          "JDTDB",
+          "Calendar Date (TDB)",
+          "X",
+          "Y",
+          "Z",
+          "VX",
+          "VY",
+          "VZ",
+          "LT",
+          "RG",
+          "RR"
+        ],
+        "row_count": 2,
+        "first_row_label": "2460409.250000000",
+        "last_row_label": "2460409.291666667"
+      }
+    },
+    {
+      "id": "vec-geo-moon-geometric",
+      "purpose": "Geocentric geometric ICRF ecliptic state vector of the Moon (lunar orbit); TDB epochs.",
+      "requirements": [
+        "SPACE-04"
+      ],
+      "scenarios": [
+        "A05"
+      ],
+      "expected_outcome": "ephemeris",
+      "request": {
+        "method": "GET",
+        "endpoint": "https://ssd.jpl.nasa.gov/api/horizons.api",
+        "parameters": {
+          "EPHEM_TYPE": "VECTORS",
+          "REF_SYSTEM": "ICRF",
+          "REF_PLANE": "ECLIPTIC",
+          "VEC_TABLE": "3",
+          "OUT_UNITS": "AU-D",
+          "VEC_LABELS": "YES",
+          "CSV_FORMAT": "YES",
+          "OBJ_DATA": "NO",
+          "TIME_DIGITS": "SECONDS",
+          "START_TIME": "2024-04-08 18:00 TDB",
+          "STOP_TIME": "2024-04-08 19:00",
+          "STEP_SIZE": "1h",
+          "COMMAND": "301",
+          "CENTER": "500@399",
+          "VEC_CORR": "NONE"
+        },
+        "query": "format=json&MAKE_EPHEM=YES&EPHEM_TYPE=%27VECTORS%27&REF_SYSTEM=%27ICRF%27&REF_PLANE=%27ECLIPTIC%27&VEC_TABLE=%273%27&OUT_UNITS=%27AU-D%27&VEC_LABELS=%27YES%27&CSV_FORMAT=%27YES%27&OBJ_DATA=%27NO%27&TIME_DIGITS=%27SECONDS%27&START_TIME=%272024-04-08%2018%3A00%20TDB%27&STOP_TIME=%272024-04-08%2019%3A00%27&STEP_SIZE=%271h%27&COMMAND=%27301%27&CENTER=%27500%40399%27&VEC_CORR=%27NONE%27"
+      },
+      "retrieval": {
+        "requested_at_utc": "2026-11-02T02:23:18Z",
+        "http_date": "Mon, 02 Nov 2026 02:23:19 GMT"
+      },
+      "artifact": {
+        "path": "originals/vec-geo-moon-geometric.json",
+        "media_type": "application/json",
+        "byte_length": 5993,
+        "sha256": "99e17c2457419412be473298c13db5e38a656eee409be330d313ea2618e7728d"
+      },
+      "extracted": {
+        "api_version": "1.2",
+        "api_source": "NASA/JPL Horizons API",
+        "outcome": "ephemeris",
+        "provider_banner": "Ephemeris / API_USER Sun Nov  1 18:23:19 2026 Pasadena, USA      / Horizons",
+        "ephemeris_sources": [
+          "DE441"
+        ],
+        "header_fields": [
+          [
+            "Target body name",
+            "Moon (301)                      {source: DE441}"
+          ],
+          [
+            "Center body name",
+            "Earth (399)                     {source: DE441}"
+          ],
+          [
+            "Center-site name",
+            "BODY CENTER"
+          ],
+          [
+            "Start time",
+            "A.D. 2024-Apr-08 18:00:00.0000 TDB"
+          ],
+          [
+            "Stop  time",
+            "A.D. 2024-Apr-08 19:00:00.0000 TDB"
+          ],
+          [
+            "Step-size",
+            "60 minutes"
+          ],
+          [
+            "Center geodetic",
+            "0.0, 0.0, 0.0                   {E-lon(deg),Lat(deg),Alt(km)}"
+          ],
+          [
+            "Center cylindric",
+            "0.0, 0.0, 0.0                   {E-lon(deg),Dxy(km),Dz(km)}"
+          ],
+          [
+            "Center radii",
+            "6378.137, 6378.137, 6356.752 km {Equator_a, b, pole_c}"
+          ],
+          [
+            "Output units",
+            "AU-D"
+          ],
+          [
+            "Calendar mode",
+            "Mixed Julian/Gregorian"
+          ],
+          [
+            "Output type",
+            "GEOMETRIC cartesian states"
+          ],
+          [
+            "Output format",
+            "3 (position, velocity, LT, range, range-rate)"
+          ],
+          [
+            "EOP file",
+            "eop.261030.p270126"
+          ],
+          [
+            "EOP coverage",
+            "DATA-BASED 1962-JAN-20 TO 2026-OCT-30. PREDICTS-> 2027-JAN-25"
+          ],
+          [
+            "Reference frame",
+            "Ecliptic of J2000.0"
+          ]
+        ],
+        "columns": [
+          "JDTDB",
+          "Calendar Date (TDB)",
+          "X",
+          "Y",
+          "Z",
+          "VX",
+          "VY",
+          "VZ",
+          "LT",
+          "RG",
+          "RR"
+        ],
+        "row_count": 2,
+        "first_row_label": "2460409.250000000",
+        "last_row_label": "2460409.291666667"
+      }
+    },
+    {
+      "id": "error-jwst-before-launch",
+      "purpose": "Unsupported date: JWST (-170) requested before its ephemeris coverage. Retained so an unavailable range stays an explicit error, not an empty or interpolated result.",
+      "requirements": [
+        "SPACE-05"
+      ],
+      "scenarios": [
+        "A05"
+      ],
+      "expected_outcome": "provider_error",
+      "request": {
+        "method": "GET",
+        "endpoint": "https://ssd.jpl.nasa.gov/api/horizons.api",
+        "parameters": {
+          "EPHEM_TYPE": "OBSERVER",
+          "ANG_FORMAT": "DEG",
+          "EXTRA_PREC": "YES",
+          "CSV_FORMAT": "YES",
+          "OBJ_DATA": "NO",
+          "TIME_DIGITS": "SECONDS",
+          "TIME_TYPE": "UT",
+          "COMMAND": "-170",
+          "CENTER": "500@399",
+          "START_TIME": "2020-01-01 00:00",
+          "STOP_TIME": "2020-01-02 00:00",
+          "STEP_SIZE": "1d",
+          "QUANTITIES": "1,20",
+          "APPARENT": "AIRLESS"
+        },
+        "query": "format=json&MAKE_EPHEM=YES&EPHEM_TYPE=%27OBSERVER%27&ANG_FORMAT=%27DEG%27&EXTRA_PREC=%27YES%27&CSV_FORMAT=%27YES%27&OBJ_DATA=%27NO%27&TIME_DIGITS=%27SECONDS%27&TIME_TYPE=%27UT%27&COMMAND=%27-170%27&CENTER=%27500%40399%27&START_TIME=%272020-01-01%2000%3A00%27&STOP_TIME=%272020-01-02%2000%3A00%27&STEP_SIZE=%271d%27&QUANTITIES=%271%2C20%27&APPARENT=%27AIRLESS%27"
+      },
+      "retrieval": {
+        "requested_at_utc": "2026-11-02T02:23:20Z",
+        "http_date": "Mon, 02 Nov 2026 02:23:20 GMT"
+      },
+      "artifact": {
+        "path": "originals/error-jwst-before-launch.json",
+        "media_type": "application/json",
+        "byte_length": 312,
+        "sha256": "744df8df84bdbb950ba84eb43de187189008bd9bcc0c0ee007b9a9c5486f1816"
+      },
+      "extracted": {
+        "api_version": "1.2",
+        "api_source": "NASA/JPL Horizons API",
+        "outcome": "provider_error",
+        "error_text": "No ephemeris for target \"James Webb Space Telescope (spacecraft)\" prior to A.D. 2021-DEC-25 13:00:00.0000 UT"
+      }
+    }
+  ]
+}

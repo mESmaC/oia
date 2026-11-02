@@ -198,7 +198,7 @@ Decisions belong to the project owner and implementing maintainers. Each resolut
 | D02 | Storage/indexes | SQLite plus managed blobs initially; choose text/spatial/vector indexing and migration tooling | P0 persistence |
 | D03 | Seed corpus and news sources | Small, documented UAP/disclosure and regional collection with verified source access | P1 adapters |
 | D04 | AI execution | Provider-neutral local/remote interface; select evaluated summarization/OCR/embedding options and data-handling defaults | P1 AI features |
-| D05 | Export formats | Markdown, self-contained HTML, JSON bundle proposed; PDF after render QA | P1 report exporter |
+| D05 | Export formats | [ADR 0006](adr/0006-d05-report-and-bundle-formats.md): Markdown, self-contained HTML, uncompressed JSON directory bundle selected for implementation; wire schema pending shared contracts; PDF after render QA | P1 report exporter |
 | D06 | Region and geo/space sources | Choose a first region, weather/track/imagery providers, ephemerides, and historical depth | P2 integrations |
 | D07 | Cameras and retention | Choose eligible directories/feeds, automated-use conditions, buffer/storage limits, and excluded views | P3 live monitoring |
 | D08 | Devices and radio | Select first drone video/telemetry interface, SDR, remote receiver, and stream integrations | P3 hardware claims |

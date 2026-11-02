@@ -44,6 +44,10 @@ The repository was empty on GitHub when this backlog was created, so issue bodie
 - [#21: Build claim-checking and misleading-coverage review](https://github.com/mESmaC/oia/issues/21)
 - [#22: Ship cited report drafting and portable case import/export](https://github.com/mESmaC/oia/issues/22)
 
+  The dependency-independent [D05 decision](adr/0006-d05-report-and-bundle-formats.md)
+  and [export contract](contracts/report-export.md) define the initial design;
+  runtime implementation and A16/A17 acceptance remain open on #22.
+
 ## P2: UAP, geographic, and space reconstruction
 
 - [#23: Build linked globe, history, regional clusters, and evidence views](https://github.com/mESmaC/oia/issues/23)

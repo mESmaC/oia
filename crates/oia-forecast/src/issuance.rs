@@ -16,7 +16,8 @@ use crate::scoring::{
     UnresolvedReason, evaluate_binary,
 };
 
-/// Maximum number of forecast vintages, resolutions, or evaluation runs in a single bounded ledger.
+/// Maximum number of forecast vintages, resolutions, evaluation runs, or total evaluated
+/// vintage summaries in a single bounded ledger.
 pub const MAX_LEDGER_RECORDS: usize = 10_000;
 
 /// Maximum number of source inputs, comparison entries, or assumptions on a single forecast vintage.
@@ -25,17 +26,24 @@ pub const MAX_FORECAST_COLLECTION_LEN: usize = 1_024;
 /// Maximum byte length of a free-text proposition, rule, assumption, or rationale field.
 pub const MAX_TEXT_FIELD_BYTES: usize = 16_384;
 
+/// Minimum admissible timestamp in UTC milliseconds (`0001-01-01T00:00:00.000Z`).
+pub const MIN_VALID_UTC_MS: i64 = -62_135_596_800_000;
+
+/// Maximum admissible timestamp in UTC milliseconds (`9999-12-31T23:59:59.999Z`).
+pub const MAX_VALID_UTC_MS: i64 = 253_402_300_799_999;
+
 /// How a forecast's information cutoff is enforced (`docs/architecture.md` §3.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CutoffAdmissibilityMode {
     /// Only source versions both publicly available AND ingested into OIA at or before
-    /// `information_cutoff_utc_ms` qualify. Unknown timestamps or post-cutoff model
-    /// knowledge are rejected.
+    /// `information_cutoff_utc_ms` qualify, and the model's `model_knowledge_cutoff_utc_ms`
+    /// must be known (`Some`) and `<= information_cutoff_utc_ms`. Unknown timestamps or
+    /// post-cutoff model knowledge are rejected.
     ProspectiveStrict,
     /// Historical reconstruction may admit externally documented public availability at or
     /// before `information_cutoff_utc_ms` even when OIA ingested the record later, provided
     /// an explicit non-empty limitation note is recorded. Unknown public availability is
-    /// still rejected.
+    /// still rejected, and unknown or post-cutoff model knowledge is visibly disclosed.
     RetrospectiveReconstructed {
         /// Mandatory explanation of retrospective reconstruction limits.
         limitation_note: String,
@@ -74,7 +82,8 @@ pub struct OutcomeDefinition {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RevisionRationale {
     /// Immutable version IDs of new or corrected evidence motivating the revision.
-    /// Every version listed here must appear in the revision's admissible `sources`.
+    /// Every version listed here must appear in the revision's admissible `sources` and
+    /// must not already have been cited in the predecessor vintage's `sources`.
     pub new_evidence_versions: Vec<VersionId>,
     /// Human-inspectable explanation of why the forecast changed.
     pub summary: String,
@@ -91,9 +100,9 @@ pub struct ForecastDraft {
     pub schema_version: SchemaVersion,
     /// Actor or process issuing this vintage.
     pub actor: ActorId,
-    /// Timestamp when this vintage was recorded in UTC milliseconds.
+    /// Timestamp when this vintage was recorded in UTC milliseconds (`issued_at_utc_ms < horizon_end_utc_ms`).
     pub issued_at_utc_ms: i64,
-    /// Forecast origin timestamp in UTC milliseconds (`information_cutoff_utc_ms <= origin_utc_ms`).
+    /// Forecast origin timestamp in UTC milliseconds (`information_cutoff_utc_ms <= origin_utc_ms <= issued_at_utc_ms`).
     pub origin_utc_ms: i64,
     /// Strict information cutoff timestamp in UTC milliseconds.
     pub information_cutoff_utc_ms: i64,
@@ -115,7 +124,8 @@ pub struct ForecastDraft {
     pub forecast_probability: Probability,
     /// Pinned forecasting model or method version.
     pub model_version: VersionId,
-    /// Optional model training/knowledge cutoff timestamp in UTC milliseconds (`docs/architecture.md` §6.4).
+    /// Model training/knowledge cutoff timestamp in UTC milliseconds (`docs/architecture.md` §6.4).
+    /// Required (`Some(t)` with `t <= information_cutoff_utc_ms`) under `ProspectiveStrict`.
     pub model_knowledge_cutoff_utc_ms: Option<i64>,
     /// Admissible source and feature versions used at issuance.
     pub sources: Vec<CutoffSourceInput>,
@@ -150,8 +160,8 @@ pub struct ForecastVintageRecord {
     pub forecast_probability: Probability,
     pub model_version: VersionId,
     pub model_knowledge_cutoff_utc_ms: Option<i64>,
-    /// True when retrospective mode admitted a model whose knowledge cutoff exceeds
-    /// `information_cutoff_utc_ms` (`docs/architecture.md` §6.4).
+    /// True when retrospective mode admitted a model whose knowledge cutoff is unknown (`None`)
+    /// or exceeds `information_cutoff_utc_ms` (`docs/architecture.md` §6.4).
     pub post_cutoff_model_knowledge_disclosed: bool,
     pub sources: Vec<CutoffSourceInput>,
     pub comparison_set: Vec<VersionId>,
@@ -164,8 +174,14 @@ pub struct ForecastVintageRecord {
 /// distinct (`docs/architecture.md` §6.4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolutionState {
-    /// Defined event resolved as occurred (`true`) or did not occur (`false`), with observed
-    /// timestamp in UTC milliseconds (`None` when confirmed non-occurrence has no point instant).
+    /// Defined event resolved as occurred (`true`) inside `[horizon_start_utc_ms, horizon_end_utc_ms)`
+    /// or did not occur (`false`) within the target horizon.
+    ///
+    /// - When `occurred == true`, `observed_event_utc_ms` must be `Some(t)` with
+    ///   `horizon_start_utc_ms <= t < horizon_end_utc_ms`.
+    /// - When `occurred == false`, `recorded_at_utc_ms` must be `>= horizon_end_utc_ms`, and
+    ///   `observed_event_utc_ms` may be `None` (never occurred) or `Some(t)` outside
+    ///   `[horizon_start_utc_ms, horizon_end_utc_ms)` (an early or late event outside the window).
     Resolved {
         occurred: bool,
         observed_event_utc_ms: Option<i64>,
@@ -206,9 +222,11 @@ pub struct OutcomeResolutionRecord {
 pub enum HorizonTiming {
     /// Event occurred inside `[horizon_start_utc_ms, horizon_end_utc_ms)`; timing error is `0`.
     WithinHorizon,
-    /// Event occurred before `horizon_start_utc_ms` by `early_by_ms` milliseconds.
+    /// Event occurred before `horizon_start_utc_ms` by `early_by_ms` milliseconds (and is therefore
+    /// scored as `occurred: false` for the target horizon).
     Early { early_by_ms: i64 },
-    /// Event occurred at or after `horizon_end_utc_ms` by `late_by_ms` milliseconds.
+    /// Event occurred at or after `horizon_end_utc_ms` by `late_by_ms` milliseconds (and is therefore
+    /// scored as `occurred: false` for the target horizon).
     Late { late_by_ms: i64 },
 }
 
@@ -228,7 +246,7 @@ pub struct EvaluatedVintageSummary {
     pub brier_scores: Option<BrierScores>,
     /// Present when `ResolutionState::Resolved` supplies an `observed_event_utc_ms`.
     pub horizon_timing: Option<HorizonTiming>,
-    /// True if the forecast vintage disclosed post-cutoff model knowledge in retrospective mode.
+    /// True if the forecast vintage disclosed unknown or post-cutoff model knowledge in retrospective mode.
     pub post_cutoff_model_knowledge_disclosed: bool,
 }
 
@@ -274,10 +292,18 @@ pub enum IssuanceError {
         field: &'static str,
         reason: &'static str,
     },
+    /// A UTC millisecond timestamp fell outside [`MIN_VALID_UTC_MS`]..=[`MAX_VALID_UTC_MS`].
+    TimestampOutOfRange { field: &'static str, value: i64 },
     /// A version identifier was already used by another record in the ledger.
     DuplicateVersionId(VersionId),
     /// Initial forecast series already exists; subsequent vintages must use revision semantics.
     ForecastSeriesAlreadyExists(OpaqueId),
+    /// Another forecast series already registered `outcome_id` with a different definition,
+    /// target, or target horizon (`FORECAST-04`, `B3`).
+    ConflictingOutcomeContract {
+        outcome_id: OpaqueId,
+        field: &'static str,
+    },
     /// Referenced forecast series or predecessor vintage does not exist.
     UnknownForecastPredecessor {
         forecast_id: OpaqueId,
@@ -291,7 +317,8 @@ pub enum IssuanceError {
     },
     /// Initial issuance supplied revision fields, or a revision omitted them.
     InvalidRevisionLinkage(&'static str),
-    /// Revision attempted to alter the frozen target, outcome definition, or target horizon.
+    /// Revision attempted to alter the frozen target, outcome definition, target horizon,
+    /// baseline, or strict cutoff mode.
     RevisionMutatedFrozenContract {
         forecast_id: OpaqueId,
         field: &'static str,
@@ -306,8 +333,13 @@ pub enum IssuanceError {
         forecast_id: OpaqueId,
         evidence_version: Option<VersionId>,
     },
-    /// Forecast timestamps violated `information_cutoff_utc_ms <= origin_utc_ms <= issued_at_utc_ms`
-    /// or `horizon_start_utc_ms < horizon_end_utc_ms` or `origin_utc_ms < horizon_end_utc_ms`.
+    /// Revision cited a source version in `new_evidence_versions` that was already present in its predecessor.
+    RevisionEvidenceNotNew {
+        forecast_id: OpaqueId,
+        evidence_version: VersionId,
+    },
+    /// Forecast timestamps violated `information_cutoff_utc_ms <= origin_utc_ms <= issued_at_utc_ms < horizon_end_utc_ms`
+    /// or `horizon_start_utc_ms < horizon_end_utc_ms`.
     InvalidTimestampOrder(&'static str),
     /// Forecast cited zero sources or duplicate source versions.
     InvalidSourceList(&'static str),
@@ -329,14 +361,31 @@ pub enum IssuanceError {
         event_utc_ms: i64,
         bound_utc_ms: i64,
     },
-    /// Under `ProspectiveStrict`, a model's knowledge cutoff exceeded `information_cutoff_utc_ms`.
+    /// Under `ProspectiveStrict`, a model's knowledge cutoff was unknown (`None`) or exceeded `information_cutoff_utc_ms`.
     ModelKnowledgeAfterStrictCutoff {
         model_version: VersionId,
-        model_knowledge_cutoff_utc_ms: i64,
+        model_knowledge_cutoff_utc_ms: Option<i64>,
         cutoff_utc_ms: i64,
     },
-    /// Outcome resolution violated evidence or supersession requirements.
+    /// Outcome resolution referenced an `outcome_id` that has not been registered by any forecast.
+    UnknownOutcomeDefinition(OpaqueId),
+    /// Outcome resolution violated evidence, `resolution_id`, or supersession requirements.
     InvalidOutcomeResolution(&'static str),
+    /// `ResolutionState::Resolved` had an `observed_event_utc_ms` inconsistent with `occurred`
+    /// and the outcome's frozen horizon `[horizon_start_utc_ms, horizon_end_utc_ms)` (`B2`).
+    ResolutionOutsideTargetHorizon {
+        outcome_id: OpaqueId,
+        occurred: bool,
+        observed_event_utc_ms: i64,
+        horizon_start_utc_ms: i64,
+        horizon_end_utc_ms: i64,
+    },
+    /// A non-occurrence (`occurred: false`) was recorded before `horizon_end_utc_ms` closed (`B4`).
+    NonOccurrenceResolvedBeforeHorizonEnd {
+        outcome_id: OpaqueId,
+        recorded_at_utc_ms: i64,
+        horizon_end_utc_ms: i64,
+    },
     /// Superseded resolution version does not exist or belongs to a different `outcome_id`.
     UnknownSupersededResolution {
         outcome_id: OpaqueId,
@@ -360,6 +409,25 @@ pub enum IssuanceError {
         resolution_version: VersionId,
         recorded_at_utc_ms: i64,
     },
+    /// Observed event occurred at or before the forecast vintage's cutoff, origin, or issue time (`B1`).
+    EventObservedAtOrBeforeForecastIssuance {
+        forecast_version: VersionId,
+        information_cutoff_utc_ms: i64,
+        issued_at_utc_ms: i64,
+        observed_event_utc_ms: i64,
+    },
+    /// Evaluation timestamp precedes a forecast issuance or outcome resolution timestamp in the cohort.
+    EvaluationPredatesInputs {
+        evaluation_version: VersionId,
+        evaluated_at_utc_ms: i64,
+        input_version: VersionId,
+        input_timestamp_utc_ms: i64,
+    },
+    /// Cohort included a revised vintage without including all earlier vintages of the same forecast series.
+    IncompleteForecastSeriesInCohort {
+        forecast_id: OpaqueId,
+        missing_vintage: VersionId,
+    },
     /// Underlying binary Brier scoring error.
     Scoring(ScoringError),
 }
@@ -375,6 +443,12 @@ impl fmt::Display for IssuanceError {
             Self::InvalidTextField { field, reason } => {
                 write!(f, "invalid text field {field}: {reason}")
             }
+            Self::TimestampOutOfRange { field, value } => {
+                write!(
+                    f,
+                    "timestamp {field}={value} is outside valid range {MIN_VALID_UTC_MS}..={MAX_VALID_UTC_MS}"
+                )
+            }
             Self::DuplicateVersionId(v) => write!(f, "duplicate version identifier {v}"),
             Self::ForecastSeriesAlreadyExists(id) => {
                 write!(
@@ -382,6 +456,10 @@ impl fmt::Display for IssuanceError {
                     "forecast series {id} already exists; issue a linked revision instead"
                 )
             }
+            Self::ConflictingOutcomeContract { outcome_id, field } => write!(
+                f,
+                "outcome {outcome_id} is already registered with a different {field}"
+            ),
             Self::UnknownForecastPredecessor {
                 forecast_id,
                 predecessor_version,
@@ -419,6 +497,13 @@ impl fmt::Display for IssuanceError {
                     "revision for forecast {forecast_id} must cite at least one new evidence version"
                 ),
             },
+            Self::RevisionEvidenceNotNew {
+                forecast_id,
+                evidence_version,
+            } => write!(
+                f,
+                "revision for forecast {forecast_id} cites evidence {evidence_version} already present in predecessor"
+            ),
             Self::InvalidTimestampOrder(msg) => write!(f, "invalid timestamp order: {msg}"),
             Self::InvalidSourceList(msg) => write!(f, "invalid forecast source list: {msg}"),
             Self::SourcePublicAvailabilityAfterCutoff {
@@ -451,9 +536,30 @@ impl fmt::Display for IssuanceError {
                 cutoff_utc_ms,
             } => write!(
                 f,
-                "model {model_version} knowledge cutoff {model_knowledge_cutoff_utc_ms} exceeds strict cutoff {cutoff_utc_ms}"
+                "model {model_version} knowledge cutoff {model_knowledge_cutoff_utc_ms:?} is unknown or exceeds strict cutoff {cutoff_utc_ms}"
             ),
+            Self::UnknownOutcomeDefinition(outcome_id) => {
+                write!(f, "unknown outcome definition {outcome_id}")
+            }
             Self::InvalidOutcomeResolution(msg) => write!(f, "invalid outcome resolution: {msg}"),
+            Self::ResolutionOutsideTargetHorizon {
+                outcome_id,
+                occurred,
+                observed_event_utc_ms,
+                horizon_start_utc_ms,
+                horizon_end_utc_ms,
+            } => write!(
+                f,
+                "outcome {outcome_id} resolution occurred={occurred} at {observed_event_utc_ms} is inconsistent with target horizon [{horizon_start_utc_ms}, {horizon_end_utc_ms})"
+            ),
+            Self::NonOccurrenceResolvedBeforeHorizonEnd {
+                outcome_id,
+                recorded_at_utc_ms,
+                horizon_end_utc_ms,
+            } => write!(
+                f,
+                "outcome {outcome_id} non-occurrence recorded at {recorded_at_utc_ms} before horizon end {horizon_end_utc_ms}"
+            ),
             Self::UnknownSupersededResolution {
                 outcome_id,
                 supersedes_version,
@@ -481,6 +587,31 @@ impl fmt::Display for IssuanceError {
                 f,
                 "resolution {resolution_version} ({recorded_at_utc_ms}) predates issuance of forecast {forecast_version} ({issued_at_utc_ms})"
             ),
+            Self::EventObservedAtOrBeforeForecastIssuance {
+                forecast_version,
+                information_cutoff_utc_ms,
+                issued_at_utc_ms,
+                observed_event_utc_ms,
+            } => write!(
+                f,
+                "observed event at {observed_event_utc_ms} occurred at or before forecast {forecast_version} cutoff ({information_cutoff_utc_ms}) or issuance ({issued_at_utc_ms})"
+            ),
+            Self::EvaluationPredatesInputs {
+                evaluation_version,
+                evaluated_at_utc_ms,
+                input_version,
+                input_timestamp_utc_ms,
+            } => write!(
+                f,
+                "evaluation {evaluation_version} timestamp {evaluated_at_utc_ms} precedes input {input_version} timestamp {input_timestamp_utc_ms}"
+            ),
+            Self::IncompleteForecastSeriesInCohort {
+                forecast_id,
+                missing_vintage,
+            } => write!(
+                f,
+                "cohort includes a revision of {forecast_id} but omits earlier vintage {missing_vintage}"
+            ),
             Self::Scoring(err) => write!(f, "{err}"),
         }
     }
@@ -494,18 +625,28 @@ impl From<ScoringError> for IssuanceError {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RegisteredOutcomeContract {
+    outcome_definition: OutcomeDefinition,
+    target_id: OpaqueId,
+    horizon_start_utc_ms: i64,
+    horizon_end_utc_ms: i64,
+}
+
 /// Bounded in-memory ledger of immutable forecast vintages, independent outcome resolution
 /// versions, and version-pinned evaluation runs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ForecastLedger {
     max_records: usize,
     used_versions: BTreeSet<VersionId>,
+    outcome_contracts: BTreeMap<OpaqueId, RegisteredOutcomeContract>,
     vintages_by_version: BTreeMap<VersionId, ForecastVintageRecord>,
     series_vintages: BTreeMap<OpaqueId, Vec<VersionId>>,
     resolutions_by_version: BTreeMap<VersionId, OutcomeResolutionRecord>,
     outcome_resolutions: BTreeMap<OpaqueId, Vec<VersionId>>,
     evaluations_by_version: BTreeMap<VersionId, EvaluationRunRecord>,
     evaluation_order: Vec<VersionId>,
+    total_evaluated_vintages: usize,
 }
 
 impl ForecastLedger {
@@ -521,12 +662,14 @@ impl ForecastLedger {
         Ok(Self {
             max_records,
             used_versions: BTreeSet::new(),
+            outcome_contracts: BTreeMap::new(),
             vintages_by_version: BTreeMap::new(),
             series_vintages: BTreeMap::new(),
             resolutions_by_version: BTreeMap::new(),
             outcome_resolutions: BTreeMap::new(),
             evaluations_by_version: BTreeMap::new(),
             evaluation_order: Vec::new(),
+            total_evaluated_vintages: 0,
         })
     }
 
@@ -555,6 +698,12 @@ impl ForecastLedger {
             &draft.outcome_definition.resolution_rules,
         )?;
 
+        validate_timestamp_range("information_cutoff_utc_ms", draft.information_cutoff_utc_ms)?;
+        validate_timestamp_range("origin_utc_ms", draft.origin_utc_ms)?;
+        validate_timestamp_range("issued_at_utc_ms", draft.issued_at_utc_ms)?;
+        validate_timestamp_range("horizon_start_utc_ms", draft.horizon_start_utc_ms)?;
+        validate_timestamp_range("horizon_end_utc_ms", draft.horizon_end_utc_ms)?;
+
         if draft.information_cutoff_utc_ms > draft.origin_utc_ms {
             return Err(IssuanceError::InvalidTimestampOrder(
                 "information_cutoff_utc_ms must be <= origin_utc_ms",
@@ -570,9 +719,9 @@ impl ForecastLedger {
                 "horizon_start_utc_ms must be < horizon_end_utc_ms",
             ));
         }
-        if draft.origin_utc_ms >= draft.horizon_end_utc_ms {
+        if draft.issued_at_utc_ms >= draft.horizon_end_utc_ms {
             return Err(IssuanceError::InvalidTimestampOrder(
-                "origin_utc_ms must precede horizon_end_utc_ms",
+                "issued_at_utc_ms must precede horizon_end_utc_ms",
             ));
         }
 
@@ -608,6 +757,31 @@ impl ForecastLedger {
                     return Err(IssuanceError::ForecastSeriesAlreadyExists(
                         draft.forecast_id,
                     ));
+                }
+                if let Some(existing_contract) = self
+                    .outcome_contracts
+                    .get(&draft.outcome_definition.outcome_id)
+                {
+                    if existing_contract.outcome_definition != draft.outcome_definition {
+                        return Err(IssuanceError::ConflictingOutcomeContract {
+                            outcome_id: draft.outcome_definition.outcome_id,
+                            field: "outcome_definition",
+                        });
+                    }
+                    if existing_contract.target_id != draft.target_id {
+                        return Err(IssuanceError::ConflictingOutcomeContract {
+                            outcome_id: draft.outcome_definition.outcome_id,
+                            field: "target_id",
+                        });
+                    }
+                    if existing_contract.horizon_start_utc_ms != draft.horizon_start_utc_ms
+                        || existing_contract.horizon_end_utc_ms != draft.horizon_end_utc_ms
+                    {
+                        return Err(IssuanceError::ConflictingOutcomeContract {
+                            outcome_id: draft.outcome_definition.outcome_id,
+                            field: "horizon",
+                        });
+                    }
                 }
                 1
             }
@@ -645,7 +819,8 @@ impl ForecastLedger {
                     }
                 })?;
 
-                // Revisions must preserve target, outcome definition, and target horizon (FORECAST-04, A15).
+                // Revisions must preserve target, outcome definition, target horizon, baseline,
+                // and cannot downgrade ProspectiveStrict to RetrospectiveReconstructed (FORECAST-04, A15).
                 if draft.target_id != pred.target_id {
                     return Err(IssuanceError::RevisionMutatedFrozenContract {
                         forecast_id: draft.forecast_id,
@@ -664,6 +839,25 @@ impl ForecastLedger {
                     return Err(IssuanceError::RevisionMutatedFrozenContract {
                         forecast_id: draft.forecast_id,
                         field: "horizon",
+                    });
+                }
+                if draft.baseline_version != pred.baseline_version
+                    || draft.baseline_probability != pred.baseline_probability
+                {
+                    return Err(IssuanceError::RevisionMutatedFrozenContract {
+                        forecast_id: draft.forecast_id,
+                        field: "baseline",
+                    });
+                }
+                if matches!(pred.cutoff_mode, CutoffAdmissibilityMode::ProspectiveStrict)
+                    && matches!(
+                        draft.cutoff_mode,
+                        CutoffAdmissibilityMode::RetrospectiveReconstructed { .. }
+                    )
+                {
+                    return Err(IssuanceError::RevisionMutatedFrozenContract {
+                        forecast_id: draft.forecast_id,
+                        field: "cutoff_mode",
                     });
                 }
                 if draft.information_cutoff_utc_ms < pred.information_cutoff_utc_ms {
@@ -696,6 +890,8 @@ impl ForecastLedger {
                         evidence_version: None,
                     });
                 }
+                let pred_sources: BTreeSet<&VersionId> =
+                    pred.sources.iter().map(|s| &s.source_version).collect();
                 let mut seen_new_evidence = BTreeSet::new();
                 for ev in &rationale.new_evidence_versions {
                     if !seen_new_evidence.insert(ev) {
@@ -709,10 +905,25 @@ impl ForecastLedger {
                             evidence_version: Some(ev.clone()),
                         });
                     }
+                    if pred_sources.contains(ev) {
+                        return Err(IssuanceError::RevisionEvidenceNotNew {
+                            forecast_id: draft.forecast_id,
+                            evidence_version: ev.clone(),
+                        });
+                    }
                 }
                 series.len() + 1
             }
         };
+
+        self.outcome_contracts
+            .entry(draft.outcome_definition.outcome_id.clone())
+            .or_insert_with(|| RegisteredOutcomeContract {
+                outcome_definition: draft.outcome_definition.clone(),
+                target_id: draft.target_id.clone(),
+                horizon_start_utc_ms: draft.horizon_start_utc_ms,
+                horizon_end_utc_ms: draft.horizon_end_utc_ms,
+            });
 
         let version_key = draft.version_id.clone();
         let record = ForecastVintageRecord {
@@ -759,8 +970,8 @@ impl ForecastLedger {
     /// Record an independent outcome resolution version (`docs/architecture.md` §6.4).
     ///
     /// If `supersedes_version` is set, the prior resolution remains intact in the ledger
-    /// and any [`EvaluationRunRecord`] that pinned `supersedes_version` is flagged with
-    /// `needs_reassessment = true`.
+    /// and any [`EvaluationRunRecord`] that pinned an earlier resolution version for the
+    /// same `outcome_id` is flagged with `needs_reassessment = true`.
     pub fn record_outcome_resolution(
         &mut self,
         resolution: OutcomeResolutionRecord,
@@ -776,6 +987,14 @@ impl ForecastLedger {
             return Err(IssuanceError::DuplicateVersionId(resolution.version_id));
         }
 
+        let contract = self
+            .outcome_contracts
+            .get(&resolution.outcome_id)
+            .ok_or_else(|| {
+                IssuanceError::UnknownOutcomeDefinition(resolution.outcome_id.clone())
+            })?;
+
+        validate_timestamp_range("recorded_at_utc_ms", resolution.recorded_at_utc_ms)?;
         validate_collection_len("evidence_versions", resolution.evidence_versions.len())?;
         let mut seen_evidence = BTreeSet::new();
         for ev in &resolution.evidence_versions {
@@ -788,21 +1007,32 @@ impl ForecastLedger {
 
         match &resolution.state {
             ResolutionState::Resolved {
-                occurred: false,
-                observed_event_utc_ms: Some(_),
+                occurred: true,
+                observed_event_utc_ms: None,
             } => {
                 return Err(IssuanceError::InvalidOutcomeResolution(
-                    "non-occurrence resolution cannot carry an observed_event_utc_ms instant",
+                    "occurrence resolution (occurred: true) must supply observed_event_utc_ms",
                 ));
             }
             ResolutionState::Resolved {
+                occurred: true,
                 observed_event_utc_ms: Some(obs_ms),
-                ..
             } => {
+                validate_timestamp_range("observed_event_utc_ms", *obs_ms)?;
                 if *obs_ms > resolution.recorded_at_utc_ms {
                     return Err(IssuanceError::InvalidOutcomeResolution(
                         "observed_event_utc_ms cannot be after recorded_at_utc_ms",
                     ));
+                }
+                if *obs_ms < contract.horizon_start_utc_ms || *obs_ms >= contract.horizon_end_utc_ms
+                {
+                    return Err(IssuanceError::ResolutionOutsideTargetHorizon {
+                        outcome_id: resolution.outcome_id,
+                        occurred: true,
+                        observed_event_utc_ms: *obs_ms,
+                        horizon_start_utc_ms: contract.horizon_start_utc_ms,
+                        horizon_end_utc_ms: contract.horizon_end_utc_ms,
+                    });
                 }
                 if resolution.evidence_versions.is_empty() {
                     return Err(IssuanceError::InvalidOutcomeResolution(
@@ -811,13 +1041,45 @@ impl ForecastLedger {
                 }
             }
             ResolutionState::Resolved {
-                observed_event_utc_ms: None,
-                ..
-            }
-            | ResolutionState::Unresolved(UnresolvedReason::Disputed) => {
+                occurred: false,
+                observed_event_utc_ms,
+            } => {
+                if resolution.recorded_at_utc_ms < contract.horizon_end_utc_ms {
+                    return Err(IssuanceError::NonOccurrenceResolvedBeforeHorizonEnd {
+                        outcome_id: resolution.outcome_id,
+                        recorded_at_utc_ms: resolution.recorded_at_utc_ms,
+                        horizon_end_utc_ms: contract.horizon_end_utc_ms,
+                    });
+                }
+                if let Some(obs_ms) = observed_event_utc_ms {
+                    validate_timestamp_range("observed_event_utc_ms", *obs_ms)?;
+                    if *obs_ms > resolution.recorded_at_utc_ms {
+                        return Err(IssuanceError::InvalidOutcomeResolution(
+                            "observed_event_utc_ms cannot be after recorded_at_utc_ms",
+                        ));
+                    }
+                    if *obs_ms >= contract.horizon_start_utc_ms
+                        && *obs_ms < contract.horizon_end_utc_ms
+                    {
+                        return Err(IssuanceError::ResolutionOutsideTargetHorizon {
+                            outcome_id: resolution.outcome_id,
+                            occurred: false,
+                            observed_event_utc_ms: *obs_ms,
+                            horizon_start_utc_ms: contract.horizon_start_utc_ms,
+                            horizon_end_utc_ms: contract.horizon_end_utc_ms,
+                        });
+                    }
+                }
                 if resolution.evidence_versions.is_empty() {
                     return Err(IssuanceError::InvalidOutcomeResolution(
-                        "resolved or disputed outcome must cite at least one evidence version",
+                        "resolved outcome must cite at least one evidence version",
+                    ));
+                }
+            }
+            ResolutionState::Unresolved(UnresolvedReason::Disputed) => {
+                if resolution.evidence_versions.is_empty() {
+                    return Err(IssuanceError::InvalidOutcomeResolution(
+                        "disputed outcome must cite at least one evidence version",
                     ));
                 }
             }
@@ -873,26 +1135,39 @@ impl ForecastLedger {
                         supersedes_version: prior_ver.clone(),
                     }
                 })?;
+                if resolution.resolution_id != prior.resolution_id {
+                    return Err(IssuanceError::InvalidOutcomeResolution(
+                        "superseding resolution must retain the same resolution_id as its predecessor",
+                    ));
+                }
                 if resolution.recorded_at_utc_ms < prior.recorded_at_utc_ms {
                     return Err(IssuanceError::InvalidOutcomeResolution(
                         "superseding resolution recorded_at_utc_ms cannot precede superseded resolution",
                     ));
                 }
 
-                // Flag dependent evaluation runs for reassessment without editing their scores.
-                let reason = ReassessmentReason::OutcomeResolutionSuperseded {
-                    outcome_id: resolution.outcome_id.clone(),
-                    previous_resolution_version: prior_ver.clone(),
-                    new_resolution_version: resolution.version_id.clone(),
-                };
+                // Flag dependent evaluation runs pinned to ANY earlier resolution version of this outcome
+                // without editing their historical scores.
+                let prior_versions: BTreeSet<&VersionId> = history.iter().collect();
                 for eval in self.evaluations_by_version.values_mut() {
-                    let uses_prior = eval
-                        .vintages
-                        .iter()
-                        .any(|v| &v.resolution_version == prior_ver);
-                    if uses_prior {
+                    let mut pinned_prior_versions = Vec::new();
+                    for v in &eval.vintages {
+                        if prior_versions.contains(&v.resolution_version)
+                            && !pinned_prior_versions.contains(&v.resolution_version)
+                        {
+                            pinned_prior_versions.push(v.resolution_version.clone());
+                        }
+                    }
+                    for old_ver in pinned_prior_versions {
+                        let reason = ReassessmentReason::OutcomeResolutionSuperseded {
+                            outcome_id: resolution.outcome_id.clone(),
+                            previous_resolution_version: old_ver,
+                            new_resolution_version: resolution.version_id.clone(),
+                        };
                         eval.needs_reassessment = true;
-                        eval.reassessment_reasons.push(reason.clone());
+                        if !eval.reassessment_reasons.contains(&reason) {
+                            eval.reassessment_reasons.push(reason);
+                        }
                     }
                 }
             }
@@ -914,9 +1189,12 @@ impl ForecastLedger {
             })
     }
 
-    /// Evaluate an explicit cohort of `(forecast_version, resolution_version)` pairs,
-    /// preserving every vintage (including superseded originals, unresolved cases, and
-    /// invalidated outcomes) and recording an immutable [`EvaluationRunRecord`].
+    /// Evaluate a caller-selected cohort of `(forecast_version, resolution_version)` pairs.
+    ///
+    /// The caller selects which forecast series enter the cohort, but whenever any revised
+    /// vintage of a series is included, all earlier vintages (`1..vintage_number`) of that
+    /// series must also be included in the cohort so losing originals cannot be dropped.
+    /// Records an immutable [`EvaluationRunRecord`].
     pub fn evaluate_cohort(
         &mut self,
         evaluation_version: VersionId,
@@ -931,6 +1209,14 @@ impl ForecastLedger {
                 limit: self.max_records,
             });
         }
+        if self.total_evaluated_vintages.saturating_add(cohort.len()) > self.max_records {
+            return Err(IssuanceError::BudgetExceeded {
+                field: "total_evaluated_vintages",
+                actual: self.total_evaluated_vintages.saturating_add(cohort.len()),
+                limit: self.max_records,
+            });
+        }
+        validate_timestamp_range("evaluated_at_utc_ms", evaluated_at_utc_ms)?;
         if self.used_versions.contains(&evaluation_version) {
             return Err(IssuanceError::DuplicateVersionId(evaluation_version));
         }
@@ -945,15 +1231,18 @@ impl ForecastLedger {
         }
 
         let mut seen_forecast_versions = BTreeSet::new();
-        let mut binary_rows = Vec::with_capacity(cohort.len());
-        let mut row_indices = Vec::with_capacity(cohort.len());
-
-        for (forecast_ver, resolution_ver) in cohort {
+        for (forecast_ver, _) in cohort {
             if !seen_forecast_versions.insert(forecast_ver) {
                 return Err(IssuanceError::Scoring(
                     ScoringError::DuplicateForecastVersion(forecast_ver.clone()),
                 ));
             }
+        }
+
+        let mut binary_rows = Vec::with_capacity(cohort.len());
+        let mut row_indices = Vec::with_capacity(cohort.len());
+
+        for (forecast_ver, resolution_ver) in cohort {
             let vintage = self.vintages_by_version.get(forecast_ver).ok_or_else(|| {
                 IssuanceError::UnknownEvaluationReference {
                     kind: "forecast",
@@ -967,6 +1256,20 @@ impl ForecastLedger {
                     kind: "resolution",
                     version_id: resolution_ver.clone(),
                 })?;
+
+            // Require all predecessor vintages of an included series to be present in the cohort.
+            if vintage.vintage_number > 1
+                && let Some(series) = self.series_vintages.get(&vintage.forecast_id)
+            {
+                for earlier_ver in series.iter().take(vintage.vintage_number - 1) {
+                    if !seen_forecast_versions.contains(earlier_ver) {
+                        return Err(IssuanceError::IncompleteForecastSeriesInCohort {
+                            forecast_id: vintage.forecast_id.clone(),
+                            missing_vintage: earlier_ver.clone(),
+                        });
+                    }
+                }
+            }
 
             if vintage.outcome_definition.outcome_id != resolution.outcome_id {
                 return Err(IssuanceError::OutcomeDefinitionMismatch {
@@ -983,9 +1286,40 @@ impl ForecastLedger {
                     recorded_at_utc_ms: resolution.recorded_at_utc_ms,
                 });
             }
+            if evaluated_at_utc_ms < vintage.issued_at_utc_ms {
+                return Err(IssuanceError::EvaluationPredatesInputs {
+                    evaluation_version,
+                    evaluated_at_utc_ms,
+                    input_version: vintage.version_id.clone(),
+                    input_timestamp_utc_ms: vintage.issued_at_utc_ms,
+                });
+            }
+            if evaluated_at_utc_ms < resolution.recorded_at_utc_ms {
+                return Err(IssuanceError::EvaluationPredatesInputs {
+                    evaluation_version,
+                    evaluated_at_utc_ms,
+                    input_version: resolution.version_id.clone(),
+                    input_timestamp_utc_ms: resolution.recorded_at_utc_ms,
+                });
+            }
 
             match &resolution.state {
-                ResolutionState::Resolved { occurred, .. } => {
+                ResolutionState::Resolved {
+                    occurred,
+                    observed_event_utc_ms,
+                } => {
+                    if let Some(obs_ms) = observed_event_utc_ms
+                        && (*obs_ms <= vintage.information_cutoff_utc_ms
+                            || *obs_ms <= vintage.origin_utc_ms
+                            || *obs_ms <= vintage.issued_at_utc_ms)
+                    {
+                        return Err(IssuanceError::EventObservedAtOrBeforeForecastIssuance {
+                            forecast_version: vintage.version_id.clone(),
+                            information_cutoff_utc_ms: vintage.information_cutoff_utc_ms,
+                            issued_at_utc_ms: vintage.issued_at_utc_ms,
+                            observed_event_utc_ms: *obs_ms,
+                        });
+                    }
                     let idx = binary_rows.len();
                     binary_rows.push(BinaryForecastRow {
                         forecast_version: vintage.version_id.clone(),
@@ -1062,8 +1396,8 @@ impl ForecastLedger {
 
             let horizon_timing = match &resolution.state {
                 ResolutionState::Resolved {
-                    occurred: true,
                     observed_event_utc_ms: Some(obs_ms),
+                    ..
                 } => Some(compute_horizon_timing(
                     *obs_ms,
                     vintage.horizon_start_utc_ms,
@@ -1101,6 +1435,7 @@ impl ForecastLedger {
             reassessment_reasons,
         };
 
+        self.total_evaluated_vintages = self.total_evaluated_vintages.saturating_add(cohort.len());
         self.used_versions.insert(evaluation_version.clone());
         self.evaluation_order.push(evaluation_version.clone());
         self.evaluations_by_version
@@ -1185,6 +1520,13 @@ fn validate_text_field(field: &'static str, value: &str) -> Result<(), IssuanceE
     Ok(())
 }
 
+fn validate_timestamp_range(field: &'static str, value: i64) -> Result<(), IssuanceError> {
+    if !(MIN_VALID_UTC_MS..=MAX_VALID_UTC_MS).contains(&value) {
+        return Err(IssuanceError::TimestampOutOfRange { field, value });
+    }
+    Ok(())
+}
+
 fn validate_collection_len(field: &'static str, actual: usize) -> Result<(), IssuanceError> {
     if actual > MAX_FORECAST_COLLECTION_LEN {
         return Err(IssuanceError::BudgetExceeded {
@@ -1213,15 +1555,26 @@ fn validate_cutoff_and_sources(
     if let CutoffAdmissibilityMode::RetrospectiveReconstructed { limitation_note } = cutoff_mode {
         validate_text_field("cutoff_mode.limitation_note", limitation_note)?;
     }
+    if let Some(mc) = model_knowledge_cutoff_utc_ms {
+        validate_timestamp_range("model_knowledge_cutoff_utc_ms", mc)?;
+    }
 
     let post_cutoff_model_knowledge_disclosed = match (cutoff_mode, model_knowledge_cutoff_utc_ms) {
-        (CutoffAdmissibilityMode::ProspectiveStrict, Some(mc)) if mc > cutoff_utc_ms => {
+        (CutoffAdmissibilityMode::ProspectiveStrict, None) => {
             return Err(IssuanceError::ModelKnowledgeAfterStrictCutoff {
                 model_version: model_version.clone(),
-                model_knowledge_cutoff_utc_ms: mc,
+                model_knowledge_cutoff_utc_ms: None,
                 cutoff_utc_ms,
             });
         }
+        (CutoffAdmissibilityMode::ProspectiveStrict, Some(mc)) if mc > cutoff_utc_ms => {
+            return Err(IssuanceError::ModelKnowledgeAfterStrictCutoff {
+                model_version: model_version.clone(),
+                model_knowledge_cutoff_utc_ms: Some(mc),
+                cutoff_utc_ms,
+            });
+        }
+        (CutoffAdmissibilityMode::RetrospectiveReconstructed { .. }, None) => true,
         (CutoffAdmissibilityMode::RetrospectiveReconstructed { .. }, Some(mc))
             if mc > cutoff_utc_ms =>
         {
@@ -1244,6 +1597,7 @@ fn validate_cutoff_and_sources(
                 cutoff_utc_ms,
             });
         };
+        validate_timestamp_range("sources[].public_available_at_utc_ms", pub_ms)?;
         if pub_ms > cutoff_utc_ms {
             return Err(IssuanceError::SourcePublicAvailabilityAfterCutoff {
                 source_version: src.source_version.clone(),
@@ -1252,6 +1606,7 @@ fn validate_cutoff_and_sources(
             });
         }
         if let Some(event_ms) = src.event_utc_ms {
+            validate_timestamp_range("sources[].event_utc_ms", event_ms)?;
             let bound = pub_ms.min(cutoff_utc_ms);
             if event_ms > bound {
                 return Err(IssuanceError::SourceEventAfterAvailabilityOrCutoff {
@@ -1260,6 +1615,9 @@ fn validate_cutoff_and_sources(
                     bound_utc_ms: bound,
                 });
             }
+        }
+        if let Some(ing_ms) = src.ingested_at_utc_ms {
+            validate_timestamp_range("sources[].ingested_at_utc_ms", ing_ms)?;
         }
         if matches!(cutoff_mode, CutoffAdmissibilityMode::ProspectiveStrict) {
             match src.ingested_at_utc_ms {
@@ -1285,11 +1643,11 @@ fn compute_horizon_timing(
 ) -> HorizonTiming {
     if observed_event_utc_ms < horizon_start_utc_ms {
         HorizonTiming::Early {
-            early_by_ms: horizon_start_utc_ms.saturating_sub(observed_event_utc_ms),
+            early_by_ms: horizon_start_utc_ms - observed_event_utc_ms,
         }
     } else if observed_event_utc_ms >= horizon_end_utc_ms {
         HorizonTiming::Late {
-            late_by_ms: observed_event_utc_ms.saturating_sub(horizon_end_utc_ms),
+            late_by_ms: observed_event_utc_ms - horizon_end_utc_ms,
         }
     } else {
         HorizonTiming::WithinHorizon

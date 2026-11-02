@@ -8,8 +8,9 @@ and compose with [`oia_forecast::scoring::evaluate_binary`](../../crates/oia-for
 
 ## Contract
 
-`ForecastLedger` enforces a bounded (`1..=10,000` records per family), in-memory
-lifecycle across three immutable versioned record types:
+`ForecastLedger` enforces a bounded (`1..=10,000` records per family and total
+evaluated vintage summaries), in-memory lifecycle across three immutable
+versioned record types:
 
 1. **`ForecastVintageRecord` (`ForecastLedger::issue_forecast`):**
    - Freezes `forecast_id`, `version_id`, `schema_version`, `actor`,
@@ -18,52 +19,74 @@ lifecycle across three immutable versioned record types:
      `OutcomeDefinition` (`outcome_id`, `proposition`, `resolution_rules`),
      `baseline_version`, `baseline_probability`, `forecast_probability`,
      `model_version`, `sources`, `comparison_set`, and `assumptions`.
-   - Enforces `information_cutoff_utc_ms <= origin_utc_ms <= issued_at_utc_ms`,
-     `horizon_start_utc_ms < horizon_end_utc_ms`, and
-     `origin_utc_ms < horizon_end_utc_ms`.
+   - Enforces valid UTC millisecond epoch bounds
+     (`0001-01-01T00:00:00.000Z`..=`9999-12-31T23:59:59.999Z`),
+     `information_cutoff_utc_ms <= origin_utc_ms <= issued_at_utc_ms < horizon_end_utc_ms`,
+     and `horizon_start_utc_ms < horizon_end_utc_ms`.
+   - Binds each `outcome_id` to its first registered `OutcomeDefinition`,
+     `target_id`, and `[horizon_start_utc_ms, horizon_end_utc_ms)` across the
+     ledger so another forecast series cannot redefine the same `outcome_id`
+     with a conflicting proposition, target, or horizon.
    - Enforces point-in-time cutoff admissibility (`CutoffAdmissibilityMode`):
      - `ProspectiveStrict` requires every cited source version to have both a
        known `public_available_at_utc_ms <= information_cutoff_utc_ms` and a
-       known OIA `ingested_at_utc_ms <= information_cutoff_utc_ms`, and rejects
-       any model with `model_knowledge_cutoff_utc_ms > information_cutoff_utc_ms`.
+       known OIA `ingested_at_utc_ms <= information_cutoff_utc_ms`, and requires
+       a known `model_knowledge_cutoff_utc_ms <= information_cutoff_utc_ms`.
      - `RetrospectiveReconstructed { limitation_note }` requires a non-empty
        `limitation_note` and known `public_available_at_utc_ms <= information_cutoff_utc_ms`,
        allowing historical records ingested into OIA after the cutoff while
        recording `post_cutoff_model_knowledge_disclosed = true` when a model's
-       knowledge cutoff exceeds `information_cutoff_utc_ms`. Unknown public
-       availability (`None`) is rejected in both modes.
+       knowledge cutoff is unknown (`None`) or exceeds `information_cutoff_utc_ms`.
+       Unknown public availability (`None`) is rejected in both modes.
    - Enforces linked revision preservation: a revision must reference the latest
      existing vintage of `forecast_id` via `predecessor_version`, preserve the
-     frozen `target_id`, `outcome_definition`, and `[horizon_start_utc_ms, horizon_end_utc_ms)`,
-     advance timestamps monotonically, and supply a `RevisionRationale` whose
-     `new_evidence_versions` are present in the revision's admissible `sources`.
-     Original vintages remain intact and queryable.
+     frozen `target_id`, `outcome_definition`, `[horizon_start_utc_ms, horizon_end_utc_ms)`,
+     `baseline_version`, and `baseline_probability`, never downgrade
+     `ProspectiveStrict` to `RetrospectiveReconstructed`, advance timestamps
+     monotonically, and supply a `RevisionRationale` whose
+     `new_evidence_versions` are present in the revision's admissible `sources`
+     and were not already cited in the predecessor vintage. Original vintages
+     remain intact and queryable.
 
 2. **`OutcomeResolutionRecord` (`ForecastLedger::record_outcome_resolution`):**
-   - Keeps `ResolutionState::Resolved { occurred, observed_event_utc_ms }`,
+   - Requires `outcome_id` to be registered by an issued forecast and keeps
+     `ResolutionState::Resolved { occurred, observed_event_utc_ms }`,
      `ResolutionState::Unresolved(Pending | Censored | Disputed)`, and
      `ResolutionState::Invalidated { reason }` distinct.
-   - Requires supporting `evidence_versions` for `Resolved`, `Disputed`, and
-     `Invalidated` states, and forbids attaching an `observed_event_utc_ms`
-     instant to a confirmed non-occurrence (`occurred: false`).
-   - Subsequent corrections to an outcome resolution require `supersedes_version`
-     and `correction_rationale`. Recording a superseding resolution preserves
-     all prior resolution versions and marks any existing `EvaluationRunRecord`
-     that pinned the superseded resolution version with
-     `needs_reassessment = true` and a `ReassessmentReason::OutcomeResolutionSuperseded`
-     entry without editing historical evaluation scores in place.
+   - Enforces horizon-consistent resolution states:
+     - `occurred: true` requires `observed_event_utc_ms: Some(t)` inside the
+       outcome's frozen horizon `[horizon_start_utc_ms, horizon_end_utc_ms)`.
+     - `occurred: false` requires `recorded_at_utc_ms >= horizon_end_utc_ms`
+       (an open window must remain `Unresolved(Pending)` until it closes) and
+       allows `observed_event_utc_ms` to be `None` (never occurred) or `Some(t)`
+       outside `[horizon_start_utc_ms, horizon_end_utc_ms)` (an early or late
+       event outside the target window).
+   - Subsequent corrections to an outcome resolution require matching
+     `resolution_id`, `supersedes_version`, and `correction_rationale`.
+     Recording a superseding resolution preserves all prior resolution versions
+     and transitively marks any existing `EvaluationRunRecord` that pinned any
+     earlier resolution version of that outcome with `needs_reassessment = true`
+     and a `ReassessmentReason::OutcomeResolutionSuperseded` entry without
+     editing historical evaluation scores in place.
 
 3. **`EvaluationRunRecord` (`ForecastLedger::evaluate_cohort`):**
-   - Evaluates an explicit cohort of `(forecast_version, resolution_version)`
-     pairs, verifying outcome-definition alignment and that each resolution does
-     not predate forecast issuance.
+   - Evaluates a caller-selected cohort of `(forecast_version, resolution_version)`
+     pairs. While the caller selects which forecast series enter the cohort, any
+     included revision requires all earlier vintages (`1..vintage_number`) of
+     that series to be included in the cohort so unsuccessful originals cannot
+     be omitted.
+   - Verifies outcome-definition alignment, that each resolution does not
+     predate forecast issuance, that `evaluated_at_utc_ms` does not predate any
+     input forecast or resolution, and that no observed event occurred at or
+     before a forecast vintage's `information_cutoff_utc_ms`, `origin_utc_ms`,
+     or `issued_at_utc_ms`.
    - Delegates `Resolved` and `Unresolved` vintages to
      `oia_forecast::scoring::evaluate_binary` while accounting separately for
      `Invalidated` vintages (`invalidated_count`) so invalidated preconditions
      never masquerade as `occurred: false` or silently disappear.
-   - Computes `HorizonTiming` (`WithinHorizon`, `Early { early_by_ms }`,
-     `Late { late_by_ms }`) for resolved occurrences with an observed event
-     timestamp.
+   - Computes `HorizonTiming` (`WithinHorizon` for `occurred: true`, and
+     `Early { early_by_ms }` or `Late { late_by_ms }` for `occurred: false` with
+     an out-of-window `observed_event_utc_ms`).
 
 ## Limitations and remaining `#43` scope
 

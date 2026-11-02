@@ -194,10 +194,10 @@ Decisions belong to the project owner and implementing maintainers. Each resolut
 
 | ID | Decision | Proposed direction or open question | Needed before |
 | --- | --- | --- | --- |
-| D01 | Deployment and UI | Local-first Rust core; resolve native UI versus rendering adapter and initial OS support | P0 application shell |
-| D02 | Storage/indexes | SQLite plus managed blobs initially; choose text/spatial/vector indexing and migration tooling | P0 persistence |
-| D03 | Seed corpus and news sources | Small, documented UAP/disclosure and regional collection with verified source access | P1 adapters |
-| D04 | AI execution | Provider-neutral local/remote interface; select evaluated summarization/OCR/embedding options and data-handling defaults | P1 AI features |
+| D01 | Deployment and UI | Proposed in [ADR 0001](adr/0001-d01-deployment-and-ui-boundary.md): local-first Rust workspace and renderer-independent shell state contract (`oia-app`) established in #9; graphical renderer options compared in #16; awaiting owner confirmation | P0 application shell (proposed) |
+| D02 | Storage/indexes | Accepted in [ADR 0002](adr/0002-d02-storage-and-indexing.md) ([owner decision](https://github.com/mESmaC/oia/pull/56#issuecomment-6568675966)): embedded SQLite (`rusqlite` in WAL mode with FTS5 and R-Tree as needed) plus content-addressed managed blobs; runtime implementation in #11 | P0 persistence (decided; #11 in progress) |
+| D03 | Seed corpus and news sources | [ADR 0005](adr/0005-d03-seed-corpus-and-news-sources.md): small, documented UAP/disclosure and regional collection with verified source access | P1 adapters |
+| D04 | AI execution | [ADR 0007](adr/0007-d04-ai-execution-and-grounding.md): provider-neutral local/remote interface; select evaluated summarization/OCR/embedding options and data-handling defaults | P1 AI features |
 | D05 | Export formats | [ADR 0006](adr/0006-d05-report-and-bundle-formats.md): Markdown, self-contained HTML, uncompressed JSON directory bundle selected for implementation; wire schema pending shared contracts; PDF after render QA | P1 report exporter |
 | D06 | Region and geo/space sources | Choose a first region, weather/track/imagery providers, ephemerides, and historical depth | P2 integrations |
 | D07 | Cameras and retention | Choose eligible directories/feeds, automated-use conditions, buffer/storage limits, and excluded views | P3 live monitoring |
@@ -206,8 +206,8 @@ Decisions belong to the project owner and implementing maintainers. Each resolut
 | D10 | Collaboration and sync | Choose hosted transport/identity, capability matrix, merge rules, and sensitive-data defaults | P4 shared service |
 | D11 | Markets | Choose instruments, providers, calendars, corporate-action handling, historical depth, and licensed uses | P5 market ingestion |
 | D12 | Forecasting | Choose first targets/horizons, baselines, point-in-time datasets, calibration and resolution methods | P5 issued forecasts |
-| D13 | Lean correspondence | Choose first proof target and implementation/model connection method | First proof claim |
-| D14 | Distribution and project licensing | Choose OIA licensing, packaging/update mechanism, supported platforms, and notices process | Public release |
+| D13 | Lean correspondence | Choose first proof target and implementation/model connection method (#15, reserved for ADR 0004) | First proof claim |
+| D14 | Distribution and project licensing | Accepted in [ADR 0003](adr/0003-d14-licensing-and-distribution.md) ([owner decision](https://github.com/mESmaC/oia/pull/56#issuecomment-6568675966)): dual `MIT OR Apache-2.0` repository code license ([`LICENSE-MIT`](../LICENSE-MIT), [`LICENSE-APACHE`](../LICENSE-APACHE)) with third-party datasets/fixtures excluded and tracked in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md); release installer/signing packaging deferred to #49 | Public release (code license decided; #49 open) |
 
 ## 7. Risk and dependency register
 

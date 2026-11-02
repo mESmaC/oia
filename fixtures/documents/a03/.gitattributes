@@ -1,0 +1,4 @@
+# Retained evidence is exact bytes, including its original line endings.
+originals/** -text
+# Keep deterministic generated metadata stable across platform checkouts.
+manifest.json text eol=lf

@@ -3,9 +3,9 @@
 //! Risk and requirements covered:
 //! 1. `REASON-01`..=`REASON-04` / `A07` composed pipeline: abstraction, correlation, deduction,
 //!    and extrapolation preserve verbatim wording, explicit unknowns, conflicts, tolerances,
-//!    baseline rates, verification tiers (`AiProposed`, `HumanReviewed`, `LeanChecked`), and
-//!    non-observational inference origin classes (`AnalyticalInference` never becomes
-//!    `NormalizedObservation`).
+//!    baseline rates, verification tiers (`AiProposed`, `HumanReviewed`,
+//!    `AssertedUnverifiedLeanRef`), and non-observational inference origin classes
+//!    (`AnalyticalInference` never becomes `NormalizedObservation`).
 //! 2. `REASON-04` / `A07` non-destructive reassessment propagation: modifying an upstream
 //!    premise or reversing an abstraction entity/relationship decision preserves the original
 //!    vintages and transitively flags dependent steps and competing hypotheses
@@ -279,11 +279,12 @@ fn composed_reasoning_preserves_origins_and_propagates_reassessment()
             conditional_conclusion:
                 "Conditional on constant wind, object speed is consistent with passive drift"
                     .to_owned(),
-            verification_tier: ReasoningVerificationTier::LeanChecked {
-                theorem_id: "OiaProofs.Kinematics.passive_drift_bound".to_owned(),
+            verification_tier: ReasoningVerificationTier::AssertedUnverifiedLeanRef {
+                theorem_id: "AssertedModelRef.Kinematics.passive_drift_bound".to_owned(),
                 lean_toolchain: "leanprover/lean4:v4.35.0".to_owned(),
-                model_revision: "git:e1d171c".to_owned(),
-                assumptions_summary: "Ideal interval arithmetic over [0, 30]".to_owned(),
+                model_revision: "unverified-fixture-ref".to_owned(),
+                assumptions_summary: "Caller-asserted model reference; not verified at runtime"
+                    .to_owned(),
             },
             contradictions_noted: vec![
                 "Shared dispatch origin prevents independent corroboration".to_owned(),
@@ -294,6 +295,18 @@ fn composed_reasoning_preserves_origins_and_propagates_reassessment()
 
     let ded_rec = graph.step(&s_ded_v1).ok_or("missing ded step")?;
     assert_eq!(ded_rec.mandatory_notice(), DEDUCTION_CONDITIONALITY_NOTICE);
+    let ReasoningStepKind::Deduction(ded_spec) = ded_rec.kind() else {
+        panic!("expected deduction step");
+    };
+    assert_eq!(
+        ded_spec.verification_tier.tier_label(),
+        "asserted_unverified_lean_ref"
+    );
+    assert!(
+        !ded_spec
+            .verification_tier
+            .establishes_lean_proof_or_correspondence()
+    );
 
     let s_ext_v1 = graph.add_step(ReasoningStepDraft {
         step_id: OpaqueId::new("step:ext")?,
@@ -609,10 +622,10 @@ fn rejects_unsupported_units_domains_horizons_and_malformed_inputs()
                 inferred_statement: "derived".to_owned(),
             }],
             conditional_conclusion: "conclusion".to_owned(),
-            verification_tier: ReasoningVerificationTier::LeanChecked {
-                theorem_id: "OiaProofs.sorry_placeholder".to_owned(),
+            verification_tier: ReasoningVerificationTier::AssertedUnverifiedLeanRef {
+                theorem_id: "AssertedModelRef.sorry_placeholder".to_owned(),
                 lean_toolchain: "leanprover/lean4:v4.35.0".to_owned(),
-                model_revision: "git:e1d171c".to_owned(),
+                model_revision: "unverified-fixture-ref".to_owned(),
                 assumptions_summary: "none".to_owned(),
             },
             contradictions_noted: vec![],

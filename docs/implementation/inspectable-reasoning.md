@@ -59,8 +59,11 @@ competing hypotheses:
    - Keeps `ReasoningVerificationTier` variants distinct:
      - `AiProposed { model_id, prompt_template_version }`
      - `HumanReviewed { reviewer, review_note }`
-     - `LeanChecked { theorem_id, lean_toolchain, model_revision, assumptions_summary }`
-       (rejects placeholder `sorry`/`admit` theorem identifiers).
+     - `AssertedUnverifiedLeanRef { theorem_id, lean_toolchain, model_revision, assumptions_summary }`
+       (records a caller-asserted theorem/model reference without claiming runtime
+       Lean verification or formal Rust implementation correspondence; rejects
+       placeholder `sorry`/`admit` theorem identifiers, and
+       `establishes_lean_proof_or_correspondence()` returns `false`).
    - Attaches `DEDUCTION_CONDITIONALITY_NOTICE` stating that validity is
      conditional on the stated premises and assumptions.
 
@@ -94,10 +97,11 @@ competing hypotheses:
 
 - **In-memory kernel only:** `ReasoningGraph` does not persist records to SQLite
   (`oia-store`, `#11`) or schedule background worker jobs (`oia-app`, `#14`).
-- **Metadata-only Lean tier:** `ReasoningVerificationTier::LeanChecked` records
-  a theorem identifier, toolchain, and model revision supplied by the caller; it
-  does not execute `lake` or establish a formal Lean proof of this Rust module
-  (`#15`).
+- **Asserted, unverified Lean reference tier:** `ReasoningVerificationTier::AssertedUnverifiedLeanRef`
+  records a caller-asserted theorem identifier, toolchain, and model revision;
+  because `proofs/` (`#15`) is not yet on `main` and a Lean model proof does not
+  automatically establish Rust implementation correspondence (`AGENTS.md` §3),
+  this kernel makes no formal proof claim (`establishes_lean_proof_or_correspondence() == false`).
 - **UI workbench:** Visual graph inspection and interactive hypothesis comparison
   in the workspace UI follow in `#16`.
 

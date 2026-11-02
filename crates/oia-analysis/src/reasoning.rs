@@ -4,8 +4,8 @@
 //! This module implements the pure domain and dependency-graph kernel for:
 //! - **`REASON-01` (Deduction):** Exposes premises, explicit assumptions, named inference
 //!   rules, and ordered derivation steps while keeping `AiProposed`, `HumanReviewed`, and
-//!   `LeanChecked` reasoning tiers distinct and marking every conclusion conditional on
-//!   its premises and assumptions.
+//!   `AssertedUnverifiedLeanRef` reasoning tiers distinct and marking every conclusion
+//!   conditional on its premises and assumptions.
 //! - **`REASON-02` (Correlation & Extrapolation):** Enforces explicit matching tolerances,
 //!   coverage fractions, baseline rates (or documented absence rationale), source-dependency
 //!   accounting, and multiple-comparison disclosures for correlations without asserting
@@ -22,8 +22,9 @@
 //!
 //! Note on scope: this kernel operates in memory within `oia-analysis` without SQLite
 //! persistence (`oia-store`), background job orchestration (`oia-app`), or a live Lean
-//! runtime. A `LeanChecked` tier records a caller-supplied theorem identifier, Lean
-//! toolchain, and model revision metadata; it does not invoke `lake` at runtime.
+//! runtime. An `AssertedUnverifiedLeanRef` tier records a caller-asserted theorem
+//! identifier, Lean toolchain, and model revision without claiming runtime verification
+//! or formal Rust implementation correspondence (`AGENTS.md` §3).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -731,8 +732,11 @@ pub struct CorrelationSpec {
 
 /// Verification tier of a deductive derivation (`REASON-01`, `AGENTS.md` §3).
 ///
-/// Keeps AI-proposed reasoning, human-reviewed reasoning, and Lean-checked model properties
-/// explicitly distinct.
+/// Keeps AI-proposed reasoning, human-reviewed reasoning, and caller-asserted (unverified)
+/// Lean theorem references explicitly distinct. Because `proofs/` (`#15`) is not yet merged
+/// on `main` and this in-memory kernel cannot verify a Lean theorem or establish Rust
+/// implementation correspondence at runtime, any Lean reference is explicitly typed as
+/// [`ReasoningVerificationTier::AssertedUnverifiedLeanRef`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReasoningVerificationTier {
     /// Proposed by a language model or automated heuristic; unreviewed.
@@ -745,9 +749,11 @@ pub enum ReasoningVerificationTier {
         reviewer: ActorId,
         review_note: String,
     },
-    /// Backed by a named Lean 4 theorem at a pinned toolchain and model revision.
-    /// Does not imply empirical truth of premises.
-    LeanChecked {
+    /// Caller-asserted reference to a Lean theorem and model revision.
+    ///
+    /// **Not verified at runtime:** this kernel neither runs `lake` nor establishes formal
+    /// correspondence between a Lean model and this Rust step (`AGENTS.md` §3).
+    AssertedUnverifiedLeanRef {
         theorem_id: String,
         lean_toolchain: String,
         model_revision: String,
@@ -756,14 +762,22 @@ pub enum ReasoningVerificationTier {
 }
 
 impl ReasoningVerificationTier {
-    /// Returns a stable tier label (`ai_proposed`, `human_reviewed`, or `lean_checked_model`).
+    /// Returns a stable tier label (`ai_proposed`, `human_reviewed`, or
+    /// `asserted_unverified_lean_ref`).
     #[must_use]
     pub const fn tier_label(&self) -> &'static str {
         match self {
             Self::AiProposed { .. } => "ai_proposed",
             Self::HumanReviewed { .. } => "human_reviewed",
-            Self::LeanChecked { .. } => "lean_checked_model",
+            Self::AssertedUnverifiedLeanRef { .. } => "asserted_unverified_lean_ref",
         }
+    }
+
+    /// Returns `false` unconditionally: this in-memory kernel never verifies a Lean proof
+    /// or establishes formal Rust implementation correspondence (`AGENTS.md` §3).
+    #[must_use]
+    pub const fn establishes_lean_proof_or_correspondence(&self) -> bool {
+        false
     }
 }
 
@@ -2319,7 +2333,7 @@ impl ReasoningGraph {
                     } => {
                         validate_text("review_note", review_note, max_bytes, true)?;
                     }
-                    ReasoningVerificationTier::LeanChecked {
+                    ReasoningVerificationTier::AssertedUnverifiedLeanRef {
                         theorem_id,
                         lean_toolchain,
                         model_revision,

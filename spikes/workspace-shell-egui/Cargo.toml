@@ -1,0 +1,24 @@
+[package]
+name = "oia-shell-spike-egui"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+description = "Evaluation spike: the same OIA shell subset drawn with a Rust-native immediate-mode renderer (egui/eframe), fixture data only"
+
+[[bin]]
+name = "oia-shell-spike-egui"
+path = "src/main.rs"
+
+[dependencies]
+oia-shell-core = { path = "../workspace-shell-core" }
+eframe = "0.37"
+serde_json = "1.0"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"

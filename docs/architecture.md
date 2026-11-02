@@ -260,15 +260,20 @@ Untrusted files require resource-bounded parsers and isolated workers where appr
 
 ## 10. Exports and portability
 
+[D05 / ADR 0006](adr/0006-d05-report-and-bundle-formats.md) selects the initial
+formats. The [report and bundle contract](contracts/report-export.md) defines
+snapshot, citation, redaction, bounded import, and atomic publication behavior.
+These are implementation designs, not implemented export/import capabilities.
+
 ### 10.1 Report and prompt formats
 
-Proposed initial outputs are Markdown and self-contained HTML reports, plus structured JSON case metadata. PDF is a later output once render QA is available. Plain-text recreation prompts must include evidence/assumption sections and a reference-asset manifest; actual asset inclusion follows use conditions.
+Selected initial outputs are Markdown and self-contained HTML reports, plus a JSON investigation directory bundle. PDF is a later output once render QA is available. Plain-text recreation prompts must include evidence/assumption sections and a reference-asset manifest; actual asset inclusion follows use conditions.
 
 Statement anchors must link to exact source versions. External URLs can be included, but a report must state whether cited material is bundled, locally referenced, or externally dependent. Offline opening must not silently fetch remote resources or leak case details.
 
 ### 10.2 Investigation bundle
 
-Proposed portable layout:
+Selected initial portable directory layout (wire schema pending shared domain contracts):
 
 ```text
 manifest.json

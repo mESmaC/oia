@@ -4,6 +4,7 @@
 //! services, or vendor SDKs (`docs/architecture.md` Section 1.2). Versioned evidence records,
 //! provenance graphs, and content hashes follow in `#10`.
 
+pub mod collaboration;
 pub mod ids;
 pub mod witness;
 

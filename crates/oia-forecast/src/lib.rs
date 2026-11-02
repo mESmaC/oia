@@ -4,6 +4,7 @@
 //! are implemented; durable storage, calibration fitting, `D12` dataset selection, and application
 //! service integration remain open in `#43`.
 
+pub mod interval;
 pub mod issuance;
 pub mod scoring;
 

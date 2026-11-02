@@ -8,6 +8,11 @@ this PR does not modify their architecture map, root manifests, or crates.
 
 See [contracts, commands, verification, and limitations](../../docs/implementation/document-text.md).
 
+The independent [exact-text search kernel and local example](../../docs/implementation/document-search.md)
+add bounded passage matching for the CASE-05/DOC-04 slice of #18. This remains a
+temporary validation package; application search and final module placement
+under the proposed `oia-query` boundary await merged P0 contracts.
+
 The local Cargo.lock exists only to reproduce standalone checks. Discard it
 when integrating into P0 and regenerate the root workspace lockfile with Cargo;
 do not treat this file as the reviewed shared workspace lockfile.

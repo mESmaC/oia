@@ -51,7 +51,7 @@ def check(name, example_args, target_count):
     original_hash = hashlib.sha256(original).hexdigest()
     candidate = subprocess.run(
         ["cargo", "+1.99.0", "run", "--quiet", "--locked", "--manifest-path",
-         str(PACKAGE / "Cargo.toml"), "--example", "clean-fixture", "--",
+         str(PACKAGE / "Cargo.toml"), "--example", "clean-png-fixture", "--",
          *example_args],
         check=True, stdout=subprocess.PIPE, timeout=120,
     ).stdout

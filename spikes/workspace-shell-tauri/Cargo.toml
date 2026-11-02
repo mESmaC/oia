@@ -1,0 +1,32 @@
+[package]
+name = "oia-shell-spike"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+description = "Evaluation spike: the OIA workspace shell as a Tauri 2 adapter over a Rust-held shell context, fixture data only"
+
+[lib]
+name = "oia_shell_spike"
+path = "src/lib.rs"
+
+[[bin]]
+name = "oia-shell-spike"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = "2.6"
+
+[dependencies]
+oia-shell-core = { path = "../workspace-shell-core" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tauri = "2.11"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"

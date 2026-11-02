@@ -81,7 +81,7 @@ svg text { font-family: var(--mono); }
 .unplaced { border-left: 2px dashed var(--amber); padding: 8px 12px; color: var(--muted); }
 .inspector { grid-area: inspector; padding: 16px; align-self: start; display: grid; gap: 14px; overflow-wrap: anywhere; }
 .tabs { display: flex; gap: 8px; }
-.tabs button { flex: 1; }
+.tabs button { flex: 1; padding: 9px 4px; font-size: 13px; }
 dl { display: grid; grid-template-columns: 88px minmax(0,1fr); gap: 10px; margin: 0; font-size: 13px; }
 dt { color: var(--muted); } dd { margin: 0; }
 .quote { border-left: 2px solid var(--cyan); padding: 10px 14px; background: #09151d; margin: 0; }
@@ -124,7 +124,33 @@ dt { color: var(--muted); } dd { margin: 0; }
 .inventory-filter { border: 0; padding: 0; margin: 0; min-width: 0; }
 .inventory-filter legend { margin-bottom: 8px; }
 .local-filter { color: var(--amber); border-left: 2px solid var(--amber); padding-left: 10px; }
-@media print { .inventory-filter, .inventory-item button, #show-geometry, #clear-inventory-filter { display: none; } }
+.verbs { align-items: flex-start; }
+.verbs small { flex-basis: 100%; }
+.report-sections { list-style: none; margin: 0; padding: 0; display: grid; gap: 16px; }
+.report-sections h3 { margin-bottom: 8px; }
+.statements { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.statement { border: 1px solid var(--line); border-left-width: 3px; border-radius: 10px; padding: 12px 14px; display: grid; gap: 8px; }
+.statement p { max-width: 72ch; }
+.statement[data-origin="generated"] { border-left-color: var(--violet); }
+.statement[data-cited="false"] { border-left-style: dashed; border-left-color: var(--amber); }
+.statement[data-cited="assumption"] { border-left-style: dotted; }
+.marker { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; }
+.marker.generated { color: var(--violet); border-style: dashed; }
+.marker.uncited { color: var(--amber); }
+.marker.assumption { border-style: dotted; }
+.cite, .assume { min-height: 34px; padding: 5px 10px; font-size: 13px; }
+.cite { font-family: var(--mono); }
+.empty-sections { color: var(--muted); font-size: 13px; }
+.claims, .notes { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.claim { border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: grid; gap: 10px; }
+.claim blockquote { margin: 0; padding: 0 0 0 12px; border-left: 2px solid var(--line); }
+.states { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.states > div { display: grid; gap: 4px; border-top: 1px solid var(--line); padding-top: 8px; font-size: 13px; }
+.note { border: 1px solid var(--line); border-left: 2px solid var(--text); border-radius: 8px; padding: 10px 12px; display: grid; gap: 6px; }
+.note .row { justify-content: space-between; }
+.inspector textarea { width: 100%; min-height: 72px; border: 1px solid var(--line); border-radius: 8px; background: #02070b; color: var(--text); padding: 10px; resize: vertical; }
+.group { display: grid; gap: 8px; }
+@media print { .inventory-filter, .inventory-item button, #show-geometry, #clear-inventory-filter, .verbs button, #note-form, .claim button, .assume, .note button { display: none; } }
 [data-clean="true"] .overlay { display: none; }
 .stage[data-focused="true"] { grid-template-columns: minmax(0,1fr) 332px; grid-template-areas: "fixture fixture" "identity clock" "workspace inspector" "workspace inspector" "dock jobs"; }
 .stage[data-focused="true"] .rail, .stage[data-focused="true"] .timeline, .stage[data-focused="true"] .readout { display: none; }
@@ -142,6 +168,7 @@ dt { color: var(--muted); } dd { margin: 0; }
   .rail button { flex: 1 1 90px; }
   .rail hr { display: none; }
   .account-list { grid-template-columns: 1fr; }
+  .states { grid-template-columns: 1fr; }
   .account-list button { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
   .geometry { min-height: 290px; }
   .reader { padding: 12px; }
@@ -178,9 +205,9 @@ dt { color: var(--muted); } dd { margin: 0; }
   <nav class="rail glass" aria-label="Instruments">
     <button type="button" id="nav-case" aria-current="page"><span aria-hidden="true">◎</span>Case</button>
     <button type="button" id="nav-library"><span aria-hidden="true">▣</span>Library<small>1 fixture source</small></button>
+    <button type="button" id="nav-report"><span aria-hidden="true">❝</span>Report<small>Synthetic draft</small></button>
     <hr>
     <button type="button" disabled>News<small>Not in prototype</small></button>
-    <button type="button" disabled>Report<small>Not in prototype</small></button>
     <button type="button" disabled>Export<small>Not in prototype</small></button>
     <button type="button" disabled>Globe / sky<small>Not in prototype</small></button>
   </nav>
@@ -189,7 +216,7 @@ dt { color: var(--muted); } dd { margin: 0; }
     <div id="home-view" class="stack">
       <section class="case-summary glass stack" aria-labelledby="case-question">
         <div class="row"><span class="k">Investigation brief</span><span class="badge fixture-badge">◇ Synthetic case</span></div>
-        <h3 id="case-question">Do the accounts establish a disagreement?</h3>
+        <h3 id="case-question" tabindex="-1">Do the accounts establish a disagreement?</h3>
         <p class="muted">Compare what each account actually reports before treating missing direction or time as a contradiction.</p>
         <div class="case-facts">
           <div><span class="k">Scope</span><span>3 accounts / 1 source version</span></div>
@@ -267,7 +294,7 @@ dt { color: var(--muted); } dd { margin: 0; }
     </div>
     <article id="reader-view" class="reader stack" hidden aria-label="Synthetic source reader">
       <span class="badge fixture-badge">◇ Synthetic source · not a historical document</span>
-      <h2>Valley accounts / fixture transcript</h2><p class="muted">FIXTURE-DOC-0007 · v2 · page 3</p>
+      <h2 id="reader-title" tabindex="-1">Valley accounts / fixture transcript</h2><p class="muted">FIXTURE-DOC-0007 · v2 · page 3</p>
       <section id="passage-A" tabindex="-1"><h3>Account A · ¶3</h3><p>From the eastern road, a light appeared to travel from northwest to southeast for about eight minutes. The reported time was approximately 21:40, with an uncertainty of fifteen minutes.</p></section>
       <section id="passage-B" tabindex="-1"><h3>Account B · ¶4</h3><p>A light was described in the valley. The account does not record an observer position, direction of travel, or event time.</p></section>
       <section id="passage-C" tabindex="-1"><h3>Account C · ¶5</h3><p>Two lights were described east of the ridge. No bearing or event time was recorded. The account gives a region, not an observer position.</p></section>
@@ -276,12 +303,27 @@ dt { color: var(--muted); } dd { margin: 0; }
     <section id="search-view" class="results glass stack" hidden aria-labelledby="results-title">
       <h2 id="results-title">Search this fixture case</h2><p id="search-coverage" class="muted"></p><ul class="result-list" id="results"></ul><p id="empty" hidden>No matching fixture accounts. Try “ridge”, “time”, or “Account B”.</p>
     </section>
+    <section id="report-view" class="results glass stack" hidden aria-labelledby="report-title">
+      <div class="inventory-heading"><h2 id="report-title">Report draft</h2><div class="row"><span class="badge">Draft · not issued</span><span class="badge fixture-badge">◇ Synthetic draft</span></div></div>
+      <p class="muted">Each statement shows its origin and its citation. Activating a citation opens the cited evidence; Back returns to this draft.</p>
+      <div class="row verbs" role="group" aria-label="Report actions">
+        <button type="button" disabled aria-describedby="verbs-help">Save (private)</button>
+        <button type="button" disabled aria-describedby="verbs-help">Export…</button>
+        <button type="button" disabled aria-describedby="verbs-help">Share…</button>
+        <small id="verbs-help">Save, export, and share are separate actions. None has a service in this prototype, so all three are unavailable. Publish is not offered because no publishing service exists.</small>
+      </div>
+      <ol class="report-sections" id="report-sections"></ol>
+      <p class="empty-sections">Not drafted: coverage, source lineage, context and media, hypotheses, citations, evidence inventory. Empty sections stay listed, not hidden.</p>
+      <small>No revisions issued. Assumption marks live in memory for this page only and are discarded on reload.</small>
+    </section>
   </main>
   <aside class="inspector glass" aria-label="Selected account inspector">
     <div class="row"><span class="k">Inspect</span><h2 id="selection-title">Account A</h2></div>
     <div class="tabs" role="tablist" aria-label="Inspector details">
       <button type="button" role="tab" id="tab-overview" aria-selected="true" aria-controls="panel-overview" tabindex="0">Overview</button>
       <button type="button" role="tab" id="tab-source" aria-selected="false" aria-controls="panel-source" tabindex="-1">Source</button>
+      <button type="button" role="tab" id="tab-claims" aria-selected="false" aria-controls="panel-claims" tabindex="-1">Claims</button>
+      <button type="button" role="tab" id="tab-notes" aria-selected="false" aria-controls="panel-notes" tabindex="-1">Notes</button>
     </div>
     <section id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" tabindex="0" class="stack">
       <dl><dt>Origin</dt><dd>◇ Synthetic testimony</dd><dt>Direction</dt><dd id="direction"></dd><dt>Location</dt><dd id="location"></dd><dt>Event time</dt><dd id="event-time"></dd><dt>Assessment</dt><dd>○ Unsupported by available evidence</dd><dt>Review</dt><dd>□ Unreviewed</dd></dl>
@@ -289,7 +331,23 @@ dt { color: var(--muted); } dd { margin: 0; }
       <table class="coverage"><caption>Case coverage · all 3 accounts</caption><thead><tr><th scope="col">Account</th><th scope="col">Event time</th><th scope="col">Location</th></tr></thead><tbody><tr data-coverage="A"><th scope="row">A</th><td>≈ ±15 min</td><td>≈ Road</td></tr><tr data-coverage="B"><th scope="row">B</th><td>— Unknown</td><td>— Unknown</td></tr><tr data-coverage="C"><th scope="row">C</th><td>— Unknown</td><td>◇ Region</td></tr></tbody></table>
     </section>
     <section id="panel-source" role="tabpanel" aria-labelledby="tab-source" tabindex="0" class="stack" hidden>
+      <span class="k">Source record · read-only</span>
       <dl><dt>Document</dt><dd>FIXTURE-DOC-0007</dd><dt>Version</dt><dd>v2 · synthetic transcript</dd><dt>Anchor</dt><dd id="source-anchor"></dd><dt>Lineage</dt><dd>One shared fixture source. Independence has not been established.</dd><dt>Original</dt><dd>No acquired original in this prototype.</dd></dl>
+      <small>Source fields come from the fixture record. Notes and assessments are separate records; see the Notes tab.</small>
+    </section>
+    <section id="panel-claims" role="tabpanel" aria-labelledby="tab-claims" tabindex="0" class="stack" hidden>
+      <p id="claims-coverage" class="muted"></p>
+      <ul id="claims-list" class="claims"></ul>
+      <small>Assessment and review are separate. “Reviewed” records who checked what; it does not mean “supported”. No probabilities are shown. Assessing or requesting review needs a service; none exists in this prototype.</small>
+    </section>
+    <section id="panel-notes" role="tabpanel" aria-labelledby="tab-notes" tabindex="0" class="stack" hidden>
+      <div class="group"><span class="k">Your notes</span><p id="notes-link" class="muted"></p></div>
+      <ul id="notes-list" class="notes"></ul>
+      <form id="note-form" class="group">
+        <label for="note-text" class="k">Add a note</label>
+        <textarea id="note-text" maxlength="500" rows="3" aria-describedby="note-help"></textarea>
+        <div class="row"><button type="submit">Add note</button><small id="note-help">Kept in memory for this page only; discarded on reload. Never changes the source passage or its record.</small></div>
+      </form>
     </section>
     <button type="button" id="open-source" class="primary">Read source passage ↗</button>
   </aside>
@@ -318,9 +376,45 @@ const accounts = {
   B: { direction: 'Not recorded', location: 'Not recorded · not plotted', time: 'Not recorded', anchor: 'p3.¶4', note: 'Missing position and time cannot be filled from another account. The investigation clock stays at 21:40.', bracket: '' },
   C: { direction: 'Not recorded', location: 'East of ridge · region only', time: 'Not recorded', anchor: 'p3.¶5', note: 'Two lights east of a ridge does not specify travel direction. A disagreement with A has not been established.', bracket: 'M710 290h14 M710 290v14 M1050 290h-14 M1050 290v14 M710 570h14 M710 570v-14 M1050 570h-14 M1050 570v-14' }
 };
+// Synthetic extracted claims. Assessment and review are separate states (design §6.2, §6.3); neither is a probability.
+const claims = [
+  { id: 'CL-1', account: 'A', text: 'A light travelled from northwest to southeast for about eight minutes.', when: '≈ 21:40 ±15 min · 1994-03-14 · America/Denver', assessment: '○ Unsupported by available evidence', review: '◻ Unreviewed' },
+  { id: 'CL-2', account: 'A', text: 'The event occurred at approximately 21:40 local time.', when: '≈ 21:40 ±15 min · reported local', assessment: '○ Unsupported by available evidence', review: '◼ Reviewed · fixture reviewer · scope: time wording only' },
+  { id: 'CL-3', account: 'B', text: 'A light was seen in the valley.', when: '— Not recorded', assessment: '… Unresolved', review: '◻ Unreviewed' },
+  { id: 'CL-4', account: 'C', text: 'Two lights were east of the ridge.', when: '— Not recorded', assessment: '○ Unsupported by available evidence', review: '◩ In review · fixture reviewer' }
+];
+// Synthetic report draft. Each statement carries an origin and either citations or an explicit uncited state (COLLAB-02).
+const report = [
+  { section: 'Question and scope', statements: [
+    { id: 'S1', text: 'This draft compares what three synthetic accounts report about lights over the valley on 14 March 1994.', cites: ['case'] }
+  ] },
+  { section: 'Chronology', statements: [
+    { id: 'S2', text: 'Account A reports a light travelling from northwest to southeast for about eight minutes at approximately 21:40, ±15 minutes.', cites: ['A'] },
+    { id: 'S3', text: 'Accounts B and C do not record an event time.', cites: ['B', 'C'] }
+  ] },
+  { section: 'Supporting and conflicting evidence', statements: [
+    { id: 'S4', text: 'Account C describes two lights east of the ridge without a bearing.', cites: ['C'] },
+    { id: 'S5', text: 'The three accounts describe the same event.', cites: [], origin: 'generated' }
+  ] },
+  { section: 'Bounded conclusions', statements: [
+    { id: 'S6', text: 'The accounts do not establish a disagreement about direction, because only Account A records one.', cites: ['A', 'C'] },
+    { id: 'S7', text: 'The lights were aircraft.', cites: [] }
+  ] },
+  { section: 'Open questions', statements: [
+    { id: 'S8', text: 'Were the accounts collected independently, or do they come from one interview?', cites: ['doc'] }
+  ] }
+];
+const citeTargets = {
+  case: { label: '◎ Case record', open: () => { transition({ view: 'home' }); byId('case-question').focus(); } },
+  doc: { label: '▣ DOC-0007 v2', open: () => { transition({ view: 'reader', tab: 'source' }); byId('reader-title').focus({ preventScroll: true }); byId('reader-title').scrollIntoView({ block: 'nearest' }); } }
+};
 let state = { account: 'A', view: 'home', tab: 'overview', query: '', inventoryFilter: 'all', clean: false, focused: false };
+// User records kept outside route state: Back navigates, it does not undo a note or an assumption mark.
+const notes = { A: [], B: [], C: [] };
+const assumptions = new Set();
 const history = [];
 const announce = message => { byId('announcement').textContent = message; };
+const tabs = ['overview', 'source', 'claims', 'notes'];
 const inventoryFilters = {
   all: { label: 'All accounts', matches: () => true },
   'missing-time': { label: 'Time not recorded', matches: key => key === 'B' || key === 'C' },
@@ -338,7 +432,13 @@ Object.entries(accounts).forEach(([key, record]) => {
   const origin = document.createElement('span');
   origin.className = 'badge fixture-badge';
   origin.textContent = '◇ Synthetic testimony';
-  heading.append(title, origin);
+  const counts = document.createElement('span');
+  counts.className = 'badge';
+  counts.id = `counts-${key}`;
+  const badges = document.createElement('div');
+  badges.className = 'row';
+  badges.append(counts, origin);
+  heading.append(title, badges);
   const summary = document.createElement('p');
   summary.textContent = record.note;
   const details = document.createElement('p');
@@ -375,6 +475,8 @@ function renderInventory() {
     byId(`inventory-${key}`).hidden = !visible;
     byId(`inventory-${key}`).dataset.selected = state.account === key;
     byId(`inspect-${key}`).setAttribute('aria-pressed', state.account === key);
+    const claimCount = claims.filter(claim => claim.account === key).length;
+    byId(`counts-${key}`).textContent = `${claimCount} claim${claimCount === 1 ? '' : 's'}${notes[key].length ? ` · ${notes[key].length} note${notes[key].length === 1 ? '' : 's'}` : ''}`;
     if (visible) count++;
   });
   document.querySelectorAll('[data-inventory-filter]').forEach(button => {
@@ -414,6 +516,142 @@ function renderResults() {
   byId('empty').hidden = matches.length !== 0;
   byId('search-coverage').textContent = `${matches.length} of 3 fixture accounts${term ? ` match “${state.query.trim()}”` : ' shown'}. Searched all 3 synthetic passages from 1 source; no other documents were searched.`;
 }
+function renderClaims() {
+  const mine = claims.filter(claim => claim.account === state.account);
+  byId('claims-coverage').textContent = `${mine.length} of ${claims.length} synthetic claims · anchored in Account ${state.account}`;
+  byId('claims-list').replaceChildren(...mine.map(claim => {
+    const item = document.createElement('li');
+    item.className = 'claim';
+    item.id = `claim-${claim.id}`;
+    const quote = document.createElement('blockquote');
+    quote.textContent = `“${claim.text}”`;
+    const facts = document.createElement('dl');
+    [['Claim', claim.id], ['Claimant', `Account ${claim.account}`], ['Source', `FIXTURE-DOC-0007 · v2 · ${accounts[claim.account].anchor}`], ['When', claim.when]].forEach(([term, value]) => {
+      const dt = document.createElement('dt'); dt.textContent = term;
+      const dd = document.createElement('dd'); dd.textContent = value;
+      if (term === 'Source' || term === 'Claim') dd.className = 'mono';
+      facts.append(dt, dd);
+    });
+    const states = document.createElement('div');
+    states.className = 'states';
+    [['Assessment', claim.assessment], ['Review', claim.review]].forEach(([term, value]) => {
+      const cell = document.createElement('div');
+      const label = document.createElement('span'); label.className = 'k'; label.textContent = term;
+      const text = document.createElement('span'); text.textContent = value;
+      cell.append(label, text);
+      states.append(cell);
+    });
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.textContent = `Open passage ${accounts[claim.account].anchor}`;
+    open.addEventListener('click', () => openPassage(claim.account));
+    item.append(quote, facts, states, open);
+    return item;
+  }));
+}
+function renderNotes() {
+  const record = accounts[state.account];
+  const mine = notes[state.account];
+  byId('notes-link').textContent = `Account ${state.account} · linked to FIXTURE-DOC-0007 v2 · ${record.anchor}. ${mine.length ? `${mine.length} note${mine.length === 1 ? '' : 's'} this session.` : 'No notes yet.'}`;
+  byId('notes-list').replaceChildren(...mine.map((note, index) => {
+    const item = document.createElement('li');
+    item.className = 'note';
+    const text = document.createElement('p');
+    text.textContent = note;
+    const row = document.createElement('div');
+    row.className = 'row';
+    const link = document.createElement('small');
+    link.className = 'mono';
+    link.textContent = `Note ${index + 1} · in memory only`;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = 'Remove';
+    remove.setAttribute('aria-label', `Remove note ${index + 1}`);
+    remove.addEventListener('click', () => {
+      mine.splice(index, 1);
+      render();
+      byId('note-text').focus();
+      announce(`Note ${index + 1} removed. ${mine.length} remaining for Account ${state.account}.`);
+    });
+    row.append(link, remove);
+    item.append(text, row);
+    return item;
+  }));
+}
+function renderReport() {
+  report.forEach(group => group.statements.forEach(statement => {
+    const item = byId(`statement-${statement.id}`);
+    const cited = statement.cites.length ? 'true' : assumptions.has(statement.id) ? 'assumption' : 'false';
+    item.dataset.cited = cited;
+    const marker = byId(`uncited-${statement.id}`);
+    if (marker) {
+      marker.textContent = cited === 'assumption' ? '◇ Assumption · stated by author' : '⚠ Uncited';
+      marker.className = `marker ${cited === 'assumption' ? 'assumption' : 'uncited'}`;
+      const assume = byId(`assume-${statement.id}`);
+      if (assume) assume.hidden = cited === 'assumption';
+    }
+  }));
+}
+// Report statements are built once so a citation control survives Back and regains focus.
+byId('report-sections').replaceChildren(...report.map(group => {
+  const section = document.createElement('li');
+  const heading = document.createElement('h3');
+  heading.textContent = group.section;
+  const list = document.createElement('ul');
+  list.className = 'statements';
+  group.statements.forEach(statement => {
+    const item = document.createElement('li');
+    item.className = 'statement';
+    item.id = `statement-${statement.id}`;
+    item.dataset.origin = statement.origin || 'human';
+    const text = document.createElement('p');
+    text.textContent = statement.text;
+    const row = document.createElement('div');
+    row.className = 'row';
+    const origin = document.createElement('span');
+    origin.className = `marker ${statement.origin === 'generated' ? 'generated' : ''}`;
+    origin.textContent = statement.origin === 'generated' ? '◇ Generated · unreviewed' : 'Human draft';
+    row.append(origin);
+    statement.cites.forEach(key => {
+      const cite = document.createElement('button');
+      cite.type = 'button';
+      cite.className = 'cite';
+      cite.id = `cite-${statement.id}-${key}`;
+      if (citeTargets[key]) {
+        cite.textContent = citeTargets[key].label;
+        cite.setAttribute('aria-label', `Open citation: ${citeTargets[key].label.slice(2)}`);
+        cite.addEventListener('click', () => { citeTargets[key].open(); announce(`Opened ${citeTargets[key].label.slice(2)}. The report draft is one Back step away.`); });
+      } else {
+        cite.textContent = `▣ ${key} · ${accounts[key].anchor}`;
+        cite.setAttribute('aria-label', `Open cited passage: Account ${key}, ${accounts[key].anchor}`);
+        cite.addEventListener('click', () => { openPassage(key); announce(`Cited passage: synthetic Account ${key}, ${accounts[key].anchor}. The report draft is one Back step away.`); });
+      }
+      row.append(cite);
+    });
+    if (!statement.cites.length) {
+      const marker = document.createElement('span');
+      marker.id = `uncited-${statement.id}`;
+      const assume = document.createElement('button');
+      assume.type = 'button';
+      assume.className = 'assume';
+      assume.id = `assume-${statement.id}`;
+      assume.textContent = 'Mark as assumption';
+      assume.addEventListener('click', () => {
+        assumptions.add(statement.id);
+        render();
+        marker.tabIndex = -1;
+        marker.focus();
+        announce(`Statement ${statement.id} marked as an explicit assumption. It remains uncited.`);
+      });
+      // Generated text cannot be declared an author assumption before a human reviews it.
+      row.append(marker, ...(statement.origin === 'generated' ? [] : [assume]));
+    }
+    item.append(text, row);
+    list.append(item);
+  });
+  section.append(heading, list);
+  return section;
+}));
 function render() {
   const record = accounts[state.account];
   byId('stage').dataset.clean = state.clean;
@@ -423,11 +661,11 @@ function render() {
   byId('focus').textContent = state.focused ? 'Exit focus view' : 'Focus view';
   byId('clean').textContent = state.clean ? 'Show overlays' : 'Clean evidence';
   byId('back').disabled = history.length === 0;
-  byId('view-title').textContent = { home: 'Case overview', geometry: 'Case geometry', reader: 'Source reader', search: 'Case search' }[state.view];
-  ['home', 'geometry', 'reader', 'search'].forEach(view => { byId(`${view}-view`).hidden = view !== state.view; });
-  document.querySelector('.account-list').hidden = state.view === 'home';
-  ['case', 'library'].forEach(nav => {
-    const selected = nav === 'library' ? state.view === 'reader' : ['home', 'geometry'].includes(state.view);
+  byId('view-title').textContent = { home: 'Case overview', geometry: 'Case geometry', reader: 'Source reader', search: 'Case search', report: 'Report draft' }[state.view];
+  ['home', 'geometry', 'reader', 'search', 'report'].forEach(view => { byId(`${view}-view`).hidden = view !== state.view; });
+  document.querySelector('.account-list').hidden = state.view === 'home' || state.view === 'report';
+  ['case', 'library', 'report'].forEach(nav => {
+    const selected = nav === 'library' ? state.view === 'reader' : nav === 'report' ? state.view === 'report' : ['home', 'geometry'].includes(state.view);
     if (selected) byId(`nav-${nav}`).setAttribute('aria-current', 'page');
     else byId(`nav-${nav}`).removeAttribute('aria-current');
   });
@@ -449,7 +687,7 @@ function render() {
     path.setAttribute('d', record.bracket);
     byId('selection-brackets').append(path);
   }
-  ['overview', 'source'].forEach(tab => {
+  tabs.forEach(tab => {
     const selected = tab === state.tab;
     byId(`tab-${tab}`).setAttribute('aria-selected', selected);
     byId(`tab-${tab}`).tabIndex = selected ? 0 : -1;
@@ -457,6 +695,9 @@ function render() {
   });
   byId('query').value = state.query;
   renderInventory();
+  renderClaims();
+  renderNotes();
+  renderReport();
   if (state.view === 'search') renderResults();
 }
 function openPassage(account = state.account) {
@@ -490,18 +731,29 @@ byId('clear-inventory-filter').addEventListener('click', () => {
   document.querySelector('[data-inventory-filter="all"]').focus();
 });
 byId('nav-library').addEventListener('click', () => openPassage());
+byId('nav-report').addEventListener('click', () => { transition({ view: 'report' }); byId('workspace').focus(); announce('Report draft open. Synthetic draft; nothing is saved or published.'); });
+byId('note-form').addEventListener('submit', event => {
+  event.preventDefault();
+  const text = byId('note-text').value.trim();
+  if (!text) { announce('Enter note text before adding.'); byId('note-text').focus(); return; }
+  notes[state.account].push(text);
+  byId('note-text').value = '';
+  render();
+  byId('note-text').focus();
+  announce(`Note added to Account ${state.account}. ${notes[state.account].length} in memory. The source passage is unchanged.`);
+});
 byId('open-source').addEventListener('click', () => openPassage());
 byId('back').addEventListener('click', goBack);
 byId('clean').addEventListener('click', () => transition({ clean: !state.clean }));
 byId('focus').addEventListener('click', () => transition({ focused: !state.focused }));
-const tabs = ['overview', 'source'];
 tabs.forEach((tab, index) => {
   const button = byId(`tab-${tab}`);
   button.addEventListener('click', () => { state.tab = tab; render(); });
   button.addEventListener('keydown', event => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
-    const next = event.key === 'Home' ? 0 : event.key === 'End' ? 1 : (index + 1) % 2;
+    const last = tabs.length - 1;
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? last : event.key === 'ArrowRight' ? (index + 1) % tabs.length : (index + last) % tabs.length;
     state.tab = tabs[next];
     render();
     byId(`tab-${state.tab}`).focus();

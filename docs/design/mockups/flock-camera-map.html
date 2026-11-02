@@ -291,7 +291,7 @@ dd { margin: 0; }
 <a class="skip" href="#workspace">Skip to Flock / ALPR map canvas</a>
 <div class="stage" id="stage" data-clean="false" data-focused="false">
   <div class="fixture" role="note">
-    <span>&#x25C7; Interactive prototype &middot; synthetic Austin OpenStreetMap ALPR fixture &middot; mapped equipment locations only (no live video or plate records)</span>
+    <span>&#x25C7; Interactive prototype &middot; synthetic New Meridian OpenStreetMap ALPR fixture (`SYNTHETIC FIXTURE - NOT OBSERVED`) &middot; mapped equipment locations only (no live video or plate records)</span>
     <div class="row">
       <label><input type="checkbox" id="rt"> Opaque panels</label>
       <label><input type="checkbox" id="rm"> Reduced motion</label>
@@ -301,11 +301,11 @@ dd { margin: 0; }
   <header class="ident">
     <b class="wordmark">OIA</b>
     <div class="case">
-      <span class="k">Case / Austin corridor camera audit &rsaquo; Area: 30.255&deg;..30.285&deg; N, 97.765&deg;..97.725&deg; W</span>
-      <h1>Where are Flock Safety and other ALPR cameras mapped along the Congress &amp; I-35 corridor?</h1>
+      <span class="k">Case / New Meridian Synthetic Corridor camera audit &rsaquo; Area: 37.605&deg;..37.635&deg; N, 121.915&deg;..121.875&deg; W</span>
+      <h1>Where are Flock Safety and other ALPR cameras mapped along the Meridian Axis &amp; Harbor Gate corridor?</h1>
       <div class="row">
         <span class="badge cyan">&#x25CF; 8 mapped ALPR nodes &middot; 5 Flock Safety &middot; 2 other named &middot; 1 unspecified</span>
-        <span class="badge fixture-badge">&#x25C7; Synthetic ODbL directory fixture</span>
+        <span class="badge fixture-badge">&#x25C7; Synthetic ODbL directory fixture (`CAM-06`)</span>
       </div>
     </div>
   </header>
@@ -357,12 +357,12 @@ dd { margin: 0; }
     <div id="map-view" class="stack" style="flex:1">
       <div class="map-frame">
         <div class="map-hud-top">
-          <span id="hud-bounds">VIEWPORT 30.2550&deg;N, 97.7650&deg;W .. 30.2850&deg;N, 97.7250&deg;W &middot; SNAPPED 0.05&deg; (30.25&deg;..30.30&deg;N)</span>
-          <span id="hud-coverage">DETAIL ZOOM z12 (&le;16 tiles) &middot; OUTCOME: COMPLETE (8 of 8 shown)</span>
+          <span id="hud-bounds">VIEWPORT 37.6050&deg;N, 121.9150&deg;W .. 37.6350&deg;N, 121.8750&deg;W &middot; SNAPPED 0.05&deg; (37.60&deg;..37.65&deg;N)</span>
+          <span id="hud-coverage">DETAIL ZOOM z12 (&le;16 tiles) &middot; OUTCOME: COMPLETE &middot; 8 of 8 mapped</span>
         </div>
 
         <div class="map-svg-wrap">
-          <svg class="canvas" id="alpr-svg" viewBox="0 0 920 440" role="img" aria-label="Austin corridor ALPR and Flock camera map. Shows mapped camera locations, manufacturer classes, and illustrative 90 meter bearing wedges where numeric direction tags exist.">
+          <svg class="canvas" id="alpr-svg" viewBox="0 0 920 440" role="img" aria-label="New Meridian Synthetic Corridor ALPR and Flock camera map. Shows synthetic mapped camera locations, manufacturer classes, and illustrative 90 meter bearing wedges where numeric direction tags exist.">
             <defs>
               <radialGradient id="wedge-flock" cx="0%" cy="50%" r="100%">
                 <stop offset="0%" stop-color="#45d1ff" stop-opacity="0.46"/>
@@ -391,31 +391,31 @@ dd { margin: 0; }
               <rect x="18" y="14" width="884" height="412" fill="none" stroke="rgba(69,209,255,0.22)" stroke-dasharray="5 5"/>
             </g>
 
-            <!-- Corridor road schematic -->
+            <!-- Fictional corridor road schematic -->
             <g fill="none" stroke-linecap="round">
-              <!-- Colorado River / Lady Bird Lake -->
+              <!-- Meridian Channel -->
               <path d="M 0 325 Q 280 305, 520 340 T 920 365" stroke="rgba(69,209,255,0.16)" stroke-width="18"/>
-              <!-- I-35 Corridor -->
+              <!-- Harbor Gate Causeway -->
               <path d="M 670 0 L 635 440" stroke="rgba(230,237,243,0.26)" stroke-width="5"/>
               <path d="M 670 0 L 635 440" stroke="rgba(69,209,255,0.22)" stroke-width="1.2" stroke-dasharray="8 6"/>
-              <!-- S Congress Ave -->
+              <!-- Meridian Axis Blvd -->
               <path d="M 485 110 L 455 440" stroke="rgba(230,237,243,0.22)" stroke-width="3.5"/>
-              <!-- MLK Jr Blvd -->
+              <!-- North Spire Transit Way -->
               <path d="M 120 92 L 860 112" stroke="rgba(230,237,243,0.18)" stroke-width="2.5"/>
-              <!-- Barton Springs Rd / Cesar Chavez -->
+              <!-- Kestrel Commons Pkwy -->
               <path d="M 80 305 L 780 295" stroke="rgba(230,237,243,0.18)" stroke-width="2.5"/>
-              <!-- Shoal Creek / Lamar -->
+              <!-- Solstice Ridge Way -->
               <path d="M 285 20 L 240 390" stroke="rgba(230,237,243,0.16)" stroke-width="2.5"/>
             </g>
 
             <g class="overlay" fill="#7c8b99" font-size="11">
-              <text x="678" y="34">I-35 CORRIDOR</text>
-              <text x="494" y="254">CONGRESS AVE</text>
-              <text x="740" y="102">E MLK JR BLVD</text>
-              <text x="102" y="294">BARTON SPRINGS RD</text>
-              <text x="295" y="54">SHOAL CREEK</text>
-              <text x="32" y="34">30.285&deg;N, 97.765&deg;W</text>
-              <text x="758" y="418">30.255&deg;N, 97.725&deg;W</text>
+              <text x="678" y="34">HARBOR GATE CAUSEWAY</text>
+              <text x="494" y="254">MERIDIAN AXIS BLVD</text>
+              <text x="690" y="102">NORTH SPIRE TRANSIT WAY</text>
+              <text x="102" y="294">KESTREL COMMONS PKWY</text>
+              <text x="295" y="54">SOLSTICE RIDGE WAY</text>
+              <text x="32" y="34">37.635&deg;N, 121.915&deg;W (SYNTHETIC)</text>
+              <text x="710" y="418">37.605&deg;N, 121.875&deg;W (SYNTHETIC)</text>
             </g>
 
             <!-- Dynamic camera bearing wedges (drawn before glyphs so cones never wash out markers) -->
@@ -438,25 +438,25 @@ dd { margin: 0; }
             <span><b style="color:var(--muted)">&#x25CE; UNSPEC</b> Unspecified ALPR (1)</span>
             <span><b style="color:var(--cyan)">&#x25B5; WEDGE</b> Illustrative 90 m / &plusmn;20&deg; bearing (not calibrated FOV)</span>
           </div>
-          <span class="mono muted">ALPR: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">&copy; OpenStreetMap contributors (ODbL 1.0)</a> &middot; Synthetic fixture</span>
+          <span class="mono muted">ALPR: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">&copy; OpenStreetMap contributors (ODbL 1.0)</a> &middot; Synthetic fixture (`oia:synthetic=true`)</span>
         </div>
       </div>
 
-      <div class="camera-strip" id="camera-strip" role="group" aria-label="Mapped ALPR camera nodes in corridor"></div>
+      <div class="camera-strip" id="camera-strip" role="group" aria-label="Mapped ALPR camera nodes in synthetic corridor"></div>
     </div>
 
     <section id="query-view" class="glass stack" style="padding:16px" hidden aria-label="Overpass QL and normalization contract">
-      <h2>Bounded Overpass QL &amp; OIA normalization rules</h2>
+      <h2>Bounded Overpass QL &amp; OIA normalization rules (`CAM-06`)</h2>
       <p class="muted">City-scale queries snap outward to 0.05&deg;, reject spans &gt; 3.0&deg;, and match semicolon-delimited <code>surveillance:type</code> values case-insensitively:</p>
-      <pre class="code-box" id="overpass-code">[out:json][timeout:20];node["man_made"="surveillance"]["surveillance:type"~"(^|;)\\s*ALPR\\s*(;|$)",i](30.25,-97.80,30.30,-97.70);out body 1500;</pre>
+      <pre class="code-box" id="overpass-code">[out:json][timeout:20];node["man_made"="surveillance"]["surveillance:type"~"(^|;)\\s*ALPR\\s*(;|$)",i](37.60,-121.95,37.65,-121.85);out body 1500;</pre>
       <table class="coverage-table">
         <caption> Provenance and missing-value safeguards enforced by <code>crates/oia-alpr-map</code></caption>
         <thead>
           <tr><th scope="col">Rule</th><th scope="col">Input tag example</th><th scope="col">Normalized OIA state</th></tr>
         </thead>
         <tbody>
-          <tr><td>Semicolon surveillance tag</td><td class="mono">surveillance:type="camera;ALPR"</td><td>Admitted (`alpr:91010422`)</td></tr>
-          <tr><td>Non-ALPR traffic camera</td><td class="mono">surveillance:type="camera"</td><td>Excluded from ALPR layer (`node 91010499`)</td></tr>
+          <tr><td>Semicolon surveillance tag</td><td class="mono">surveillance:type="camera;ALPR"</td><td>Admitted (`alpr:900000000102`)</td></tr>
+          <tr><td>Non-ALPR traffic camera</td><td class="mono">surveillance:type="camera"</td><td>Excluded from ALPR layer (`node 900000000199`)</td></tr>
           <tr><td>Blank / whitespace bearing</td><td class="mono">camera:direction="   "</td><td><code>None</code> (never promoted to <code>0&deg;</code> north)</td></tr>
           <tr><td>Cardinal word direction</td><td class="mono">camera:direction="NE"</td><td><code>None</code> (numeric bearings only; no wedge drawn)</td></tr>
           <tr><td>360&deg; north wrap</td><td class="mono">camera:direction="360"</td><td><code>Some(0.0&deg;)</code></td></tr>
@@ -468,7 +468,7 @@ dd { margin: 0; }
 
   <aside class="inspector glass" aria-label="Selected ALPR camera inspector">
     <div class="row" style="justify-content:space-between">
-      <div><span class="k">Inspect camera record</span><h2 id="ins-title">ALPR-0421</h2></div>
+      <div><span class="k">Inspect camera record</span><h2 id="ins-title">SYNTH-0101</h2></div>
       <span class="badge cyan" id="ins-class-badge">&#x25C6; Flock Safety</span>
     </div>
 
@@ -480,7 +480,7 @@ dd { margin: 0; }
     <section id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" tabindex="0" class="stack">
       <dl>
         <dt>Record ID</dt><dd class="mono" id="ins-id"></dd>
-        <dt>Origin class</dt><dd>&#x25CF; Mapped directory node (fixture)</dd>
+        <dt>Origin class</dt><dd>&#x25CF; Synthetic directory fixture (`synthetic: true` &middot; `NOT OBSERVED`)</dd>
         <dt>Manufacturer</dt><dd id="ins-manufacturer"></dd>
         <dt>Operator</dt><dd id="ins-operator"></dd>
         <dt>Camera / Zone</dt><dd id="ins-type-zone"></dd>
@@ -497,9 +497,9 @@ dd { margin: 0; }
       <dl>
         <dt>Provider</dt><dd>OpenStreetMap / DeFlock hourly US/CA extract schema</dd>
         <dt>Data license</dt><dd>ODbL 1.0 (&copy; OpenStreetMap contributors)</dd>
-        <dt>Access method</dt><dd>Bounded city-scale tile / Overpass directory query (`CAM-01`)</dd>
+        <dt>Access method</dt><dd>Bounded city-scale tile / Overpass directory query (`CAM-06`)</dd>
         <dt>Raw tags</dt><dd class="mono" id="ins-raw-tags"></dd>
-        <dt>Reuse terms</dt><dd>Attribution required; database share-alike applies to adapted OSM extracts (`CAM-02`).</dd>
+        <dt>Reuse terms</dt><dd>Attribution required; database share-alike applies to adapted OSM extracts (`CAM-02` &middot; `CAM-06`).</dd>
       </dl>
     </section>
 
@@ -518,14 +518,14 @@ dd { margin: 0; }
 
   <div class="readout" aria-label="View state">
     <span class="k">View readout</span>
-    <p id="readout-main" class="mono">alpr:91010421 &middot; z12 &middot; 8/8 shown</p>
+    <p id="readout-main" class="mono">alpr:900000000101 &middot; z12 &middot; 8/8 shown</p>
     <p id="readout-sub" class="muted">Illustrative wedges on &middot; ODbL credit active</p>
   </div>
 
   <form class="dock glass" id="search-form" role="search">
-    <label for="query" class="k">Filter corridor by operator, vendor, ref, or OSM ID <span aria-hidden="true">/ Ctrl+K</span></label>
+    <label for="query" class="k">Filter corridor by operator, vendor, ref, or synthetic OSM ID <span aria-hidden="true">/ Ctrl+K</span></label>
     <div class="search-row">
-      <input type="search" id="query" maxlength="120" placeholder="e.g. Flock, Austin Police, HOA, 0422, Motorola, parking">
+      <input type="search" id="query" maxlength="120" placeholder="e.g. Flock, New Meridian, Aegis, Kestrel, 0102, Motorola, parking">
       <button type="submit">Filter</button>
       <button type="button" id="clear-query">Clear</button>
     </div>
@@ -533,7 +533,7 @@ dd { margin: 0; }
 
   <details class="jobs glass">
     <summary>Jobs &middot; 1 completed fixture query &middot; 0 live streams</summary>
-    <p class="muted"><code>alpr-viewport-z12</code> succeeded (8 ALPR nodes normalized, 1 non-ALPR CCTV node excluded). No camera video or plate-read endpoints are contacted.</p>
+    <p class="muted"><code>alpr-viewport-z12</code> succeeded (`new-meridian-corridor-fixture.json`: 8 synthetic ALPR nodes normalized, 1 non-ALPR CCTV node `900000000199` excluded). No camera video or plate-read endpoints are contacted.</p>
   </details>
 </div>
 <p id="announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
@@ -544,92 +544,92 @@ const byId = id => document.getElementById(id);
 
 const CAMERAS = [
   {
-    id: 'alpr:91010421', osmId: 91010421, badge: 'ALPR-0421',
-    lat: 30.2672, lon: -97.7431, zoom: 12,
+    id: 'alpr:900000000101', osmId: 900000000101, synthetic: true, badge: 'SYNTH-0101',
+    lat: 37.6172, lon: -121.8931, zoom: 12,
     manufacturer: 'Flock Safety', vendorClass: 'flock', vendorGlyph: '\u25C6', vendorShort: 'FLOCK',
-    operator: 'Austin Police Department', cameraType: 'fixed', zone: 'traffic',
-    directionDeg: 180, rawDirection: '180', ref: 'APD-CONGRESS-01',
+    operator: 'New Meridian Municipal Transit Authority (Synthetic)', cameraType: 'fixed', zone: 'traffic',
+    directionDeg: 180, rawDirection: '180', ref: 'SYNTH-NM-001',
     lastVerified: '2026-09-14', osmTimestamp: '2026-10-18T14:22:10Z',
-    rawTags: 'surveillance:type=ALPR · manufacturer=Flock Safety · model=Falcon · camera:direction=180 · check_date=2026-09-14',
-    note: 'Southbound Congress Ave approach. Carries both a field check_date (2026-09-14) and a later OSM edit timestamp (2026-10-18); both remain distinct.'
+    rawTags: 'surveillance:type=ALPR · manufacturer=Flock Safety · model=Falcon · camera:direction=180 · check_date=2026-09-14 · contact:website=https://transit.new-meridian.invalid/cameras/synth-nm-001 · note="SYNTHETIC FIXTURE - NOT OBSERVED" · oia:synthetic=true',
+    note: 'SYNTHETIC FIXTURE - NOT OBSERVED. Southbound Meridian Axis Blvd approach. Carries both a field check_date (2026-09-14) and a later OSM edit timestamp (2026-10-18); both remain distinct.'
   },
   {
-    id: 'alpr:91010422', osmId: 91010422, badge: 'ALPR-0422',
-    lat: 30.2747, lon: -97.7404, zoom: 12,
+    id: 'alpr:900000000102', osmId: 900000000102, synthetic: true, badge: 'SYNTH-0102',
+    lat: 37.6247, lon: -121.8904, zoom: 12,
     manufacturer: 'Flock Safety', vendorClass: 'flock', vendorGlyph: '\u25C6', vendorShort: 'FLOCK',
-    operator: 'Texas DPS \u2014 Capitol Complex', cameraType: 'fixed', zone: 'street',
-    directionDeg: 0, rawDirection: '360', ref: 'DPS-CAP-N04',
+    operator: 'Aegis Harbor District Patrol (Synthetic)', cameraType: 'fixed', zone: 'street',
+    directionDeg: 0, rawDirection: '360', ref: 'SYNTH-NM-002',
     lastVerified: '2026-08-29', osmTimestamp: '2026-10-19T08:11:00Z',
-    rawTags: 'surveillance:type=camera;ALPR · manufacturer=Flock Safety · camera:direction=360 · survey:date=2026-08-29',
-    note: 'Admitted via semicolon multi-value tag surveillance:type="camera;ALPR". Bearing "360" normalizes to 0\u00b0 (due north).'
+    rawTags: 'surveillance:type=camera;ALPR · manufacturer=Flock Safety · camera:direction=360 · survey:date=2026-08-29 · note="SYNTHETIC FIXTURE - NOT OBSERVED" · oia:synthetic=true',
+    note: 'SYNTHETIC FIXTURE - NOT OBSERVED. Admitted via semicolon multi-value tag surveillance:type="camera;ALPR". Bearing "360" normalizes to 0\u00b0 (due north).'
   },
   {
-    id: 'alpr:91010423', osmId: 91010423, badge: 'ALPR-0423',
-    lat: 30.2638, lon: -97.7522, zoom: 12,
+    id: 'alpr:900000000103', osmId: 900000000103, synthetic: true, badge: 'SYNTH-0103',
+    lat: 37.6138, lon: -121.9022, zoom: 12,
     manufacturer: 'Flock Safety', vendorClass: 'flock', vendorGlyph: '\u25C6', vendorShort: 'FLOCK',
-    operator: 'Barton Springs Commercial HOA', cameraType: 'fixed', zone: 'parking',
-    directionDeg: null, rawDirection: '   ', ref: 'HOA-BS-02',
+    operator: 'Kestrel Commons Commercial HOA (Synthetic)', cameraType: 'fixed', zone: 'parking',
+    directionDeg: null, rawDirection: '   ', ref: 'SYNTH-NM-003',
     lastVerified: null, osmTimestamp: '2026-10-21T19:45:33Z',
-    rawTags: 'surveillance:type=ALPR · manufacturer=Flock Safety · camera:direction="   " (whitespace)',
-    note: 'Whitespace-only camera:direction tag is normalized to None (not 0\u00b0 north), so no directional wedge is drawn. No check_date is present; OSM edit time is not promoted to field verification.'
+    rawTags: 'surveillance:type=ALPR · manufacturer=Flock Safety · camera:direction="   " (whitespace) · note="SYNTHETIC FIXTURE - NOT OBSERVED" · oia:synthetic=true',
+    note: 'SYNTHETIC FIXTURE - NOT OBSERVED. Whitespace-only camera:direction tag is normalized to None (not 0\u00b0 north), so no directional wedge is drawn. No check_date is present; OSM edit time is not promoted to field verification.'
   },
   {
-    id: 'alpr:91010424', osmId: 91010424, badge: 'ALPR-0424',
-    lat: 30.2712, lon: -97.7341, zoom: 12,
+    id: 'alpr:900000000104', osmId: 900000000104, synthetic: true, badge: 'SYNTH-0104',
+    lat: 37.6212, lon: -121.8841, zoom: 12,
     manufacturer: 'Flock Safety', vendorClass: 'flock', vendorGlyph: '\u25C6', vendorShort: 'FLOCK',
-    operator: 'Austin Police Department', cameraType: 'fixed', zone: 'traffic',
-    directionDeg: 265, rawDirection: '265', ref: 'APD-I35-FR07',
+    operator: 'New Meridian Municipal Transit Authority (Synthetic)', cameraType: 'fixed', zone: 'traffic',
+    directionDeg: 265, rawDirection: '265', ref: 'SYNTH-NM-004',
     lastVerified: '2026-10-02', osmTimestamp: '2026-10-22T03:10:05Z',
-    rawTags: 'surveillance:type=alpr · manufacturer=Flock Safety · direction=265 · check_date=2026-10-02',
-    note: 'I-35 frontage road camera matched via lowercase surveillance:type="alpr" and fallback direction=265 tag.'
+    rawTags: 'surveillance:type=alpr · manufacturer=Flock Safety · direction=265 · check_date=2026-10-02 · note="SYNTHETIC FIXTURE - NOT OBSERVED" · oia:synthetic=true',
+    note: 'SYNTHETIC FIXTURE - NOT OBSERVED. Harbor Gate Causeway approach matched via lowercase surveillance:type="alpr" and fallback direction=265 tag.'
   },
   {
-    id: 'alpr:91010425', osmId: 91010425, badge: 'ALPR-0425',
-    lat: 30.2791, lon: -97.7378, zoom: 12,
+    id: 'alpr:900000000105', osmId: 900000000105, synthetic: true, badge: 'SYNTH-0105',
+    lat: 37.6291, lon: -121.8878, zoom: 12,
     manufacturer: 'Motorola Solutions / Vigilant', vendorClass: 'other', vendorGlyph: '\u25AA', vendorShort: 'MOTOROLA',
-    operator: 'UT Austin Campus Safety', cameraType: 'fixed', zone: 'traffic',
-    directionDeg: 95, rawDirection: '95', ref: 'UTPD-MLK-12',
+    operator: 'North Spire Institute Safety (Synthetic)', cameraType: 'fixed', zone: 'traffic',
+    directionDeg: 95, rawDirection: '95', ref: 'SYNTH-NM-005',
     lastVerified: '2026-07-19', osmTimestamp: '2026-10-25T11:04:19Z',
-    rawTags: 'surveillance:type=ALPR · manufacturer=Motorola Solutions / Vigilant · camera:direction=95 · check_date=2026-07-19',
-    note: 'Non-Flock ALPR installation (Motorola / Vigilant). Kept distinct from Flock Safety while remaining part of corridor ALPR coverage.'
+    rawTags: 'surveillance:type=ALPR · manufacturer=Motorola Solutions / Vigilant · camera:direction=95 · check_date=2026-07-19 · note="SYNTHETIC FIXTURE - NOT OBSERVED" · oia:synthetic=true',
+    note: 'SYNTHETIC FIXTURE - NOT OBSERVED. Non-Flock ALPR installation (Motorola / Vigilant) along North Spire Transit Way. Kept distinct from Flock Safety while remaining part of corridor ALPR coverage.'
   },
   {
-    id: 'alpr:91010426', osmId: 91010426, badge: 'ALPR-0426',
-    lat: 30.2604, lon: -97.7389, zoom: 12,
+    id: 'alpr:900000000106', osmId: 900000000106, synthetic: true, badge: 'SYNTH-0106',
+    lat: 37.6104, lon: -121.8889, zoom: 12,
     manufacturer: 'Genetec AutoVu', vendorClass: 'other', vendorGlyph: '\u25AA', vendorShort: 'GENETEC',
-    operator: 'Riverside Garage Management', cameraType: 'fixed', zone: 'parking',
-    directionDeg: 45, rawDirection: '45', ref: null,
+    operator: 'Vanguard Plaza Parking Cooperative (Synthetic)', cameraType: 'fixed', zone: 'parking',
+    directionDeg: 45, rawDirection: '45', ref: 'SYNTH-NM-006',
     lastVerified: null, osmTimestamp: '2026-10-26T16:30:00Z',
-    rawTags: 'surveillance:type=ALPR · manufacturer=Genetec AutoVu · camera:direction=45',
-    note: 'Fixed garage ALPR attributed to Genetec AutoVu. Excluded when the local "Flock Safety only" filter is active, with omission count surfaced in the filter chip.'
+    rawTags: 'surveillance:type=ALPR · manufacturer=Genetec AutoVu · camera:direction=45 · ref=SYNTH-NM-006 · note="SYNTHETIC FIXTURE - NOT OBSERVED" · oia:synthetic=true',
+    note: 'SYNTHETIC FIXTURE - NOT OBSERVED. Fixed garage ALPR attributed to Genetec AutoVu. Excluded when the local "Flock Safety only" filter is active, with omission count surfaced in the filter chip.'
   },
   {
-    id: 'alpr:91010427', osmId: 91010427, badge: 'ALPR-0427',
-    lat: 30.2689, lon: -97.7574, zoom: 12,
+    id: 'alpr:900000000107', osmId: 900000000107, synthetic: true, badge: 'SYNTH-0107',
+    lat: 37.6189, lon: -121.9074, zoom: 12,
     manufacturer: null, vendorClass: 'unspecified', vendorGlyph: '\u25CE', vendorShort: 'UNSPEC',
     operator: null, cameraType: 'fixed', zone: 'traffic',
-    directionDeg: 125, rawDirection: '125', ref: null,
+    directionDeg: 125, rawDirection: '125', ref: 'SYNTH-NM-007',
     lastVerified: null, osmTimestamp: '2026-10-28T22:15:42Z',
-    rawTags: 'surveillance:type=ALPR · camera:direction=125 · source=aerial_and_street_level',
-    note: 'Tagged as an ALPR camera in OpenStreetMap without a manufacturer or operator tag. Classified as Unspecified rather than guessed as Flock Safety.'
+    rawTags: 'surveillance:type=ALPR · camera:direction=125 · ref=SYNTH-NM-007 · source=synthetic_fixture · note="SYNTHETIC FIXTURE - NOT OBSERVED" · oia:synthetic=true',
+    note: 'SYNTHETIC FIXTURE - NOT OBSERVED. Tagged as an ALPR camera without a manufacturer or operator tag. Classified as Unspecified rather than guessed as Flock Safety.'
   },
   {
-    id: 'alpr:91010428', osmId: 91010428, badge: 'ALPR-0428',
-    lat: 30.2764, lon: -97.7495, zoom: 12,
+    id: 'alpr:900000000108', osmId: 900000000108, synthetic: true, badge: 'SYNTH-0108',
+    lat: 37.6264, lon: -121.8995, zoom: 12,
     manufacturer: 'Flock Safety', vendorClass: 'flock', vendorGlyph: '\u25C6', vendorShort: 'FLOCK',
-    operator: 'Shoal Creek Neighborhood Association', cameraType: 'fixed', zone: 'street',
-    directionDeg: null, rawDirection: 'NE', ref: null,
+    operator: 'Solstice Ridge Civic Association (Synthetic)', cameraType: 'fixed', zone: 'street',
+    directionDeg: null, rawDirection: 'NE', ref: 'SYNTH-NM-008',
     lastVerified: '2026-10-11', osmTimestamp: '2026-10-29T09:05:12Z',
-    rawTags: 'surveillance:type=ALPR · manufacturer=Flock Safety · camera:direction=NE · check_date=2026-10-11',
-    note: 'Cardinal string camera:direction="NE" is not a calibrated numeric bearing; normalized direction_deg remains None and no wedge is rendered.'
+    rawTags: 'surveillance:type=ALPR · manufacturer=Flock Safety · camera:direction=NE · ref=SYNTH-NM-008 · check_date=2026-10-11 · note="SYNTHETIC FIXTURE - NOT OBSERVED" · oia:synthetic=true',
+    note: 'SYNTHETIC FIXTURE - NOT OBSERVED. Cardinal string camera:direction="NE" is not a calibrated numeric bearing; normalized direction_deg remains None and no wedge is rendered.'
   }
 ];
 
-const BBOX = { south: 30.255, west: -97.765, north: 30.285, east: -97.725 };
-const CENTER = { lat: 30.270, lon: -97.745 };
+const BBOX = { south: 37.605, west: -121.915, north: 37.635, east: -121.875 };
+const CENTER = { lat: 37.620, lon: -121.895 };
 
 let state = {
-  selectedId: 'alpr:91010421',
+  selectedId: 'alpr:900000000101',
   view: 'map',
   tab: 'overview',
   filter: 'all',
@@ -864,7 +864,7 @@ function render() {
     byId('hud-coverage').textContent = 'DETAIL ZOOM n/a \u00b7 OUTCOME: NO COVERAGE (US & Canada extract only)';
   } else if (state.mode === 'zoom-in') {
     banner.hidden = false;
-    banner.textContent = 'OUTCOME: ZOOM REQUIRED (28.0\u00b0..32.0\u00b0N, 4.0\u00b0 span > 3.0\u00b0 city limit / >16 z9 tiles) \u2014 Zoom in to a city viewport before querying.';
+    banner.textContent = 'OUTCOME: ZOOM REQUIRED (35.0\u00b0..39.0\u00b0N, 4.0\u00b0 span > 3.0\u00b0 city limit / >16 z9 tiles) \u2014 Zoom in to a city viewport before querying.';
     byId('hud-coverage').textContent = 'DETAIL ZOOM none (>16 tiles at z9) \u00b7 OUTCOME: ZOOM REQUIRED';
   } else if (state.mode === 'saturated') {
     banner.hidden = false;
@@ -872,7 +872,8 @@ function render() {
     byId('hud-coverage').textContent = `DETAIL ZOOM z10 \u00b7 OUTCOME: SATURATED (${visible.length} of ${totalMatching} matching shown)`;
   } else {
     banner.hidden = true;
-    byId('hud-coverage').textContent = `DETAIL ZOOM z12 (\u226416 tiles) \u00b7 OUTCOME: COMPLETE (${visible.length} of ${CAMERAS.length} mapped ALPR shown)`;
+    const filterSuffix = omittedByFilter > 0 ? ` (${visible.length} shown by local filter)` : '';
+    byId('hud-coverage').textContent = `DETAIL ZOOM z12 (\u226416 tiles) \u00b7 OUTCOME: COMPLETE \u00b7 ${CAMERAS.length} of ${CAMERAS.length} mapped${filterSuffix}`;
   }
 
   renderMap(visible);
@@ -902,11 +903,11 @@ function render() {
   byId('ins-title').textContent = `${selected.badge} (${selected.operator || 'Operator unrecorded'})`;
   byId('ins-class-badge').textContent = `${selected.vendorGlyph} ${selected.manufacturer || 'Unspecified ALPR vendor'}`;
   byId('ins-class-badge').className = `badge ${selected.vendorClass === 'flock' ? 'cyan' : 'warn'}`;
-  byId('ins-id').textContent = `${selected.id} (OSM node ${selected.osmId})`;
+  byId('ins-id').textContent = `${selected.id} (synthetic OSM node ${selected.osmId})`;
   byId('ins-manufacturer').textContent = selected.manufacturer || 'Unspecified on OSM node (not assumed to be Flock Safety)';
   byId('ins-operator').textContent = selected.operator || 'Not recorded on OSM node';
   byId('ins-type-zone').textContent = `${selected.cameraType || 'unknown'} · zone: ${selected.zone || 'unrecorded'}${selected.ref ? ` · ref: ${selected.ref}` : ''}`;
-  byId('ins-coords').textContent = `${selected.lat.toFixed(4)}\u00b0 N, ${Math.abs(selected.lon).toFixed(4)}\u00b0 W (tile precision z${selected.zoom}, height unknown)`;
+  byId('ins-coords').textContent = `${selected.lat.toFixed(4)}\u00b0 N, ${Math.abs(selected.lon).toFixed(4)}\u00b0 W (synthetic fixture · tile precision z${selected.zoom}, height unknown)`;
   byId('ins-bearing').textContent = selected.directionDeg !== null
     ? `${selected.directionDeg}\u00b0 clockwise from true north \u00b7 Illustrative 90 m / \u00b120\u00b0 wedge (not calibrated FOV)`
     : `Not recorded (raw tag: ${JSON.stringify(selected.rawDirection)}) \u2014 no wedge drawn`;

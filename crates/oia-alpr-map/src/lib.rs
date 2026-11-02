@@ -1,13 +1,16 @@
 //! Bounded ALPR and Flock camera directory normalization, viewport query,
-//! coordinate precision retention, and illustrative bearing-wedge kernel.
+//! coordinate precision retention, and illustrative bearing-wedge kernel (`CAM-06`).
 //!
 //! Selective Rust port and tightening of `src/layers/alpr/*` from God's Eye View
 //! (`0d1a68160e532ba65dc34b48ea205de6de4028fc`, MIT License, Copyright (c)
 //! Bilawal Sidhu). OpenStreetMap camera directory data remains licensed under
-//! ODbL 1.0 (`© OpenStreetMap contributors`).
+//! ODbL 1.0 (`© OpenStreetMap contributors`), distinct from OIA's `MIT OR Apache-2.0`
+//! code license (`D14`).
 //!
-//! Mapped ALPR records represent community-mapped equipment presence and tags,
-//! never live video feeds, license-plate read logs, or exhaustive road coverage.
+//! Under `CAM-06` (distinct from `CAM-01`/`CAM-02` viewable camera feeds), mapped
+//! ALPR records represent community-mapped equipment assertions and tags only,
+//! never verified hardware deployments, live video feeds, license-plate read logs,
+//! or exhaustive road coverage.
 
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -472,6 +475,9 @@ pub fn classify_manufacturer(
     (None, AlprManufacturerClass::Unspecified)
 }
 
+/// Reserved minimum OpenStreetMap node ID for synthetic OIA test fixtures (`>= 900_000_000_000`).
+pub const SYNTHETIC_OSM_ID_FLOOR: u64 = 900_000_000_000;
+
 /// Raw OpenStreetMap node input from Overpass JSON or an hourly vector-tile extract.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RawOsmNode {
@@ -493,9 +499,12 @@ pub struct RawOsmNode {
     pub survey_date: Option<String>,
     pub osm_timestamp: Option<String>,
     pub source: Option<String>,
+    pub note: Option<String>,
+    pub oia_synthetic: Option<String>,
+    pub synthetic: bool,
 }
 
-/// Normalized, provenance-preserving ALPR directory camera record.
+/// Normalized, provenance-preserving ALPR directory camera record (`CAM-06`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct AlprCameraRecord {
     pub id: String,
@@ -515,6 +524,10 @@ pub struct AlprCameraRecord {
     /// Upstream OSM edit/extract timestamp, never promoted to `last_verified`.
     pub osm_timestamp: Option<String>,
     pub source_tag: Option<String>,
+    /// Preserved `note` tag (including `"SYNTHETIC FIXTURE - NOT OBSERVED"` on fixture records).
+    pub note: Option<String>,
+    /// Explicit synthetic marker carried from `synthetic: true`, `oia:synthetic=true`, or `SYNTHETIC_OSM_ID_FLOOR`.
+    pub synthetic: bool,
 }
 
 impl AlprCameraRecord {
@@ -527,7 +540,9 @@ impl AlprCameraRecord {
     /// Structured readout lines naming the actual source and supplied metadata only.
     pub fn label_details(&self, source_name: &str) -> Vec<String> {
         let mut details = Vec::new();
-        if source_name == "OpenStreetMap" {
+        if self.synthetic {
+            details.push("SYNTHETIC FIXTURE - NOT OBSERVED".to_owned());
+        } else if source_name == "OpenStreetMap" {
             details.push("OSM MAPPED".to_owned());
         } else {
             details.push(format!("Source: {source_name}"));
@@ -552,7 +567,7 @@ impl AlprCameraRecord {
         if !equipment.is_empty() {
             details.push(equipment.join(" · "));
         }
-        if source_name == "OpenStreetMap" {
+        if !self.synthetic && source_name == "OpenStreetMap" {
             details.push("PUBLIC MAP DATA".to_owned());
         }
         details
@@ -586,6 +601,15 @@ pub fn normalize_alpr_node(raw: &RawOsmNode) -> Option<AlprCameraRecord> {
         normalize_direction_deg(raw.camera_direction.as_deref().or(raw.direction.as_deref()));
     let last_verified =
         clean_tag(raw.check_date.as_deref()).or_else(|| clean_tag(raw.survey_date.as_deref()));
+    let note = clean_tag(raw.note.as_deref());
+    let tag_synthetic = raw
+        .oia_synthetic
+        .as_deref()
+        .is_some_and(|val| val.trim().eq_ignore_ascii_case("true"))
+        || note
+            .as_deref()
+            .is_some_and(|n| contains_ascii_case_insensitive(n, "SYNTHETIC FIXTURE"));
+    let synthetic = raw.synthetic || tag_synthetic || osm_id >= SYNTHETIC_OSM_ID_FLOOR;
     Some(AlprCameraRecord {
         id: format!("alpr:{osm_id}"),
         osm_id,
@@ -602,6 +626,8 @@ pub fn normalize_alpr_node(raw: &RawOsmNode) -> Option<AlprCameraRecord> {
         last_verified,
         osm_timestamp: clean_tag(raw.osm_timestamp.as_deref()),
         source_tag: clean_tag(raw.source.as_deref()),
+        note,
+        synthetic,
     })
 }
 
@@ -888,7 +914,7 @@ impl AlprLocalFilter {
     }
 }
 
-/// Coverage outcome for a bounded ALPR viewport query (`GEO-02`, `CAM-02`).
+/// Coverage outcome for a bounded ALPR viewport query (`GEO-02`, `CAM-06`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AlprCoverageStatus {
     /// Viewport exceeds city-scale degree or tile limits; user must zoom in before querying.

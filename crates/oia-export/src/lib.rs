@@ -7,6 +7,8 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::indexing_slicing, clippy::unwrap_used, clippy::expect_used)]
 
+pub mod bundle;
+
 use std::error::Error;
 use std::fmt;
 

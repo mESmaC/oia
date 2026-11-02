@@ -33,6 +33,26 @@ GitHub issues and the [implementation Project](https://github.com/users/mESmaC/p
 6. Treat split or partial work explicitly: track remaining scope in open linked issues and preserve requirement and dependency references. Close phase epics only when all required work and integrated acceptance checks are complete.
 7. If GitHub access is unavailable, state that the claim/status update could not be recorded, keep a local handoff with the issue, scope, and intended status, and reconcile it when access returns. Never report a successful claim or status change without verifying it. This fallback does not authorize taking over work already claimed by another session.
 
+### Coordinate concurrent sessions
+
+Several sessions may work at once in separate worktrees under one GitHub account, so the assignee does not identify an owner; the claim comment does.
+
+1. **Claim only what you are starting.** Claim a package when implementation begins, not every package you expect to reach. A claim on a phase epic records coordination of that phase; it does not reserve its child issues. Release claims you are not actively working on with a comment and return the item to **Todo**.
+2. **Comment first, then status.** Post the claim comment before moving the Project item to **In Progress**. Treat either signal as ownership if the other is missing, and ask on the issue rather than assume the work is free.
+3. **Recheck immediately before claiming,** especially after waiting on user input or a long task. If two claims race, the earlier comment wins and the later session withdraws its claim in a comment.
+4. **Declare shared files.** List in the claim any shared files you expect to change beyond the package's own module: the workspace manifest, `Cargo.lock`, toolchain pins, `docs/spec.md`, `docs/architecture.md`, `AGENTS.md`, and scripts. Keep those edits in minimal, separate hunks without reordering or reformatting. Rebase onto current `main` before opening a PR, and regenerate `Cargo.lock` with Cargo after a rebase rather than hand-merging it.
+5. **Do not copy unmerged prerequisites.** When a package depends on another session's unmerged branch, say so in the claim. Either base the PR on that branch and state the stack, or wait for it to merge.
+6. **Hand off explicitly.** Request a handoff on the issue. The owning session, or the user, releases the work in a comment before anyone else starts. Inactivity alone does not make a claim stale; if the owning session appears to have ended, ask the user.
+7. **Review sessions stay out of implementation.** A session assigned to review records its role on the relevant epic and comments on issues and PRs. It does not push to another session's branch or claim that session's packages.
+
+Check active work with:
+
+```text
+gh project item-list 4 --owner mESmaC --format json --limit 200 --jq '.items[] | select(.status=="In Progress") | .content.number'
+gh issue view <number> --comments
+gh pr list --state open
+```
+
 ## 2. Preserve evidence and analytical quality
 
 OIA's central contract is that a user can inspect how a result follows from its sources. A successful request, attractive visualization, or passing test is not a reason to weaken that contract.

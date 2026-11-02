@@ -1,0 +1,3 @@
+SYNTHETIC LINEAGE FIXTURE — NOT OBSERVED EVIDENCE
+Document: Calibration Advisory 2026-07
+Finding: Anomaly attributed to thermal sensor latch fault in synthetic unit 4.

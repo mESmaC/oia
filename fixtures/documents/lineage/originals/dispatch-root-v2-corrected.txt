@@ -1,0 +1,4 @@
+SYNTHETIC LINEAGE FIXTURE — NOT OBSERVED EVIDENCE
+Record: Coastal Observation Dispatch Edition 2 (Corrected)
+Summary: Correction: Optical track bearing 054 deg true after magnetic declination fix.
+Note: Supersedes Edition 1; prior citations remain bound to Edition 1.

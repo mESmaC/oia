@@ -1,0 +1,26 @@
+[package]
+name = "oia-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "oia"
+path = "src/main.rs"
+
+[dependencies]
+oia-domain = { path = "../oia-domain" }
+oia-time-geo = { path = "../oia-time-geo" }
+oia-store = { path = "../oia-store" }
+oia-ingest = { path = "../oia-ingest" }
+oia-query = { path = "../oia-query" }
+oia-analysis = { path = "../oia-analysis" }
+oia-models = { path = "../oia-models" }
+oia-media = { path = "../oia-media" }
+oia-devices = { path = "../oia-devices" }
+oia-forecast = { path = "../oia-forecast" }
+oia-export = { path = "../oia-export" }
+
+[lints]
+workspace = true

@@ -6,7 +6,7 @@ OIA is a Rust-based intelligence and research suite with selected algorithmic pr
 
 ## 1. Start with the actual repository
 
-At the time these instructions were introduced, OIA contained documentation and assets only. The crate map, interfaces, performance targets, and delivery phases are proposals. Inspect the current tree and configuration before running commands or describing capabilities; update this paragraph when implementation lands.
+OIA includes a 12-crate Rust workspace (`Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` pinned to `1.99.0`) implementing the P0 Evidence Foundation (`crates/oia-*`) alongside a Lean 4 (`v4.35.0`) formal verification package in `proofs/` and architecture decision records in `docs/adr/`. Phases P1–P5 and native renderer/provider integrations remain open work packages; inspect the current tree, ADRs, and configuration before running commands or describing capabilities.
 
 Read the documents relevant to the task:
 
@@ -127,7 +127,7 @@ Differential tests against prior work help detect regressions; independently val
 
 ## 8. Verification commands and scope
 
-There is no established OIA Cargo/Lake workspace or CI command set yet. Check for actual manifests, lockfiles, toolchains, scripts, and CI configuration before issuing build commands. Do not copy Kadmium crate names, versions, ports, or test paths into this repository.
+The repository defines a 12-crate Cargo workspace (`Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` `1.99.0`) and a Lean 4 (`v4.35.0`) package in `proofs/`. Check for actual manifests, lockfiles, toolchains, scripts, and CI configuration before issuing build commands. Do not copy Kadmium crate names, versions, ports, or test paths into this repository.
 
 ### Local automation and functionality first
 

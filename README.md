@@ -30,16 +30,27 @@ Verification claims will be limited to the properties and implementation connect
 
 ## Current status
 
-OIA is at the project-definition stage. This repository currently records the vision; tools, Rust implementations, and Lean proofs have not yet been added.
+The **P0: Evidence Foundation** workspace is implemented and verified locally:
 
-The version 0.1 specification draft consolidates the product scope and a proposed implementation plan:
+- **12-crate Rust workspace** (`rustc 1.99.0`, `edition = "2024"`, `#![forbid(unsafe_code)]`):
+  - `oia-domain`, `oia-time-geo`, `oia-store`, `oia-ingest`, `oia-query`, `oia-analysis`, `oia-models`, `oia-media`, `oia-devices`, `oia-forecast`, `oia-export`, and `oia-app`.
+- **Lean 4 formal verification (`proofs/`, `leanprover/lean4:v4.35.0`)**:
+  - Machine-checked theorems (zero `sorry`/`admit`/project axioms) for source frame selection (`OiaProofs.FrameSelection`), point-in-time forecast cutoff admissibility (`OiaProofs.CutoffAdmissibility`), and DAG dependency invalidation (`OiaProofs.DependencyInvalidation`), paired with Rust correspondence tests.
+- **Architecture Decision Records (`docs/adr/`)**:
+  - [ADR 0001 (D01): Deployment and UI boundary](docs/adr/0001-d01-deployment-and-ui-boundary.md)
+  - [ADR 0002 (D02): Storage and indexing](docs/adr/0002-d02-storage-and-indexing.md)
+  - [ADR 0003 (D14): Project licensing and distribution notices](docs/adr/0003-d14-licensing-and-distribution.md)
+  - [ADR 0004 (D13): Initial Lean 4 proof targets and Rust correspondence](docs/adr/0004-d13-lean-correspondence-target.md)
+
+Phases P1–P5 (external source adapters, 3D globe/sky renderer, media forensics/hardware adapters, hosted collaboration, and market/analogue forecasting) remain open work packages in the [GitHub implementation backlog](docs/backlog.md):
 
 - [Product specification](docs/spec.md): workflows, visual identity, and functional requirements across the suite.
 - [Architecture and data contracts](docs/architecture.md): Rust services, evidence and time models, integrations, storage, and the Lean verification boundary.
-- [Delivery and verification](docs/delivery.md): proposed milestones, acceptance scenarios, release gates, and open decisions.
+- [Delivery and verification](docs/delivery.md): milestones, acceptance scenarios, release gates, and decision register.
 - [GitHub implementation backlog](docs/backlog.md): the Project, phase epics, and linked work packages covering the specification.
-- [Selective reuse inventory](docs/prior-art.md): implementation groundwork in God's Eye View that can inform the Rust implementation.
+- [Selective reuse inventory](docs/prior-art.md): implementation groundwork in God's Eye View and P0 ports into Rust.
+- [Third-party notices](THIRD_PARTY_NOTICES.md) and [MIT license](LICENSE).
 
-The [earlier exploration draft](docs/spec-draft.md) is retained as design history. The specification describes intended behavior; implementation choices and delivery sequencing remain proposals where identified.
+The [earlier exploration draft](docs/spec-draft.md) is retained as design history.
 
 Coding agents should read [AGENTS.md](AGENTS.md) before making changes.

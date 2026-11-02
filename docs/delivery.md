@@ -194,8 +194,8 @@ Decisions belong to the project owner and implementing maintainers. Each resolut
 
 | ID | Decision | Proposed direction or open question | Needed before |
 | --- | --- | --- | --- |
-| D01 | Deployment and UI | Local-first Rust core; resolve native UI versus rendering adapter and initial OS support | P0 application shell |
-| D02 | Storage/indexes | SQLite plus managed blobs initially; choose text/spatial/vector indexing and migration tooling | P0 persistence |
+| D01 | Deployment and UI | Resolved for P0 in [ADR 0001](adr/0001-d01-deployment-and-ui-boundary.md): local-first Rust core (`oia-app`) with typed command/query/event boundary and localhost session-token/origin guard | P0 application shell (resolved) |
+| D02 | Storage/indexes | Resolved for P0 in [ADR 0002](adr/0002-d02-storage-and-indexing.md): atomic WAL-backed snapshot + SHA-256 content-addressed blob store (`oia-store`) and permission-filtered token index (`oia-query`) | P0 persistence (resolved) |
 | D03 | Seed corpus and news sources | Small, documented UAP/disclosure and regional collection with verified source access | P1 adapters |
 | D04 | AI execution | Provider-neutral local/remote interface; select evaluated summarization/OCR/embedding options and data-handling defaults | P1 AI features |
 | D05 | Export formats | Markdown, self-contained HTML, JSON bundle proposed; PDF after render QA | P1 report exporter |
@@ -206,8 +206,8 @@ Decisions belong to the project owner and implementing maintainers. Each resolut
 | D10 | Collaboration and sync | Choose hosted transport/identity, capability matrix, merge rules, and sensitive-data defaults | P4 shared service |
 | D11 | Markets | Choose instruments, providers, calendars, corporate-action handling, historical depth, and licensed uses | P5 market ingestion |
 | D12 | Forecasting | Choose first targets/horizons, baselines, point-in-time datasets, calibration and resolution methods | P5 issued forecasts |
-| D13 | Lean correspondence | Choose first proof target and implementation/model connection method | First proof claim |
-| D14 | Distribution and project licensing | Choose OIA licensing, packaging/update mechanism, supported platforms, and notices process | Public release |
+| D13 | Lean correspondence | Resolved for P0 in [ADR 0004](adr/0004-d13-lean-correspondence-target.md): Lean 4 (`v4.35.0`) proofs in `proofs/` for frame selection, cutoff admissibility, and dependency invalidation with Rust correspondence tests | First proof claim (resolved) |
+| D14 | Distribution and project licensing | Resolved for P0 in [ADR 0003](adr/0003-d14-licensing-and-distribution.md): MIT license for OIA code ([LICENSE](../LICENSE)), separate dataset/asset terms, and [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) | Public release (resolved) |
 
 ## 7. Risk and dependency register
 

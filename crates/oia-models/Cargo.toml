@@ -1,0 +1,13 @@
+[package]
+name = "oia-models"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+oia-domain = { path = "../oia-domain" }
+oia-time-geo = { path = "../oia-time-geo" }
+
+[lints]
+workspace = true

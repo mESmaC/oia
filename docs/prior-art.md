@@ -95,6 +95,21 @@ The same license explicitly excludes third-party datasets and assets. Examples i
 5. Add focused Lean specifications and proofs where they establish useful properties, documenting the connection to Rust and any floating-point assumptions.
 6. Integrate the capability into OIA's shared workspace and validate the end-to-end investigation behavior.
 
-Potential early candidates are time selection and freshness handling, geographic and height-reference primitives, satellite pass calculations, and one source adapter feeding the evidence timeline. Selection and order remain open.
+Potential early candidates are time selection and freshness handling, geographic and height-reference primitives, satellite pass calculations, and one source adapter feeding the evidence timeline.
+
+### P0 ports landed in the Rust workspace
+
+The following contracts from `0d1a68160e532ba65dc34b48ea205de6de4028fc` have been ported into Rust with MIT attribution in [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) and verified against OIA's stricter evidence requirements:
+
+1. **Time-window frame selection and freshness (`src/layers/weather/clock.js`, `clock.test.mjs` → `crates/oia-time-geo/src/lib.rs`, `proofs/OiaProofs/FrameSelection.lean`):**
+   - Ported deterministic closest-capture selection within `[target - max_earliness, target + max_lateness]` with earlier-capture and lexicographic-ID tie-breaking.
+   - Deliberate OIA difference: returns `FrameSelection::NoFrameWithinWindow` rather than silently holding a stale frame outside the allowed window (`A03`). Machine-checked in Lean 4 (`OiaProofs.FrameSelection`) and tested in `crates/oia-time-geo/tests/lean_correspondence.rs`.
+2. **Geographic bounds, longitude normalization, and height datums (`src/data/geoid.js`, `geoid.test.mjs` → `crates/oia-time-geo/src/lib.rs`):**
+   - Ported `[-180, 180)` longitude normalization, dateline-crossing bounding-box containment (`west > east`), and bilinear geoid undulation interpolation for Ellipsoidal ↔ Orthometric height conversions.
+   - Deliberate OIA difference: `AltitudeDatum::Barometric` refuses geoid-undulation conversion (`TimeGeoError::BarometricGeoidConversionForbidden`), and missing altitude remains `AltitudeMeasurement::Missing(MissingReason)` rather than defaulting to `0.0` (`A03`).
+3. **Bounded payload reader, cancellation, and sliding-window rate limiter (`server/providers/common/request.js`, `request.test.mjs`, `rate-limit.js`, `src/utils/rateLimit.js` → `crates/oia-ingest/src/lib.rs`):**
+   - Ported strict byte-limit enforcement (`PayloadTooLarge` with zero partial bytes retained), mid-stream cancellation, fail-safe sliding-window rate limiting (`RateLimiterUnavailable`), and explicit source outcomes (`Success`, `Partial`, `Empty`, `Unavailable`, `Unauthorized`, `RateLimited`, `Malformed`, `Cancelled`, `Superseded`).
+4. **Camera source admission and substitute-view separation (`src/layers/cctv/source.js`, `sourcePolicy.js` → `crates/oia-ingest/src/lib.rs`):**
+   - Ported ordinary-access camera admission (`CAM-01`, `CAM-02`) without requiring owner publication proof, while rejecting interior residential views (`HomeInteriorExcluded`) and keeping `StreetViewFallback`, `StaleStill`, and `SyntheticPlaceholder` ineligible as live scene observations (`A04`).
 
 Document research, source lineage, historical report correlation, image forensics, and recreation prompt export remain OIA workstreams; this inspection does not establish that the reference project implements them.

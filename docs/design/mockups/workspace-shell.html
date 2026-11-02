@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OIA workspace shell — design mockup (fixture data)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/* OIA workspace shell mockup. Static page, no application behind it. Every value shown is fixture content.
+   Tokens follow docs/design/workspace-ui-ux.md §7. */
+:root {
+  --canvas: #0b0f14;
+  --canvas-deep: #070a0e;
+  --glass-1: rgba(16, 22, 30, 0.72);
+  --glass-2: rgba(22, 30, 40, 0.82);
+  --glass-3: rgba(26, 35, 46, 0.94);
+  --line: rgba(255, 255, 255, 0.10);
+  --line-strong: rgba(255, 255, 255, 0.22);
+  --text: #e6edf3;
+  --text-2: #9fb0c0;
+  --text-3: #6b7a8a;
+  --cyan: #45d1ff;
+  --green: #5fe08a;
+  --amber: #f59e2e;
+  --red: #ff6b6b;
+  --violet: #b59cff;
+  --grid: rgba(69, 209, 255, 0.045);
+  --bracket: rgba(69, 209, 255, 0.75);
+  --blur: 16px;
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+}
+/* Reduced transparency: opaque surfaces, no blur. Reduced motion: no transitions. */
+@media (prefers-reduced-transparency: reduce) { :root { --glass-1: #121922; --glass-2: #182230; --glass-3: #1c2733; --blur: 0px; } }
+:root[data-reduce-transparency="true"] { --glass-1: #121922; --glass-2: #182230; --glass-3: #1c2733; --blur: 0px; }
+@media (prefers-reduced-motion: reduce) { :root { --dur-1: 0ms; --dur-2: 0ms; } }
+:root[data-reduce-motion="true"] { --dur-1: 0ms; --dur-2: 0ms; }
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--canvas); color: var(--text); font: 14px/1.45 var(--sans); }
+.shell {
+  width: 1440px; margin: 0 auto; position: relative;
+  /* Canvas: fine grid, two restrained glows, edge vignette. Grid lines are decoration and carry no data. */
+  background:
+    radial-gradient(1400px 900px at 50% 50%, transparent 55%, rgba(0, 0, 0, 0.45) 100%),
+    repeating-linear-gradient(0deg, var(--grid) 0 1px, transparent 1px 48px),
+    repeating-linear-gradient(90deg, var(--grid) 0 1px, transparent 1px 48px),
+    radial-gradient(1200px 600px at 70% -10%, rgba(69, 209, 255, 0.08), transparent 60%),
+    radial-gradient(900px 500px at 10% 110%, rgba(95, 224, 138, 0.06), transparent 60%),
+    var(--canvas);
+  display: grid;
+  grid-template-columns: 196px 1fr 372px;
+  grid-template-rows: auto auto 1fr auto auto;
+  grid-template-areas:
+    "fixture fixture fixture"
+    "command command command"
+    "rail canvas inspector"
+    "timeline timeline timeline"
+    "tray tray tray";
+  min-height: 960px;
+  gap: 0;
+}
+.panel {
+  background: linear-gradient(180deg, rgba(255,255,255,0.035), transparent 38%), var(--glass-1);
+  -webkit-backdrop-filter: blur(var(--blur)); backdrop-filter: blur(var(--blur));
+  border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.07), 0 8px 24px rgba(0,0,0,0.35);
+}
+/* Corner brackets: drawn only around the region that currently holds the selection or focus. */
+.frame { position: relative; }
+.frame::after {
+  content: ""; position: absolute; inset: -2px; pointer-events: none; border-radius: 10px;
+  background:
+    linear-gradient(var(--bracket), var(--bracket)) left 0 top 0 / 18px 1px no-repeat,
+    linear-gradient(var(--bracket), var(--bracket)) left 0 top 0 / 1px 18px no-repeat,
+    linear-gradient(var(--bracket), var(--bracket)) right 0 top 0 / 18px 1px no-repeat,
+    linear-gradient(var(--bracket), var(--bracket)) right 0 top 0 / 1px 18px no-repeat,
+    linear-gradient(var(--bracket), var(--bracket)) left 0 bottom 0 / 18px 1px no-repeat,
+    linear-gradient(var(--bracket), var(--bracket)) left 0 bottom 0 / 1px 18px no-repeat,
+    linear-gradient(var(--bracket), var(--bracket)) right 0 bottom 0 / 18px 1px no-repeat,
+    linear-gradient(var(--bracket), var(--bracket)) right 0 bottom 0 / 1px 18px no-repeat;
+}
+.label { font: 600 11px/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-2); }
+.mono { font-family: var(--mono); font-size: 12px; }
+.muted { color: var(--text-2); }
+.faint { color: var(--text-3); }
+button, .btn { font: inherit; color: var(--text); background: rgba(255,255,255,0.04); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: default; }
+button:focus-visible, [tabindex]:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; box-shadow: 0 0 0 2px var(--canvas); }
+.primary { background: rgba(69, 209, 255, 0.14); border-color: rgba(69, 209, 255, 0.5); }
+
+/* Fixture banner: this is the only "alert" on the page and it is about the page itself. */
+.fixture { grid-area: fixture; margin: 12px 12px 0; padding: 6px 12px; border: 1px dashed var(--violet); border-radius: 6px; color: var(--violet); font-family: var(--mono); font-size: 12px; display: flex; justify-content: space-between; align-items: center; }
+.fixture .controls { display: flex; gap: 8px; align-items: center; color: var(--text-2); font-family: var(--sans); }
+.fixture label { display: inline-flex; gap: 6px; align-items: center; }
+
+/* A. Command field and G. context strip */
+.command { grid-area: command; margin: 10px 12px; display: grid; gap: 8px; }
+.cmd-row { display: grid; grid-template-columns: 56px 1fr auto; align-items: center; gap: 10px; }
+.wordmark { font-weight: 700; letter-spacing: 0.14em; font-size: 15px; display: grid; line-height: 1; gap: 3px; }
+.wordmark small { font: 500 9px/1 var(--mono); letter-spacing: 0.14em; color: var(--text-3); }
+.wordmark small i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--green); margin-right: 4px; vertical-align: 0; }
+.cmd { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--glass-2); -webkit-backdrop-filter: blur(var(--blur)); backdrop-filter: blur(var(--blur)); border: 1px solid var(--line-strong); border-radius: 10px; }
+.cmd input { flex: 1; background: transparent; border: 0; color: var(--text); font: 14px var(--sans); }
+.cmd input::placeholder { color: var(--text-3); }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; font-size: 12px; color: var(--text-2); white-space: nowrap; }
+.chip.scope { border-color: rgba(69, 209, 255, 0.45); color: var(--text); }
+.kbd { font-family: var(--mono); font-size: 11px; color: var(--text-3); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+.context { display: flex; align-items: center; gap: 6px; padding: 0 4px; font-size: 13px; color: var(--text-2); }
+.context .seg { padding: 2px 8px; border-radius: 6px; border: 1px solid transparent; }
+.context .seg b { color: var(--text); font-weight: 600; }
+.context .seg.current { border-color: rgba(69, 209, 255, 0.45); color: var(--text); }
+.context .sep { color: var(--text-3); }
+.context .spacer { flex: 1; }
+
+/* B. Navigation rail */
+.rail { grid-area: rail; margin: 0 0 0 12px; padding: 10px 8px; display: flex; flex-direction: column; gap: 2px; }
+.rail a { display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 6px; color: var(--text-2); text-decoration: none; border: 1px solid transparent; }
+.rail a .glyph { font-family: var(--mono); text-align: center; color: var(--text-2); }
+.rail a.active { color: var(--text); background: rgba(69, 209, 255, 0.08); border-color: rgba(69, 209, 255, 0.25); box-shadow: inset 2px 0 0 var(--cyan); }
+.rail a.active .glyph { color: var(--cyan); }
+.rail a.off { color: var(--text-3); }
+.rail a.off .glyph { color: var(--text-3); }
+.rail a .why { font-size: 10px; color: var(--text-3); letter-spacing: 0.04em; text-transform: uppercase; }
+.rail .group { margin: 10px 8px 4px; }
+
+/* C. Evidence canvas: document reader */
+.canvas { grid-area: canvas; margin: 0 10px; display: grid; grid-template-rows: auto auto 1fr auto; gap: 8px; min-height: 0; }
+/* View-state readout: every field describes the current view (document, anchor, selection, clock). Nothing ambient. */
+.readout { display: flex; gap: 18px; padding: 6px 12px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; color: var(--text-2); border-top: 1px solid var(--line); }
+.readout b { color: var(--text); font-weight: 500; }
+.readout .k { color: var(--text-3); text-transform: uppercase; margin-right: 6px; }
+.canvas-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 4px 6px 0; }
+.canvas-head h1 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+.canvas-head .meta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.coverage { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; padding: 8px 12px; }
+.coverage .bar { display: grid; grid-template-columns: repeat(9, 1fr); gap: 2px; height: 10px; }
+.coverage .bar span { border-radius: 3px; background: var(--green); }
+.coverage .bar span.bad { background: repeating-linear-gradient(135deg, var(--amber) 0 3px, transparent 3px 6px); border: 1px solid var(--amber); }
+.reader { display: grid; grid-template-columns: 76px 1fr; gap: 0; background: var(--glass-3); border-radius: 10px; border: 1px solid var(--line); overflow: hidden; }
+.anchors { border-right: 1px solid var(--line); padding: 18px 0; font-family: var(--mono); font-size: 11px; color: var(--text-3); }
+.anchors div { height: 28px; line-height: 28px; text-align: right; padding-right: 10px; }
+.anchors div.hl { color: var(--cyan); }
+.text { padding: 18px 28px 18px 24px; font-size: 16px; line-height: 28px; max-width: 72ch; }
+.text p { margin: 0 0 28px; }
+.text h2 { font-size: 16px; margin: 0 0 28px; letter-spacing: 0.02em; }
+.text .doc-id { font-family: var(--mono); font-size: 12px; color: var(--text-2); margin-bottom: 28px; }
+.gap { display: flex; align-items: center; gap: 10px; margin: 0 0 28px; padding: 6px 10px; border: 1px dashed var(--amber); border-radius: 6px; color: var(--text-2); font-size: 13px; line-height: 1.4; }
+.gap .g { color: var(--amber); font-family: var(--mono); }
+.sel { background: rgba(69, 209, 255, 0.14); box-shadow: inset 0 -1px 0 var(--cyan); border-radius: 2px; padding: 1px 0; }
+.popover { position: absolute; z-index: 5; left: 760px; top: 560px; background: var(--glass-2); -webkit-backdrop-filter: blur(var(--blur)); backdrop-filter: blur(var(--blur)); border: 1px solid var(--line-strong); border-radius: 8px; padding: 6px; display: flex; gap: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.35); }
+.popover button { font-size: 12px; }
+.corner { position: absolute; width: 10px; height: 10px; border-color: var(--cyan); border-style: solid; border-width: 0; }
+
+/* D. Inspector */
+.inspector { grid-area: inspector; margin: 0 12px 0 0; display: flex; flex-direction: column; min-height: 0; }
+.tabs { display: flex; border-bottom: 1px solid var(--line); padding: 0 6px; }
+.tabs button { background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 10px 10px; color: var(--text-2); font-size: 13px; }
+.tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--cyan); }
+.ins-body { padding: 12px 14px; display: grid; gap: 14px; overflow: hidden; }
+.section h3 { margin: 0 0 8px; }
+.kv { display: grid; grid-template-columns: 112px 1fr; gap: 4px 10px; font-size: 13px; }
+.kv dt { color: var(--text-2); }
+.kv dd { margin: 0; }
+.kv dd.mono { font-size: 12px; color: var(--text); overflow-wrap: anywhere; }
+.state { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; }
+.state .g { font-family: var(--mono); font-size: 12px; }
+.state.ok { border-color: rgba(95, 224, 138, 0.5); } .state.ok .g { color: var(--green); }
+.state.warn { border-color: rgba(245, 158, 46, 0.55); } .state.warn .g { color: var(--amber); }
+.state.bad { border-color: rgba(255, 107, 107, 0.55); } .state.bad .g { color: var(--red); }
+.state.gen { border-color: rgba(181, 156, 255, 0.55); border-style: dashed; } .state.gen .g { color: var(--violet); }
+.state.neutral .g { color: var(--text-2); }
+.claim { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: grid; gap: 8px; }
+.claim q { font-size: 14px; }
+.claim .row { display: flex; gap: 6px; flex-wrap: wrap; }
+.notes { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: rgba(255,255,255,0.02); }
+.notes textarea { width: 100%; min-height: 56px; background: transparent; color: var(--text); border: 0; font: 13px/1.45 var(--sans); resize: none; }
+.divider { height: 1px; background: var(--line); }
+
+/* E. Shared timeline */
+.timeline { grid-area: timeline; margin: 10px 12px 0; padding: 10px 14px 12px; display: grid; grid-template-columns: 240px 1fr; gap: 16px; align-items: center; }
+.clock { display: grid; gap: 4px; }
+.clock .mode { display: inline-flex; gap: 8px; align-items: center; }
+.clock .mode .state { font-family: var(--mono); letter-spacing: 0.08em; }
+.track { position: relative; height: 54px; }
+.track .axis { position: absolute; left: 0; right: 0; top: 34px; height: 1px; background: var(--line-strong); }
+.track .tick { position: absolute; top: 30px; width: 1px; height: 9px; background: var(--line-strong); }
+.track .tick span { position: absolute; top: 12px; left: 0; transform: translateX(-50%); font-family: var(--mono); font-size: 10px; color: var(--text-3); white-space: nowrap; }
+.mark { position: absolute; top: 12px; transform: translateX(-50%); display: grid; justify-items: center; gap: 2px; font-family: var(--mono); font-size: 10px; color: var(--text-2); }
+.mark .g { font-size: 13px; line-height: 1; color: var(--text); }
+.mark .g.c { color: var(--cyan); }
+.range { position: absolute; top: 31px; height: 7px; border-radius: 3px; background: rgba(69, 209, 255, 0.22); border: 1px solid rgba(69, 209, 255, 0.55); }
+.cursor { position: absolute; top: 6px; width: 1px; height: 36px; background: var(--cyan); }
+
+/* F. Job tray */
+.tray { grid-area: tray; margin: 8px 12px 12px; padding: 8px 14px; display: grid; grid-template-columns: auto 1fr; gap: 16px; align-items: center; }
+.jobs { display: flex; gap: 10px; }
+.job { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: center; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; min-width: 280px; }
+.job .name { font-size: 13px; }
+.job .prog { grid-column: 1 / -1; height: 4px; background: rgba(255,255,255,0.08); border-radius: 2px; overflow: hidden; }
+.job .prog i { display: block; height: 100%; width: 0; background: var(--cyan); }
+.job .sub { grid-column: 1 / -1; font-size: 12px; color: var(--text-2); }
+.job button { font-size: 12px; padding: 2px 8px; }
+.job.off { opacity: 0.7; }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <div class="fixture" role="note">
+    <span>FIXTURE DATA · design mockup · no live sources, no application behind this page · document FIXTURE-DOC-0007 is synthetic</span>
+    <span class="controls">
+      <label><input type="checkbox" id="rt"> Reduced transparency</label>
+      <label><input type="checkbox" id="rm"> Reduced motion</label>
+    </span>
+  </div>
+
+  <!-- A. Command field + G. context strip -->
+  <header class="command">
+    <div class="cmd-row">
+      <div class="wordmark">OIA<small><i aria-hidden="true"></i>LOCAL</small></div>
+      <div class="cmd" role="search">
+        <span class="chip scope">Scope: this case ▾</span>
+        <input type="text" aria-label="Search, identifier, place, or date" placeholder="Search text, or use id:  near:  t:  in:  — Enter runs a query; nothing is changed without confirmation">
+        <span class="kbd">Ctrl K</span>
+      </div>
+      <button class="btn">Save <span class="faint">· private</span></button>
+    </div>
+    <nav class="context" aria-label="Shared context">
+      <span class="seg"><span class="label">Case</span> &nbsp;<b>Why do the 1994 valley accounts disagree on direction?</b></span>
+      <span class="sep">›</span>
+      <span class="seg"><span class="label">Area</span> &nbsp;<b>≈ 12 km region</b> <span class="faint">(reported, approximate)</span></span>
+      <span class="sep">›</span>
+      <span class="seg"><span class="label">Interval</span> &nbsp;<b class="mono">1994-03-14 20:00 → 23:00</b> <span class="faint">America/Denver</span></span>
+      <span class="sep">›</span>
+      <span class="seg current"><span class="label">Selected</span> &nbsp;<b>FIXTURE-DOC-0007 · v2</b></span>
+      <span class="spacer"></span>
+      <button class="btn">← Route back <span class="faint">to search results</span></button>
+    </nav>
+  </header>
+
+  <!-- B. Navigation rail -->
+  <nav class="rail panel" aria-label="Instruments">
+    <a href="#" ><span class="glyph">◫</span><span>Case</span></a>
+    <a href="#" class="active" aria-current="page"><span class="glyph">▣</span><span>Library</span></a>
+    <a href="#"><span class="glyph">≋</span><span>News</span></a>
+    <a href="#"><span class="glyph">¶</span><span>Report</span><span class="why">draft · 2 uncited</span></a>
+    <a href="#"><span class="glyph">⇪</span><span>Export</span></a>
+    <div class="group label">Later phases</div>
+    <a href="#" class="off" aria-disabled="true"><span class="glyph">◎</span><span>Globe</span><span class="why">not in this build</span></a>
+    <a href="#" class="off" aria-disabled="true"><span class="glyph">✦</span><span>Sky</span><span class="why">not in this build</span></a>
+    <a href="#" class="off" aria-disabled="true"><span class="glyph">▦</span><span>Media</span><span class="why">not in this build</span></a>
+    <a href="#" class="off" aria-disabled="true"><span class="glyph">◈</span><span>Forecasts</span><span class="why">not in this build</span></a>
+    <div class="group label">Workspace</div>
+    <a href="#"><span class="glyph">⟳</span><span>Jobs</span><span class="why">2 running</span></a>
+    <a href="#"><span class="glyph">⚙</span><span>Settings</span></a>
+  </nav>
+
+  <!-- C. Evidence canvas: document reader -->
+  <main class="canvas" aria-label="Evidence canvas: document reader">
+    <div class="canvas-head">
+      <h1>Aerial observation summary, valley district, March 1994 <span class="faint">(synthetic fixture)</span></h1>
+      <div class="meta">
+        <span class="state neutral"><span class="g">▣</span>Source</span>
+        <span class="state ok"><span class="g">●</span>Available</span>
+        <span class="state neutral"><span class="g">▲</span><span class="mono">published 1994-06-02</span></span>
+        <button class="btn">Original bytes</button>
+      </div>
+    </div>
+    <div class="coverage panel" role="status">
+      <span class="label">Extraction coverage</span>
+      <div class="bar" aria-label="7 of 9 pages extracted">
+        <span></span><span></span><span></span><span class="bad"></span><span></span><span></span><span></span><span class="bad"></span><span></span>
+      </div>
+      <span class="mono muted">7 of 9 pages extracted · pages 4, 8 unreadable (OCR failed) · run <span class="faint">OCR-fixture-run-03</span></span>
+    </div>
+    <article class="reader frame">
+      <div class="anchors" aria-hidden="true">
+        <div>p3.¶1</div><div></div><div></div><div></div><div>p3.¶2</div><div></div><div></div><div class="hl">p3.¶3</div><div></div><div></div><div></div><div>p4</div><div></div><div>p5.¶1</div><div></div><div></div><div></div>
+      </div>
+      <div class="text">
+        <div class="doc-id">FIXTURE-DOC-0007 · version 2 of 2 · sha256 3f9a…c21e · extracted text, page 3</div>
+        <h2>3. Reported observations</h2>
+        <p>Three written accounts were received between 15 and 22 March. Each describes a slow-moving light above the ridge line during the evening of 14 March. The accounts do not agree on the direction of travel.</p>
+        <p>The first account, from a resident on the eastern road, places the light moving <span class="sel" tabindex="0" aria-label="Selected passage">from the north-west toward the south-east over approximately eight minutes</span>, with no sound reported. The reported time was "about twenty to ten", local.</p>
+        <div class="gap"><span class="g">p4 ◌ unreadable</span> Page 4 did not extract. The retained original is available under Original bytes. Text is not inferred for this page.</div>
+        <p>The third account, received by letter, describes two lights rather than one and places them east of the ridge. The author did not record a time. The weather observer's log for the evening notes broken cloud at an unstated height.</p>
+      </div>
+    </article>
+    <div class="popover" role="toolbar" aria-label="Passage actions">
+      <button class="primary">Cite in report</button><button>Record claim</button><button>Add note</button>
+    </div>
+    <div class="readout" role="status" aria-label="View state">
+      <span><span class="k">View</span><b>document · extracted text</b></span>
+      <span><span class="k">Page</span><b>3 / 9</b></span>
+      <span><span class="k">Anchor</span><b>p3.¶3</b></span>
+      <span><span class="k">Selection</span><b>71 chars</b></span>
+      <span><span class="k">Version</span><b>v2 · pinned</b></span>
+      <span><span class="k">Clock</span><b>21:40 ±15m · historical</b></span>
+      <span><span class="k">Overlays</span><b>on</b></span>
+    </div>
+  </main>
+
+  <!-- D. Inspector -->
+  <aside class="inspector panel" aria-label="Inspector">
+    <div class="tabs" role="tablist">
+      <button role="tab" aria-selected="true">Source</button>
+      <button role="tab">Claims <span class="faint">3</span></button>
+      <button role="tab">Notes</button>
+      <button role="tab">Lineage</button>
+      <button role="tab">Runs</button>
+    </div>
+    <div class="ins-body">
+      <div class="section">
+        <h3 class="label">Source record · read-only</h3>
+        <dl class="kv">
+          <dt>Record</dt><dd class="mono">src_01HFX…9Q · v2</dd>
+          <dt>Origin class</dt><dd><span class="state neutral"><span class="g">▣</span>Acquired source material</span></dd>
+          <dt>Provider</dt><dd>Fixture public-records archive <span class="faint">(synthetic)</span></dd>
+          <dt>Published</dt><dd class="mono">1994-06-02 <span class="faint">(date only, source stated)</span></dd>
+          <dt>Retrieved</dt><dd class="mono">2026-10-28 14:02:11Z</dd>
+          <dt>Revised</dt><dd class="mono">v2 supersedes v1 · 2026-10-30 <span class="faint">redaction differs p.6</span></dd>
+          <dt>Blob</dt><dd class="mono">sha256 3f9a7c…c21e · 1,284,330 bytes</dd>
+          <dt>Availability</dt><dd><span class="state ok"><span class="g">●</span>Available</span></dd>
+          <dt>Source health</dt><dd><span class="state warn"><span class="g">◐</span>Stale</span> <span class="faint">last acquisition 4 d ago</span></dd>
+          <dt>Reuse</dt><dd>Viewing: recorded · Automated processing: <b>unknown</b> · Redistribution: <b>not recorded</b></dd>
+        </dl>
+      </div>
+      <div class="divider"></div>
+      <div class="section">
+        <h3 class="label">Claim anchored at p3.¶3</h3>
+        <div class="claim">
+          <q>The light moved from the north-west toward the south-east over approximately eight minutes.</q>
+          <div class="muted" style="font-size:12px">Claimant: first account author (unnamed) · temporal scope: 1994-03-14 evening, reported local</div>
+          <div class="row">
+            <span class="state neutral" title="Assessment"><span class="g">○</span>Unsupported by available evidence</span>
+            <span class="state neutral" title="Review"><span class="g">◻</span>Unreviewed</span>
+          </div>
+          <div class="row">
+            <span class="state bad"><span class="g">✕</span>1 contradicting <span class="faint">(third account)</span></span>
+            <span class="state neutral"><span class="g">…</span>0 independent sources</span>
+          </div>
+          <div class="row"><button>Assess</button><button>Request review</button><button>Discriminating evidence</button></div>
+        </div>
+      </div>
+      <div class="divider"></div>
+      <div class="section">
+        <h3 class="label">Your notes · separate from the source</h3>
+        <div class="notes">
+          <textarea aria-label="Your notes">Direction conflict may be a viewpoint difference: east road vs. west of ridge. Need the second account's position.</textarea>
+          <div class="row" style="display:flex;gap:6px;align-items:center;justify-content:space-between">
+            <span class="state gen"><span class="g">◇</span>Inference · yours</span>
+            <button>Save note <span class="faint">· private</span></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- E. Shared timeline -->
+  <section class="timeline panel" aria-label="Shared timeline">
+    <div class="clock">
+      <span class="label">Investigation clock</span>
+      <div class="mode">
+        <span class="state neutral"><span class="g">▮</span>HISTORICAL</span>
+        <span class="mono">1994-03-14 21:40 <span class="muted">±15 min</span></span>
+      </div>
+      <span class="faint" style="font-size:12px">Reported local, America/Denver · this document is not time-indexed</span>
+    </div>
+    <div class="track" aria-label="Timeline, 1994 to 2026, compressed">
+      <div class="axis"></div>
+      <div class="tick" style="left:4%"><span>1994-03-14 20:00</span></div>
+      <div class="tick" style="left:30%"><span>23:00</span></div>
+      <div class="tick" style="left:48%"><span>1994-06</span></div>
+      <div class="tick" style="left:76%"><span>2026-10</span></div>
+      <div class="tick" style="left:96%"><span>now</span></div>
+      <div class="range" style="left:14%; width:8%" title="Reported event time, ±15 min"></div>
+      <div class="cursor" style="left:18%"></div>
+      <div class="mark" style="left:18%"><span class="g c">◆</span>event ≈</div>
+      <div class="mark" style="left:48%"><span class="g">▲</span>published</div>
+      <div class="mark" style="left:64%"><span class="g">▽</span>retrieved</div>
+      <div class="mark" style="left:76%"><span class="g">△</span>revised v2</div>
+      <div class="mark" style="left:88%"><span class="g">◇</span>OCR run</div>
+    </div>
+  </section>
+
+  <!-- F. Job tray -->
+  <section class="tray panel" aria-label="Job tray">
+    <div><span class="label">Jobs</span> <span class="mono muted">2 running · 1 failed · 1 superseded</span></div>
+    <div class="jobs">
+      <div class="job">
+        <span class="name"><span class="state neutral"><span class="g">⟳</span>Running</span> OCR · FIXTURE-DOC-0007</span>
+        <button>Cancel</button>
+        <div class="prog"><i style="width:78%"></i></div>
+        <span class="sub mono">7 of 9 pages · reported by worker</span>
+      </div>
+      <div class="job">
+        <span class="name"><span class="state neutral"><span class="g">⟳</span>Running</span> Acquire · fixture archive listing</span>
+        <button>Cancel</button>
+        <div class="prog" aria-label="Progress not reported"><i style="width:0"></i></div>
+        <span class="sub mono">progress not reported</span>
+      </div>
+      <div class="job">
+        <span class="name"><span class="state bad"><span class="g">✕</span>Failed</span> Acquire · https://example.invalid/release-2</span>
+        <button>Retry</button>
+        <span class="sub mono">unavailable · HTTP 503 · attempt 2 of 3</span>
+      </div>
+      <div class="job off">
+        <span class="name"><span class="state neutral"><span class="g">⤳</span>Superseded</span> Search · "ridge light 1994"</span>
+        <button>Open result</button>
+        <span class="sub mono">finished after the query changed · not applied</span>
+      </div>
+    </div>
+  </section>
+
+</div>
+<script>
+  // Demo toggles only. They set attributes that the stylesheet maps to opaque surfaces and zero-duration motion.
+  document.getElementById('rt').addEventListener('change', e => document.documentElement.setAttribute('data-reduce-transparency', e.target.checked));
+  document.getElementById('rm').addEventListener('change', e => document.documentElement.setAttribute('data-reduce-motion', e.target.checked));
+</script>
+</body>
+</html>

@@ -1,0 +1,999 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OIA — Flock &amp; ALPR camera directory map (interactive fixture prototype)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/* Self-contained offline design prototype for #28 / #23 / #16. No remote loads, live feeds, or plate-read access. */
+:root {
+  color-scheme: dark;
+  --glass: rgba(10, 15, 20, 0.88);
+  --solid: var(--card, #0c1219);
+  --line: var(--border, #344451);
+  --line-subtle: rgba(255, 255, 255, 0.09);
+  --text: var(--foreground, #e6edf3);
+  --muted: var(--muted-foreground, #a2b0bc);
+  --cyan: var(--info, #45d1ff);
+  --amber: var(--warning, #ffc06b);
+  --coral: var(--destructive, #ff6474);
+  --green: var(--success, #3ddc97);
+  --violet: var(--accent, #c4b1ff);
+  --blur: 18px;
+  --duration: 120ms;
+  --sans: var(--font-sans, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif);
+  --mono: var(--font-mono, ui-monospace, "Cascadia Mono", Consolas, monospace);
+}
+@media (prefers-reduced-transparency: reduce) { :root { --glass: var(--solid); --blur: 0px; } }
+:root[data-reduce-transparency="true"] { --glass: var(--solid); --blur: 0px; }
+@media (prefers-reduced-motion: reduce) { :root { --duration: 0ms; } }
+:root[data-reduce-motion="true"] { --duration: 0ms; }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; color: var(--text); font: 14px/1.5 var(--sans); }
+button, input, select, summary { font: inherit; }
+button, summary { cursor: pointer; }
+button {
+  color: var(--text);
+  background: var(--secondary, #111b24);
+  border: 1px solid var(--line);
+  border-radius: var(--radius, 8px);
+  padding: 7px 11px;
+  min-height: 38px;
+  transition: border-color var(--duration), background-color var(--duration);
+}
+button:hover:not(:disabled) { border-color: var(--cyan); }
+button:disabled { color: var(--muted); opacity: 0.65; cursor: not-allowed; }
+button[aria-pressed="true"], button[aria-selected="true"], button[aria-current="page"], .primary {
+  border-color: var(--cyan);
+  background: #102b36;
+}
+:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+a { color: var(--cyan); }
+h1, h2, h3, p { margin: 0; }
+h1 { font-size: 18px; line-height: 1.35; font-weight: 600; }
+h2 { font-size: 15px; font-weight: 600; }
+h3 { font-size: 13px; font-weight: 600; }
+small, .muted { color: var(--muted); }
+small { font-size: 12px; }
+.k { font: 500 11px/1.45 var(--mono); letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
+.mono, .v { font-family: var(--mono); }
+.glass {
+  background: var(--glass);
+  backdrop-filter: blur(var(--blur));
+  border: 1px solid var(--line);
+  border-radius: var(--radius, 14px);
+  padding: 16px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+}
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 3px 9px;
+  font: 500 11px/1.35 var(--mono);
+}
+.badge.cyan { color: var(--cyan); border-color: rgba(69, 209, 255, 0.45); background: rgba(16, 43, 54, 0.65); }
+.badge.warn { color: var(--amber); border-color: rgba(255, 192, 107, 0.5); background: rgba(52, 36, 12, 0.55); }
+.badge.fixture-badge { color: var(--violet); border-style: dashed; }
+.row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.stack { display: grid; gap: 10px; }
+.skip { position: fixed; top: -100px; left: 12px; z-index: 100; background: var(--solid); padding: 10px 14px; border: 1px solid var(--cyan); border-radius: 8px; }
+.skip:focus { top: 12px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+.stage {
+  max-width: 1820px;
+  margin: auto;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 136px minmax(0, 1fr) 368px;
+  grid-template-rows: auto auto auto auto auto;
+  grid-template-areas:
+    "fixture fixture fixture"
+    "identity identity clock"
+    "rail workspace inspector"
+    "rail timeline inspector"
+    "readout dock jobs";
+}
+.stage > * { min-width: 0; }
+.fixture {
+  grid-area: fixture;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+  color: var(--violet);
+  font-size: 12px;
+}
+.fixture label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); min-height: 30px; cursor: pointer; }
+.ident { grid-area: identity; display: flex; gap: 16px; align-items: center; }
+.wordmark { color: var(--cyan); font: 700 20px/1 var(--mono); letter-spacing: 0.16em; }
+.case { display: grid; gap: 6px; }
+.clock { grid-area: clock; padding: 12px 14px; display: grid; gap: 4px; }
+.clock .v { font-size: 15px; }
+.rail { grid-area: rail; display: grid; align-content: start; gap: 6px; padding: 8px; align-self: start; }
+.rail button { text-align: left; padding: 8px 9px; background: transparent; }
+.rail button span { color: var(--cyan); display: inline-block; width: 18px; font-family: var(--mono); }
+.rail small { display: block; font-size: 11px; }
+.rail hr { width: 100%; border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+
+.workspace { grid-area: workspace; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.toolbar h2 { margin-right: auto; }
+.filter-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: space-between; }
+.filter-group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.local-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 12px;
+  border-radius: 10px;
+  border: 1px dashed var(--amber);
+  background: rgba(52, 36, 12, 0.45);
+  color: var(--amber);
+  font-size: 12px;
+}
+.local-chip button { min-height: 30px; padding: 4px 9px; font-size: 12px; }
+
+.map-frame {
+  flex: 1;
+  position: relative;
+  min-height: 410px;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 52% 46%, #071520 0%, #03090f 58%, #000000 100%);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+}
+.map-hud-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line-subtle);
+  background: rgba(6, 10, 14, 0.78);
+  font: 11px/1.4 var(--mono);
+}
+.map-svg-wrap { position: relative; flex: 1; min-height: 330px; }
+.canvas { width: 100%; height: 100%; display: block; }
+svg text { font-family: var(--mono); user-select: none; }
+.camera-node { cursor: pointer; }
+.camera-node:focus-visible { outline: none; }
+.camera-node:focus-visible .focus-ring { opacity: 1; }
+.focus-ring { opacity: 0; transition: opacity var(--duration); }
+.map-hud-bottom {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line-subtle);
+  background: rgba(6, 10, 14, 0.82);
+  font-size: 11px;
+}
+.legend { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; font: 11px/1.3 var(--mono); color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.state-banner {
+  position: absolute;
+  inset: 52px 16px auto 16px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--amber);
+  background: rgba(12, 18, 25, 0.94);
+  color: var(--text);
+  font-size: 13px;
+  pointer-events: none;
+}
+
+.camera-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+.camera-strip button {
+  text-align: left;
+  padding: 7px 9px;
+  display: grid;
+  gap: 2px;
+}
+.camera-strip button[data-selected="true"] {
+  border-color: var(--coral);
+  background: rgba(48, 16, 24, 0.65);
+}
+.camera-strip strong { font: 600 12px/1.3 var(--mono); display: flex; justify-content: space-between; gap: 4px; }
+.camera-strip small { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.inspector { grid-area: inspector; padding: 14px; align-self: start; display: grid; gap: 12px; overflow-wrap: anywhere; }
+.tabs { display: flex; gap: 6px; }
+.tabs button { flex: 1; }
+dl { display: grid; grid-template-columns: 108px minmax(0, 1fr); gap: 8px 10px; margin: 0; font-size: 12.5px; }
+dt { color: var(--muted); font: 500 11px/1.4 var(--mono); text-transform: uppercase; }
+dd { margin: 0; }
+.quote { border-left: 2px solid var(--cyan); padding: 9px 12px; background: #09151d; margin: 0; font-size: 12.5px; }
+.code-box {
+  background: #050a0e;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: 11px/1.45 var(--mono);
+  color: var(--muted);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.coverage-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.coverage-table caption { text-align: left; margin-bottom: 6px; font-weight: 600; color: var(--text); }
+.coverage-table th, .coverage-table td { border-bottom: 1px solid var(--line); padding: 5px 4px; text-align: left; }
+.coverage-table th { color: var(--muted); font: 500 11px var(--mono); }
+
+.timeline { grid-area: timeline; padding: 12px 14px; display: grid; gap: 8px; }
+.time-track { height: 28px; position: relative; margin: 4px 6px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, 0.02); border-radius: 4px; }
+.t-mark { position: absolute; top: 3px; transform: translateX(-50%); font: 12px/1 var(--mono); }
+.t-mark.survey { color: var(--green); }
+.t-mark.osm { color: var(--cyan); top: 13px; }
+.time-labels { display: flex; justify-content: space-between; color: var(--muted); font: 11px var(--mono); }
+
+.readout { grid-area: readout; align-self: center; font-size: 12px; overflow-wrap: anywhere; }
+.dock { grid-area: dock; padding: 10px 12px; display: grid; gap: 6px; align-self: end; }
+.search-row { display: flex; gap: 8px; }
+.dock input { width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: #02070b; color: var(--text); padding: 8px 10px; }
+.dock input::placeholder { color: var(--muted); }
+.jobs { grid-area: jobs; padding: 10px 12px; align-self: end; font-size: 12px; }
+.jobs summary { min-height: 28px; font-weight: 500; }
+.jobs p { margin-top: 6px; }
+
+[data-clean="true"] .overlay { display: none; }
+.stage[data-focused="true"] {
+  grid-template-columns: minmax(0, 1fr) 368px;
+  grid-template-areas:
+    "fixture fixture"
+    "identity clock"
+    "workspace inspector"
+    "workspace inspector"
+    "dock jobs";
+}
+.stage[data-focused="true"] .rail,
+.stage[data-focused="true"] .timeline,
+.stage[data-focused="true"] .readout { display: none; }
+
+@media (max-width: 1180px) {
+  .stage, .stage[data-focused="true"] {
+    grid-template-columns: 120px minmax(0, 1fr);
+    grid-template-rows: auto;
+    grid-template-areas:
+      "fixture fixture"
+      "identity identity"
+      "rail clock"
+      "rail workspace"
+      "rail timeline"
+      "rail inspector"
+      "readout dock"
+      "jobs jobs";
+  }
+  .camera-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 680px) {
+  .stage, .stage[data-focused="true"] { display: flex; flex-direction: column; padding: 10px; }
+  .camera-strip { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#workspace">Skip to Flock / ALPR map canvas</a>
+<div class="stage" id="stage" data-clean="false" data-focused="false">
+  <div class="fixture" role="note">
+    <span>&#x25C7; Interactive prototype &middot; synthetic Austin OpenStreetMap ALPR fixture &middot; mapped equipment locations only (no live video or plate records)</span>
+    <div class="row">
+      <label><input type="checkbox" id="rt"> Opaque panels</label>
+      <label><input type="checkbox" id="rm"> Reduced motion</label>
+    </div>
+  </div>
+
+  <header class="ident">
+    <b class="wordmark">OIA</b>
+    <div class="case">
+      <span class="k">Case / Austin corridor camera audit &rsaquo; Area: 30.255&deg;..30.285&deg; N, 97.765&deg;..97.725&deg; W</span>
+      <h1>Where are Flock Safety and other ALPR cameras mapped along the Congress &amp; I-35 corridor?</h1>
+      <div class="row">
+        <span class="badge cyan">&#x25CF; 8 mapped ALPR nodes &middot; 5 Flock Safety &middot; 2 other named &middot; 1 unspecified</span>
+        <span class="badge fixture-badge">&#x25C7; Synthetic ODbL directory fixture</span>
+      </div>
+    </div>
+  </header>
+
+  <section class="clock glass" aria-label="Investigation clock and extract freshness">
+    <span class="k">&#x25AE; Directory snapshot &middot; Historical mode</span>
+    <span class="v">2026-10-30 12:00 UTC</span>
+    <small>OSM extract z12 &middot; edit time &ne; field verification</small>
+  </section>
+
+  <nav class="rail glass" aria-label="Instruments">
+    <button type="button" id="nav-cameras" aria-current="page"><span aria-hidden="true">&#x25CE;</span>Cameras<small>ALPR directory map</small></button>
+    <button type="button" id="nav-query"><span aria-hidden="true">&#x25A3;</span>Overpass QL<small>Contract &amp; query</small></button>
+    <hr>
+    <button type="button" disabled>Live feeds<small>None for ALPR nodes</small></button>
+    <button type="button" disabled>Plate archive<small>Out of scope / private</small></button>
+    <button type="button" disabled>Report<small>Not in prototype</small></button>
+  </nav>
+
+  <main class="workspace" id="workspace" tabindex="-1">
+    <div class="toolbar">
+      <h2 id="view-title">Flock &amp; ALPR directory map</h2>
+      <button type="button" id="back" disabled>&larr; Back</button>
+      <button type="button" id="clean" aria-pressed="false">Clean evidence</button>
+      <button type="button" id="focus" aria-pressed="false">Focus view</button>
+    </div>
+
+    <div class="filter-bar">
+      <div class="filter-group" role="group" aria-label="Local manufacturer and bearing filter">
+        <button type="button" data-filter="all" aria-pressed="true">All mapped ALPR (8)</button>
+        <button type="button" data-filter="flock" aria-pressed="false">&#x25C6; Flock Safety only (5)</button>
+        <button type="button" data-filter="other" aria-pressed="false">&#x25AA; Other / unspecified (3)</button>
+        <button type="button" data-filter="bearing" aria-pressed="false">&#x25B4; Bearing recorded (6)</button>
+      </div>
+      <div class="filter-group" role="group" aria-label="Simulated viewport coverage state">
+        <span class="k">Coverage mode:</span>
+        <button type="button" data-mode="complete" aria-pressed="true">City z12 (Complete)</button>
+        <button type="button" data-mode="saturated" aria-pressed="false">Cap=2 (Saturated)</button>
+        <button type="button" data-mode="no-coverage" aria-pressed="false">Outside US/CA</button>
+        <button type="button" data-mode="zoom-in" aria-pressed="false">Wide &gt;3&deg;</button>
+      </div>
+    </div>
+
+    <div id="local-filter-chip" class="local-chip" hidden>
+      <span id="local-filter-text"></span>
+      <button type="button" id="reset-filter">Show all 8 mapped ALPR nodes</button>
+    </div>
+
+    <div id="map-view" class="stack" style="flex:1">
+      <div class="map-frame">
+        <div class="map-hud-top">
+          <span id="hud-bounds">VIEWPORT 30.2550&deg;N, 97.7650&deg;W .. 30.2850&deg;N, 97.7250&deg;W &middot; SNAPPED 0.05&deg; (30.25&deg;..30.30&deg;N)</span>
+          <span id="hud-coverage">DETAIL ZOOM z12 (&le;16 tiles) &middot; OUTCOME: COMPLETE (8 of 8 shown)</span>
+        </div>
+
+        <div class="map-svg-wrap">
+          <svg class="canvas" id="alpr-svg" viewBox="0 0 920 440" role="img" aria-label="Austin corridor ALPR and Flock camera map. Shows mapped camera locations, manufacturer classes, and illustrative 90 meter bearing wedges where numeric direction tags exist.">
+            <defs>
+              <radialGradient id="wedge-flock" cx="0%" cy="50%" r="100%">
+                <stop offset="0%" stop-color="#45d1ff" stop-opacity="0.46"/>
+                <stop offset="70%" stop-color="#45d1ff" stop-opacity="0.14"/>
+                <stop offset="100%" stop-color="#45d1ff" stop-opacity="0.02"/>
+              </radialGradient>
+              <radialGradient id="wedge-selected" cx="0%" cy="50%" r="100%">
+                <stop offset="0%" stop-color="#ff6474" stop-opacity="0.62"/>
+                <stop offset="70%" stop-color="#ff6474" stop-opacity="0.22"/>
+                <stop offset="100%" stop-color="#ff6474" stop-opacity="0.04"/>
+              </radialGradient>
+              <radialGradient id="wedge-other" cx="0%" cy="50%" r="100%">
+                <stop offset="0%" stop-color="#ffc06b" stop-opacity="0.42"/>
+                <stop offset="100%" stop-color="#ffc06b" stop-opacity="0.03"/>
+              </radialGradient>
+            </defs>
+
+            <!-- Coordinate grid and snapped query box (hidden in Clean evidence mode) -->
+            <g class="overlay" stroke="rgba(69,209,255,0.08)" stroke-width="1">
+              <line x1="0" y1="110" x2="920" y2="110"/>
+              <line x1="0" y1="220" x2="920" y2="220"/>
+              <line x1="0" y1="330" x2="920" y2="330"/>
+              <line x1="230" y1="0" x2="230" y2="440"/>
+              <line x1="460" y1="0" x2="460" y2="440"/>
+              <line x1="690" y1="0" x2="690" y2="440"/>
+              <rect x="18" y="14" width="884" height="412" fill="none" stroke="rgba(69,209,255,0.22)" stroke-dasharray="5 5"/>
+            </g>
+
+            <!-- Corridor road schematic -->
+            <g fill="none" stroke-linecap="round">
+              <!-- Colorado River / Lady Bird Lake -->
+              <path d="M 0 325 Q 280 305, 520 340 T 920 365" stroke="rgba(69,209,255,0.16)" stroke-width="18"/>
+              <!-- I-35 Corridor -->
+              <path d="M 670 0 L 635 440" stroke="rgba(230,237,243,0.26)" stroke-width="5"/>
+              <path d="M 670 0 L 635 440" stroke="rgba(69,209,255,0.22)" stroke-width="1.2" stroke-dasharray="8 6"/>
+              <!-- S Congress Ave -->
+              <path d="M 485 110 L 455 440" stroke="rgba(230,237,243,0.22)" stroke-width="3.5"/>
+              <!-- MLK Jr Blvd -->
+              <path d="M 120 92 L 860 112" stroke="rgba(230,237,243,0.18)" stroke-width="2.5"/>
+              <!-- Barton Springs Rd / Cesar Chavez -->
+              <path d="M 80 305 L 780 295" stroke="rgba(230,237,243,0.18)" stroke-width="2.5"/>
+              <!-- Shoal Creek / Lamar -->
+              <path d="M 285 20 L 240 390" stroke="rgba(230,237,243,0.16)" stroke-width="2.5"/>
+            </g>
+
+            <g class="overlay" fill="#7c8b99" font-size="11">
+              <text x="678" y="34">I-35 CORRIDOR</text>
+              <text x="494" y="254">CONGRESS AVE</text>
+              <text x="740" y="102">E MLK JR BLVD</text>
+              <text x="102" y="294">BARTON SPRINGS RD</text>
+              <text x="295" y="54">SHOAL CREEK</text>
+              <text x="32" y="34">30.285&deg;N, 97.765&deg;W</text>
+              <text x="758" y="418">30.255&deg;N, 97.725&deg;W</text>
+            </g>
+
+            <!-- Dynamic camera bearing wedges (drawn before glyphs so cones never wash out markers) -->
+            <g id="wedges-layer" class="overlay"></g>
+
+            <!-- Dynamic camera markers -->
+            <g id="markers-layer"></g>
+
+            <!-- Tactical selection brackets -->
+            <g id="selection-brackets" class="overlay" fill="none" stroke="#ff6474" stroke-width="1.8"></g>
+          </svg>
+
+          <div id="state-banner" class="state-banner" hidden></div>
+        </div>
+
+        <div class="map-hud-bottom">
+          <div class="legend" aria-label="Map symbol legend">
+            <span><b style="color:var(--cyan)">&#x25C6; FLOCK</b> Flock Safety (5)</span>
+            <span><b style="color:var(--amber)">&#x25AA; VENDOR</b> Other named ALPR (2)</span>
+            <span><b style="color:var(--muted)">&#x25CE; UNSPEC</b> Unspecified ALPR (1)</span>
+            <span><b style="color:var(--cyan)">&#x25B5; WEDGE</b> Illustrative 90 m / &plusmn;20&deg; bearing (not calibrated FOV)</span>
+          </div>
+          <span class="mono muted">ALPR: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">&copy; OpenStreetMap contributors (ODbL 1.0)</a> &middot; Synthetic fixture</span>
+        </div>
+      </div>
+
+      <div class="camera-strip" id="camera-strip" role="group" aria-label="Mapped ALPR camera nodes in corridor"></div>
+    </div>
+
+    <section id="query-view" class="glass stack" style="padding:16px" hidden aria-label="Overpass QL and normalization contract">
+      <h2>Bounded Overpass QL &amp; OIA normalization rules</h2>
+      <p class="muted">City-scale queries snap outward to 0.05&deg;, reject spans &gt; 3.0&deg;, and match semicolon-delimited <code>surveillance:type</code> values case-insensitively:</p>
+      <pre class="code-box" id="overpass-code">[out:json][timeout:20];node["man_made"="surveillance"]["surveillance:type"~"(^|;)\\s*ALPR\\s*(;|$)",i](30.25,-97.80,30.30,-97.70);out body 1500;</pre>
+      <table class="coverage-table">
+        <caption> Provenance and missing-value safeguards enforced by <code>crates/oia-alpr-map</code></caption>
+        <thead>
+          <tr><th scope="col">Rule</th><th scope="col">Input tag example</th><th scope="col">Normalized OIA state</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Semicolon surveillance tag</td><td class="mono">surveillance:type="camera;ALPR"</td><td>Admitted (`alpr:91010422`)</td></tr>
+          <tr><td>Non-ALPR traffic camera</td><td class="mono">surveillance:type="camera"</td><td>Excluded from ALPR layer (`node 91010499`)</td></tr>
+          <tr><td>Blank / whitespace bearing</td><td class="mono">camera:direction="   "</td><td><code>None</code> (never promoted to <code>0&deg;</code> north)</td></tr>
+          <tr><td>Cardinal word direction</td><td class="mono">camera:direction="NE"</td><td><code>None</code> (numeric bearings only; no wedge drawn)</td></tr>
+          <tr><td>360&deg; north wrap</td><td class="mono">camera:direction="360"</td><td><code>Some(0.0&deg;)</code></td></tr>
+          <tr><td>OSM edit time vs. survey date</td><td class="mono">timestamp="2026-10-21T..." (no check_date)</td><td><code>last_verified: None</code>, <code>osm_timestamp: Some(...)</code></td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+
+  <aside class="inspector glass" aria-label="Selected ALPR camera inspector">
+    <div class="row" style="justify-content:space-between">
+      <div><span class="k">Inspect camera record</span><h2 id="ins-title">ALPR-0421</h2></div>
+      <span class="badge cyan" id="ins-class-badge">&#x25C6; Flock Safety</span>
+    </div>
+
+    <div class="tabs" role="tablist" aria-label="Camera inspector tabs">
+      <button type="button" role="tab" id="tab-overview" aria-selected="true" aria-controls="panel-overview" tabindex="0">Overview</button>
+      <button type="button" role="tab" id="tab-source" aria-selected="false" aria-controls="panel-source" tabindex="-1">Source &amp; ODbL</button>
+    </div>
+
+    <section id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" tabindex="0" class="stack">
+      <dl>
+        <dt>Record ID</dt><dd class="mono" id="ins-id"></dd>
+        <dt>Origin class</dt><dd>&#x25CF; Mapped directory node (fixture)</dd>
+        <dt>Manufacturer</dt><dd id="ins-manufacturer"></dd>
+        <dt>Operator</dt><dd id="ins-operator"></dd>
+        <dt>Camera / Zone</dt><dd id="ins-type-zone"></dd>
+        <dt>Coordinates</dt><dd class="mono" id="ins-coords"></dd>
+        <dt>Bearing / FOV</dt><dd id="ins-bearing"></dd>
+        <dt>Field verified</dt><dd id="ins-verified"></dd>
+        <dt>OSM edit time</dt><dd class="mono" id="ins-osm-time"></dd>
+        <dt>Feed / Archive</dt><dd class="muted">&#x2014; Unavailable (directory node only; no video or plate logs)</dd>
+      </dl>
+      <p class="quote" id="ins-note"></p>
+    </section>
+
+    <section id="panel-source" role="tabpanel" aria-labelledby="tab-source" tabindex="0" class="stack" hidden>
+      <dl>
+        <dt>Provider</dt><dd>OpenStreetMap / DeFlock hourly US/CA extract schema</dd>
+        <dt>Data license</dt><dd>ODbL 1.0 (&copy; OpenStreetMap contributors)</dd>
+        <dt>Access method</dt><dd>Bounded city-scale tile / Overpass directory query (`CAM-01`)</dd>
+        <dt>Raw tags</dt><dd class="mono" id="ins-raw-tags"></dd>
+        <dt>Reuse terms</dt><dd>Attribution required; database share-alike applies to adapted OSM extracts (`CAM-02`).</dd>
+      </dl>
+    </section>
+
+    <button type="button" id="inspect-query-btn">View Overpass QL &amp; contract &nearr;</button>
+  </aside>
+
+  <section class="timeline glass" aria-label="Shared timeline">
+    <div class="row" style="justify-content:space-between">
+      <div class="row"><h2>Shared timeline &middot; survey vs. OSM edit timestamps</h2><span class="badge">&#x25AE; Historical directory</span></div>
+      <small class="mono">&#x25B2; Field check_date / survey:date &nbsp;|&nbsp; &#x25BD; OSM element edit timestamp</small>
+    </div>
+    <p id="timeline-summary" class="muted"></p>
+    <div class="time-track" id="time-track" role="img" aria-label="Timeline from July 2026 to November 2026 comparing field survey dates with OSM edit timestamps."></div>
+    <div class="time-labels"><span>2026-07-01</span><span>2026-08-01</span><span>2026-09-01</span><span>2026-10-01</span><span>2026-11-01</span></div>
+  </section>
+
+  <div class="readout" aria-label="View state">
+    <span class="k">View readout</span>
+    <p id="readout-main" class="mono">alpr:91010421 &middot; z12 &middot; 8/8 shown</p>
+    <p id="readout-sub" class="muted">Illustrative wedges on &middot; ODbL credit active</p>
+  </div>
+
+  <form class="dock glass" id="search-form" role="search">
+    <label for="query" class="k">Filter corridor by operator, vendor, ref, or OSM ID <span aria-hidden="true">/ Ctrl+K</span></label>
+    <div class="search-row">
+      <input type="search" id="query" maxlength="120" placeholder="e.g. Flock, Austin Police, HOA, 0422, Motorola, parking">
+      <button type="submit">Filter</button>
+      <button type="button" id="clear-query">Clear</button>
+    </div>
+  </form>
+
+  <details class="jobs glass">
+    <summary>Jobs &middot; 1 completed fixture query &middot; 0 live streams</summary>
+    <p class="muted"><code>alpr-viewport-z12</code> succeeded (8 ALPR nodes normalized, 1 non-ALPR CCTV node excluded). No camera video or plate-read endpoints are contacted.</p>
+  </details>
+</div>
+<p id="announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
+
+<script>
+'use strict';
+const byId = id => document.getElementById(id);
+
+const CAMERAS = [
+  {
+    id: 'alpr:91010421', osmId: 91010421, badge: 'ALPR-0421',
+    lat: 30.2672, lon: -97.7431, zoom: 12,
+    manufacturer: 'Flock Safety', vendorClass: 'flock', vendorGlyph: '\u25C6', vendorShort: 'FLOCK',
+    operator: 'Austin Police Department', cameraType: 'fixed', zone: 'traffic',
+    directionDeg: 180, rawDirection: '180', ref: 'APD-CONGRESS-01',
+    lastVerified: '2026-09-14', osmTimestamp: '2026-10-18T14:22:10Z',
+    rawTags: 'surveillance:type=ALPR · manufacturer=Flock Safety · model=Falcon · camera:direction=180 · check_date=2026-09-14',
+    note: 'Southbound Congress Ave approach. Carries both a field check_date (2026-09-14) and a later OSM edit timestamp (2026-10-18); both remain distinct.'
+  },
+  {
+    id: 'alpr:91010422', osmId: 91010422, badge: 'ALPR-0422',
+    lat: 30.2747, lon: -97.7404, zoom: 12,
+    manufacturer: 'Flock Safety', vendorClass: 'flock', vendorGlyph: '\u25C6', vendorShort: 'FLOCK',
+    operator: 'Texas DPS \u2014 Capitol Complex', cameraType: 'fixed', zone: 'street',
+    directionDeg: 0, rawDirection: '360', ref: 'DPS-CAP-N04',
+    lastVerified: '2026-08-29', osmTimestamp: '2026-10-19T08:11:00Z',
+    rawTags: 'surveillance:type=camera;ALPR · manufacturer=Flock Safety · camera:direction=360 · survey:date=2026-08-29',
+    note: 'Admitted via semicolon multi-value tag surveillance:type="camera;ALPR". Bearing "360" normalizes to 0\u00b0 (due north).'
+  },
+  {
+    id: 'alpr:91010423', osmId: 91010423, badge: 'ALPR-0423',
+    lat: 30.2638, lon: -97.7522, zoom: 12,
+    manufacturer: 'Flock Safety', vendorClass: 'flock', vendorGlyph: '\u25C6', vendorShort: 'FLOCK',
+    operator: 'Barton Springs Commercial HOA', cameraType: 'fixed', zone: 'parking',
+    directionDeg: null, rawDirection: '   ', ref: 'HOA-BS-02',
+    lastVerified: null, osmTimestamp: '2026-10-21T19:45:33Z',
+    rawTags: 'surveillance:type=ALPR · manufacturer=Flock Safety · camera:direction="   " (whitespace)',
+    note: 'Whitespace-only camera:direction tag is normalized to None (not 0\u00b0 north), so no directional wedge is drawn. No check_date is present; OSM edit time is not promoted to field verification.'
+  },
+  {
+    id: 'alpr:91010424', osmId: 91010424, badge: 'ALPR-0424',
+    lat: 30.2712, lon: -97.7341, zoom: 12,
+    manufacturer: 'Flock Safety', vendorClass: 'flock', vendorGlyph: '\u25C6', vendorShort: 'FLOCK',
+    operator: 'Austin Police Department', cameraType: 'fixed', zone: 'traffic',
+    directionDeg: 265, rawDirection: '265', ref: 'APD-I35-FR07',
+    lastVerified: '2026-10-02', osmTimestamp: '2026-10-22T03:10:05Z',
+    rawTags: 'surveillance:type=alpr · manufacturer=Flock Safety · direction=265 · check_date=2026-10-02',
+    note: 'I-35 frontage road camera matched via lowercase surveillance:type="alpr" and fallback direction=265 tag.'
+  },
+  {
+    id: 'alpr:91010425', osmId: 91010425, badge: 'ALPR-0425',
+    lat: 30.2791, lon: -97.7378, zoom: 12,
+    manufacturer: 'Motorola Solutions / Vigilant', vendorClass: 'other', vendorGlyph: '\u25AA', vendorShort: 'MOTOROLA',
+    operator: 'UT Austin Campus Safety', cameraType: 'fixed', zone: 'traffic',
+    directionDeg: 95, rawDirection: '95', ref: 'UTPD-MLK-12',
+    lastVerified: '2026-07-19', osmTimestamp: '2026-10-25T11:04:19Z',
+    rawTags: 'surveillance:type=ALPR · manufacturer=Motorola Solutions / Vigilant · camera:direction=95 · check_date=2026-07-19',
+    note: 'Non-Flock ALPR installation (Motorola / Vigilant). Kept distinct from Flock Safety while remaining part of corridor ALPR coverage.'
+  },
+  {
+    id: 'alpr:91010426', osmId: 91010426, badge: 'ALPR-0426',
+    lat: 30.2604, lon: -97.7389, zoom: 12,
+    manufacturer: 'Genetec AutoVu', vendorClass: 'other', vendorGlyph: '\u25AA', vendorShort: 'GENETEC',
+    operator: 'Riverside Garage Management', cameraType: 'fixed', zone: 'parking',
+    directionDeg: 45, rawDirection: '45', ref: null,
+    lastVerified: null, osmTimestamp: '2026-10-26T16:30:00Z',
+    rawTags: 'surveillance:type=ALPR · manufacturer=Genetec AutoVu · camera:direction=45',
+    note: 'Fixed garage ALPR attributed to Genetec AutoVu. Excluded when the local "Flock Safety only" filter is active, with omission count surfaced in the filter chip.'
+  },
+  {
+    id: 'alpr:91010427', osmId: 91010427, badge: 'ALPR-0427',
+    lat: 30.2689, lon: -97.7574, zoom: 12,
+    manufacturer: null, vendorClass: 'unspecified', vendorGlyph: '\u25CE', vendorShort: 'UNSPEC',
+    operator: null, cameraType: 'fixed', zone: 'traffic',
+    directionDeg: 125, rawDirection: '125', ref: null,
+    lastVerified: null, osmTimestamp: '2026-10-28T22:15:42Z',
+    rawTags: 'surveillance:type=ALPR · camera:direction=125 · source=aerial_and_street_level',
+    note: 'Tagged as an ALPR camera in OpenStreetMap without a manufacturer or operator tag. Classified as Unspecified rather than guessed as Flock Safety.'
+  },
+  {
+    id: 'alpr:91010428', osmId: 91010428, badge: 'ALPR-0428',
+    lat: 30.2764, lon: -97.7495, zoom: 12,
+    manufacturer: 'Flock Safety', vendorClass: 'flock', vendorGlyph: '\u25C6', vendorShort: 'FLOCK',
+    operator: 'Shoal Creek Neighborhood Association', cameraType: 'fixed', zone: 'street',
+    directionDeg: null, rawDirection: 'NE', ref: null,
+    lastVerified: '2026-10-11', osmTimestamp: '2026-10-29T09:05:12Z',
+    rawTags: 'surveillance:type=ALPR · manufacturer=Flock Safety · camera:direction=NE · check_date=2026-10-11',
+    note: 'Cardinal string camera:direction="NE" is not a calibrated numeric bearing; normalized direction_deg remains None and no wedge is rendered.'
+  }
+];
+
+const BBOX = { south: 30.255, west: -97.765, north: 30.285, east: -97.725 };
+const CENTER = { lat: 30.270, lon: -97.745 };
+
+let state = {
+  selectedId: 'alpr:91010421',
+  view: 'map',
+  tab: 'overview',
+  filter: 'all',
+  mode: 'complete',
+  query: '',
+  clean: false,
+  focused: false
+};
+const history = [];
+
+function announce(msg) {
+  byId('announcement').textContent = msg;
+}
+
+function project(lat, lon) {
+  const x = 40 + ((lon - BBOX.west) / (BBOX.east - BBOX.west)) * 840;
+  const y = 400 - ((lat - BBOX.south) / (BBOX.north - BBOX.south)) * 360;
+  return { x, y };
+}
+
+function matchesFilter(cam) {
+  if (state.filter === 'flock' && cam.vendorClass !== 'flock') return false;
+  if (state.filter === 'other' && cam.vendorClass === 'flock') return false;
+  if (state.filter === 'bearing' && cam.directionDeg === null) return false;
+  const q = state.query.trim().toLowerCase();
+  if (q) {
+    const hay = `${cam.id} ${cam.badge} ${cam.manufacturer || 'unspecified'} ${cam.operator || ''} ${cam.ref || ''} ${cam.zone || ''}`.toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  return true;
+}
+
+function visibleCameras() {
+  if (state.mode === 'no-coverage' || state.mode === 'zoom-in') return [];
+  const scale = Math.cos((CENTER.lat * Math.PI) / 180);
+  const filtered = CAMERAS.filter(matchesFilter).sort((a, b) => {
+    const da = (a.lat - CENTER.lat) ** 2 + ((a.lon - CENTER.lon) * scale) ** 2;
+    const db = (b.lat - CENTER.lat) ** 2 + ((b.lon - CENTER.lon) * scale) ** 2;
+    return da - db || a.osmId - b.osmId;
+  });
+  return state.mode === 'saturated' ? filtered.slice(0, 2) : filtered;
+}
+
+function transition(patch) {
+  if (Object.entries(patch).every(([k, v]) => state[k] === v)) return;
+  history.push({ ...state });
+  if (history.length > 40) history.shift();
+  state = { ...state, ...patch };
+  render();
+}
+
+function goBack() {
+  const prev = history.pop();
+  if (!prev) return;
+  state = prev;
+  render();
+  announce(`Restored previous view state (${state.selectedId}).`);
+}
+
+function svgEl(tag, attrs = {}) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+  return el;
+}
+
+function renderMap(visible) {
+  const wedgesLayer = byId('wedges-layer');
+  const markersLayer = byId('markers-layer');
+  const bracketsLayer = byId('selection-brackets');
+  wedgesLayer.replaceChildren();
+  markersLayer.replaceChildren();
+  bracketsLayer.replaceChildren();
+
+  const wedgeRadiusPx = 68;
+  const halfAngleRad = (20 * Math.PI) / 180;
+
+  visible.forEach(cam => {
+    const { x, y } = project(cam.lat, cam.lon);
+    const isSelected = cam.id === state.selectedId;
+
+    if (cam.directionDeg !== null) {
+      const bearingRad = ((cam.directionDeg - 90) * Math.PI) / 180;
+      const lx = x + Math.cos(bearingRad - halfAngleRad) * wedgeRadiusPx;
+      const ly = y + Math.sin(bearingRad - halfAngleRad) * wedgeRadiusPx;
+      const rx = x + Math.cos(bearingRad + halfAngleRad) * wedgeRadiusPx;
+      const ry = y + Math.sin(bearingRad + halfAngleRad) * wedgeRadiusPx;
+      const fillUrl = isSelected
+        ? 'url(#wedge-selected)'
+        : cam.vendorClass === 'flock' ? 'url(#wedge-flock)' : 'url(#wedge-other)';
+      const strokeColor = isSelected ? '#ff6474' : cam.vendorClass === 'flock' ? '#45d1ff' : '#ffc06b';
+
+      const poly = svgEl('polygon', {
+        points: `${x.toFixed(1)},${y.toFixed(1)} ${lx.toFixed(1)},${ly.toFixed(1)} ${rx.toFixed(1)},${ry.toFixed(1)}`,
+        fill: fillUrl,
+        stroke: strokeColor,
+        'stroke-width': isSelected ? 1.8 : 1.1,
+        'stroke-dasharray': '4 3'
+      });
+      wedgesLayer.append(poly);
+    }
+
+    const g = svgEl('g', {
+      class: 'camera-node',
+      tabindex: '0',
+      role: 'button',
+      'aria-label': `${cam.badge}, ${cam.manufacturer || 'Unspecified ALPR vendor'}, ${cam.directionDeg !== null ? `bearing ${cam.directionDeg} degrees` : 'no bearing recorded'}`
+    });
+    g.addEventListener('click', () => transition({ selectedId: cam.id }));
+    g.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        transition({ selectedId: cam.id });
+      }
+    });
+
+    g.append(svgEl('circle', { cx: x, cy: y, r: 17, fill: 'none', stroke: '#45d1ff', 'stroke-width': 2, class: 'focus-ring' }));
+
+    const color = isSelected ? '#ff6474' : cam.vendorClass === 'flock' ? '#45d1ff' : cam.vendorClass === 'other' ? '#ffc06b' : '#a2b0bc';
+    if (cam.vendorClass === 'flock') {
+      g.append(svgEl('polygon', {
+        points: `${x},${y - 9} ${x + 9},${y} ${x},${y + 9} ${x - 9},${y}`,
+        fill: '#081822',
+        stroke: color,
+        'stroke-width': isSelected ? 2.4 : 1.8
+      }));
+      g.append(svgEl('circle', { cx: x, cy: y, r: 2.6, fill: color }));
+    } else if (cam.vendorClass === 'other') {
+      g.append(svgEl('rect', {
+        x: x - 7, y: y - 7, width: 14, height: 14, rx: 2,
+        fill: '#1c1508', stroke: color, 'stroke-width': isSelected ? 2.4 : 1.8
+      }));
+    } else {
+      g.append(svgEl('circle', {
+        cx: x, cy: y, r: 7.5,
+        fill: '#0e1318', stroke: color, 'stroke-width': isSelected ? 2.4 : 1.8, 'stroke-dasharray': '3 2'
+      }));
+    }
+
+    const label = svgEl('text', {
+      x: x + 12, y: y + 4,
+      fill: isSelected ? '#ff6474' : '#e6edf3',
+      'font-size': isSelected ? '12' : '11',
+      'font-weight': isSelected ? '700' : '500'
+    });
+    label.textContent = `${cam.badge} · ${cam.vendorShort}`;
+    g.append(label);
+    markersLayer.append(g);
+
+    if (isSelected) {
+      const b = 15;
+      const d = `M${x - b} ${y - b + 5}v-5h5 M${x + b - 5} ${y - b}h5v5 M${x - b} ${y + b - 5}v5h5 M${x + b - 5} ${y + b}h5v-5`;
+      bracketsLayer.append(svgEl('path', { d }));
+    }
+  });
+}
+
+function renderTimeline(selected) {
+  const track = byId('time-track');
+  track.replaceChildren();
+  const startMs = Date.parse('2026-07-01T00:00:00Z');
+  const spanMs = Date.parse('2026-11-01T00:00:00Z') - startMs;
+
+  CAMERAS.forEach(cam => {
+    const isSel = cam.id === selected.id;
+    if (cam.lastVerified) {
+      const pct = ((Date.parse(`${cam.lastVerified}T00:00:00Z`) - startMs) / spanMs) * 100;
+      const mark = document.createElement('span');
+      mark.className = 't-mark survey';
+      mark.style.left = `${Math.max(2, Math.min(98, pct))}%`;
+      mark.style.opacity = isSel ? '1' : '0.45';
+      mark.title = `${cam.badge} field verified: ${cam.lastVerified}`;
+      mark.textContent = isSel ? `\u25B2 ${cam.badge}` : '\u25B2';
+      track.append(mark);
+    }
+    if (cam.osmTimestamp) {
+      const pct = ((Date.parse(cam.osmTimestamp) - startMs) / spanMs) * 100;
+      const mark = document.createElement('span');
+      mark.className = 't-mark osm';
+      mark.style.left = `${Math.max(2, Math.min(98, pct))}%`;
+      mark.style.opacity = isSel ? '1' : '0.45';
+      mark.title = `${cam.badge} OSM edit timestamp: ${cam.osmTimestamp}`;
+      mark.textContent = isSel ? `\u25BD ${cam.badge}` : '\u25BD';
+      track.append(mark);
+    }
+  });
+
+  byId('timeline-summary').textContent = selected.lastVerified
+    ? `Selected ${selected.badge}: field survey/check_date ${selected.lastVerified} (\u25B2) is kept separate from OSM edit timestamp ${selected.osmTimestamp} (\u25BD).`
+    : `Selected ${selected.badge}: no field check_date/survey:date recorded. OSM edit timestamp ${selected.osmTimestamp} (\u25BD) is not promoted to field verification.`;
+}
+
+function render() {
+  byId('stage').dataset.clean = state.clean;
+  byId('stage').dataset.focused = state.focused;
+  byId('clean').setAttribute('aria-pressed', state.clean);
+  byId('clean').textContent = state.clean ? 'Show wedges & overlays' : 'Clean evidence';
+  byId('focus').setAttribute('aria-pressed', state.focused);
+  byId('focus').textContent = state.focused ? 'Exit focus view' : 'Focus view';
+  byId('back').disabled = history.length === 0;
+
+  byId('map-view').hidden = state.view !== 'map';
+  byId('query-view').hidden = state.view !== 'query';
+  byId('nav-cameras').setAttribute('aria-current', state.view === 'map' ? 'page' : 'false');
+  byId('nav-query').setAttribute('aria-current', state.view === 'query' ? 'page' : 'false');
+  if (state.view === 'map') byId('nav-query').removeAttribute('aria-current');
+  else byId('nav-cameras').removeAttribute('aria-current');
+
+  document.querySelectorAll('[data-filter]').forEach(btn => {
+    btn.setAttribute('aria-pressed', btn.dataset.filter === state.filter);
+  });
+  document.querySelectorAll('[data-mode]').forEach(btn => {
+    btn.setAttribute('aria-pressed', btn.dataset.mode === state.mode);
+  });
+
+  const visible = visibleCameras();
+  const totalMatching = CAMERAS.filter(matchesFilter).length;
+  const omittedByFilter = CAMERAS.length - totalMatching;
+
+  const chip = byId('local-filter-chip');
+  if (state.filter !== 'all' || state.query.trim() !== '') {
+    chip.hidden = false;
+    byId('local-filter-text').textContent =
+      `Local filter active (${state.filter.toUpperCase()}${state.query ? ` · query "${state.query.trim()}"` : ''}): showing ${visible.length} of ${CAMERAS.length} mapped ALPR nodes in viewport (${omittedByFilter} omitted by local filter; 1 non-ALPR traffic camera excluded by schema).`;
+  } else {
+    chip.hidden = true;
+  }
+
+  const banner = byId('state-banner');
+  if (state.mode === 'no-coverage') {
+    banner.hidden = false;
+    banner.textContent = 'OUTCOME: NO COVERAGE (51.05\u00b0N, 0.05\u00b0E) \u2014 Outside hourly US/Canada ALPR extract bounds. Reported as NoCoverage, never as an empty road corridor.';
+    byId('hud-coverage').textContent = 'DETAIL ZOOM n/a \u00b7 OUTCOME: NO COVERAGE (US & Canada extract only)';
+  } else if (state.mode === 'zoom-in') {
+    banner.hidden = false;
+    banner.textContent = 'OUTCOME: ZOOM REQUIRED (28.0\u00b0..32.0\u00b0N, 4.0\u00b0 span > 3.0\u00b0 city limit / >16 z9 tiles) \u2014 Zoom in to a city viewport before querying.';
+    byId('hud-coverage').textContent = 'DETAIL ZOOM none (>16 tiles at z9) \u00b7 OUTCOME: ZOOM REQUIRED';
+  } else if (state.mode === 'saturated') {
+    banner.hidden = false;
+    banner.textContent = `OUTCOME: SATURATED (PARTIAL) \u2014 Query limit capped at 2 nearest cameras to viewport center (${totalMatching - visible.length} matching cameras in viewport omitted by cap).`;
+    byId('hud-coverage').textContent = `DETAIL ZOOM z10 \u00b7 OUTCOME: SATURATED (${visible.length} of ${totalMatching} matching shown)`;
+  } else {
+    banner.hidden = true;
+    byId('hud-coverage').textContent = `DETAIL ZOOM z12 (\u226416 tiles) \u00b7 OUTCOME: COMPLETE (${visible.length} of ${CAMERAS.length} mapped ALPR shown)`;
+  }
+
+  renderMap(visible);
+
+  const strip = byId('camera-strip');
+  strip.replaceChildren();
+  CAMERAS.forEach(cam => {
+    const isShown = visible.some(v => v.id === cam.id);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.dataset.selected = cam.id === state.selectedId;
+    btn.style.opacity = isShown ? '1' : '0.45';
+    const title = document.createElement('strong');
+    title.textContent = `${cam.vendorGlyph} ${cam.badge}`;
+    const tag = document.createElement('span');
+    tag.className = 'muted';
+    tag.textContent = cam.directionDeg !== null ? `${cam.directionDeg}\u00b0` : 'no brg';
+    title.append(tag);
+    const sub = document.createElement('small');
+    sub.textContent = `${cam.manufacturer || 'Unspecified ALPR'}${cam.operator ? ` · ${cam.operator}` : ''}`;
+    btn.append(title, sub);
+    btn.addEventListener('click', () => transition({ selectedId: cam.id }));
+    strip.append(btn);
+  });
+
+  const selected = CAMERAS.find(c => c.id === state.selectedId) || CAMERAS[0];
+  byId('ins-title').textContent = `${selected.badge} (${selected.operator || 'Operator unrecorded'})`;
+  byId('ins-class-badge').textContent = `${selected.vendorGlyph} ${selected.manufacturer || 'Unspecified ALPR vendor'}`;
+  byId('ins-class-badge').className = `badge ${selected.vendorClass === 'flock' ? 'cyan' : 'warn'}`;
+  byId('ins-id').textContent = `${selected.id} (OSM node ${selected.osmId})`;
+  byId('ins-manufacturer').textContent = selected.manufacturer || 'Unspecified on OSM node (not assumed to be Flock Safety)';
+  byId('ins-operator').textContent = selected.operator || 'Not recorded on OSM node';
+  byId('ins-type-zone').textContent = `${selected.cameraType || 'unknown'} · zone: ${selected.zone || 'unrecorded'}${selected.ref ? ` · ref: ${selected.ref}` : ''}`;
+  byId('ins-coords').textContent = `${selected.lat.toFixed(4)}\u00b0 N, ${Math.abs(selected.lon).toFixed(4)}\u00b0 W (tile precision z${selected.zoom}, height unknown)`;
+  byId('ins-bearing').textContent = selected.directionDeg !== null
+    ? `${selected.directionDeg}\u00b0 clockwise from true north \u00b7 Illustrative 90 m / \u00b120\u00b0 wedge (not calibrated FOV)`
+    : `Not recorded (raw tag: ${JSON.stringify(selected.rawDirection)}) \u2014 no wedge drawn`;
+  byId('ins-verified').textContent = selected.lastVerified
+    ? `${selected.lastVerified} (field check_date / survey:date)`
+    : '\u2014 Not field-verified (OSM edit time is not promoted)';
+  byId('ins-osm-time').textContent = selected.osmTimestamp;
+  byId('ins-note').textContent = selected.note;
+  byId('ins-raw-tags').textContent = selected.rawTags;
+
+  ['overview', 'source'].forEach(t => {
+    const active = state.tab === t;
+    byId(`tab-${t}`).setAttribute('aria-selected', active);
+    byId(`tab-${t}`).tabIndex = active ? 0 : -1;
+    byId(`panel-${t}`).hidden = !active;
+  });
+
+  renderTimeline(selected);
+
+  byId('readout-main').textContent = `${selected.id} \u00b7 ${state.mode.toUpperCase()} \u00b7 ${visible.length}/${CAMERAS.length} shown`;
+  byId('readout-sub').textContent = state.clean
+    ? 'Clean evidence: wedges & grid off \u00b7 provenance retained'
+    : 'Illustrative wedges on \u00b7 ODbL 1.0 credit active';
+}
+
+document.querySelectorAll('[data-filter]').forEach(btn => {
+  btn.addEventListener('click', () => transition({ filter: btn.dataset.filter }));
+});
+document.querySelectorAll('[data-mode]').forEach(btn => {
+  btn.addEventListener('click', () => transition({ mode: btn.dataset.mode }));
+});
+byId('reset-filter').addEventListener('click', () => {
+  byId('query').value = '';
+  transition({ filter: 'all', query: '' });
+});
+byId('nav-cameras').addEventListener('click', () => transition({ view: 'map' }));
+byId('nav-query').addEventListener('click', () => transition({ view: 'query' }));
+byId('inspect-query-btn').addEventListener('click', () => transition({ view: state.view === 'query' ? 'map' : 'query' }));
+byId('back').addEventListener('click', goBack);
+byId('clean').addEventListener('click', () => transition({ clean: !state.clean }));
+byId('focus').addEventListener('click', () => transition({ focused: !state.focused }));
+
+['overview', 'source'].forEach((tab, idx, arr) => {
+  const btn = byId(`tab-${tab}`);
+  btn.addEventListener('click', () => transition({ tab }));
+  btn.addEventListener('keydown', e => {
+    if (!['ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+    e.preventDefault();
+    const next = arr[(idx + 1) % arr.length];
+    transition({ tab: next });
+    byId(`tab-${next}`).focus();
+  });
+});
+
+byId('search-form').addEventListener('submit', e => {
+  e.preventDefault();
+  transition({ query: byId('query').value, view: 'map' });
+});
+byId('clear-query').addEventListener('click', () => {
+  byId('query').value = '';
+  transition({ query: '' });
+});
+
+for (const [id, key, pref] of [
+  ['rt', 'reduceTransparency', 'prefers-reduced-transparency'],
+  ['rm', 'reduceMotion', 'prefers-reduced-motion']
+]) {
+  const mq = matchMedia(`(${pref}: reduce)`);
+  byId(id).checked = mq.matches;
+  byId(id).addEventListener('change', e => {
+    document.documentElement.dataset[key] = e.target.checked;
+  });
+}
+
+document.addEventListener('keydown', e => {
+  const editing = e.target.matches('input, textarea');
+  if (((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') || (e.key === '/' && !editing)) {
+    e.preventDefault();
+    byId('query').focus();
+    byId('query').select();
+  } else if (e.altKey && e.key === 'ArrowLeft' && history.length) {
+    e.preventDefault();
+    goBack();
+  }
+});
+
+render();
+</script>
+</body>
+</html>

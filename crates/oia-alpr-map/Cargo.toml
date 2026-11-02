@@ -1,0 +1,17 @@
+[package]
+name = "oia-alpr-map"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+description = "Bounded ALPR / Flock camera directory normalization and viewport query kernel for OIA"
+
+[workspace]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"

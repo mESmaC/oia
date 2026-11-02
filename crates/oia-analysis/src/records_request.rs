@@ -12,6 +12,9 @@ pub const MAX_REQUEST_BYTES: usize = 32_768;
 pub const MAX_CUSTODIAN_BYTES: usize = 2_048;
 /// Maximum pinned source versions attached to a draft.
 pub const MAX_REFERENCES: usize = 64;
+/// Upper bound on UTF-8 preview length, including field escapes and line quoting.
+pub const MAX_PREVIEW_BYTES: usize =
+    4 * (MAX_REQUEST_BYTES + 2 * MAX_CUSTODIAN_BYTES) + MAX_REFERENCES * 132 + 1024;
 
 /// Whether the proposed recipient has been established as the records custodian.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +93,27 @@ fn validate_text(
     Ok(())
 }
 
+fn write_preview_field(output: &mut String, text: &str) -> Result<(), DraftError> {
+    output.push_str("> ");
+    for character in text.chars() {
+        match character {
+            '\\' => output.push_str("\\\\"),
+            '\n' => output.push_str("\n> "),
+            '\t' => output.push_str("\\t"),
+            '\u{061C}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{FEFF}' => write!(output, "\\u{{{:04X}}}", character as u32)
+                .map_err(|_| DraftError::FormattingFailed)?,
+            _ => output.push(character),
+        }
+    }
+    output.push('\n');
+    Ok(())
+}
+
 impl RecordsRequestDraft {
     /// Validate bounded text and unique pinned references without side effects.
     /// LF and tab are accepted in multiline fields; other control characters,
@@ -125,23 +149,27 @@ impl RecordsRequestDraft {
     }
 
     /// Render an explicitly labeled UTF-8 plain-text preview, not an HTTP/email body.
-    /// Includes rationale and references so uncertainty survives export by the caller.
+    /// Quotes every field line and escapes backslashes, tabs and display controls.
+    /// Exact wording remains available through input(); this is a display derivative.
     pub fn preview(&self) -> Result<String, DraftError> {
         let input = &self.0;
-        // All text and ID sizes are validated. This upper bound includes labels,
-        // separators, and the maximum 128-byte identifier for every reference.
-        let capacity = MAX_REQUEST_BYTES + 2 * MAX_CUSTODIAN_BYTES + MAX_REFERENCES * 132 + 1024;
         let mut output = String::new();
         output
-            .try_reserve(capacity)
+            .try_reserve(MAX_PREVIEW_BYTES)
             .map_err(|_| DraftError::AllocationFailed)?;
         let assessment = match input.assessment {
             CustodianAssessment::Candidate => "candidate; responsibility unconfirmed",
             CustodianAssessment::AuthorConfirmed => "confirmed by draft author",
         };
-        write!(output, "DRAFT — NOT SUBMITTED\nVersion: {}\nCustodian: {}\nAssessment: {}\n\nCustodian rationale:\n{}\n\nRequest wording:\n{}\n\nSource versions (research references):\n",
-            input.version, input.custodian, assessment, input.custodian_rationale, input.request
+        write!(output, "DRAFT — NOT SUBMITTED\nVersion: {}\nAssessment: {}\nPreview encoding: field lines start with > ; backslashes, tabs and display controls are escaped.\n\nCustodian:\n",
+            input.version, assessment
         ).map_err(|_| DraftError::FormattingFailed)?;
+        write_preview_field(&mut output, &input.custodian)?;
+        output.push_str("\nCustodian rationale:\n");
+        write_preview_field(&mut output, &input.custodian_rationale)?;
+        output.push_str("\nRequest wording:\n");
+        write_preview_field(&mut output, &input.request)?;
+        output.push_str("\nSource versions (research references):\n");
         if input.source_versions.is_empty() {
             output.push_str("None supplied; provenance not established.\n");
         }

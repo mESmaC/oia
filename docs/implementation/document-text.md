@@ -49,7 +49,7 @@ Ranges alone are not publishable citations. The shared application/domain layer 
 
 Reprocessing must produce a new extraction version; correction propagation and citation reassessment remain domain/application work. `Complete` applies only to the supplied UTF-8 slice, not to an archive, collection, PDF, source's availability, independent corroboration, or truth. No inferred pages, OCR confidence, language, publication date, or source authenticity are reported.
 
-Unsupported here: PDF/container decoding, OCR, images, non-UTF-8 encodings, network acquisition, retention permissions, source-version persistence, citation invalidation, search, summaries, UI, and multi-user access isolation. No provider access, hardware compatibility, performance measurement, Lean theorem, or Rust-to-Lean proof claim is established.
+Unsupported by the extractor: PDF/container decoding, OCR, images, non-UTF-8 encodings, network acquisition, retention permissions, source-version persistence, citation invalidation, summaries, UI, and multi-user access isolation. A separate [exact-text search kernel](document-search.md) can search these passages with explicit coverage; integrated application search remains open. No provider access, hardware compatibility, performance measurement, Lean theorem, or Rust-to-Lean proof claim is established.
 
 ## Local verification
 

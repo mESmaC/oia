@@ -1,0 +1,9 @@
+SYNTHETIC A06 FIXTURE - NOT OBSERVED EVIDENCE
+PACIFIC WIRE SERVICE (SYNTHETIC FIXTURE) DISPATCH: SYNTH-PWS-0884 (VERSION 2 - CORRECTED)
+ORIGIN URL: https://pacificwire.invalid/dispatches/SYNTH-PWS-0884?v=2
+PUBLISHED: 2024-03-16T03:40:00Z (SUPERSEDES VERSION 1 OF 2024-03-15T21:05:00Z)
+DATELINE: KESTREL ATOLL (Fictional Vesper Harbor West Fairway 21.318N 158.132W and Offshore Calibration Box CX-9, WGS84)
+
+CORRECTION NOTICE: An earlier version of this synthetic dispatch misstated the number of vessels logged in the Vesper Harbor West Fairway due to a transcription error ("14-meter survey launch" read as "14 vessels"). The watch log recorded 4 vessels total (one 14-meter commercial survey launch, two harbor tugs, and one coastal barge). In addition, the offshore range tender transit to Calibration Box CX-9 was a separately scheduled calibration exercise announced on March 14, and the contractor who alleged a sub-surface payload recovery withdrew the claim after Vesper Port Safety Board enforcement records identified the craft as a private hydrographic survey launch with a failed AIS unit.
+
+KESTREL ATOLL (SYNTH-PWS) -- Harbor pilotage at fictional Vesper Harbor was held for 35 minutes Friday morning while two assist tugs escorted an unlit 14-meter commercial survey launch clear of West Fairway Buoy B3, according to watch logs and port citations. Four vessels were in the approach sector during the hold. Separate Pelagic Maritime Safety Directorate notices confirm that range support tenders transiting further offshore were conducting a pre-announced sensor calibration exercise in Calibration Box CX-9 unrelated to the harbor channel hold.

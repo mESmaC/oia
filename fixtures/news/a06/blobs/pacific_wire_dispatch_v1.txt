@@ -1,0 +1,11 @@
+SYNTHETIC A06 FIXTURE - NOT OBSERVED EVIDENCE
+PACIFIC WIRE SERVICE (SYNTHETIC FIXTURE) DISPATCH: SYNTH-PWS-0884 (VERSION 1)
+ORIGIN URL: https://pacificwire.invalid/dispatches/SYNTH-PWS-0884?v=1
+PUBLISHED: 2024-03-15T21:05:00Z
+DATELINE: KESTREL ATOLL (Fictional Kestrel Atoll regional centroid approx. 21.4389N 158.0001W, gazetteer centroid, WGS84)
+
+KESTREL ATOLL (SYNTH-PWS) -- Harbor operations at fictional Vesper Harbor were disrupted Friday morning after an unidentified surface craft triggered a channel hold near West Fairway Buoy B3 while calibration tenders departed for offshore waters.
+
+According to cooperative watch logs reviewed by this synthetic wire service, 14 vessels were involved in the West Fairway standoff as harbor tugs responded near Buoy B3. Duty pilot Capt. M. Kealoha said harbor control held inbound pilotage for 35 minutes while the craft was escorted clear.
+
+An anonymous dockside contractor alleged that the channel closure was ordered to recover a classified sub-surface test payload tied to the offshore calibration exercise in Calibration Box CX-9. Officials had not responded to the contractor's allegation at press time.

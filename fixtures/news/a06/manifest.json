@@ -1,0 +1,1740 @@
+{
+  "fixture_metadata": {
+    "fixture_id": "a06-news-lineage-and-regional-events",
+    "schema_version": "0.1.0",
+    "is_synthetic_fixture": true,
+    "title": "Synthetic A06 Regional News Lineage, Reversible Event Clustering, and Claim Assessment Corpus",
+    "decision_id": "D03",
+    "adr_path": "docs/adr/0005-d03-seed-corpus-and-news-sources.md",
+    "work_packages": [
+      "#20",
+      "#21"
+    ],
+    "acceptance_scenario": "A06",
+    "covered_requirements": [
+      "NEWS-01",
+      "NEWS-02",
+      "NEWS-03",
+      "NEWS-04",
+      "NEWS-05",
+      "GEO-03",
+      "INTEL-01",
+      "INTEL-04"
+    ],
+    "workspace_id": "ws-kestrel-archipelago-synth",
+    "case_id": "case-vesper-harbor-synth-2024-03",
+    "created_at": "2026-11-02T02:55:00Z",
+    "synthetic_disclosure": "All agencies, publishers, locations, vessels, dates, and events in this corpus are synthetic development fixtures for A06. None is observed evidence or a real disclosure. All URLs use the reserved .invalid TLD."
+  },
+  "sources": [
+    {
+      "id": "src-pelagic-msd",
+      "version_id": "src-pelagic-msd@v1",
+      "schema_version": "0.1.0",
+      "object_type": "Source",
+      "is_synthetic_fixture": true,
+      "workspace_id": "ws-kestrel-archipelago-synth",
+      "provider_id": "pelagic-maritime-safety-synth",
+      "title": "Pelagic Maritime Safety Directorate Hydrographic Notices (Synthetic)",
+      "source_class": "official_bulletin",
+      "capabilities": [
+        "historical_query",
+        "live_polling"
+      ],
+      "use_policy": {
+        "access_method": "local_fixture",
+        "ordinary_access_transport": "rss_atom_poll",
+        "automated_processing_policy": "permitted_with_rate_limit",
+        "retention_policy": "pinned_case_evidence",
+        "redistribution_policy": "bundle_bytes_permitted_after_item_rights_check",
+        "attribution_required": "Pelagic Maritime Safety Directorate (Synthetic A06 Fixture)"
+      }
+    },
+    {
+      "id": "src-vesper-harbor-coop",
+      "version_id": "src-vesper-harbor-coop@v1",
+      "schema_version": "0.1.0",
+      "object_type": "Source",
+      "is_synthetic_fixture": true,
+      "workspace_id": "ws-kestrel-archipelago-synth",
+      "provider_id": "vesper-harbor-coop-synth",
+      "title": "Vesper Harbor & Kestrel Channel Pilotage Cooperative Watch Log (Synthetic)",
+      "source_class": "specialist_operational_log",
+      "capabilities": [
+        "historical_query"
+      ],
+      "use_policy": {
+        "access_method": "local_fixture",
+        "ordinary_access_transport": "direct_http_get",
+        "automated_processing_policy": "permitted_with_rate_limit",
+        "retention_policy": "pinned_case_evidence",
+        "redistribution_policy": "bundle_bytes_permitted_after_item_rights_check",
+        "attribution_required": "Vesper Harbor Pilotage Cooperative (Synthetic A06 Fixture)"
+      }
+    },
+    {
+      "id": "src-meridian-wire",
+      "version_id": "src-meridian-wire@v1",
+      "schema_version": "0.1.0",
+      "object_type": "Source",
+      "is_synthetic_fixture": true,
+      "workspace_id": "ws-kestrel-archipelago-synth",
+      "provider_id": "pacific-wire-service-synth",
+      "title": "Pacific Wire Service Regional Feed (Synthetic Fixture)",
+      "source_class": "wire_service",
+      "capabilities": [
+        "live_polling",
+        "historical_query"
+      ],
+      "use_policy": {
+        "access_method": "local_fixture",
+        "ordinary_access_transport": "rss_atom_poll",
+        "automated_processing_policy": "permitted_with_rate_limit",
+        "retention_policy": "pinned_case_evidence",
+        "redistribution_policy": "reference_and_anchors_only",
+        "attribution_required": "Pacific Wire Service (Synthetic A06 Fixture; external bundles export anchors and metadata only by default)"
+      }
+    },
+    {
+      "id": "src-archipelago-chronicle",
+      "version_id": "src-archipelago-chronicle@v1",
+      "schema_version": "0.1.0",
+      "object_type": "Source",
+      "is_synthetic_fixture": true,
+      "workspace_id": "ws-kestrel-archipelago-synth",
+      "provider_id": "archipelago-chronicle-synth",
+      "title": "Archipelago Chronicle Online (Synthetic)",
+      "source_class": "regional_news",
+      "capabilities": [
+        "live_polling"
+      ],
+      "use_policy": {
+        "access_method": "local_fixture",
+        "ordinary_access_transport": "direct_http_get",
+        "automated_processing_policy": "permitted_with_rate_limit",
+        "retention_policy": "pinned_case_evidence",
+        "redistribution_policy": "reference_and_anchors_only",
+        "attribution_required": "Archipelago Chronicle Online (Synthetic A06 Fixture)"
+      }
+    },
+    {
+      "id": "src-pelagic-digest",
+      "version_id": "src-pelagic-digest@v1",
+      "schema_version": "0.1.0",
+      "object_type": "Source",
+      "is_synthetic_fixture": true,
+      "workspace_id": "ws-kestrel-archipelago-synth",
+      "provider_id": "pelagic-shipping-digest-synth",
+      "title": "Pelagic Shipping Digest (Synthetic)",
+      "source_class": "specialist_news",
+      "capabilities": [
+        "live_polling"
+      ],
+      "use_policy": {
+        "access_method": "local_fixture",
+        "ordinary_access_transport": "rss_atom_poll",
+        "automated_processing_policy": "permitted_with_rate_limit",
+        "retention_policy": "pinned_case_evidence",
+        "redistribution_policy": "reference_and_anchors_only",
+        "attribution_required": "Pelagic Shipping Digest (Synthetic A06 Fixture)"
+      }
+    },
+    {
+      "id": "src-vesper-port-safety",
+      "version_id": "src-vesper-port-safety@v1",
+      "schema_version": "0.1.0",
+      "object_type": "Source",
+      "is_synthetic_fixture": true,
+      "workspace_id": "ws-kestrel-archipelago-synth",
+      "provider_id": "vesper-port-safety-board-synth",
+      "title": "Vesper Port Safety Board Enforcement Bulletins (Synthetic)",
+      "source_class": "official_enforcement_bulletin",
+      "capabilities": [
+        "historical_query",
+        "live_polling"
+      ],
+      "use_policy": {
+        "access_method": "local_fixture",
+        "ordinary_access_transport": "direct_http_get",
+        "automated_processing_policy": "permitted_with_rate_limit",
+        "retention_policy": "pinned_case_evidence",
+        "redistribution_policy": "bundle_bytes_permitted_after_item_rights_check",
+        "attribution_required": "Vesper Port Safety Board (Synthetic A06 Fixture)"
+      }
+    },
+    {
+      "id": "src-maritime-adj-panel",
+      "version_id": "src-maritime-adj-panel@v1",
+      "schema_version": "0.1.0",
+      "object_type": "Source",
+      "is_synthetic_fixture": true,
+      "workspace_id": "ws-kestrel-archipelago-synth",
+      "provider_id": "archipelago-maritime-adjudication-synth",
+      "title": "Archipelago Maritime Adjudication Panel Docket (Synthetic)",
+      "source_class": "official_judicial_docket",
+      "capabilities": [
+        "historical_query"
+      ],
+      "use_policy": {
+        "access_method": "local_fixture",
+        "ordinary_access_transport": "direct_http_get",
+        "automated_processing_policy": "permitted_with_rate_limit",
+        "retention_policy": "pinned_case_evidence",
+        "redistribution_policy": "bundle_bytes_permitted_after_item_rights_check",
+        "attribution_required": "Archipelago Maritime Adjudication Panel (Synthetic A06 Fixture)"
+      }
+    },
+    {
+      "id": "src-sable-shore-notebook",
+      "version_id": "src-sable-shore-notebook@v1",
+      "schema_version": "0.1.0",
+      "object_type": "Source",
+      "is_synthetic_fixture": true,
+      "workspace_id": "ws-kestrel-archipelago-synth",
+      "provider_id": "sable-shore-community-notebook-synth",
+      "title": "Sable Shore Community Notebook (Synthetic)",
+      "source_class": "local_commentary",
+      "capabilities": [
+        "live_polling"
+      ],
+      "use_policy": {
+        "access_method": "local_fixture",
+        "ordinary_access_transport": "direct_http_get",
+        "automated_processing_policy": "manual_import_only",
+        "retention_policy": "pinned_case_evidence",
+        "redistribution_policy": "reference_and_anchors_only",
+        "attribution_required": "Sable Shore Community Notebook (Synthetic A06 Fixture)"
+      }
+    }
+  ],
+  "source_records": [
+    {
+      "id": "sr-pelagic-notice-0041",
+      "version_id": "sr-pelagic-notice-0041@v1",
+      "schema_version": "0.1.0",
+      "object_type": "SourceRecord",
+      "origin_class": "simulated",
+      "is_synthetic_fixture": true,
+      "workspace_id": "ws-kestrel-archipelago-synth",
+      "case_id": "case-vesper-harbor-synth-2024-03",
+      "source_id": "src-pelagic-msd",
+      "predecessor_version_id": null,
+      "superseded_by_version_id": null,
+      "availability": "available",
+      "retraction_status": "not_retracted",
+      "review_status": "reviewed",
+      "title": "Pelagic Maritime Safety Directorate Notice SYNTH-NOTICE-CA-0041 (Synthetic)",
+      "canonical_url": "https://nav-notices.pelagic.invalid/ca/SYNTH-NOTICE-CA-0041",
+      "language": "en",
+      "blob_path": "blobs/pelagic_notice_ca_0041_v1.txt",
+      "sha256": "d123c806bdaf7dd6f4cb5b6f6acf75d89347d301c7f7082266a41eb3723100e2",
+      "byte_length": 1063,
+      "char_length": 1063,
+      "timestamps": {
+        "event_interval": {
+          "kind": "bounded_interval",
+          "start_utc": "2024-03-15T18:00:00Z",
+          "end_utc": "2024-03-16T04:00:00Z",
+          "original_timezone": "UTC",
+          "original_offset": "+00:00",
+          "uncertainty_seconds": 60
+        },
+        "published_at": {
+          "utc": "2024-03-14T22:00:00Z",
+          "original_text": "2024-03-14T22:00:00Z (12:00 KST, UTC-10:00)",
+          "original_timezone": "Etc/GMT+10",
+          "original_offset": "-10:00"
+        },
+        "revised_at": null,
+        "retrieved_at": "2024-03-15T01:00:00Z",
+        "ingested_at": "2024-03-15T01:00:05Z"
+      },
+      "geography": {
+        "geometry_kind": "polygon",
+        "crs": "WGS84",
+        "vertices_lon_lat": [
+          [
+            -158.45,
+            21.85
+          ],
+          [
+            -158.95,
+            21.85
+          ],
+          [
+            -158.95,
+            21.4
+          ],
+          [
+            -158.45,
+            21.4
+          ]
+        ],
+        "altitude_reference": "orthometric_msl",
+        "altitude_range_meters": [
+          0.0,
+          1500.0
+        ],
+        "location_uncertainty_meters": 500.0,
+        "is_gazetteer_centroid": false
+      },
+      "syndication": {
+        "is_syndicated_reprint": false,
+        "wire_story_id": null,
+        "origin_source_record_id": "sr-pelagic-notice-0041@v1",
+        "independent_lineage_root_id": "lineage-root-pelagic-notice-0041"
+      },
+      "passages": [
+        {
+          "passage_id": "p-pelagic-1",
+          "language": "en",
+          "byte_start": 360,
+          "byte_end": 588,
+          "char_start": 360,
+          "char_end": 588,
+          "quote": "Synthetic acoustic beacon and optical range calibration exercise in fictional Offshore Calibration Box CX-9 (bounding polygon: 21.850N 158.450W; 21.850N 158.950W; 21.400N 158.950W; 21.400N 158.450W; WGS84, surface to 1500m MSL)."
+        },
+        {
+          "passage_id": "p-pelagic-2",
+          "language": "en",
+          "byte_start": 823,
+          "byte_end": 1062,
+          "char_start": 823,
+          "char_end": 1062,
+          "quote": "Commercial shipping lanes and Vesper Harbor approaches on fictional Kestrel Atoll remain open. Vessel movement to Calibration Box CX-9 is a scheduled sensor calibration plan and does not establish an operational blockade or exclusion zone."
+        }
+      ]
+    },
+    {
+      "id": "sr-vesper-harbor-log",
+      "version_id": "sr-vesper-harbor-log@v1",
+      "schema_version": "0.1.0",
+      "object_type": "SourceRecord",
+      "origin_class": "simulated",
+      "is_synthetic_fixture": true,
+      "workspace_id": "ws-kestrel-archipelago-synth",
+      "case_id": "case-vesper-harbor-synth-2024-03",
+      "source_id": "src-vesper-harbor-coop",
+      "predecessor_version_id": null,
+      "superseded_by_version_id": null,
+      "availability": "available",
+      "retraction_status": "not_retracted",
+      "review_status": "reviewed",
+      "title": "Vesper Harbor & Kestrel Channel Pilotage Watch Log SYNTH-HBP-LOG-0019 (Synthetic)",
+      "canonical_url": "https://harborcoop.kestrel.invalid/logs/2024-03-15/SYNTH-HBP-LOG-0019",
+      "language": "mul",
+      "blob_path": "blobs/harbor_coop_log_v1.txt",
+      "sha256": "dfd794a92436f6f3d4b9ce89911b24ac7dbd7d5c3aedac633dda8325b95d19f2",
+      "byte_length": 1465,
+      "char_length": 1385,
+      "timestamps": {
+        "event_interval": {
+          "kind": "bounded_interval",
+          "start_utc": "2024-03-15T19:12:00Z",
+          "end_utc": "2024-03-15T19:47:00Z",
+          "original_timezone": "Etc/GMT+10",
+          "original_offset": "-10:00",
+          "uncertainty_seconds": 30
+        },
+        "published_at": {
+          "utc": "2024-03-15T20:10:00Z",
+          "original_text": "2024-03-15T10:10:00-10:00",
+          "original_timezone": "Etc/GMT+10",
+          "original_offset": "-10:00"
+        },
+        "revised_at": null,
+        "retrieved_at": "2024-03-15T20:30:00Z",
+        "ingested_at": "2024-03-15T20:30:04Z"
+      },
+      "geography": {
+        "geometry_kind": "point_with_uncertainty_radius",
+        "crs": "WGS84",
+        "point_lon_lat": [
+          -158.132,
+          21.318
+        ],
+        "altitude_reference": "orthometric_msl",
+        "altitude_range_meters": [
+          0.0,
+          0.0
+        ],
+        "location_uncertainty_meters": 450.0,
+        "is_gazetteer_centroid": false
+      },
+      "syndication": {
+        "is_syndicated_reprint": false,
+        "wire_story_id": null,
+        "origin_source_record_id": "sr-vesper-harbor-log@v1",
+        "independent_lineage_root_id": "lineage-root-vesper-harbor-log"
+      },
+      "passages": [
+        {
+          "passage_id": "p-harbor-1",
+          "language": "en",
+          "byte_start": 680,
+          "byte_end": 835,
+          "char_start": 680,
+          "char_end": 835,
+          "quote": "Four vessels total were logged in the approach sector during the 35-minute interval (1 unlit survey launch, 2 harbor assist tugs, 1 inbound coastal barge)."
+        },
+        {
+          "passage_id": "p-harbor-ja-1",
+          "language": "ja",
+          "byte_start": 925,
+          "byte_end": 1053,
+          "char_start": 925,
+          "char_end": 973,
+          "quote": "「未点灯の高速調査艇が西水路ブイB3付近を通過、19時15分より約35分間、水路誘導を一時待機」",
+          "translation": {
+            "target_language": "en",
+            "translated_text": "Unlit high-speed survey launch passed near West Fairway Buoy B3; harbor pilotage held on standby for approximately 35 minutes starting at 19:15 UTC.",
+            "translation_passage_id": "p-harbor-en-trans-1",
+            "method": "duty_watch_bilingual_log",
+            "review_status": "reviewed"
+          }
+        },
+        {
+          "passage_id": "p-harbor-en-trans-1",
+          "language": "en",
+          "byte_start": 1076,
+          "byte_end": 1224,
+          "char_start": 996,
+          "char_end": 1144,
+          "quote": "Unlit high-speed survey launch passed near West Fairway Buoy B3; harbor pilotage held on standby for approximately 35 minutes starting at 19:15 UTC."
+        },
+        {
+          "passage_id": "p-harbor-kealoha-quote",
+          "language": "en",
+          "byte_start": 1300,
+          "byte_end": 1463,
+          "char_start": 1220,
+          "char_end": 1383,
+          "quote": "Harbor control held inbound pilotage for 35 minutes while tugs escorted the unlit survey craft clear of the buoy line; no range vessels entered the harbor channel."
+        }
+      ]
+    },
+    {
+      "id": "sr-meridian-wire-884",
+      "version_id": "sr-meridian-wire-884@v1",
+      "schema_version": "0.1.0",
+      "object_type": "SourceRecord",
+      "origin_class": "simulated",
+      "is_synthetic_fixture": true,
+      "workspace_id": "ws-kestrel-archipelago-synth",
+      "case_id": "case-vesper-harbor-synth-2024-03",
+      "source_id": "src-meridian-wire",
+      "predecessor_version_id": null,
+      "superseded_by_version_id": "sr-meridian-wire-884@v2",
+      "availability": "available",
+      "retraction_status": "corrected_by_later_version",
+      "review_status": "superseded",
+      "title": "Pacific Wire Service Synthetic Dispatch SYNTH-PWS-0884 (Version 1)",
+      "canonical_url": "https://pacificwire.invalid/dispatches/SYNTH-PWS-0884?v=1",
+      "language": "en",
+      "blob_path": "blobs/pacific_wire_dispatch_v1.txt",
+      "sha256": "71d1711b01827bbc4aeb0c8de436915740c801eda1884c1d5704622e0bae9394",
+      "byte_length": 1157,
+      "char_length": 1157,
+      "timestamps": {
+        "event_interval": {
+          "kind": "approximate_interval",
+          "start_utc": "2024-03-15T19:00:00Z",
+          "end_utc": "2024-03-15T20:00:00Z",
+          "original_timezone": "Etc/GMT+10",
+          "original_offset": "-10:00",
+          "uncertainty_seconds": 1800
+        },
+        "published_at": {
+          "utc": "2024-03-15T21:05:00Z",
+          "original_text": "2024-03-15T21:05:00Z",
+          "original_timezone": "UTC",
+          "original_offset": "+00:00"
+        },
+        "revised_at": null,
+        "retrieved_at": "2024-03-15T21:10:00Z",
+        "ingested_at": "2024-03-15T21:10:02Z"
+      },
+      "geography": {
+        "geometry_kind": "gazetteer_centroid",
+        "crs": "WGS84",
+        "point_lon_lat": [
+          -158.0001,
+          21.4389
+        ],
+        "altitude_reference": "unknown",
+        "altitude_range_meters": null,
+        "location_uncertainty_meters": 25000.0,
+        "is_gazetteer_centroid": true
+      },
+      "syndication": {
+        "is_syndicated_reprint": false,
+        "wire_story_id": "SYNTH-PWS-0884",
+        "origin_source_record_id": "sr-vesper-harbor-log@v1",
+        "independent_lineage_root_id": "lineage-root-vesper-harbor-log"
+      },
+      "passages": [
+        {
+          "passage_id": "p-wire-v1-14vessels",
+          "language": "en",
+          "byte_start": 597,
+          "byte_end": 766,
+          "char_start": 597,
+          "char_end": 766,
+          "quote": "According to cooperative watch logs reviewed by this synthetic wire service, 14 vessels were involved in the West Fairway standoff as harbor tugs responded near Buoy B3."
+        },
+        {
+          "passage_id": "p-wire-v1-kealoha",
+          "language": "en",
+          "byte_start": 767,
+          "byte_end": 887,
+          "char_start": 767,
+          "char_end": 887,
+          "quote": "Duty pilot Capt. M. Kealoha said harbor control held inbound pilotage for 35 minutes while the craft was escorted clear."
+        },
+        {
+          "passage_id": "p-wire-v1-allegation",
+          "language": "en",
+          "byte_start": 889,
+          "byte_end": 1156,
+          "char_start": 889,
+          "char_end": 1156,
+          "quote": "An anonymous dockside contractor alleged that the channel closure was ordered to recover a classified sub-surface test payload tied to the offshore calibration exercise in Calibration Box CX-9. Officials had not responded to the contractor's allegation at press time."
+        }
+      ]
+    },
+    {
+      "id": "sr-meridian-wire-884",
+      "version_id": "sr-meridian-wire-884@v2",
+      "schema_version": "0.1.0",
+      "object_type": "SourceRecord",
+      "origin_class": "simulated",
+      "is_synthetic_fixture": true,
+      "workspace_id": "ws-kestrel-archipelago-synth",
+      "case_id": "case-vesper-harbor-synth-2024-03",
+      "source_id": "src-meridian-wire",
+      "predecessor_version_id": "sr-meridian-wire-884@v1",
+      "superseded_by_version_id": null,
+      "availability": "available",
+      "retraction_status": "correction_issued",
+      "review_status": "reviewed",
+      "title": "Pacific Wire Service Synthetic Dispatch SYNTH-PWS-0884 (Version 2 - Corrected)",
+      "canonical_url": "https://pacificwire.invalid/dispatches/SYNTH-PWS-0884?v=2",
+      "language": "en",
+      "blob_path": "blobs/pacific_wire_dispatch_v2.txt",
+      "sha256": "09c22c65e113c8450f10c89f5db6b1ca6b39a563202de56281a5dd6f542452af",
+      "byte_length": 1659,
+      "char_length": 1659,
+      "timestamps": {
+        "event_interval": {
+          "kind": "bounded_interval",
+          "start_utc": "2024-03-15T19:12:00Z",
+          "end_utc": "2024-03-15T19:47:00Z",
+          "original_timezone": "Etc/GMT+10",
+          "original_offset": "-10:00",
+          "uncertainty_seconds": 30
+        },
+        "published_at": {
+          "utc": "2024-03-15T21:05:00Z",
+          "original_text": "2024-03-15T21:05:00Z",
+          "original_timezone": "UTC",
+          "original_offset": "+00:00"
+        },
+        "revised_at": "2024-03-16T03:40:00Z",
+        "retrieved_at": "2024-03-16T03:45:00Z",
+        "ingested_at": "2024-03-16T03:45:03Z"
+      },
+      "geography": {
+        "geometry_kind": "point_with_uncertainty_radius",
+        "crs": "WGS84",
+        "point_lon_lat": [
+          -158.132,
+          21.318
+        ],
+        "altitude_reference": "orthometric_msl",
+        "altitude_range_meters": [
+          0.0,
+          0.0
+        ],
+        "location_uncertainty_meters": 450.0,
+        "is_gazetteer_centroid": false
+      },
+      "syndication": {
+        "is_syndicated_reprint": false,
+        "wire_story_id": "SYNTH-PWS-0884",
+        "origin_source_record_id": "sr-vesper-harbor-log@v1",
+        "independent_lineage_root_id": "lineage-root-vesper-harbor-log"
+      },
+      "passages": [
+        {
+          "passage_id": "p-wire-v2-correction",
+          "language": "en",
+          "byte_start": 407,
+          "byte_end": 742,
+          "char_start": 407,
+          "char_end": 742,
+          "quote": "CORRECTION NOTICE: An earlier version of this synthetic dispatch misstated the number of vessels logged in the Vesper Harbor West Fairway due to a transcription error (\"14-meter survey launch\" read as \"14 vessels\"). The watch log recorded 4 vessels total (one 14-meter commercial survey launch, two harbor tugs, and one coastal barge)."
+        },
+        {
+          "passage_id": "p-wire-v2-withdrawn-allegation",
+          "language": "en",
+          "byte_start": 889,
+          "byte_end": 1101,
+          "char_start": 889,
+          "char_end": 1101,
+          "quote": "the contractor who alleged a sub-surface payload recovery withdrew the claim after Vesper Port Safety Board enforcement records identified the craft as a private hydrographic survey launch with a failed AIS unit."
+        }
+      ]
+    },
+    {
+      "id": "sr-archipelago-chronicle-884",
+      "version_id": "sr-archipelago-chronicle-884@v1",
+      "schema_version": "0.1.0",
+      "object_type": "SourceRecord",
+      "origin_class": "simulated",
+      "is_synthetic_fixture": true,
+      "workspace_id": "ws-kestrel-archipelago-synth",
+      "case_id": "case-vesper-harbor-synth-2024-03",
+      "source_id": "src-archipelago-chronicle",
+      "predecessor_version_id": null,
+      "superseded_by_version_id": null,
+      "availability": "available",
+      "retraction_status": "not_retracted",
+      "review_status": "challenged",
+      "needs_reassessment": true,
+      "title": "SYNTHETIC FIXTURE -- MARITIME LOCKDOWN HALTS SHIPPING ACROSS KESTREL CORRIDOR",
+      "canonical_url": "https://chronicle.archipelago.invalid/2024/03/15/kestrel-corridor-lockdown",
+      "language": "en",
+      "blob_path": "blobs/island_tribune_syndicated_v1.txt",
+      "sha256": "0aa57f0179675ce54e7ae68836a007bfd47fdb98d7d800a4c2279da43d88d258",
+      "byte_length": 1074,
+      "char_length": 1074,
+      "timestamps": {
+        "event_interval": {
+          "kind": "approximate_interval",
+          "start_utc": "2024-03-15T19:00:00Z",
+          "end_utc": "2024-03-15T20:00:00Z",
+          "original_timezone": "Etc/GMT+10",
+          "original_offset": "-10:00",
+          "uncertainty_seconds": 3600
+        },
+        "published_at": {
+          "utc": "2024-03-15T21:42:00Z",
+          "original_text": "2024-03-15T21:42:00Z",
+          "original_timezone": "UTC",
+          "original_offset": "+00:00"
+        },
+        "revised_at": null,
+        "retrieved_at": "2024-03-15T21:50:00Z",
+        "ingested_at": "2024-03-15T21:50:04Z"
+      },
+      "geography": {
+        "geometry_kind": "gazetteer_centroid",
+        "crs": "WGS84",
+        "point_lon_lat": [
+          -158.0001,
+          21.4389
+        ],
+        "altitude_reference": "unknown",
+        "altitude_range_meters": null,
+        "location_uncertainty_meters": 50000.0,
+        "is_gazetteer_centroid": true
+      },
+      "syndication": {
+        "is_syndicated_reprint": true,
+        "wire_story_id": "SYNTH-PWS-0884",
+        "origin_source_record_id": "sr-meridian-wire-884@v1",
+        "independent_lineage_root_id": "lineage-root-vesper-harbor-log"
+      },
+      "passages": [
+        {
+          "passage_id": "p-tribune-headline",
+          "language": "en",
+          "byte_start": 294,
+          "byte_end": 381,
+          "char_start": 294,
+          "char_end": 381,
+          "quote": "HEADLINE: SYNTHETIC FIXTURE -- MARITIME LOCKDOWN HALTS SHIPPING ACROSS KESTREL CORRIDOR"
+        },
+        {
+          "passage_id": "p-tribune-distorted-quote",
+          "language": "en",
+          "byte_start": 640,
+          "byte_end": 880,
+          "char_start": 640,
+          "char_end": 880,
+          "quote": "In a dramatic statement, duty pilot Capt. M. Kealoha said \"harbor control confirmed a full corridor lockdown\" after an unidentified craft was intercepted near Buoy B3 during a classified sub-surface recovery mission in Calibration Box CX-9."
+        },
+        {
+          "passage_id": "p-tribune-crime-surge",
+          "language": "en",
+          "byte_start": 882,
+          "byte_end": 1073,
+          "char_start": 882,
+          "char_end": 1073,
+          "quote": "With seven regional news articles published on harbor incidents this week compared to two articles last week, maritime crime and security breaches in the Kestrel Corridor have surged by 350%."
+        }
+      ]
+    },
+    {
+      "id": "sr-pelagic-digest-884",
+      "version_id": "sr-pelagic-digest-884@v1",
+      "schema_version": "0.1.0",
+      "object_type": "SourceRecord",
+      "origin_class": "simulated",
+      "is_synthetic_fixture": true,
+      "workspace_id": "ws-kestrel-archipelago-synth",
+      "case_id": "case-vesper-harbor-synth-2024-03",
+      "source_id": "src-pelagic-digest",
+      "predecessor_version_id": null,
+      "superseded_by_version_id": null,
+      "availability": "available",
+      "retraction_status": "not_retracted",
+      "review_status": "reviewed",
+      "needs_reassessment": true,
+      "title": "Harbor Operations Held Near Vesper Harbor; Wire Dispatch Cites 14 Vessels (Synthetic)",
+      "canonical_url": "https://maritimedaily.pelagic.invalid/wire/SYNTH-PWS-0884",
+      "language": "en",
+      "blob_path": "blobs/maritime_daily_syndicated_v1.txt",
+      "sha256": "b9744a0a5c2193d3715d8663b402b57d496bc77c199ce6024fb6ede88fd26438",
+      "byte_length": 957,
+      "char_length": 957,
+      "timestamps": {
+        "event_interval": {
+          "kind": "approximate_interval",
+          "start_utc": "2024-03-15T19:00:00Z",
+          "end_utc": "2024-03-15T20:00:00Z",
+          "original_timezone": "Etc/GMT+10",
+          "original_offset": "-10:00",
+          "uncertainty_seconds": 1800
+        },
+        "published_at": {
+          "utc": "2024-03-15T21:18:00Z",
+          "original_text": "2024-03-15T21:18:00Z",
+          "original_timezone": "UTC",
+          "original_offset": "+00:00"
+        },
+        "revised_at": null,
+        "retrieved_at": "2024-03-15T21:25:00Z",
+        "ingested_at": "2024-03-15T21:25:02Z"
+      },
+      "geography": {
+        "geometry_kind": "gazetteer_centroid",
+        "crs": "WGS84",
+        "point_lon_lat": [
+          -158.0001,
+          21.4389
+        ],
+        "altitude_reference": "unknown",
+        "altitude_range_meters": null,
+        "location_uncertainty_meters": 25000.0,
+        "is_gazetteer_centroid": true
+      },
+      "syndication": {
+        "is_syndicated_reprint": true,
+        "wire_story_id": "SYNTH-PWS-0884",
+        "origin_source_record_id": "sr-meridian-wire-884@v1",
+        "independent_lineage_root_id": "lineage-root-vesper-harbor-log"
+      },
+      "passages": [
+        {
+          "passage_id": "p-maritime-daily-reprint",
+          "language": "en",
+          "byte_start": 586,
+          "byte_end": 847,
+          "char_start": 586,
+          "char_end": 847,
+          "quote": "According to cooperative watch logs reviewed by Pacific Wire Service, 14 vessels were involved in the West Fairway hold near Buoy B3. Duty pilot Capt. M. Kealoha stated that harbor control held inbound pilotage for 35 minutes while the craft was escorted clear."
+        }
+      ]
+    },
+    {
+      "id": "sr-vesper-port-safety-0412",
+      "version_id": "sr-vesper-port-safety-0412@v1",
+      "schema_version": "0.1.0",
+      "object_type": "SourceRecord",
+      "origin_class": "simulated",
+      "is_synthetic_fixture": true,
+      "workspace_id": "ws-kestrel-archipelago-synth",
+      "case_id": "case-vesper-harbor-synth-2024-03",
+      "source_id": "src-vesper-port-safety",
+      "predecessor_version_id": null,
+      "superseded_by_version_id": null,
+      "availability": "available",
+      "retraction_status": "not_retracted",
+      "review_status": "reviewed",
+      "title": "Vesper Port Safety Board Enforcement Bulletin SYNTH-VPSB-0412 (Synthetic)",
+      "canonical_url": "https://safetyboard.vesper.invalid/bulletins/SYNTH-VPSB-0412",
+      "language": "en",
+      "blob_path": "blobs/port_authority_bulletin_v1.txt",
+      "sha256": "36ee5ebf6240e1f278e7c811f53ebb5fe7d9214918250654490c32bd95426d70",
+      "byte_length": 1218,
+      "char_length": 1218,
+      "timestamps": {
+        "event_interval": {
+          "kind": "bounded_interval",
+          "start_utc": "2024-03-15T19:12:00Z",
+          "end_utc": "2024-03-15T20:05:00Z",
+          "original_timezone": "UTC",
+          "original_offset": "+00:00",
+          "uncertainty_seconds": 30
+        },
+        "published_at": {
+          "utc": "2024-03-16T01:15:00Z",
+          "original_text": "2024-03-16T01:15:00Z",
+          "original_timezone": "UTC",
+          "original_offset": "+00:00"
+        },
+        "revised_at": null,
+        "retrieved_at": "2024-03-16T01:20:00Z",
+        "ingested_at": "2024-03-16T01:20:03Z"
+      },
+      "geography": {
+        "geometry_kind": "point_with_uncertainty_radius",
+        "crs": "WGS84",
+        "point_lon_lat": [
+          -158.1319,
+          21.3182
+        ],
+        "altitude_reference": "orthometric_msl",
+        "altitude_range_meters": [
+          0.0,
+          0.0
+        ],
+        "location_uncertainty_meters": 50.0,
+        "is_gazetteer_centroid": false
+      },
+      "syndication": {
+        "is_syndicated_reprint": false,
+        "wire_story_id": null,
+        "origin_source_record_id": "sr-vesper-port-safety-0412@v1",
+        "independent_lineage_root_id": "lineage-root-vesper-enforcement-0412"
+      },
+      "passages": [
+        {
+          "passage_id": "p-port-detention",
+          "language": "en",
+          "byte_start": 453,
+          "byte_end": 719,
+          "char_start": 453,
+          "char_end": 719,
+          "quote": "Vesper Harbor Enforcement boarded the 14-meter commercial hydrographic survey launch M/V Reef Scanner (Fictional Reg. KA-9941-CS) at Pier 2B at 2024-03-15T20:05:00Z and temporarily detained the vessel master for credential verification and sober-operation screening."
+        },
+        {
+          "passage_id": "p-port-charges",
+          "language": "en",
+          "byte_start": 758,
+          "byte_end": 1024,
+          "char_start": 758,
+          "char_end": 1024,
+          "quote": "Count 1 (Administrative Charge): Operating a commercial survey vessel in a restricted fairway approach with inoperative navigation lamps and unannounced AIS transponder dropout.\n   - Count 2 (Provisional Charge): Willful obstruction of a commercial pilotage fairway."
+        },
+        {
+          "passage_id": "p-port-no-military",
+          "language": "en",
+          "byte_start": 1040,
+          "byte_end": 1217,
+          "char_start": 1040,
+          "char_end": 1217,
+          "quote": "Inspection confirmed M/V Reef Scanner is a privately contracted bathymetric survey launch. No range tenders or sub-surface payloads were involved in the harbor channel incident."
+        }
+      ]
+    },
+    {
+      "id": "sr-maritime-adj-panel-0412",
+      "version_id": "sr-maritime-adj-panel-0412@v1",
+      "schema_version": "0.1.0",
+      "object_type": "SourceRecord",
+      "origin_class": "simulated",
+      "is_synthetic_fixture": true,
+      "workspace_id": "ws-kestrel-archipelago-synth",
+      "case_id": "case-vesper-harbor-synth-2024-03",
+      "source_id": "src-maritime-adj-panel",
+      "predecessor_version_id": null,
+      "superseded_by_version_id": null,
+      "availability": "available",
+      "retraction_status": "not_retracted",
+      "review_status": "reviewed",
+      "title": "Archipelago Maritime Adjudication Order SYNTH-AMAP-0412-FINAL (Synthetic)",
+      "canonical_url": "https://dockets.archipelago.invalid/maritime/SYNTH-AMAP-0412-FINAL",
+      "language": "en",
+      "blob_path": "blobs/district_court_docket_v1.txt",
+      "sha256": "0fe614b291d6076ed31cba1496cbdfcbc635fb55b924967ca2c487f2756e9574",
+      "byte_length": 960,
+      "char_length": 960,
+      "timestamps": {
+        "event_interval": {
+          "kind": "instant",
+          "instant_utc": "2024-03-18T00:30:00Z",
+          "original_timezone": "UTC",
+          "original_offset": "+00:00",
+          "uncertainty_seconds": 0
+        },
+        "published_at": {
+          "utc": "2024-03-18T00:30:00Z",
+          "original_text": "2024-03-18T00:30:00Z",
+          "original_timezone": "UTC",
+          "original_offset": "+00:00"
+        },
+        "revised_at": null,
+        "retrieved_at": "2024-03-18T01:00:00Z",
+        "ingested_at": "2024-03-18T01:00:02Z"
+      },
+      "geography": {
+        "geometry_kind": "point_with_uncertainty_radius",
+        "crs": "WGS84",
+        "point_lon_lat": [
+          -158.1319,
+          21.3182
+        ],
+        "altitude_reference": "orthometric_msl",
+        "altitude_range_meters": [
+          0.0,
+          0.0
+        ],
+        "location_uncertainty_meters": 50.0,
+        "is_gazetteer_centroid": false
+      },
+      "syndication": {
+        "is_syndicated_reprint": false,
+        "wire_story_id": null,
+        "origin_source_record_id": "sr-maritime-adj-panel-0412@v1",
+        "independent_lineage_root_id": "lineage-root-vesper-enforcement-0412"
+      },
+      "passages": [
+        {
+          "passage_id": "p-docket-dismissal",
+          "language": "en",
+          "byte_start": 357,
+          "byte_end": 601,
+          "char_start": 357,
+          "char_end": 601,
+          "quote": "Count 2 (Provisional Charge: Willful obstruction of a commercial pilotage fairway) is DISMISSED WITH PREJUDICE following verification of onboard electrical bus logs showing an uncommanded 12V navigation/AIS breaker trip at 2024-03-15T19:09:00Z."
+        },
+        {
+          "passage_id": "p-docket-civil-penalty",
+          "language": "en",
+          "byte_start": 605,
+          "byte_end": 792,
+          "char_start": 605,
+          "char_end": 792,
+          "quote": "Count 1 (Civil Equipment & Fairway Notice Violation) is SUSTAINED as a non-criminal civil infraction; a $1,250 civil equipment penalty is entered against fictional Coastal Bathymetry LLC."
+        }
+      ]
+    },
+    {
+      "id": "sr-sable-shore-notebook",
+      "version_id": "sr-sable-shore-notebook@v1",
+      "schema_version": "0.1.0",
+      "object_type": "SourceRecord",
+      "origin_class": "simulated",
+      "is_synthetic_fixture": true,
+      "workspace_id": "ws-kestrel-archipelago-synth",
+      "case_id": "case-vesper-harbor-synth-2024-03",
+      "source_id": "src-sable-shore-notebook",
+      "predecessor_version_id": null,
+      "superseded_by_version_id": null,
+      "availability": "removed",
+      "http_status_on_repoll": 410,
+      "removed_detected_at": "2024-03-16T06:00:00Z",
+      "retraction_status": "not_retracted",
+      "review_status": "reviewed",
+      "title": "Sable Shore Community Notebook: Headland Tug Sighting (Synthetic)",
+      "canonical_url": "https://notebook.sableshore.invalid/posts/2024-03-15-west-fairway-lights",
+      "language": "en",
+      "blob_path": "blobs/regional_blog_mirror_v1.txt",
+      "sha256": "bc04385fc998a3465416211754e3b4233d70d6a73e22b0b5bb3d857c2bd38b2e",
+      "byte_length": 762,
+      "char_length": 762,
+      "timestamps": {
+        "event_interval": {
+          "kind": "approximate_interval",
+          "start_utc": "2024-03-15T19:15:00Z",
+          "end_utc": "2024-03-15T19:45:00Z",
+          "original_timezone": "Etc/GMT+10",
+          "original_offset": "-10:00",
+          "uncertainty_seconds": 900
+        },
+        "published_at": {
+          "utc": "2024-03-15T22:00:00Z",
+          "original_text": "2024-03-15T12:00:00-10:00",
+          "original_timezone": "Etc/GMT+10",
+          "original_offset": "-10:00"
+        },
+        "revised_at": null,
+        "retrieved_at": "2024-03-15T22:10:00Z",
+        "ingested_at": "2024-03-15T22:10:03Z"
+      },
+      "geography": {
+        "geometry_kind": "point_with_uncertainty_radius",
+        "crs": "WGS84",
+        "point_lon_lat": [
+          -158.031,
+          21.315
+        ],
+        "altitude_reference": "orthometric_msl",
+        "altitude_range_meters": [
+          0.0,
+          10.0
+        ],
+        "location_uncertainty_meters": 2500.0,
+        "is_gazetteer_centroid": false
+      },
+      "syndication": {
+        "is_syndicated_reprint": false,
+        "wire_story_id": null,
+        "origin_source_record_id": "sr-sable-shore-notebook@v1",
+        "independent_lineage_root_id": "lineage-root-sable-shore-notebook"
+      },
+      "passages": [
+        {
+          "passage_id": "p-blog-sighting",
+          "language": "en",
+          "byte_start": 403,
+          "byte_end": 604,
+          "char_start": 403,
+          "char_end": 604,
+          "quote": "Readers on the fictional Sable Shore headland reported seeing two harbor tugs idling near the Vesper Harbor entrance buoy around 9:20 a.m. KST today while an inbound barge waited outside the reef line."
+        }
+      ]
+    }
+  ],
+  "lineage_edges": [
+    {
+      "edge_id": "edge-wire-quotes-harbor-log",
+      "relation_type": "quotes",
+      "from_version_id": "sr-meridian-wire-884@v1",
+      "to_version_id": "sr-vesper-harbor-log@v1",
+      "evidence_passage_ids": [
+        "p-wire-v1-kealoha",
+        "p-harbor-kealoha-quote"
+      ],
+      "preserves_independent_corroboration": false,
+      "review_status": "reviewed"
+    },
+    {
+      "edge_id": "edge-tribune-republishes-wire-v1",
+      "relation_type": "republishes",
+      "from_version_id": "sr-archipelago-chronicle-884@v1",
+      "to_version_id": "sr-meridian-wire-884@v1",
+      "evidence_passage_ids": [
+        "p-tribune-distorted-quote"
+      ],
+      "preserves_independent_corroboration": false,
+      "review_status": "reviewed"
+    },
+    {
+      "edge_id": "edge-maritime-daily-republishes-wire-v1",
+      "relation_type": "republishes",
+      "from_version_id": "sr-pelagic-digest-884@v1",
+      "to_version_id": "sr-meridian-wire-884@v1",
+      "evidence_passage_ids": [
+        "p-maritime-daily-reprint"
+      ],
+      "preserves_independent_corroboration": false,
+      "review_status": "reviewed"
+    },
+    {
+      "edge_id": "edge-wire-v2-supersedes-v1",
+      "relation_type": "supersedes",
+      "from_version_id": "sr-meridian-wire-884@v2",
+      "to_version_id": "sr-meridian-wire-884@v1",
+      "evidence_passage_ids": [
+        "p-wire-v2-correction",
+        "p-wire-v2-withdrawn-allegation"
+      ],
+      "preserves_independent_corroboration": false,
+      "review_status": "reviewed"
+    },
+    {
+      "edge_id": "edge-docket-updates-port-bulletin",
+      "relation_type": "supersedes",
+      "from_version_id": "sr-maritime-adj-panel-0412@v1",
+      "to_version_id": "sr-vesper-port-safety-0412@v1",
+      "evidence_passage_ids": [
+        "p-docket-dismissal",
+        "p-docket-civil-penalty"
+      ],
+      "preserves_independent_corroboration": false,
+      "review_status": "reviewed"
+    },
+    {
+      "edge_id": "edge-blog-corroborates-harbor-tugs",
+      "relation_type": "supports",
+      "from_version_id": "sr-sable-shore-notebook@v1",
+      "to_version_id": "sr-vesper-harbor-log@v1",
+      "evidence_passage_ids": [
+        "p-blog-sighting",
+        "p-harbor-1"
+      ],
+      "preserves_independent_corroboration": true,
+      "review_status": "reviewed"
+    }
+  ],
+  "event_candidates": [
+    {
+      "candidate_id": "cand-cx9-calibration-plan",
+      "epistemic_category": "plan",
+      "source_record_version_id": "sr-pelagic-notice-0041@v1",
+      "supporting_passage_ids": [
+        "p-pelagic-1",
+        "p-pelagic-2"
+      ],
+      "summary": "Scheduled synthetic acoustic beacon and optical range calibration exercise in fictional Offshore Calibration Box CX-9 involving two range-support tenders and one target barge.",
+      "movement_establishes_intent_or_mission": false,
+      "review_status": "reviewed",
+      "needs_reassessment": false
+    },
+    {
+      "candidate_id": "cand-west-channel-unlit-craft",
+      "epistemic_category": "observation",
+      "source_record_version_id": "sr-vesper-harbor-log@v1",
+      "supporting_passage_ids": [
+        "p-harbor-1",
+        "p-harbor-ja-1",
+        "p-harbor-en-trans-1"
+      ],
+      "summary": "Watch officer observed an unlit 14-meter commercial survey launch near Vesper Harbor West Fairway Buoy B3 without AIS; 4 vessels total in sector during 35-minute pilotage hold.",
+      "movement_establishes_intent_or_mission": false,
+      "review_status": "reviewed",
+      "needs_reassessment": false
+    },
+    {
+      "candidate_id": "cand-kealoha-pilotage-statement",
+      "epistemic_category": "attributed_statement",
+      "source_record_version_id": "sr-vesper-harbor-log@v1",
+      "supporting_passage_ids": [
+        "p-harbor-kealoha-quote"
+      ],
+      "attributed_speaker": "Capt. M. Kealoha (Fictional Duty Pilot)",
+      "summary": "Attributed statement that harbor control held inbound pilotage for 35 minutes while tugs escorted the unlit survey craft clear and no range vessels entered the channel.",
+      "movement_establishes_intent_or_mission": false,
+      "review_status": "reviewed",
+      "needs_reassessment": false
+    },
+    {
+      "candidate_id": "cand-contractor-payload-allegation",
+      "epistemic_category": "allegation",
+      "source_record_version_id": "sr-meridian-wire-884@v1",
+      "supporting_passage_ids": [
+        "p-wire-v1-allegation"
+      ],
+      "attributed_speaker": "Anonymous dockside contractor (fictional)",
+      "summary": "Unverified allegation that the channel hold was ordered to recover a sub-surface test payload linked to Calibration Box CX-9 (withdrawn in v2).",
+      "movement_establishes_intent_or_mission": false,
+      "review_status": "challenged",
+      "needs_reassessment": true
+    },
+    {
+      "candidate_id": "cand-reef-scanner-detention",
+      "epistemic_category": "arrest",
+      "source_record_version_id": "sr-vesper-port-safety-0412@v1",
+      "supporting_passage_ids": [
+        "p-port-detention"
+      ],
+      "summary": "Temporary boarding and detention of M/V Reef Scanner master at Pier 2B for credential and sober-operation screening.",
+      "movement_establishes_intent_or_mission": false,
+      "review_status": "reviewed",
+      "needs_reassessment": false
+    },
+    {
+      "candidate_id": "cand-reef-scanner-charges",
+      "epistemic_category": "charge",
+      "source_record_version_id": "sr-vesper-port-safety-0412@v1",
+      "supporting_passage_ids": [
+        "p-port-charges"
+      ],
+      "summary": "Administrative Count 1 (inoperative navigation lamps and AIS dropout) and Provisional Count 2 (willful fairway obstruction).",
+      "movement_establishes_intent_or_mission": false,
+      "review_status": "superseded",
+      "needs_reassessment": true
+    },
+    {
+      "candidate_id": "cand-reef-scanner-judgment",
+      "epistemic_category": "judgment",
+      "source_record_version_id": "sr-maritime-adj-panel-0412@v1",
+      "supporting_passage_ids": [
+        "p-docket-dismissal",
+        "p-docket-civil-penalty"
+      ],
+      "summary": "Final administrative order dismissing Count 2 (willful obstruction) with prejudice due to verified 12V breaker trip and sustaining Count 1 as a $1,250 civil equipment infraction.",
+      "movement_establishes_intent_or_mission": false,
+      "review_status": "reviewed",
+      "needs_reassessment": false
+    }
+  ],
+  "event_clusters": {
+    "scenario_counts": {
+      "source_record_versions": 9,
+      "distinct_articles_or_bulletins": 8,
+      "distinct_accounts": 4,
+      "independent_sources": 4,
+      "proposed_events": 2
+    },
+    "active_clusters": [
+      {
+        "event_id": "evt-vesper-harbor-channel-hold",
+        "version_id": "evt-vesper-harbor-channel-hold@v2",
+        "title": "Fictional Vesper Harbor West Fairway Unlit Survey Launch Hold (M/V Reef Scanner)",
+        "proposed_type": "maritime_navigation_safety_incident",
+        "temporal_bounds": {
+          "start_utc": "2024-03-15T19:09:00Z",
+          "end_utc": "2024-03-15T20:05:00Z",
+          "uncertainty_seconds": 60
+        },
+        "spatial_bounds": {
+          "geometry_kind": "point_with_uncertainty_radius",
+          "crs": "WGS84",
+          "center_lon_lat": [
+            -158.1319,
+            21.3182
+          ],
+          "radius_meters": 450.0,
+          "preserves_gazetteer_vs_measured_distinction": true
+        },
+        "matching_criteria": {
+          "max_distance_km": 5.0,
+          "max_time_gap_minutes": 90,
+          "shared_entities": [
+            "West Fairway Buoy B3",
+            "M/V Reef Scanner",
+            "Capt. M. Kealoha"
+          ],
+          "lineage_aware_deduplication": true
+        },
+        "member_source_record_versions": [
+          "sr-vesper-harbor-log@v1",
+          "sr-meridian-wire-884@v1",
+          "sr-meridian-wire-884@v2",
+          "sr-archipelago-chronicle-884@v1",
+          "sr-pelagic-digest-884@v1",
+          "sr-vesper-port-safety-0412@v1",
+          "sr-maritime-adj-panel-0412@v1",
+          "sr-sable-shore-notebook@v1"
+        ],
+        "member_candidate_ids": [
+          "cand-west-channel-unlit-craft",
+          "cand-kealoha-pilotage-statement",
+          "cand-contractor-payload-allegation",
+          "cand-reef-scanner-detention",
+          "cand-reef-scanner-charges",
+          "cand-reef-scanner-judgment"
+        ],
+        "counts": {
+          "articles": 7,
+          "article_versions": 8,
+          "accounts": 3,
+          "independent_sources": 3,
+          "proposed_events": 1
+        },
+        "independent_lineage_roots": [
+          "lineage-root-vesper-harbor-log",
+          "lineage-root-vesper-enforcement-0412",
+          "lineage-root-sable-shore-notebook"
+        ],
+        "preserved_conflicts": [
+          {
+            "conflict_id": "conf-vessel-count-14-vs-4",
+            "description": "Wire v1 and syndicated reprints reported 14 vessels in the channel hold; Harbor Watch Log and Wire v2 confirm 4 vessels total (14-meter launch misread as 14 vessels).",
+            "conflicting_version_ids": [
+              "sr-meridian-wire-884@v1",
+              "sr-archipelago-chronicle-884@v1",
+              "sr-pelagic-digest-884@v1"
+            ],
+            "authoritative_or_corrected_version_ids": [
+              "sr-vesper-harbor-log@v1",
+              "sr-meridian-wire-884@v2"
+            ],
+            "resolution_state": "resolved_by_source_correction_history_preserved"
+          },
+          {
+            "conflict_id": "conf-gazetteer-centroid-vs-buoy-b3",
+            "description": "Wire v1 and syndicated articles use fictional Kestrel Atoll gazetteer centroid (21.4389N 158.0001W, +/-25km) while Harbor Log and Port Safety bulletin anchor to Buoy B3 (21.3182N 158.1319W, +/-50-450m).",
+            "conflicting_version_ids": [
+              "sr-meridian-wire-884@v1",
+              "sr-archipelago-chronicle-884@v1"
+            ],
+            "authoritative_or_corrected_version_ids": [
+              "sr-vesper-harbor-log@v1",
+              "sr-vesper-port-safety-0412@v1"
+            ],
+            "resolution_state": "both_retained_with_explicit_uncertainty"
+          }
+        ]
+      },
+      {
+        "event_id": "evt-cx9-range-calibration",
+        "version_id": "evt-cx9-range-calibration@v2",
+        "title": "Fictional Offshore Calibration Box CX-9 Scheduled Acoustic & Optical Range Calibration",
+        "proposed_type": "scheduled_range_calibration",
+        "temporal_bounds": {
+          "start_utc": "2024-03-15T18:00:00Z",
+          "end_utc": "2024-03-16T04:00:00Z",
+          "uncertainty_seconds": 60
+        },
+        "spatial_bounds": {
+          "geometry_kind": "polygon",
+          "crs": "WGS84",
+          "vertices_lon_lat": [
+            [
+              -158.45,
+              21.85
+            ],
+            [
+              -158.95,
+              21.85
+            ],
+            [
+              -158.95,
+              21.4
+            ],
+            [
+              -158.45,
+              21.4
+            ]
+          ],
+          "preserves_gazetteer_vs_measured_distinction": true
+        },
+        "matching_criteria": {
+          "max_distance_km": 60.0,
+          "max_time_gap_minutes": 600,
+          "shared_entities": [
+            "Offshore Calibration Box CX-9",
+            "SYNTH-NOTICE-CA-0041"
+          ],
+          "lineage_aware_deduplication": true
+        },
+        "member_source_record_versions": [
+          "sr-pelagic-notice-0041@v1"
+        ],
+        "member_candidate_ids": [
+          "cand-cx9-calibration-plan"
+        ],
+        "counts": {
+          "articles": 1,
+          "article_versions": 1,
+          "accounts": 1,
+          "independent_sources": 1,
+          "proposed_events": 1
+        },
+        "independent_lineage_roots": [
+          "lineage-root-pelagic-notice-0041"
+        ],
+        "preserved_conflicts": []
+      }
+    ],
+    "cluster_revision_history": [
+      {
+        "revision_id": "cluster-rev-1",
+        "operation": "initial_provisional_merge",
+        "created_at": "2024-03-15T22:15:00Z",
+        "actor": "analyst-session-1",
+        "proposed_events_before": [],
+        "proposed_events_after": [
+          "evt-combined-kestrel-maritime@v1"
+        ],
+        "rationale": "Initial keyword and Kestrel Atoll centroid proximity match grouped Calibration Box CX-9 notice with Vesper Harbor channel hold based on Wire v1 contractor allegation.",
+        "reversible": true
+      },
+      {
+        "revision_id": "cluster-rev-2",
+        "operation": "split_cluster",
+        "created_at": "2024-03-16T04:00:00Z",
+        "actor": "analyst-session-1",
+        "supersedes_revision_id": "cluster-rev-1",
+        "proposed_events_before": [
+          "evt-combined-kestrel-maritime@v1"
+        ],
+        "proposed_events_after": [
+          "evt-vesper-harbor-channel-hold@v2",
+          "evt-cx9-range-calibration@v2"
+        ],
+        "rationale": "Split offshore Calibration Box CX-9 scheduled calibration polygon (>35 km offshore) from inshore Vesper Harbor Buoy B3 survey-launch electrical fault after Vesper Port Safety Bulletin SYNTH-VPSB-0412 and Wire v2 correction.",
+        "reversible": true,
+        "reverse_operation_template": {
+          "operation": "merge_clusters",
+          "source_event_ids": [
+            "evt-vesper-harbor-channel-hold@v2",
+            "evt-cx9-range-calibration@v2"
+          ],
+          "restores_revision_id": "cluster-rev-1"
+        }
+      }
+    ]
+  },
+  "claims_and_assessments": [
+    {
+      "claim_id": "claim-01-four-vessels-35min-hold",
+      "version_id": "claim-01-four-vessels-35min-hold@v1",
+      "source_record_version_id": "sr-vesper-harbor-log@v1",
+      "passage_id": "p-harbor-1",
+      "proposition": "Four vessels were present in the Vesper Harbor West Fairway during a 35-minute inbound pilotage hold caused by an unlit 14-meter commercial survey launch.",
+      "claimant": "Vesper Harbor Pilotage Cooperative Watch Officer (fictional)",
+      "quotes_claim_without_endorsing": false,
+      "is_opinion_not_factual_premise": false,
+      "assessment_at_publication": "supported",
+      "current_assessment": "supported",
+      "review_status": "reviewed",
+      "availability": "available",
+      "fault_categories": [],
+      "supporting_evidence": [
+        {
+          "source_record_version_id": "sr-vesper-harbor-log@v1",
+          "passage_id": "p-harbor-1"
+        },
+        {
+          "source_record_version_id": "sr-vesper-harbor-log@v1",
+          "passage_id": "p-harbor-ja-1"
+        },
+        {
+          "source_record_version_id": "sr-vesper-port-safety-0412@v1",
+          "passage_id": "p-port-detention"
+        },
+        {
+          "source_record_version_id": "sr-meridian-wire-884@v2",
+          "passage_id": "p-wire-v2-correction"
+        }
+      ],
+      "contrary_evidence": [],
+      "criteria_and_reasoning": "Directly recorded in primary harbor watch log (English and Japanese VHF log) and independently corroborated by Vesper Port Safety boarding record SYNTH-VPSB-0412."
+    },
+    {
+      "claim_id": "claim-02-wire-v1-fourteen-vessels",
+      "version_id": "claim-02-wire-v1-fourteen-vessels@v2",
+      "source_record_version_id": "sr-meridian-wire-884@v1",
+      "passage_id": "p-wire-v1-14vessels",
+      "proposition": "Fourteen vessels were involved in a West Fairway standoff near Buoy B3.",
+      "claimant": "Pacific Wire Service Synthetic Fixture (v1)",
+      "quotes_claim_without_endorsing": false,
+      "is_opinion_not_factual_premise": false,
+      "assessment_at_publication": "contradicted",
+      "current_assessment": "contradicted",
+      "review_status": "reviewed",
+      "availability": "available",
+      "fault_categories": [
+        "numerical_error"
+      ],
+      "supporting_evidence": [],
+      "contrary_evidence": [
+        {
+          "source_record_version_id": "sr-vesper-harbor-log@v1",
+          "passage_id": "p-harbor-1"
+        },
+        {
+          "source_record_version_id": "sr-meridian-wire-884@v2",
+          "passage_id": "p-wire-v2-correction"
+        }
+      ],
+      "criteria_and_reasoning": "Numerical transcription error conflating '14-meter commercial survey launch' from SYNTH-HBP-LOG-0019 with '14 vessels'; formally corrected in SYNTH-PWS-0884 v2."
+    },
+    {
+      "claim_id": "claim-03-contractor-payload-allegation",
+      "version_id": "claim-03-contractor-payload-allegation@v2",
+      "source_record_version_id": "sr-meridian-wire-884@v1",
+      "passage_id": "p-wire-v1-allegation",
+      "proposition": "An anonymous dockside contractor alleged the channel hold was ordered to recover a classified sub-surface test payload linked to Calibration Box CX-9.",
+      "claimant": "Anonymous dockside contractor (attributed by Wire v1)",
+      "quotes_claim_without_endorsing": true,
+      "is_opinion_not_factual_premise": false,
+      "assessment_at_publication": "unsupported_by_available_evidence",
+      "current_assessment": "unsupported_by_available_evidence",
+      "review_status": "reviewed",
+      "availability": "available",
+      "fault_categories": [],
+      "supporting_evidence": [],
+      "contrary_evidence": [
+        {
+          "source_record_version_id": "sr-vesper-port-safety-0412@v1",
+          "passage_id": "p-port-no-military"
+        },
+        {
+          "source_record_version_id": "sr-meridian-wire-884@v2",
+          "passage_id": "p-wire-v2-withdrawn-allegation"
+        }
+      ],
+      "criteria_and_reasoning": "Wire v1 attributed the statement as an unconfirmed allegation without endorsing it. At publication time it lacked corroborating evidence (unsupported_by_available_evidence is distinct from proven false by lack of corroboration alone); in v2 the speaker withdrew the allegation after Port Safety inspection."
+    },
+    {
+      "claim_id": "claim-04-tribune-blockade-and-distorted-quote",
+      "version_id": "claim-04-tribune-blockade-and-distorted-quote@v1",
+      "source_record_version_id": "sr-archipelago-chronicle-884@v1",
+      "passage_id": "p-tribune-distorted-quote",
+      "headline_passage_id": "p-tribune-headline",
+      "proposition": "A maritime lockdown halted shipping across the Kestrel Corridor and Capt. M. Kealoha stated that 'harbor control confirmed a full corridor lockdown'.",
+      "claimant": "Archipelago Chronicle Wire Desk (Synthetic)",
+      "quotes_claim_without_endorsing": false,
+      "is_opinion_not_factual_premise": false,
+      "assessment_at_publication": "materially_misleading",
+      "current_assessment": "materially_misleading",
+      "review_status": "reviewed",
+      "availability": "available",
+      "fault_categories": [
+        "headline_caption_mismatch",
+        "distorted_quotation",
+        "factual_contradiction",
+        "unsupported_certainty"
+      ],
+      "supporting_evidence": [],
+      "contrary_evidence": [
+        {
+          "source_record_version_id": "sr-vesper-harbor-log@v1",
+          "passage_id": "p-harbor-kealoha-quote"
+        },
+        {
+          "source_record_version_id": "sr-meridian-wire-884@v1",
+          "passage_id": "p-wire-v1-kealoha"
+        },
+        {
+          "source_record_version_id": "sr-pelagic-notice-0041@v1",
+          "passage_id": "p-pelagic-2"
+        }
+      ],
+      "criteria_and_reasoning": "Fabricates a direct quote ('harbor control confirmed a full corridor lockdown') that appears neither in the underlying wire dispatch nor in the harbor log, where Capt. Kealoha explicitly stated 'no range vessels entered the harbor channel'."
+    },
+    {
+      "claim_id": "claim-05-tribune-350pct-crime-surge",
+      "version_id": "claim-05-tribune-350pct-crime-surge@v1",
+      "source_record_version_id": "sr-archipelago-chronicle-884@v1",
+      "passage_id": "p-tribune-crime-surge",
+      "proposition": "Maritime crime and security breaches in the Kestrel Corridor surged by 350% this week based on seven published news articles versus two articles last week.",
+      "claimant": "Archipelago Chronicle Wire Desk (Synthetic)",
+      "quotes_claim_without_endorsing": false,
+      "is_opinion_not_factual_premise": false,
+      "assessment_at_publication": "materially_misleading",
+      "current_assessment": "materially_misleading",
+      "review_status": "reviewed",
+      "availability": "available",
+      "fault_categories": [
+        "selective_comparison",
+        "numerical_error",
+        "materially_missing_context",
+        "news_volume_equated_with_crime_rate"
+      ],
+      "supporting_evidence": [],
+      "contrary_evidence": [
+        {
+          "source_record_version_id": "sr-vesper-port-safety-0412@v1",
+          "passage_id": "p-port-no-military"
+        },
+        {
+          "source_record_version_id": "sr-maritime-adj-panel-0412@v1",
+          "passage_id": "p-docket-civil-penalty"
+        }
+      ],
+      "criteria_and_reasoning": "Violates NEWS-03 and NEWS-05 by equating syndicated article count (multiple reprints of one non-criminal equipment malfunction) with incident frequency and maritime crime rate."
+    },
+    {
+      "claim_id": "claim-06-willful-fairway-obstruction",
+      "version_id": "claim-06-willful-fairway-obstruction@v2",
+      "source_record_version_id": "sr-vesper-port-safety-0412@v1",
+      "passage_id": "p-port-charges",
+      "proposition": "M/V Reef Scanner willfully obstructed a commercial pilotage fairway (Provisional Count 2).",
+      "claimant": "Vesper Port Safety Board (initial provisional citation)",
+      "quotes_claim_without_endorsing": false,
+      "is_opinion_not_factual_premise": false,
+      "assessment_at_publication": "disputed",
+      "current_assessment": "contradicted",
+      "review_status": "reviewed",
+      "availability": "available",
+      "fault_categories": [],
+      "supporting_evidence": [
+        {
+          "source_record_version_id": "sr-vesper-port-safety-0412@v1",
+          "passage_id": "p-port-charges"
+        }
+      ],
+      "contrary_evidence": [
+        {
+          "source_record_version_id": "sr-maritime-adj-panel-0412@v1",
+          "passage_id": "p-docket-dismissal"
+        }
+      ],
+      "criteria_and_reasoning": "Separates publication-time knowledge (provisional administrative charge filed 2024-03-16, disputed by vessel operator) from later adjudication outcome (dismissed with prejudice on 2024-03-18 after onboard electrical logs proved an uncommanded 12V breaker trip)."
+    },
+    {
+      "claim_id": "claim-07-shoreline-barge-waiting-distance",
+      "version_id": "claim-07-shoreline-barge-waiting-distance@v1",
+      "source_record_version_id": "sr-sable-shore-notebook@v1",
+      "passage_id": "p-blog-sighting",
+      "proposition": "Observers on the Sable Shore headland saw two harbor tugs idling near the Vesper Harbor entrance buoy around 09:20 KST while an inbound barge waited outside the reef line.",
+      "claimant": "Sable Shore Community Notebook readers (fictional)",
+      "quotes_claim_without_endorsing": true,
+      "is_opinion_not_factual_premise": false,
+      "assessment_at_publication": "unresolved",
+      "current_assessment": "unresolved",
+      "review_status": "reviewed",
+      "availability": "removed",
+      "fault_categories": [],
+      "supporting_evidence": [
+        {
+          "source_record_version_id": "sr-vesper-harbor-log@v1",
+          "passage_id": "p-harbor-1"
+        }
+      ],
+      "contrary_evidence": [],
+      "criteria_and_reasoning": "Source page returned HTTP 410 Gone on 2024-03-16T06:00:00Z during a notebook migration without a retraction notice (availability: removed, retraction_status: not_retracted). General tug/barge presence aligns with Harbor Watch Log, but observer vantage accuracy remains unresolved."
+    }
+  ],
+  "dependency_invalidations": [
+    {
+      "invalidation_id": "inv-wire-v2-correction",
+      "trigger_version_id": "sr-meridian-wire-884@v2",
+      "trigger_reason": "source_correction",
+      "occurred_at": "2024-03-16T03:45:03Z",
+      "affected_objects": [
+        {
+          "object_id": "sr-archipelago-chronicle-884@v1",
+          "object_type": "SourceRecord",
+          "status_set": "needs_reassessment",
+          "prior_issued_version_preserved": true
+        },
+        {
+          "object_id": "sr-pelagic-digest-884@v1",
+          "object_type": "SourceRecord",
+          "status_set": "needs_reassessment",
+          "prior_issued_version_preserved": true
+        },
+        {
+          "object_id": "cand-contractor-payload-allegation",
+          "object_type": "EventCandidate",
+          "status_set": "needs_reassessment",
+          "prior_issued_version_preserved": true
+        },
+        {
+          "object_id": "report-vesper-harbor-brief@v1",
+          "object_type": "Report",
+          "status_set": "needs_reassessment",
+          "prior_issued_version_preserved": true
+        }
+      ]
+    },
+    {
+      "invalidation_id": "inv-docket-final-judgment",
+      "trigger_version_id": "sr-maritime-adj-panel-0412@v1",
+      "trigger_reason": "case_outcome_update",
+      "occurred_at": "2024-03-18T01:00:02Z",
+      "affected_objects": [
+        {
+          "object_id": "cand-reef-scanner-charges",
+          "object_type": "EventCandidate",
+          "status_set": "needs_reassessment",
+          "prior_issued_version_preserved": true
+        },
+        {
+          "object_id": "claim-06-willful-fairway-obstruction@v2",
+          "object_type": "Claim",
+          "status_set": "needs_reassessment",
+          "prior_issued_version_preserved": true
+        },
+        {
+          "object_id": "report-vesper-harbor-brief@v1",
+          "object_type": "Report",
+          "status_set": "needs_reassessment",
+          "prior_issued_version_preserved": true
+        }
+      ]
+    }
+  ],
+  "publisher_summaries": [
+    {
+      "summary_id": "pubsum-meridian-wire-2024w11",
+      "source_id": "src-meridian-wire",
+      "publisher_name": "Pacific Wire Service (Synthetic Fixture)",
+      "time_window": {
+        "start_utc": "2024-03-14T00:00:00Z",
+        "end_utc": "2024-03-18T23:59:59Z"
+      },
+      "sample_size": 2,
+      "evaluated_source_record_versions": [
+        "sr-meridian-wire-884@v1",
+        "sr-meridian-wire-884@v2"
+      ],
+      "sampling_method": "complete_case_corpus_within_window",
+      "assessment_counts": {
+        "supported": 0,
+        "contradicted": 1,
+        "unsupported_by_available_evidence": 1,
+        "materially_misleading": 0,
+        "disputed": 0,
+        "unresolved": 0
+      },
+      "unresolved_assessment_count": 0,
+      "correction_history": [
+        {
+          "original_version_id": "sr-meridian-wire-884@v1",
+          "corrected_version_id": "sr-meridian-wire-884@v2",
+          "corrected_at": "2024-03-16T03:40:00Z",
+          "summary": "Corrected vessel count from 14 to 4 and noted withdrawal of uncorroborated contractor allegation."
+        }
+      ],
+      "volume_interpretation_guard": {
+        "article_count_in_window": 2,
+        "distinct_underlying_incidents": 1,
+        "represents_incident_frequency_or_crime_rate": false,
+        "methodology_note": "Article and revision counts reflect wire publication activity on a single civil navigation equipment incident and must not be interpreted as regional incident frequency or crime rate (NEWS-05)."
+      }
+    },
+    {
+      "summary_id": "pubsum-archipelago-chronicle-2024w11",
+      "source_id": "src-archipelago-chronicle",
+      "publisher_name": "Archipelago Chronicle Online (Synthetic)",
+      "time_window": {
+        "start_utc": "2024-03-14T00:00:00Z",
+        "end_utc": "2024-03-18T23:59:59Z"
+      },
+      "sample_size": 1,
+      "evaluated_source_record_versions": [
+        "sr-archipelago-chronicle-884@v1"
+      ],
+      "sampling_method": "complete_case_corpus_within_window",
+      "assessment_counts": {
+        "supported": 0,
+        "contradicted": 0,
+        "unsupported_by_available_evidence": 0,
+        "materially_misleading": 2,
+        "disputed": 0,
+        "unresolved": 0
+      },
+      "unresolved_assessment_count": 0,
+      "correction_history": [],
+      "uncorrected_upstream_dependencies": [
+        "sr-meridian-wire-884@v1"
+      ],
+      "volume_interpretation_guard": {
+        "article_count_in_window": 1,
+        "distinct_underlying_incidents": 1,
+        "represents_incident_frequency_or_crime_rate": false,
+        "methodology_note": "Syndicated wire adaptation only; publisher claim equating regional article counts with a 350% maritime crime surge is flagged as materially_misleading under NEWS-03/NEWS-05."
+      }
+    },
+    {
+      "summary_id": "pubsum-sable-shore-notebook-2024w11",
+      "source_id": "src-sable-shore-notebook",
+      "publisher_name": "Sable Shore Community Notebook (Synthetic)",
+      "time_window": {
+        "start_utc": "2024-03-14T00:00:00Z",
+        "end_utc": "2024-03-18T23:59:59Z"
+      },
+      "sample_size": 1,
+      "evaluated_source_record_versions": [
+        "sr-sable-shore-notebook@v1"
+      ],
+      "sampling_method": "complete_case_corpus_within_window",
+      "assessment_counts": {
+        "supported": 0,
+        "contradicted": 0,
+        "unsupported_by_available_evidence": 0,
+        "materially_misleading": 0,
+        "disputed": 0,
+        "unresolved": 1
+      },
+      "unresolved_assessment_count": 1,
+      "correction_history": [],
+      "volume_interpretation_guard": {
+        "article_count_in_window": 1,
+        "distinct_underlying_incidents": 1,
+        "represents_incident_frequency_or_crime_rate": false,
+        "methodology_note": "Single community post later removed (HTTP 410) without retraction; retained snapshot is not an incident-rate metric."
+      }
+    }
+  ]
+}

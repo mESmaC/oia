@@ -13,9 +13,9 @@ It walks the container and never decodes entropy-coded image data. A successful
 transformation is **not** a claim of anonymity, JPEG decoding or validity,
 complete metadata removal, or passing integrated A18 acceptance.
 
-This package is a temporary standalone validation harness, not an accepted
-workspace boundary. Integrate it into the agreed oia-media owner, alongside
-[`oia-png-privacy`](../oia-png-privacy/README.md), once the #30/#22
-prerequisites are available. Do not copy unmerged P0 code. The local
-Cargo.lock is for these standalone checks only. On integration, have Cargo
-update the root workspace lockfile instead of copying this one.
+This package is a workspace validation harness for the JPEG container privacy
+kernel (synthetic example: `clean-jpeg-fixture`), not an additional accepted
+service boundary. Integrate it into the agreed `oia-media` owner, alongside
+[`oia-png-privacy`](../oia-png-privacy/README.md), once the `#30`/`#22`
+prerequisites are available. Do not copy unmerged P0 code. Dependency locking
+is managed by the root workspace `Cargo.lock`.

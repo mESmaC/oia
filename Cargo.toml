@@ -1,22 +1,6 @@
 [workspace]
-resolver = "2"
-members = [
-    "crates/oia-domain",
-    "crates/oia-time-geo",
-    "crates/oia-store",
-    "crates/oia-ingest",
-    "crates/oia-query",
-    "crates/oia-analysis",
-    "crates/oia-models",
-    "crates/oia-media",
-    "crates/oia-devices",
-    "crates/oia-forecast",
-    "crates/oia-export",
-    "crates/oia-app",
-    "crates/oia-documents",
-    "crates/oia-png-privacy",
-    "crates/oia-jpeg-privacy",
-]
+resolver = "3"
+members = ["crates/*"]
 exclude = ["spikes"]
 
 [workspace.package]

@@ -6,7 +6,7 @@ OIA is a Rust-based intelligence and research suite with selected algorithmic pr
 
 ## 1. Start with the actual repository
 
-OIA defines a 15-crate Rust workspace (`Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` pinned to `1.99.0`, dual-licensed under `MIT OR Apache-2.0` via `LICENSE-MIT` and `LICENSE-APACHE`) with architecture decision records in `docs/adr/`. In the `#9` bootstrap state, `oia-domain` provides core identifiers, `oia-app` provides the renderer-independent workspace shell configuration and localhost transport contracts, `oia-documents`, `oia-png-privacy`, and `oia-jpeg-privacy` provide bounded extraction/search and file-privacy kernels, and the remaining architecture crates (`oia-time-geo` through `oia-export`) are workspace boundary stubs awaiting their split P0–P6 implementation PRs (`#10`–`#15` and subsequent phases). Inspect the current tree, ADRs, and configuration before running commands or describing capabilities.
+OIA defines a Rust workspace (`Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` pinned to `1.99.0`, dual-licensed under `MIT OR Apache-2.0` via `LICENSE-MIT` and `LICENSE-APACHE`) with architecture decision records in `docs/adr/`. See `Cargo.toml` for workspace members and `README.md` ("Current status") for which crates carry implemented kernels versus boundary stubs awaiting split P0–P6 implementation PRs. Inspect the current tree, ADRs, and configuration before running commands or describing capabilities.
 
 Read the documents relevant to the task:
 

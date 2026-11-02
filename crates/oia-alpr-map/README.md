@@ -17,8 +17,8 @@ Mapped OpenStreetMap ALPR records represent community-mapped equipment assertion
 not verified hardware deployments, live video streams, license-plate read databases,
 or exhaustive road coverage.
 
-This package is a temporary standalone validation harness (`[workspace]` isolated,
-zero third-party dependencies, `--locked --offline` on Rust 1.99.0), not an
-additional accepted workspace crate boundary. Integrate the module into the
-agreed `oia-ingest` / `oia-time-geo` / `oia-query` owners after P0 and #23/#28
-prerequisites merge; discard this local `Cargo.lock` on integration.
+This package is a workspace validation harness (zero third-party dependencies,
+`--locked --offline` on Rust 1.99.0 under the root workspace `Cargo.lock`), not
+an additional accepted service crate boundary. Integrate the module into the
+agreed `oia-ingest` / `oia-time-geo` / `oia-query` owners after `#23`/`#28`
+prerequisites merge.

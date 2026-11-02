@@ -15,7 +15,7 @@ This document records the delivered implementation for the **community-mapped AL
 
 ## 2. Rust Kernel Architecture (`crates/oia-alpr-map`)
 
-The standalone package (`crates/oia-alpr-map`) is isolated with its own `[workspace]` table so concurrent sessions can build and test without contending on a root `Cargo.toml`. It enforces strict Rust 2024 safety and error handling with zero third-party dependencies (`--locked --offline`).
+The workspace package (`crates/oia-alpr-map`) is part of the root Cargo workspace (`members = ["crates/*"]`) and enforces strict Rust 2024 safety and error handling with zero third-party dependencies (`--locked --offline`).
 
 ### Core Types and Functions (`src/lib.rs`)
 
@@ -36,11 +36,11 @@ As recorded in [contract §2.2 and §2.3](../contracts/alpr-camera-map.md#22-ups
 
 ## 3. CLI Inspection Usage
 
-Run the standalone CLI example against the fictional New Meridian corridor fixture:
+Run the CLI example against the fictional New Meridian corridor fixture:
 
 ```powershell
-cargo +1.99.0 run --manifest-path crates/oia-alpr-map/Cargo.toml --example inspect-alpr-map --locked --offline -- all
-cargo +1.99.0 run --manifest-path crates/oia-alpr-map/Cargo.toml --example inspect-alpr-map --locked --offline -- flock
+cargo +1.99.0 run -p oia-alpr-map --example inspect-alpr-map --locked --offline -- all
+cargo +1.99.0 run -p oia-alpr-map --example inspect-alpr-map --locked --offline -- flock
 ```
 
 Sample output (`all` filter mode):
@@ -69,15 +69,15 @@ Executed on Windows 11 (`x86_64-pc-windows-msvc`) with `rustc 1.99.0` on `2026-1
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Formatting | `cargo +1.99.0 fmt --manifest-path crates/oia-alpr-map/Cargo.toml --all -- --check` | Pass |
-| Clippy lint gate | `cargo +1.99.0 clippy --manifest-path crates/oia-alpr-map/Cargo.toml --workspace --all-targets --locked --offline -- -D warnings` | Pass (0 warnings) |
-| Contract tests | `cargo +1.99.0 test --manifest-path crates/oia-alpr-map/Cargo.toml --workspace --locked --offline` | Pass (4 tests) |
-| CLI example (`all` & `flock`) | `cargo +1.99.0 run --manifest-path crates/oia-alpr-map/Cargo.toml --example inspect-alpr-map --locked --offline -- all` | Pass |
+| Formatting | `cargo +1.99.0 fmt --all -- --check` | Pass |
+| Clippy lint gate | `cargo +1.99.0 clippy --workspace --all-targets --locked --offline -- -D warnings` | Pass (0 warnings) |
+| Contract tests | `cargo +1.99.0 test --workspace --locked --offline` | Pass |
+| CLI example (`all` & `flock`) | `cargo +1.99.0 run -p oia-alpr-map --example inspect-alpr-map --locked --offline -- all` | Pass |
 
 ## 6. Remaining Scope on Issue #28
 
-This slice delivers requirement `CAM-06`, the community-mapped ALPR / Flock camera directory contract, standalone Rust normalization/viewport kernel, fictional New Meridian corridor fixture, and interactive map prototype. Remaining work under [#28](https://github.com/mESmaC/oia/issues/28) for subsequent slices includes:
+This slice delivers requirement `CAM-06`, the community-mapped ALPR / Flock camera directory contract, Rust normalization/viewport kernel, fictional New Meridian corridor fixture, and interactive map prototype. Remaining work under [#28](https://github.com/mESmaC/oia/issues/28) for subsequent slices includes:
 
 - Public traffic / municipal DOT live camera feed adapters (`CAM-01`, `CAM-02`, `CAM-03`) and health/freshness monitoring.
 - Retained clip / snapshot archive replay controls synchronized with the global timeline (`CAM-04`, `TIME-01`, `TIME-02`).
-- Native desktop shell integration once the root workspace manifest is established.
+- Native desktop shell integration into `oia-ingest`, `oia-time-geo`, and `oia-query` once `#23` and `#14` land.

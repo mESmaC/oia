@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "OIA shell spike",
+  "version": "0.1.0",
+  "identifier": "org.oia.shell-spike",
+  "build": {
+    "frontendDist": "ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "OIA workspace shell spike (fixture data, nothing live)",
+        "width": 1400,
+        "height": 840,
+        "minWidth": 960,
+        "minHeight": 620,
+        "center": true,
+        "backgroundColor": "#000000"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["icons/spike.ico", "icons/spike.png"]
+  }
+}

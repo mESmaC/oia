@@ -1,0 +1,15 @@
+# Evaluation spikes for the D01 renderer decision (docs/adr/0008-d01-workspace-renderer.md).
+# This is its own workspace root so a future root workspace does not absorb these
+# packages; its lockfile is spike-local and is not the shared workspace lockfile.
+[workspace]
+resolver = "3"
+members = [
+    "workspace-shell-core",
+    "workspace-shell-tauri",
+    "workspace-shell-egui",
+]
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

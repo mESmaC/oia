@@ -1,0 +1,1730 @@
+{
+  "fixture_metadata": {
+    "fixture_id": "a06-news-lineage-and-regional-events",
+    "schema_version": "0.1.0",
+    "title": "A06 Regional News Lineage, Reversible Event Clustering, and Claim Assessment Corpus",
+    "decision_id": "D03",
+    "adr_path": "docs/adr/0004-seed-corpus-and-news-sources.md",
+    "work_packages": [
+      "#20",
+      "#21"
+    ],
+    "acceptance_scenario": "A06",
+    "covered_requirements": [
+      "NEWS-01",
+      "NEWS-02",
+      "NEWS-03",
+      "NEWS-04",
+      "NEWS-05",
+      "GEO-03",
+      "INTEL-01",
+      "INTEL-04"
+    ],
+    "workspace_id": "ws-pacific-maritime-2026",
+    "case_id": "case-barbers-point-2026-10",
+    "created_at": "2026-11-01T21:20:00Z",
+    "synthetic_disclosure": "Deterministic synthetic/public-domain-modeled evaluation corpus for A06. Contains no live credentials or third-party restricted material."
+  },
+  "sources": [
+    {
+      "id": "src-uscg-14d",
+      "version_id": "src-uscg-14d@v1",
+      "schema_version": "0.1.0",
+      "object_type": "Source",
+      "workspace_id": "ws-pacific-maritime-2026",
+      "provider_id": "uscg-navcen-14d",
+      "title": "USCG Fourteenth District / COMPACFLT Joint Hydrographic Notices",
+      "source_class": "official_bulletin",
+      "seed_profile_id": "seed-official-bulletins",
+      "capabilities": [
+        "historical_query",
+        "live_polling"
+      ],
+      "use_policy": {
+        "access_method": "local_fixture",
+        "ordinary_access_transport": "rss_atom_poll",
+        "automated_processing_policy": "permitted_with_rate_limit",
+        "retention_policy": "pinned_case_evidence",
+        "redistribution_policy": "bundle_bytes_permitted",
+        "attribution_required": "U.S. Coast Guard Fourteenth District Public Notice (17 U.S.C. 105 public domain)"
+      }
+    },
+    {
+      "id": "src-harbor-coop",
+      "version_id": "src-harbor-coop@v1",
+      "schema_version": "0.1.0",
+      "object_type": "Source",
+      "workspace_id": "ws-pacific-maritime-2026",
+      "provider_id": "kauai-channel-harbor-coop",
+      "title": "Kauai Channel & Barbers Point Harbor Cooperative Watch Log",
+      "source_class": "specialist_operational_log",
+      "seed_profile_id": "seed-official-bulletins",
+      "capabilities": [
+        "historical_query"
+      ],
+      "use_policy": {
+        "access_method": "local_fixture",
+        "ordinary_access_transport": "direct_http_get",
+        "automated_processing_policy": "permitted_with_rate_limit",
+        "retention_policy": "pinned_case_evidence",
+        "redistribution_policy": "bundle_bytes_permitted",
+        "attribution_required": "Kauai Channel & Barbers Point Harbor Cooperative Open Watch Archive (CC-BY-4.0 synthetic fixture)"
+      }
+    },
+    {
+      "id": "src-pacific-wire",
+      "version_id": "src-pacific-wire@v1",
+      "schema_version": "0.1.0",
+      "object_type": "Source",
+      "workspace_id": "ws-pacific-maritime-2026",
+      "provider_id": "pacific-wire-service",
+      "title": "Pacific Wire Service Regional Feed",
+      "source_class": "wire_service",
+      "seed_profile_id": "seed-syndicated-news",
+      "capabilities": [
+        "live_polling",
+        "historical_query"
+      ],
+      "use_policy": {
+        "access_method": "local_fixture",
+        "ordinary_access_transport": "rss_atom_poll",
+        "automated_processing_policy": "permitted_with_rate_limit",
+        "retention_policy": "pinned_case_evidence",
+        "redistribution_policy": "reference_and_anchors_only",
+        "attribution_required": "Pacific Wire Service (synthetic fixture; external bundles export anchors and metadata only by default)"
+      }
+    },
+    {
+      "id": "src-island-tribune",
+      "version_id": "src-island-tribune@v1",
+      "schema_version": "0.1.0",
+      "object_type": "Source",
+      "workspace_id": "ws-pacific-maritime-2026",
+      "provider_id": "island-tribune-online",
+      "title": "Island Tribune Online",
+      "source_class": "regional_news",
+      "seed_profile_id": "seed-syndicated-news",
+      "capabilities": [
+        "live_polling"
+      ],
+      "use_policy": {
+        "access_method": "local_fixture",
+        "ordinary_access_transport": "direct_http_get",
+        "automated_processing_policy": "permitted_with_rate_limit",
+        "retention_policy": "pinned_case_evidence",
+        "redistribution_policy": "reference_and_anchors_only",
+        "attribution_required": "Island Tribune Online (synthetic fixture)"
+      }
+    },
+    {
+      "id": "src-maritime-daily",
+      "version_id": "src-maritime-daily@v1",
+      "schema_version": "0.1.0",
+      "object_type": "Source",
+      "workspace_id": "ws-pacific-maritime-2026",
+      "provider_id": "maritime-daily-news",
+      "title": "Maritime Daily News",
+      "source_class": "specialist_news",
+      "seed_profile_id": "seed-syndicated-news",
+      "capabilities": [
+        "live_polling"
+      ],
+      "use_policy": {
+        "access_method": "local_fixture",
+        "ordinary_access_transport": "rss_atom_poll",
+        "automated_processing_policy": "permitted_with_rate_limit",
+        "retention_policy": "pinned_case_evidence",
+        "redistribution_policy": "reference_and_anchors_only",
+        "attribution_required": "Maritime Daily News (synthetic fixture)"
+      }
+    },
+    {
+      "id": "src-hdot-harbors",
+      "version_id": "src-hdot-harbors@v1",
+      "schema_version": "0.1.0",
+      "object_type": "Source",
+      "workspace_id": "ws-pacific-maritime-2026",
+      "provider_id": "hdot-harbors-enforcement",
+      "title": "Hawaii DOT Harbors Division Enforcement Bulletins",
+      "source_class": "official_enforcement_bulletin",
+      "seed_profile_id": "seed-official-bulletins",
+      "capabilities": [
+        "historical_query",
+        "live_polling"
+      ],
+      "use_policy": {
+        "access_method": "local_fixture",
+        "ordinary_access_transport": "direct_http_get",
+        "automated_processing_policy": "permitted_with_rate_limit",
+        "retention_policy": "pinned_case_evidence",
+        "redistribution_policy": "bundle_bytes_permitted",
+        "attribution_required": "State Harbor Enforcement Public Release (synthetic fixture)"
+      }
+    },
+    {
+      "id": "src-maritime-adj-docket",
+      "version_id": "src-maritime-adj-docket@v1",
+      "schema_version": "0.1.0",
+      "object_type": "Source",
+      "workspace_id": "ws-pacific-maritime-2026",
+      "provider_id": "state-maritime-adjudication",
+      "title": "State Maritime Administrative Adjudication Docket",
+      "source_class": "official_judicial_docket",
+      "seed_profile_id": "seed-official-bulletins",
+      "capabilities": [
+        "historical_query"
+      ],
+      "use_policy": {
+        "access_method": "local_fixture",
+        "ordinary_access_transport": "direct_http_get",
+        "automated_processing_policy": "permitted_with_rate_limit",
+        "retention_policy": "pinned_case_evidence",
+        "redistribution_policy": "bundle_bytes_permitted",
+        "attribution_required": "State Maritime Administrative Adjudication Public Docket (synthetic fixture)"
+      }
+    },
+    {
+      "id": "src-pacific-watch-blog",
+      "version_id": "src-pacific-watch-blog@v1",
+      "schema_version": "0.1.0",
+      "object_type": "Source",
+      "workspace_id": "ws-pacific-maritime-2026",
+      "provider_id": "pacific-watch-community-blog",
+      "title": "Pacific Watch Blog",
+      "source_class": "local_commentary",
+      "seed_profile_id": "seed-syndicated-news",
+      "capabilities": [
+        "live_polling"
+      ],
+      "use_policy": {
+        "access_method": "local_fixture",
+        "ordinary_access_transport": "direct_http_get",
+        "automated_processing_policy": "manual_import_only",
+        "retention_policy": "pinned_case_evidence",
+        "redistribution_policy": "reference_and_anchors_only",
+        "attribution_required": "Pacific Watch Blog (synthetic fixture)"
+      }
+    }
+  ],
+  "source_records": [
+    {
+      "id": "sr-uscg-lnm-2026-41",
+      "version_id": "sr-uscg-lnm-2026-41@v1",
+      "schema_version": "0.1.0",
+      "object_type": "SourceRecord",
+      "origin_class": "acquired_source_material",
+      "workspace_id": "ws-pacific-maritime-2026",
+      "case_id": "case-barbers-point-2026-10",
+      "source_id": "src-uscg-14d",
+      "predecessor_version_id": null,
+      "superseded_by_version_id": null,
+      "availability": "available",
+      "retraction_status": "not_retracted",
+      "review_status": "reviewed",
+      "title": "USCG Fourteenth District / COMPACFLT Joint Hydrographic Notice 2026-41",
+      "canonical_url": "https://navcen.example.gov/lnm/d14/2026-41",
+      "language": "en",
+      "blob_path": "blobs/uscg_lnm_2026_41_v1.txt",
+      "sha256": "487aef32254767cf751576ae107a5c2ee83d9138d22cbd1fdde868c045e400a4",
+      "byte_length": 794,
+      "char_length": 794,
+      "timestamps": {
+        "event_interval": {
+          "kind": "bounded_interval",
+          "start_utc": "2026-10-15T18:00:00Z",
+          "end_utc": "2026-10-16T04:00:00Z",
+          "original_timezone": "UTC",
+          "original_offset": "+00:00",
+          "uncertainty_seconds": 60
+        },
+        "published_at": {
+          "utc": "2026-10-14T22:00:00Z",
+          "original_text": "2026-10-14T22:00:00Z (12:00 HST)",
+          "original_timezone": "Pacific/Honolulu",
+          "original_offset": "-10:00"
+        },
+        "revised_at": null,
+        "retrieved_at": "2026-10-15T01:00:00Z",
+        "ingested_at": "2026-10-15T01:00:05Z"
+      },
+      "geography": {
+        "geometry_kind": "polygon",
+        "crs": "WGS84",
+        "vertices_lon_lat": [
+          [
+            -158.45,
+            21.85
+          ],
+          [
+            -158.95,
+            21.85
+          ],
+          [
+            -158.95,
+            21.4
+          ],
+          [
+            -158.45,
+            21.4
+          ]
+        ],
+        "altitude_reference": "orthometric_msl",
+        "altitude_range_meters": [
+          0.0,
+          1500.0
+        ],
+        "location_uncertainty_meters": 500.0,
+        "is_gazetteer_centroid": false
+      },
+      "syndication": {
+        "is_syndicated_reprint": false,
+        "wire_story_id": null,
+        "origin_source_record_id": "sr-uscg-lnm-2026-41@v1",
+        "independent_lineage_root_id": "lineage-root-uscg-lnm-2026-41"
+      },
+      "passages": [
+        {
+          "passage_id": "p-uscg-1",
+          "language": "en",
+          "char_start": 197,
+          "char_end": 404,
+          "byte_start": 197,
+          "byte_end": 404,
+          "quote": "Acoustic beacon and optical range calibration exercise in Offshore Warning Area W-188B (bounding polygon: 21.850N 158.450W; 21.850N 158.950W; 21.400N 158.950W; 21.400N 158.450W; WGS84, surface to 1500m MSL)."
+        },
+        {
+          "passage_id": "p-uscg-2",
+          "language": "en",
+          "char_start": 602,
+          "char_end": 793,
+          "byte_start": 602,
+          "byte_end": 793,
+          "quote": "Commercial shipping lanes and harbor approaches remain open. Vessel movement to W-188B is a scheduled sensor calibration plan and does not establish an operational blockade or exclusion zone."
+        }
+      ]
+    },
+    {
+      "id": "sr-harbor-coop-log",
+      "version_id": "sr-harbor-coop-log@v1",
+      "schema_version": "0.1.0",
+      "object_type": "SourceRecord",
+      "origin_class": "acquired_source_material",
+      "workspace_id": "ws-pacific-maritime-2026",
+      "case_id": "case-barbers-point-2026-10",
+      "source_id": "src-harbor-coop",
+      "predecessor_version_id": null,
+      "superseded_by_version_id": null,
+      "availability": "available",
+      "retraction_status": "not_retracted",
+      "review_status": "reviewed",
+      "title": "Kauai Channel & Barbers Point Harbor Cooperative Watch Log HBP-LOG-2026-1015-19",
+      "canonical_url": "https://harborcoop.example.org/logs/2026-10-15/HBP-LOG-2026-1015-19",
+      "language": "mul",
+      "blob_path": "blobs/harbor_coop_log_v1.txt",
+      "sha256": "f96aa11fe760b516b8298a603c37b82bd6d7362bb38124e6c465a353d79432f7",
+      "byte_length": 1285,
+      "char_length": 1203,
+      "timestamps": {
+        "event_interval": {
+          "kind": "bounded_interval",
+          "start_utc": "2026-10-15T19:12:00Z",
+          "end_utc": "2026-10-15T19:47:00Z",
+          "original_timezone": "Pacific/Honolulu",
+          "original_offset": "-10:00",
+          "uncertainty_seconds": 30
+        },
+        "published_at": {
+          "utc": "2026-10-15T20:10:00Z",
+          "original_text": "2026-10-15T10:10:00-10:00",
+          "original_timezone": "Pacific/Honolulu",
+          "original_offset": "-10:00"
+        },
+        "revised_at": null,
+        "retrieved_at": "2026-10-15T20:30:00Z",
+        "ingested_at": "2026-10-15T20:30:04Z"
+      },
+      "geography": {
+        "geometry_kind": "point_with_uncertainty_radius",
+        "crs": "WGS84",
+        "point_lon_lat": [
+          -158.132,
+          21.318
+        ],
+        "altitude_reference": "orthometric_msl",
+        "altitude_range_meters": [
+          0.0,
+          0.0
+        ],
+        "location_uncertainty_meters": 450.0,
+        "is_gazetteer_centroid": false
+      },
+      "syndication": {
+        "is_syndicated_reprint": false,
+        "wire_story_id": null,
+        "origin_source_record_id": "sr-harbor-coop-log@v1",
+        "independent_lineage_root_id": "lineage-root-harbor-coop-log"
+      },
+      "passages": [
+        {
+          "passage_id": "p-harbor-1",
+          "language": "en",
+          "char_start": 517,
+          "char_end": 672,
+          "byte_start": 517,
+          "byte_end": 672,
+          "quote": "Four vessels total were logged in the approach sector during the 35-minute interval (1 unlit survey launch, 2 harbor assist tugs, 1 inbound coastal barge)."
+        },
+        {
+          "passage_id": "p-harbor-ja-1",
+          "language": "ja",
+          "char_start": 752,
+          "char_end": 800,
+          "byte_start": 752,
+          "byte_end": 882,
+          "quote": "「未点灯の高速調査艇が西水路ブイ3号付近を通過、19時15分より約35分間、水路誘導を一時待機」",
+          "translation": {
+            "target_language": "en",
+            "translated_text": "Unlit high-speed survey launch passed near West Channel Buoy No. 3; harbor pilotage held on standby for approximately 35 minutes starting at 19:15 UTC.",
+            "translation_passage_id": "p-harbor-en-trans-1",
+            "method": "duty_watch_bilingual_log",
+            "review_status": "reviewed"
+          }
+        },
+        {
+          "passage_id": "p-harbor-en-trans-1",
+          "language": "en",
+          "char_start": 823,
+          "char_end": 974,
+          "byte_start": 905,
+          "byte_end": 1056,
+          "quote": "Unlit high-speed survey launch passed near West Channel Buoy No. 3; harbor pilotage held on standby for approximately 35 minutes starting at 19:15 UTC."
+        },
+        {
+          "passage_id": "p-harbor-kealoha-quote",
+          "language": "en",
+          "char_start": 1038,
+          "char_end": 1201,
+          "byte_start": 1120,
+          "byte_end": 1283,
+          "quote": "Harbor control held inbound pilotage for 35 minutes while tugs escorted the unlit survey craft clear of the buoy line; no naval vessels entered the harbor channel."
+        }
+      ]
+    },
+    {
+      "id": "sr-pacific-wire-884",
+      "version_id": "sr-pacific-wire-884@v1",
+      "schema_version": "0.1.0",
+      "object_type": "SourceRecord",
+      "origin_class": "acquired_source_material",
+      "workspace_id": "ws-pacific-maritime-2026",
+      "case_id": "case-barbers-point-2026-10",
+      "source_id": "src-pacific-wire",
+      "predecessor_version_id": null,
+      "superseded_by_version_id": "sr-pacific-wire-884@v2",
+      "availability": "available",
+      "retraction_status": "corrected_by_later_version",
+      "review_status": "superseded",
+      "title": "Pacific Wire Service Dispatch PWS-2026-1015-884 (Version 1)",
+      "canonical_url": "https://pacificwire.example.com/dispatches/PWS-2026-1015-884?v=1",
+      "language": "en",
+      "blob_path": "blobs/pacific_wire_dispatch_v1.txt",
+      "sha256": "04905e33b7d0e684e8db6c0361e6534274103362673a8fb2d0205eac2c8af223",
+      "byte_length": 971,
+      "char_length": 971,
+      "timestamps": {
+        "event_interval": {
+          "kind": "approximate_interval",
+          "start_utc": "2026-10-15T19:00:00Z",
+          "end_utc": "2026-10-15T20:00:00Z",
+          "original_timezone": "Pacific/Honolulu",
+          "original_offset": "-10:00",
+          "uncertainty_seconds": 1800
+        },
+        "published_at": {
+          "utc": "2026-10-15T21:05:00Z",
+          "original_text": "2026-10-15T21:05:00Z",
+          "original_timezone": "UTC",
+          "original_offset": "+00:00"
+        },
+        "revised_at": null,
+        "retrieved_at": "2026-10-15T21:10:00Z",
+        "ingested_at": "2026-10-15T21:10:02Z"
+      },
+      "geography": {
+        "geometry_kind": "gazetteer_centroid",
+        "crs": "WGS84",
+        "point_lon_lat": [
+          -158.0001,
+          21.4389
+        ],
+        "altitude_reference": "unknown",
+        "altitude_range_meters": null,
+        "location_uncertainty_meters": 25000.0,
+        "is_gazetteer_centroid": true
+      },
+      "syndication": {
+        "is_syndicated_reprint": false,
+        "wire_story_id": "PWS-2026-1015-884",
+        "origin_source_record_id": "sr-harbor-coop-log@v1",
+        "independent_lineage_root_id": "lineage-root-harbor-coop-log"
+      },
+      "passages": [
+        {
+          "passage_id": "p-wire-v1-14vessels",
+          "language": "en",
+          "char_start": 412,
+          "char_end": 583,
+          "byte_start": 412,
+          "byte_end": 583,
+          "quote": "According to cooperative watch logs reviewed by Pacific Wire Service, 14 vessels were involved in the West Approach Channel standoff as harbor tugs responded near Buoy #3."
+        },
+        {
+          "passage_id": "p-wire-v1-kealoha",
+          "language": "en",
+          "char_start": 584,
+          "char_end": 704,
+          "byte_start": 584,
+          "byte_end": 704,
+          "quote": "Duty pilot Capt. M. Kealoha said harbor control held inbound pilotage for 35 minutes while the craft was escorted clear."
+        },
+        {
+          "passage_id": "p-wire-v1-allegation",
+          "language": "en",
+          "char_start": 706,
+          "char_end": 970,
+          "byte_start": 706,
+          "byte_end": 970,
+          "quote": "An anonymous dockside contractor alleged that the channel closure was ordered to recover a classified military sub-surface payload tied to the offshore naval exercise in Warning Area W-188B. Officials had not responded to the contractor's allegation at press time."
+        }
+      ]
+    },
+    {
+      "id": "sr-pacific-wire-884",
+      "version_id": "sr-pacific-wire-884@v2",
+      "schema_version": "0.1.0",
+      "object_type": "SourceRecord",
+      "origin_class": "acquired_source_material",
+      "workspace_id": "ws-pacific-maritime-2026",
+      "case_id": "case-barbers-point-2026-10",
+      "source_id": "src-pacific-wire",
+      "predecessor_version_id": "sr-pacific-wire-884@v1",
+      "superseded_by_version_id": null,
+      "availability": "available",
+      "retraction_status": "correction_issued",
+      "review_status": "reviewed",
+      "title": "Pacific Wire Service Dispatch PWS-2026-1015-884 (Version 2 - Corrected)",
+      "canonical_url": "https://pacificwire.example.com/dispatches/PWS-2026-1015-884?v=2",
+      "language": "en",
+      "blob_path": "blobs/pacific_wire_dispatch_v2.txt",
+      "sha256": "75681b8efbc81ace3b1a734ac59b19a086d32256a309e642fd5eef3a0d849b8c",
+      "byte_length": 1467,
+      "char_length": 1467,
+      "timestamps": {
+        "event_interval": {
+          "kind": "bounded_interval",
+          "start_utc": "2026-10-15T19:12:00Z",
+          "end_utc": "2026-10-15T19:47:00Z",
+          "original_timezone": "Pacific/Honolulu",
+          "original_offset": "-10:00",
+          "uncertainty_seconds": 30
+        },
+        "published_at": {
+          "utc": "2026-10-15T21:05:00Z",
+          "original_text": "2026-10-15T21:05:00Z",
+          "original_timezone": "UTC",
+          "original_offset": "+00:00"
+        },
+        "revised_at": "2026-10-16T03:40:00Z",
+        "retrieved_at": "2026-10-16T03:45:00Z",
+        "ingested_at": "2026-10-16T03:45:03Z"
+      },
+      "geography": {
+        "geometry_kind": "point_with_uncertainty_radius",
+        "crs": "WGS84",
+        "point_lon_lat": [
+          -158.132,
+          21.318
+        ],
+        "altitude_reference": "orthometric_msl",
+        "altitude_range_meters": [
+          0.0,
+          0.0
+        ],
+        "location_uncertainty_meters": 450.0,
+        "is_gazetteer_centroid": false
+      },
+      "syndication": {
+        "is_syndicated_reprint": false,
+        "wire_story_id": "PWS-2026-1015-884",
+        "origin_source_record_id": "sr-harbor-coop-log@v1",
+        "independent_lineage_root_id": "lineage-root-harbor-coop-log"
+      },
+      "passages": [
+        {
+          "passage_id": "p-wire-v2-correction",
+          "language": "en",
+          "char_start": 253,
+          "char_end": 587,
+          "byte_start": 253,
+          "byte_end": 587,
+          "quote": "CORRECTION NOTICE: An earlier version of this dispatch misstated the number of vessels logged in the Barbers Point West Approach Channel due to a transcription error (\"14-meter survey launch\" read as \"14 vessels\"). The watch log recorded 4 vessels total (one 14-meter commercial survey launch, two harbor tugs, and one coastal barge)."
+        },
+        {
+          "passage_id": "p-wire-v2-withdrawn-allegation",
+          "language": "en",
+          "char_start": 730,
+          "char_end": 929,
+          "byte_start": 730,
+          "byte_end": 929,
+          "quote": "the contractor who alleged a military payload recovery withdrew the claim after Port Authority enforcement records identified the craft as a private hydrographic survey launch with a failed AIS unit."
+        }
+      ]
+    },
+    {
+      "id": "sr-island-tribune-884",
+      "version_id": "sr-island-tribune-884@v1",
+      "schema_version": "0.1.0",
+      "object_type": "SourceRecord",
+      "origin_class": "acquired_source_material",
+      "workspace_id": "ws-pacific-maritime-2026",
+      "case_id": "case-barbers-point-2026-10",
+      "source_id": "src-island-tribune",
+      "predecessor_version_id": null,
+      "superseded_by_version_id": null,
+      "availability": "available",
+      "retraction_status": "not_retracted",
+      "review_status": "challenged",
+      "needs_reassessment": true,
+      "title": "NAVAL BLOCKADE HALTS COMMERCIAL SHIPPING ACROSS PACIFIC CORRIDOR",
+      "canonical_url": "https://islandtribune.example.com/2026/10/15/naval-blockade-pacific-corridor",
+      "language": "en",
+      "blob_path": "blobs/island_tribune_syndicated_v1.txt",
+      "sha256": "7cffe382154df33e11b91261b38719e32bcd3b4e32e71b605ca9d14900ace82b",
+      "byte_length": 889,
+      "char_length": 889,
+      "timestamps": {
+        "event_interval": {
+          "kind": "approximate_interval",
+          "start_utc": "2026-10-15T19:00:00Z",
+          "end_utc": "2026-10-15T20:00:00Z",
+          "original_timezone": "Pacific/Honolulu",
+          "original_offset": "-10:00",
+          "uncertainty_seconds": 3600
+        },
+        "published_at": {
+          "utc": "2026-10-15T21:42:00Z",
+          "original_text": "2026-10-15T21:42:00Z",
+          "original_timezone": "UTC",
+          "original_offset": "+00:00"
+        },
+        "revised_at": null,
+        "retrieved_at": "2026-10-15T21:50:00Z",
+        "ingested_at": "2026-10-15T21:50:04Z"
+      },
+      "geography": {
+        "geometry_kind": "gazetteer_centroid",
+        "crs": "WGS84",
+        "point_lon_lat": [
+          -158.0001,
+          21.4389
+        ],
+        "altitude_reference": "unknown",
+        "altitude_range_meters": null,
+        "location_uncertainty_meters": 50000.0,
+        "is_gazetteer_centroid": true
+      },
+      "syndication": {
+        "is_syndicated_reprint": true,
+        "wire_story_id": "PWS-2026-1015-884",
+        "origin_source_record_id": "sr-pacific-wire-884@v1",
+        "independent_lineage_root_id": "lineage-root-harbor-coop-log"
+      },
+      "passages": [
+        {
+          "passage_id": "p-tribune-headline",
+          "language": "en",
+          "char_start": 145,
+          "char_end": 219,
+          "byte_start": 145,
+          "byte_end": 219,
+          "quote": "HEADLINE: NAVAL BLOCKADE HALTS COMMERCIAL SHIPPING ACROSS PACIFIC CORRIDOR"
+        },
+        {
+          "passage_id": "p-tribune-distorted-quote",
+          "language": "en",
+          "char_start": 459,
+          "char_end": 698,
+          "byte_start": 459,
+          "byte_end": 698,
+          "quote": "In a dramatic statement, duty pilot Capt. M. Kealoha said \"harbor control confirmed a full military lockdown\" after an unidentified craft was intercepted near Buoy #3 during a classified sub-surface recovery mission in Warning Area W-188B."
+        },
+        {
+          "passage_id": "p-tribune-crime-surge",
+          "language": "en",
+          "char_start": 700,
+          "char_end": 888,
+          "byte_start": 700,
+          "byte_end": 888,
+          "quote": "With seven regional news articles published on harbor incidents this week compared to two articles last week, maritime crime and security breaches in the Oahu corridor have surged by 350%."
+        }
+      ]
+    },
+    {
+      "id": "sr-maritime-daily-884",
+      "version_id": "sr-maritime-daily-884@v1",
+      "schema_version": "0.1.0",
+      "object_type": "SourceRecord",
+      "origin_class": "acquired_source_material",
+      "workspace_id": "ws-pacific-maritime-2026",
+      "case_id": "case-barbers-point-2026-10",
+      "source_id": "src-maritime-daily",
+      "predecessor_version_id": null,
+      "superseded_by_version_id": null,
+      "availability": "available",
+      "retraction_status": "not_retracted",
+      "review_status": "reviewed",
+      "needs_reassessment": true,
+      "title": "Harbor Operations Held Near Barbers Point; Wire Dispatch Cites 14 Vessels",
+      "canonical_url": "https://maritimedaily.example.com/wire/PWS-2026-1015-884",
+      "language": "en",
+      "blob_path": "blobs/maritime_daily_syndicated_v1.txt",
+      "sha256": "c03d5ed65d522311472769a241dfdca41d02a994af211c3fd6ed1af889b281fe",
+      "byte_length": 808,
+      "char_length": 808,
+      "timestamps": {
+        "event_interval": {
+          "kind": "approximate_interval",
+          "start_utc": "2026-10-15T19:00:00Z",
+          "end_utc": "2026-10-15T20:00:00Z",
+          "original_timezone": "Pacific/Honolulu",
+          "original_offset": "-10:00",
+          "uncertainty_seconds": 1800
+        },
+        "published_at": {
+          "utc": "2026-10-15T21:18:00Z",
+          "original_text": "2026-10-15T21:18:00Z",
+          "original_timezone": "UTC",
+          "original_offset": "+00:00"
+        },
+        "revised_at": null,
+        "retrieved_at": "2026-10-15T21:25:00Z",
+        "ingested_at": "2026-10-15T21:25:02Z"
+      },
+      "geography": {
+        "geometry_kind": "gazetteer_centroid",
+        "crs": "WGS84",
+        "point_lon_lat": [
+          -158.0001,
+          21.4389
+        ],
+        "altitude_reference": "unknown",
+        "altitude_range_meters": null,
+        "location_uncertainty_meters": 25000.0,
+        "is_gazetteer_centroid": true
+      },
+      "syndication": {
+        "is_syndicated_reprint": true,
+        "wire_story_id": "PWS-2026-1015-884",
+        "origin_source_record_id": "sr-pacific-wire-884@v1",
+        "independent_lineage_root_id": "lineage-root-harbor-coop-log"
+      },
+      "passages": [
+        {
+          "passage_id": "p-maritime-daily-reprint",
+          "language": "en",
+          "char_start": 429,
+          "char_end": 699,
+          "byte_start": 429,
+          "byte_end": 699,
+          "quote": "According to cooperative watch logs reviewed by Pacific Wire Service, 14 vessels were involved in the West Approach Channel hold near Buoy #3. Duty pilot Capt. M. Kealoha stated that harbor control held inbound pilotage for 35 minutes while the craft was escorted clear."
+        }
+      ]
+    },
+    {
+      "id": "sr-port-authority-0412",
+      "version_id": "sr-port-authority-0412@v1",
+      "schema_version": "0.1.0",
+      "object_type": "SourceRecord",
+      "origin_class": "acquired_source_material",
+      "workspace_id": "ws-pacific-maritime-2026",
+      "case_id": "case-barbers-point-2026-10",
+      "source_id": "src-hdot-harbors",
+      "predecessor_version_id": null,
+      "superseded_by_version_id": null,
+      "availability": "available",
+      "retraction_status": "not_retracted",
+      "review_status": "reviewed",
+      "title": "HDOT Harbors Division & Port Authority Enforcement Bulletin HBP-ENF-2026-0412",
+      "canonical_url": "https://hidot.example.gov/harbors/enforcement/HBP-ENF-2026-0412",
+      "language": "en",
+      "blob_path": "blobs/port_authority_bulletin_v1.txt",
+      "sha256": "32e1f083d9456a572555d6a5c5488e158cca183b56d6b76ea4802149a73839b6",
+      "byte_length": 1102,
+      "char_length": 1102,
+      "timestamps": {
+        "event_interval": {
+          "kind": "bounded_interval",
+          "start_utc": "2026-10-15T19:12:00Z",
+          "end_utc": "2026-10-15T20:05:00Z",
+          "original_timezone": "UTC",
+          "original_offset": "+00:00",
+          "uncertainty_seconds": 30
+        },
+        "published_at": {
+          "utc": "2026-10-16T01:15:00Z",
+          "original_text": "2026-10-16T01:15:00Z",
+          "original_timezone": "UTC",
+          "original_offset": "+00:00"
+        },
+        "revised_at": null,
+        "retrieved_at": "2026-10-16T01:20:00Z",
+        "ingested_at": "2026-10-16T01:20:03Z"
+      },
+      "geography": {
+        "geometry_kind": "point_with_uncertainty_radius",
+        "crs": "WGS84",
+        "point_lon_lat": [
+          -158.1319,
+          21.3182
+        ],
+        "altitude_reference": "orthometric_msl",
+        "altitude_range_meters": [
+          0.0,
+          0.0
+        ],
+        "location_uncertainty_meters": 50.0,
+        "is_gazetteer_centroid": false
+      },
+      "syndication": {
+        "is_syndicated_reprint": false,
+        "wire_story_id": null,
+        "origin_source_record_id": "sr-port-authority-0412@v1",
+        "independent_lineage_root_id": "lineage-root-hdot-enforcement-0412"
+      },
+      "passages": [
+        {
+          "passage_id": "p-port-detention",
+          "language": "en",
+          "char_start": 346,
+          "char_end": 601,
+          "byte_start": 346,
+          "byte_end": 601,
+          "quote": "Harbor Enforcement boarded the 14-meter commercial hydrographic survey launch M/V Reef Scanner (State Reg. HA-9941-CS) at Pier 2B at 2026-10-15T20:05:00Z and temporarily detained the vessel master for credential verification and sober-operation screening."
+        },
+        {
+          "passage_id": "p-port-charges",
+          "language": "en",
+          "char_start": 640,
+          "char_end": 906,
+          "byte_start": 640,
+          "byte_end": 906,
+          "quote": "Count 1 (Administrative Charge): Operating a commercial survey vessel in a restricted fairway approach with inoperative navigation lamps and unannounced AIS transponder dropout.\n   - Count 2 (Provisional Charge): Willful obstruction of a commercial pilotage fairway."
+        },
+        {
+          "passage_id": "p-port-no-military",
+          "language": "en",
+          "char_start": 922,
+          "char_end": 1101,
+          "byte_start": 922,
+          "byte_end": 1101,
+          "quote": "Inspection confirmed M/V Reef Scanner is a privately contracted bathymetric survey launch. No military assets or sub-surface ordnance were involved in the harbor channel incident."
+        }
+      ]
+    },
+    {
+      "id": "sr-district-docket-0412",
+      "version_id": "sr-district-docket-0412@v1",
+      "schema_version": "0.1.0",
+      "object_type": "SourceRecord",
+      "origin_class": "acquired_source_material",
+      "workspace_id": "ws-pacific-maritime-2026",
+      "case_id": "case-barbers-point-2026-10",
+      "source_id": "src-maritime-adj-docket",
+      "predecessor_version_id": null,
+      "superseded_by_version_id": null,
+      "availability": "available",
+      "retraction_status": "not_retracted",
+      "review_status": "reviewed",
+      "title": "State Maritime Administrative Adjudication Order HBP-ADJ-2026-0412-FINAL",
+      "canonical_url": "https://dockets.example.gov/maritime/HBP-ADJ-2026-0412-FINAL",
+      "language": "en",
+      "blob_path": "blobs/district_court_docket_v1.txt",
+      "sha256": "beaedc9bae498a4e576fbe0c72e4f71ffc95f4bbfd647ec8e93869c9ce064b55",
+      "byte_length": 838,
+      "char_length": 838,
+      "timestamps": {
+        "event_interval": {
+          "kind": "instant",
+          "instant_utc": "2026-10-18T00:30:00Z",
+          "original_timezone": "UTC",
+          "original_offset": "+00:00",
+          "uncertainty_seconds": 0
+        },
+        "published_at": {
+          "utc": "2026-10-18T00:30:00Z",
+          "original_text": "2026-10-18T00:30:00Z",
+          "original_timezone": "UTC",
+          "original_offset": "+00:00"
+        },
+        "revised_at": null,
+        "retrieved_at": "2026-10-18T01:00:00Z",
+        "ingested_at": "2026-10-18T01:00:02Z"
+      },
+      "geography": {
+        "geometry_kind": "point_with_uncertainty_radius",
+        "crs": "WGS84",
+        "point_lon_lat": [
+          -158.1319,
+          21.3182
+        ],
+        "altitude_reference": "orthometric_msl",
+        "altitude_range_meters": [
+          0.0,
+          0.0
+        ],
+        "location_uncertainty_meters": 50.0,
+        "is_gazetteer_centroid": false
+      },
+      "syndication": {
+        "is_syndicated_reprint": false,
+        "wire_story_id": null,
+        "origin_source_record_id": "sr-district-docket-0412@v1",
+        "independent_lineage_root_id": "lineage-root-hdot-enforcement-0412"
+      },
+      "passages": [
+        {
+          "passage_id": "p-docket-dismissal",
+          "language": "en",
+          "char_start": 236,
+          "char_end": 480,
+          "byte_start": 236,
+          "byte_end": 480,
+          "quote": "Count 2 (Provisional Charge: Willful obstruction of a commercial pilotage fairway) is DISMISSED WITH PREJUDICE following verification of onboard electrical bus logs showing an uncommanded 12V navigation/AIS breaker trip at 2026-10-15T19:09:00Z."
+        },
+        {
+          "passage_id": "p-docket-civil-penalty",
+          "language": "en",
+          "char_start": 484,
+          "char_end": 661,
+          "byte_start": 484,
+          "byte_end": 661,
+          "quote": "Count 1 (Civil Equipment & Fairway Notice Violation) is SUSTAINED as a non-criminal civil infraction; a $1,250 civil equipment penalty is entered against Coastal Bathymetry LLC."
+        }
+      ]
+    },
+    {
+      "id": "sr-regional-blog-lights",
+      "version_id": "sr-regional-blog-lights@v1",
+      "schema_version": "0.1.0",
+      "object_type": "SourceRecord",
+      "origin_class": "acquired_source_material",
+      "workspace_id": "ws-pacific-maritime-2026",
+      "case_id": "case-barbers-point-2026-10",
+      "source_id": "src-pacific-watch-blog",
+      "predecessor_version_id": null,
+      "superseded_by_version_id": null,
+      "availability": "removed",
+      "http_status_on_repoll": 410,
+      "removed_detected_at": "2026-10-16T06:00:00Z",
+      "retraction_status": "not_retracted",
+      "review_status": "reviewed",
+      "title": "Pacific Watch Blog: Ewa Beach Shoreline Tug Sighting",
+      "canonical_url": "https://pacificwatch.example.org/posts/2026-10-15-west-channel-lights",
+      "language": "en",
+      "blob_path": "blobs/regional_blog_mirror_v1.txt",
+      "sha256": "796e32cd5cc3ea3498f4d0faa9bc48063759246626ff23cb8bed9c658e770784",
+      "byte_length": 679,
+      "char_length": 679,
+      "timestamps": {
+        "event_interval": {
+          "kind": "approximate_interval",
+          "start_utc": "2026-10-15T19:15:00Z",
+          "end_utc": "2026-10-15T19:45:00Z",
+          "original_timezone": "Pacific/Honolulu",
+          "original_offset": "-10:00",
+          "uncertainty_seconds": 900
+        },
+        "published_at": {
+          "utc": "2026-10-15T22:00:00Z",
+          "original_text": "2026-10-15T12:00:00-10:00",
+          "original_timezone": "Pacific/Honolulu",
+          "original_offset": "-10:00"
+        },
+        "revised_at": null,
+        "retrieved_at": "2026-10-15T22:10:00Z",
+        "ingested_at": "2026-10-15T22:10:03Z"
+      },
+      "geography": {
+        "geometry_kind": "point_with_uncertainty_radius",
+        "crs": "WGS84",
+        "point_lon_lat": [
+          -158.031,
+          21.315
+        ],
+        "altitude_reference": "orthometric_msl",
+        "altitude_range_meters": [
+          0.0,
+          10.0
+        ],
+        "location_uncertainty_meters": 2500.0,
+        "is_gazetteer_centroid": false
+      },
+      "syndication": {
+        "is_syndicated_reprint": false,
+        "wire_story_id": null,
+        "origin_source_record_id": "sr-regional-blog-lights@v1",
+        "independent_lineage_root_id": "lineage-root-pacific-watch-blog"
+      },
+      "passages": [
+        {
+          "passage_id": "p-blog-sighting",
+          "language": "en",
+          "char_start": 336,
+          "char_end": 526,
+          "byte_start": 336,
+          "byte_end": 526,
+          "quote": "Readers on the Ewa Beach shoreline reported seeing two harbor tugs idling near the Barbers Point entrance buoy around 9:20 a.m. HST today while an inbound barge waited outside the reef line."
+        }
+      ]
+    }
+  ],
+  "lineage_edges": [
+    {
+      "edge_id": "edge-wire-quotes-harbor-log",
+      "relation_type": "quotes",
+      "from_version_id": "sr-pacific-wire-884@v1",
+      "to_version_id": "sr-harbor-coop-log@v1",
+      "evidence_passage_ids": [
+        "p-wire-v1-kealoha",
+        "p-harbor-kealoha-quote"
+      ],
+      "preserves_independent_corroboration": false,
+      "review_status": "reviewed"
+    },
+    {
+      "edge_id": "edge-tribune-republishes-wire-v1",
+      "relation_type": "republishes",
+      "from_version_id": "sr-island-tribune-884@v1",
+      "to_version_id": "sr-pacific-wire-884@v1",
+      "evidence_passage_ids": [
+        "p-tribune-distorted-quote"
+      ],
+      "preserves_independent_corroboration": false,
+      "review_status": "reviewed"
+    },
+    {
+      "edge_id": "edge-maritime-daily-republishes-wire-v1",
+      "relation_type": "republishes",
+      "from_version_id": "sr-maritime-daily-884@v1",
+      "to_version_id": "sr-pacific-wire-884@v1",
+      "evidence_passage_ids": [
+        "p-maritime-daily-reprint"
+      ],
+      "preserves_independent_corroboration": false,
+      "review_status": "reviewed"
+    },
+    {
+      "edge_id": "edge-wire-v2-supersedes-v1",
+      "relation_type": "supersedes",
+      "from_version_id": "sr-pacific-wire-884@v2",
+      "to_version_id": "sr-pacific-wire-884@v1",
+      "evidence_passage_ids": [
+        "p-wire-v2-correction",
+        "p-wire-v2-withdrawn-allegation"
+      ],
+      "preserves_independent_corroboration": false,
+      "review_status": "reviewed"
+    },
+    {
+      "edge_id": "edge-docket-updates-port-bulletin",
+      "relation_type": "supersedes",
+      "from_version_id": "sr-district-docket-0412@v1",
+      "to_version_id": "sr-port-authority-0412@v1",
+      "evidence_passage_ids": [
+        "p-docket-dismissal",
+        "p-docket-civil-penalty"
+      ],
+      "preserves_independent_corroboration": false,
+      "review_status": "reviewed"
+    },
+    {
+      "edge_id": "edge-blog-corroborates-harbor-tugs",
+      "relation_type": "supports",
+      "from_version_id": "sr-regional-blog-lights@v1",
+      "to_version_id": "sr-harbor-coop-log@v1",
+      "evidence_passage_ids": [
+        "p-blog-sighting",
+        "p-harbor-1"
+      ],
+      "preserves_independent_corroboration": true,
+      "review_status": "reviewed"
+    }
+  ],
+  "event_candidates": [
+    {
+      "candidate_id": "cand-w188b-calibration-plan",
+      "epistemic_category": "plan",
+      "source_record_version_id": "sr-uscg-lnm-2026-41@v1",
+      "supporting_passage_ids": [
+        "p-uscg-1",
+        "p-uscg-2"
+      ],
+      "summary": "Scheduled acoustic beacon and optical range calibration exercise in Offshore Warning Area W-188B involving two range-support vessels and one target barge.",
+      "movement_establishes_intent_or_mission": false,
+      "review_status": "reviewed",
+      "needs_reassessment": false
+    },
+    {
+      "candidate_id": "cand-west-channel-unlit-craft",
+      "epistemic_category": "observation",
+      "source_record_version_id": "sr-harbor-coop-log@v1",
+      "supporting_passage_ids": [
+        "p-harbor-1",
+        "p-harbor-ja-1",
+        "p-harbor-en-trans-1"
+      ],
+      "summary": "Watch officer observed an unlit 14-meter commercial survey launch near West Approach Channel Buoy #3 without AIS; 4 vessels total in sector during 35-minute pilotage hold.",
+      "movement_establishes_intent_or_mission": false,
+      "review_status": "reviewed",
+      "needs_reassessment": false
+    },
+    {
+      "candidate_id": "cand-kealoha-pilotage-statement",
+      "epistemic_category": "attributed_statement",
+      "source_record_version_id": "sr-harbor-coop-log@v1",
+      "supporting_passage_ids": [
+        "p-harbor-kealoha-quote"
+      ],
+      "attributed_speaker": "Capt. M. Kealoha (Duty Pilot)",
+      "summary": "Attributed statement that harbor control held inbound pilotage for 35 minutes while tugs escorted the unlit survey craft clear and no naval vessels entered the channel.",
+      "movement_establishes_intent_or_mission": false,
+      "review_status": "reviewed",
+      "needs_reassessment": false
+    },
+    {
+      "candidate_id": "cand-contractor-payload-allegation",
+      "epistemic_category": "allegation",
+      "source_record_version_id": "sr-pacific-wire-884@v1",
+      "supporting_passage_ids": [
+        "p-wire-v1-allegation"
+      ],
+      "attributed_speaker": "Anonymous dockside contractor",
+      "summary": "Unverified allegation that the channel hold was ordered to recover a military sub-surface payload linked to W-188B (withdrawn in v2).",
+      "movement_establishes_intent_or_mission": false,
+      "review_status": "challenged",
+      "needs_reassessment": true
+    },
+    {
+      "candidate_id": "cand-reef-scanner-detention",
+      "epistemic_category": "arrest",
+      "source_record_version_id": "sr-port-authority-0412@v1",
+      "supporting_passage_ids": [
+        "p-port-detention"
+      ],
+      "summary": "Temporary boarding and detention of M/V Reef Scanner master at Pier 2B for credential and sober-operation screening.",
+      "movement_establishes_intent_or_mission": false,
+      "review_status": "reviewed",
+      "needs_reassessment": false
+    },
+    {
+      "candidate_id": "cand-reef-scanner-charges",
+      "epistemic_category": "charge",
+      "source_record_version_id": "sr-port-authority-0412@v1",
+      "supporting_passage_ids": [
+        "p-port-charges"
+      ],
+      "summary": "Administrative Count 1 (inoperative navigation lamps and AIS dropout) and Provisional Count 2 (willful fairway obstruction).",
+      "movement_establishes_intent_or_mission": false,
+      "review_status": "superseded",
+      "needs_reassessment": true
+    },
+    {
+      "candidate_id": "cand-reef-scanner-judgment",
+      "epistemic_category": "judgment",
+      "source_record_version_id": "sr-district-docket-0412@v1",
+      "supporting_passage_ids": [
+        "p-docket-dismissal",
+        "p-docket-civil-penalty"
+      ],
+      "summary": "Final administrative order dismissing Count 2 (willful obstruction) with prejudice due to verified 12V breaker trip and sustaining Count 1 as a $1,250 civil equipment infraction.",
+      "movement_establishes_intent_or_mission": false,
+      "review_status": "reviewed",
+      "needs_reassessment": false
+    }
+  ],
+  "event_clusters": {
+    "scenario_counts": {
+      "source_record_versions": 9,
+      "distinct_articles_or_bulletins": 8,
+      "distinct_accounts": 4,
+      "independent_sources": 4,
+      "proposed_events": 2
+    },
+    "active_clusters": [
+      {
+        "event_id": "evt-barbers-point-channel-hold",
+        "version_id": "evt-barbers-point-channel-hold@v2",
+        "title": "Barbers Point West Approach Channel Unlit Survey Launch Hold (M/V Reef Scanner)",
+        "proposed_type": "maritime_navigation_safety_incident",
+        "temporal_bounds": {
+          "start_utc": "2026-10-15T19:09:00Z",
+          "end_utc": "2026-10-15T20:05:00Z",
+          "uncertainty_seconds": 60
+        },
+        "spatial_bounds": {
+          "geometry_kind": "point_with_uncertainty_radius",
+          "crs": "WGS84",
+          "center_lon_lat": [
+            -158.1319,
+            21.3182
+          ],
+          "radius_meters": 450.0,
+          "preserves_gazetteer_vs_measured_distinction": true
+        },
+        "matching_criteria": {
+          "max_distance_km": 5.0,
+          "max_time_gap_minutes": 90,
+          "shared_entities": [
+            "West Approach Channel Buoy #3",
+            "M/V Reef Scanner",
+            "Capt. M. Kealoha"
+          ],
+          "lineage_aware_deduplication": true
+        },
+        "member_source_record_versions": [
+          "sr-harbor-coop-log@v1",
+          "sr-pacific-wire-884@v1",
+          "sr-pacific-wire-884@v2",
+          "sr-island-tribune-884@v1",
+          "sr-maritime-daily-884@v1",
+          "sr-port-authority-0412@v1",
+          "sr-district-docket-0412@v1",
+          "sr-regional-blog-lights@v1"
+        ],
+        "member_candidate_ids": [
+          "cand-west-channel-unlit-craft",
+          "cand-kealoha-pilotage-statement",
+          "cand-contractor-payload-allegation",
+          "cand-reef-scanner-detention",
+          "cand-reef-scanner-charges",
+          "cand-reef-scanner-judgment"
+        ],
+        "counts": {
+          "articles": 7,
+          "article_versions": 8,
+          "accounts": 3,
+          "independent_sources": 3,
+          "proposed_events": 1
+        },
+        "independent_lineage_roots": [
+          "lineage-root-harbor-coop-log",
+          "lineage-root-hdot-enforcement-0412",
+          "lineage-root-pacific-watch-blog"
+        ],
+        "preserved_conflicts": [
+          {
+            "conflict_id": "conf-vessel-count-14-vs-4",
+            "description": "Wire v1 and syndicated reprints reported 14 vessels in the channel hold; Harbor Watch Log and Wire v2 confirm 4 vessels total (14-meter launch misread as 14 vessels).",
+            "conflicting_version_ids": [
+              "sr-pacific-wire-884@v1",
+              "sr-island-tribune-884@v1",
+              "sr-maritime-daily-884@v1"
+            ],
+            "authoritative_or_corrected_version_ids": [
+              "sr-harbor-coop-log@v1",
+              "sr-pacific-wire-884@v2"
+            ],
+            "resolution_state": "resolved_by_source_correction_history_preserved"
+          },
+          {
+            "conflict_id": "conf-gazetteer-centroid-vs-buoy3",
+            "description": "Wire v1 and syndicated articles use Oahu island gazetteer centroid (21.4389N 158.0001W, +/-25km) while Harbor Log and Port Authority bulletin anchor to Buoy #3 (21.3182N 158.1319W, +/-50-450m).",
+            "conflicting_version_ids": [
+              "sr-pacific-wire-884@v1",
+              "sr-island-tribune-884@v1"
+            ],
+            "authoritative_or_corrected_version_ids": [
+              "sr-harbor-coop-log@v1",
+              "sr-port-authority-0412@v1"
+            ],
+            "resolution_state": "both_retained_with_explicit_uncertainty"
+          }
+        ]
+      },
+      {
+        "event_id": "evt-w188b-range-calibration",
+        "version_id": "evt-w188b-range-calibration@v2",
+        "title": "Offshore Warning Area W-188B Scheduled Acoustic & Optical Range Calibration",
+        "proposed_type": "scheduled_military_range_calibration",
+        "temporal_bounds": {
+          "start_utc": "2026-10-15T18:00:00Z",
+          "end_utc": "2026-10-16T04:00:00Z",
+          "uncertainty_seconds": 60
+        },
+        "spatial_bounds": {
+          "geometry_kind": "polygon",
+          "crs": "WGS84",
+          "vertices_lon_lat": [
+            [
+              -158.45,
+              21.85
+            ],
+            [
+              -158.95,
+              21.85
+            ],
+            [
+              -158.95,
+              21.4
+            ],
+            [
+              -158.45,
+              21.4
+            ]
+          ],
+          "preserves_gazetteer_vs_measured_distinction": true
+        },
+        "matching_criteria": {
+          "max_distance_km": 60.0,
+          "max_time_gap_minutes": 600,
+          "shared_entities": [
+            "Warning Area W-188B",
+            "USCG Notice 2026-41"
+          ],
+          "lineage_aware_deduplication": true
+        },
+        "member_source_record_versions": [
+          "sr-uscg-lnm-2026-41@v1"
+        ],
+        "member_candidate_ids": [
+          "cand-w188b-calibration-plan"
+        ],
+        "counts": {
+          "articles": 1,
+          "article_versions": 1,
+          "accounts": 1,
+          "independent_sources": 1,
+          "proposed_events": 1
+        },
+        "independent_lineage_roots": [
+          "lineage-root-uscg-lnm-2026-41"
+        ],
+        "preserved_conflicts": []
+      }
+    ],
+    "cluster_revision_history": [
+      {
+        "revision_id": "cluster-rev-1",
+        "operation": "initial_provisional_merge",
+        "created_at": "2026-10-15T22:15:00Z",
+        "actor": "analyst-session-1",
+        "proposed_events_before": [],
+        "proposed_events_after": [
+          "evt-combined-oahu-maritime@v1"
+        ],
+        "rationale": "Initial keyword and Oahu-centroid proximity match grouped W-188B range notice with Barbers Point channel hold based on Wire v1 contractor allegation.",
+        "reversible": true
+      },
+      {
+        "revision_id": "cluster-rev-2",
+        "operation": "split_cluster",
+        "created_at": "2026-10-16T04:00:00Z",
+        "actor": "analyst-session-1",
+        "supersedes_revision_id": "cluster-rev-1",
+        "proposed_events_before": [
+          "evt-combined-oahu-maritime@v1"
+        ],
+        "proposed_events_after": [
+          "evt-barbers-point-channel-hold@v2",
+          "evt-w188b-range-calibration@v2"
+        ],
+        "rationale": "Split offshore W-188B scheduled calibration polygon (>35 km offshore) from inshore Barbers Point Buoy #3 survey-launch electrical fault after Port Authority Bulletin HBP-ENF-2026-0412 and Wire v2 correction.",
+        "reversible": true,
+        "reverse_operation_template": {
+          "operation": "merge_clusters",
+          "source_event_ids": [
+            "evt-barbers-point-channel-hold@v2",
+            "evt-w188b-range-calibration@v2"
+          ],
+          "restores_revision_id": "cluster-rev-1"
+        }
+      }
+    ]
+  },
+  "claims_and_assessments": [
+    {
+      "claim_id": "claim-01-four-vessels-35min-hold",
+      "version_id": "claim-01-four-vessels-35min-hold@v1",
+      "source_record_version_id": "sr-harbor-coop-log@v1",
+      "passage_id": "p-harbor-1",
+      "proposition": "Four vessels were present in the Barbers Point West Approach Channel during a 35-minute inbound pilotage hold caused by an unlit 14-meter commercial survey launch.",
+      "claimant": "Kauai Channel & Barbers Point Harbor Cooperative Watch Officer",
+      "quotes_claim_without_endorsing": false,
+      "is_opinion_not_factual_premise": false,
+      "assessment_at_publication": "supported",
+      "current_assessment": "supported",
+      "review_status": "reviewed",
+      "availability": "available",
+      "fault_categories": [],
+      "supporting_evidence": [
+        {
+          "source_record_version_id": "sr-harbor-coop-log@v1",
+          "passage_id": "p-harbor-1"
+        },
+        {
+          "source_record_version_id": "sr-harbor-coop-log@v1",
+          "passage_id": "p-harbor-ja-1"
+        },
+        {
+          "source_record_version_id": "sr-port-authority-0412@v1",
+          "passage_id": "p-port-detention"
+        },
+        {
+          "source_record_version_id": "sr-pacific-wire-884@v2",
+          "passage_id": "p-wire-v2-correction"
+        }
+      ],
+      "contrary_evidence": [],
+      "criteria_and_reasoning": "Directly recorded in primary harbor watch log (English and Japanese VHF log) and independently corroborated by Port Authority boarding record HBP-ENF-2026-0412."
+    },
+    {
+      "claim_id": "claim-02-wire-v1-fourteen-vessels",
+      "version_id": "claim-02-wire-v1-fourteen-vessels@v2",
+      "source_record_version_id": "sr-pacific-wire-884@v1",
+      "passage_id": "p-wire-v1-14vessels",
+      "proposition": "Fourteen vessels were involved in a West Approach Channel standoff near Buoy #3.",
+      "claimant": "Pacific Wire Service (v1)",
+      "quotes_claim_without_endorsing": false,
+      "is_opinion_not_factual_premise": false,
+      "assessment_at_publication": "contradicted",
+      "current_assessment": "contradicted",
+      "review_status": "reviewed",
+      "availability": "available",
+      "fault_categories": [
+        "numerical_error"
+      ],
+      "supporting_evidence": [],
+      "contrary_evidence": [
+        {
+          "source_record_version_id": "sr-harbor-coop-log@v1",
+          "passage_id": "p-harbor-1"
+        },
+        {
+          "source_record_version_id": "sr-pacific-wire-884@v2",
+          "passage_id": "p-wire-v2-correction"
+        }
+      ],
+      "criteria_and_reasoning": "Numerical transcription error conflating '14-meter commercial survey launch' from HBP-LOG-2026-1015-19 with '14 vessels'; formally corrected in PWS-2026-1015-884 v2."
+    },
+    {
+      "claim_id": "claim-03-contractor-payload-allegation",
+      "version_id": "claim-03-contractor-payload-allegation@v2",
+      "source_record_version_id": "sr-pacific-wire-884@v1",
+      "passage_id": "p-wire-v1-allegation",
+      "proposition": "An anonymous dockside contractor alleged the channel hold was ordered to recover a classified military sub-surface payload linked to W-188B.",
+      "claimant": "Anonymous dockside contractor (attributed by Pacific Wire Service v1)",
+      "quotes_claim_without_endorsing": true,
+      "is_opinion_not_factual_premise": false,
+      "assessment_at_publication": "unsupported_by_available_evidence",
+      "current_assessment": "unsupported_by_available_evidence",
+      "review_status": "reviewed",
+      "availability": "available",
+      "fault_categories": [],
+      "supporting_evidence": [],
+      "contrary_evidence": [
+        {
+          "source_record_version_id": "sr-port-authority-0412@v1",
+          "passage_id": "p-port-no-military"
+        },
+        {
+          "source_record_version_id": "sr-pacific-wire-884@v2",
+          "passage_id": "p-wire-v2-withdrawn-allegation"
+        }
+      ],
+      "criteria_and_reasoning": "Wire v1 accurately attributed the statement as an unconfirmed allegation without endorsing it. At publication time it lacked corroborating evidence (unsupported_by_available_evidence is distinct from proven false by lack of corroboration alone); in v2 the speaker withdrew the allegation after Port Authority inspection."
+    },
+    {
+      "claim_id": "claim-04-tribune-blockade-and-distorted-quote",
+      "version_id": "claim-04-tribune-blockade-and-distorted-quote@v1",
+      "source_record_version_id": "sr-island-tribune-884@v1",
+      "passage_id": "p-tribune-distorted-quote",
+      "headline_passage_id": "p-tribune-headline",
+      "proposition": "A naval blockade halted commercial shipping across the Pacific corridor and Capt. M. Kealoha stated that 'harbor control confirmed a full military lockdown'.",
+      "claimant": "Island Tribune Wire Desk",
+      "quotes_claim_without_endorsing": false,
+      "is_opinion_not_factual_premise": false,
+      "assessment_at_publication": "materially_misleading",
+      "current_assessment": "materially_misleading",
+      "review_status": "reviewed",
+      "availability": "available",
+      "fault_categories": [
+        "headline_caption_mismatch",
+        "distorted_quotation",
+        "factual_contradiction",
+        "unsupported_certainty"
+      ],
+      "supporting_evidence": [],
+      "contrary_evidence": [
+        {
+          "source_record_version_id": "sr-harbor-coop-log@v1",
+          "passage_id": "p-harbor-kealoha-quote"
+        },
+        {
+          "source_record_version_id": "sr-pacific-wire-884@v1",
+          "passage_id": "p-wire-v1-kealoha"
+        },
+        {
+          "source_record_version_id": "sr-uscg-lnm-2026-41@v1",
+          "passage_id": "p-uscg-2"
+        }
+      ],
+      "criteria_and_reasoning": "Fabricates a direct quote ('harbor control confirmed a full military lockdown') that appears neither in the underlying wire dispatch nor in the harbor log, where Capt. Kealoha explicitly stated 'no naval vessels entered the harbor channel'."
+    },
+    {
+      "claim_id": "claim-05-tribune-350pct-crime-surge",
+      "version_id": "claim-05-tribune-350pct-crime-surge@v1",
+      "source_record_version_id": "sr-island-tribune-884@v1",
+      "passage_id": "p-tribune-crime-surge",
+      "proposition": "Maritime crime and security breaches in the Oahu corridor surged by 350% this week based on seven published news articles versus two articles last week.",
+      "claimant": "Island Tribune Wire Desk",
+      "quotes_claim_without_endorsing": false,
+      "is_opinion_not_factual_premise": false,
+      "assessment_at_publication": "materially_misleading",
+      "current_assessment": "materially_misleading",
+      "review_status": "reviewed",
+      "availability": "available",
+      "fault_categories": [
+        "selective_comparison",
+        "numerical_error",
+        "materially_missing_context",
+        "news_volume_equated_with_crime_rate"
+      ],
+      "supporting_evidence": [],
+      "contrary_evidence": [
+        {
+          "source_record_version_id": "sr-port-authority-0412@v1",
+          "passage_id": "p-port-no-military"
+        },
+        {
+          "source_record_version_id": "sr-district-docket-0412@v1",
+          "passage_id": "p-docket-civil-penalty"
+        }
+      ],
+      "criteria_and_reasoning": "Violates NEWS-03 and NEWS-05 by equating syndicated article count (multiple reprints of one non-criminal equipment malfunction) with incident frequency and maritime crime rate."
+    },
+    {
+      "claim_id": "claim-06-willful-fairway-obstruction",
+      "version_id": "claim-06-willful-fairway-obstruction@v2",
+      "source_record_version_id": "sr-port-authority-0412@v1",
+      "passage_id": "p-port-charges",
+      "proposition": "M/V Reef Scanner willfully obstructed a commercial pilotage fairway (Provisional Count 2).",
+      "claimant": "HDOT Harbors Enforcement (initial provisional citation)",
+      "quotes_claim_without_endorsing": false,
+      "is_opinion_not_factual_premise": false,
+      "assessment_at_publication": "disputed",
+      "current_assessment": "contradicted",
+      "review_status": "reviewed",
+      "availability": "available",
+      "fault_categories": [],
+      "supporting_evidence": [
+        {
+          "source_record_version_id": "sr-port-authority-0412@v1",
+          "passage_id": "p-port-charges"
+        }
+      ],
+      "contrary_evidence": [
+        {
+          "source_record_version_id": "sr-district-docket-0412@v1",
+          "passage_id": "p-docket-dismissal"
+        }
+      ],
+      "criteria_and_reasoning": "Separates publication-time knowledge (provisional administrative charge filed 2026-10-16, disputed by vessel operator) from later adjudication outcome (dismissed with prejudice on 2026-10-18 after onboard electrical logs proved an uncommanded 12V breaker trip)."
+    },
+    {
+      "claim_id": "claim-07-shoreline-barge-waiting-distance",
+      "version_id": "claim-07-shoreline-barge-waiting-distance@v1",
+      "source_record_version_id": "sr-regional-blog-lights@v1",
+      "passage_id": "p-blog-sighting",
+      "proposition": "Shoreline observers at Ewa Beach saw two harbor tugs idling near the entrance buoy around 09:20 HST while an inbound barge waited outside the reef line.",
+      "claimant": "Pacific Watch Blog shoreline readers",
+      "quotes_claim_without_endorsing": true,
+      "is_opinion_not_factual_premise": false,
+      "assessment_at_publication": "unresolved",
+      "current_assessment": "unresolved",
+      "review_status": "reviewed",
+      "availability": "removed",
+      "fault_categories": [],
+      "supporting_evidence": [
+        {
+          "source_record_version_id": "sr-harbor-coop-log@v1",
+          "passage_id": "p-harbor-1"
+        }
+      ],
+      "contrary_evidence": [],
+      "criteria_and_reasoning": "Source page returned HTTP 410 Gone on 2026-10-16T06:00:00Z during a blog migration without a retraction notice (availability: removed, retraction_status: not_retracted). General tug/barge presence aligns with Harbor Watch Log, but observer vantage accuracy remains unresolved."
+    }
+  ],
+  "dependency_invalidations": [
+    {
+      "invalidation_id": "inv-wire-v2-correction",
+      "trigger_version_id": "sr-pacific-wire-884@v2",
+      "trigger_reason": "source_correction",
+      "occurred_at": "2026-10-16T03:45:03Z",
+      "affected_objects": [
+        {
+          "object_id": "sr-island-tribune-884@v1",
+          "object_type": "SourceRecord",
+          "status_set": "needs_reassessment",
+          "prior_issued_version_preserved": true
+        },
+        {
+          "object_id": "sr-maritime-daily-884@v1",
+          "object_type": "SourceRecord",
+          "status_set": "needs_reassessment",
+          "prior_issued_version_preserved": true
+        },
+        {
+          "object_id": "cand-contractor-payload-allegation",
+          "object_type": "EventCandidate",
+          "status_set": "needs_reassessment",
+          "prior_issued_version_preserved": true
+        },
+        {
+          "object_id": "report-barbers-point-brief@v1",
+          "object_type": "Report",
+          "status_set": "needs_reassessment",
+          "prior_issued_version_preserved": true
+        }
+      ]
+    },
+    {
+      "invalidation_id": "inv-docket-final-judgment",
+      "trigger_version_id": "sr-district-docket-0412@v1",
+      "trigger_reason": "case_outcome_update",
+      "occurred_at": "2026-10-18T01:00:02Z",
+      "affected_objects": [
+        {
+          "object_id": "cand-reef-scanner-charges",
+          "object_type": "EventCandidate",
+          "status_set": "needs_reassessment",
+          "prior_issued_version_preserved": true
+        },
+        {
+          "object_id": "claim-06-willful-fairway-obstruction@v2",
+          "object_type": "Claim",
+          "status_set": "needs_reassessment",
+          "prior_issued_version_preserved": true
+        },
+        {
+          "object_id": "report-barbers-point-brief@v1",
+          "object_type": "Report",
+          "status_set": "needs_reassessment",
+          "prior_issued_version_preserved": true
+        }
+      ]
+    }
+  ],
+  "publisher_summaries": [
+    {
+      "summary_id": "pubsum-pacific-wire-2026w42",
+      "source_id": "src-pacific-wire",
+      "publisher_name": "Pacific Wire Service",
+      "time_window": {
+        "start_utc": "2026-10-14T00:00:00Z",
+        "end_utc": "2026-10-18T23:59:59Z"
+      },
+      "sample_size": 2,
+      "evaluated_source_record_versions": [
+        "sr-pacific-wire-884@v1",
+        "sr-pacific-wire-884@v2"
+      ],
+      "sampling_method": "complete_case_corpus_within_window",
+      "assessment_counts": {
+        "supported": 0,
+        "contradicted": 1,
+        "unsupported_by_available_evidence": 1,
+        "materially_misleading": 0,
+        "disputed": 0,
+        "unresolved": 0
+      },
+      "unresolved_assessment_count": 0,
+      "correction_history": [
+        {
+          "original_version_id": "sr-pacific-wire-884@v1",
+          "corrected_version_id": "sr-pacific-wire-884@v2",
+          "corrected_at": "2026-10-16T03:40:00Z",
+          "summary": "Corrected vessel count from 14 to 4 and noted withdrawal of uncorroborated contractor allegation."
+        }
+      ],
+      "volume_interpretation_guard": {
+        "article_count_in_window": 2,
+        "distinct_underlying_incidents": 1,
+        "represents_incident_frequency_or_crime_rate": false,
+        "methodology_note": "Article and revision counts reflect wire publication activity on a single civil navigation equipment incident and must not be interpreted as regional incident frequency or crime rate (NEWS-05)."
+      }
+    },
+    {
+      "summary_id": "pubsum-island-tribune-2026w42",
+      "source_id": "src-island-tribune",
+      "publisher_name": "Island Tribune Online",
+      "time_window": {
+        "start_utc": "2026-10-14T00:00:00Z",
+        "end_utc": "2026-10-18T23:59:59Z"
+      },
+      "sample_size": 1,
+      "evaluated_source_record_versions": [
+        "sr-island-tribune-884@v1"
+      ],
+      "sampling_method": "complete_case_corpus_within_window",
+      "assessment_counts": {
+        "supported": 0,
+        "contradicted": 0,
+        "unsupported_by_available_evidence": 0,
+        "materially_misleading": 2,
+        "disputed": 0,
+        "unresolved": 0
+      },
+      "unresolved_assessment_count": 0,
+      "correction_history": [],
+      "uncorrected_upstream_dependencies": [
+        "sr-pacific-wire-884@v1"
+      ],
+      "volume_interpretation_guard": {
+        "article_count_in_window": 1,
+        "distinct_underlying_incidents": 1,
+        "represents_incident_frequency_or_crime_rate": false,
+        "methodology_note": "Syndicated wire adaptation only; publisher claim equating regional article counts with a 350% maritime crime surge is flagged as materially_misleading under NEWS-03/NEWS-05."
+      }
+    },
+    {
+      "summary_id": "pubsum-pacific-watch-blog-2026w42",
+      "source_id": "src-pacific-watch-blog",
+      "publisher_name": "Pacific Watch Blog",
+      "time_window": {
+        "start_utc": "2026-10-14T00:00:00Z",
+        "end_utc": "2026-10-18T23:59:59Z"
+      },
+      "sample_size": 1,
+      "evaluated_source_record_versions": [
+        "sr-regional-blog-lights@v1"
+      ],
+      "sampling_method": "complete_case_corpus_within_window",
+      "assessment_counts": {
+        "supported": 0,
+        "contradicted": 0,
+        "unsupported_by_available_evidence": 0,
+        "materially_misleading": 0,
+        "disputed": 0,
+        "unresolved": 1
+      },
+      "unresolved_assessment_count": 1,
+      "correction_history": [],
+      "volume_interpretation_guard": {
+        "article_count_in_window": 1,
+        "distinct_underlying_incidents": 1,
+        "represents_incident_frequency_or_crime_rate": false,
+        "methodology_note": "Single community post later removed (HTTP 410) without retraction; retained snapshot is not an incident-rate metric."
+      }
+    }
+  ]
+}

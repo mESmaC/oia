@@ -1,0 +1,7 @@
+PACIFIC WATCH BLOG -- COMMUNITY MARITIME NOTEBOOK
+SNAPSHOT RETRIEVED: 2026-10-15T22:10:00Z
+ORIGINAL URL: https://pacificwatch.example.org/posts/2026-10-15-west-channel-lights
+SUBSEQUENT POLL STATUS (2026-10-16T06:00:00Z): HTTP 410 Gone (Page deleted by site administrator during blog migration; no retraction notice issued)
+
+POST BODY:
+Readers on the Ewa Beach shoreline reported seeing two harbor tugs idling near the Barbers Point entrance buoy around 9:20 a.m. HST today while an inbound barge waited outside the reef line. Commenters speculated about whether the offshore Navy range notice (W-188B) was related, though the tugs remained inside the nearshore harbor approach.

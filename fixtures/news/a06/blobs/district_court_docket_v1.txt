@@ -1,0 +1,8 @@
+STATE MARITIME ADMINISTRATIVE ADJUDICATION DOCKET -- HONOLULU HARBOR DIVISION
+DOCKET NO: HBP-ADJ-2026-0412-FINAL (RELATES TO ENFORCEMENT CASE HBP-ENF-2026-0412)
+ENTERED: 2026-10-18T00:30:00Z
+
+FINAL ADMINISTRATIVE ORDER AND JUDGMENT:
+1. Count 2 (Provisional Charge: Willful obstruction of a commercial pilotage fairway) is DISMISSED WITH PREJUDICE following verification of onboard electrical bus logs showing an uncommanded 12V navigation/AIS breaker trip at 2026-10-15T19:09:00Z.
+2. Count 1 (Civil Equipment & Fairway Notice Violation) is SUSTAINED as a non-criminal civil infraction; a $1,250 civil equipment penalty is entered against Coastal Bathymetry LLC.
+3. Operators and downstream public safety summaries citing HBP-ENF-2026-0412 must record that the willful-obstruction charge was dismissed and no criminal conviction occurred.

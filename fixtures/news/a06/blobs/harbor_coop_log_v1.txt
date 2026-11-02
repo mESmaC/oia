@@ -1,0 +1,10 @@
+KAUAI CHANNEL & BARBERS POINT HARBOR COOPERATIVE WATCH LOG
+ENTRY ID: HBP-LOG-2026-1015-19
+OBSERVATION INTERVAL: 2026-10-15T09:12:00-10:00 TO 2026-10-15T09:47:00-10:00 (2026-10-15T19:12:00Z TO 2026-10-15T19:47:00Z)
+LOCATION: West Approach Channel Buoy #3 (approx. 21.318N 158.132W, uncertainty radius 450m, WGS84, surface)
+
+1. VISUAL & RADAR OBSERVATION: Watch officer observed one unlit 14-meter commercial survey launch operating erratic search lanes near West Approach Channel Buoy #3 without active AIS broadcast. Four vessels total were logged in the approach sector during the 35-minute interval (1 unlit survey launch, 2 harbor assist tugs, 1 inbound coastal barge).
+2. MULTILINGUAL BRIDGE RELAY (VHF CH 12 / RECORDED EXCERPT):
+   Original (ja): 「未点灯の高速調査艇が西水路ブイ3号付近を通過、19時15分より約35分間、水路誘導を一時待機」
+   Translation (en): "Unlit high-speed survey launch passed near West Channel Buoy No. 3; harbor pilotage held on standby for approximately 35 minutes starting at 19:15 UTC."
+3. ATTRIBUTED STATEMENT: Duty pilot Capt. M. Kealoha stated: "Harbor control held inbound pilotage for 35 minutes while tugs escorted the unlit survey craft clear of the buoy line; no naval vessels entered the harbor channel."

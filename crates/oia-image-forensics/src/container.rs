@@ -176,7 +176,7 @@ fn jpeg(
             reason: "trailing JPEG bytes",
         });
     }
-    if inspection.frame.marker == 0xc0 {
+    if matches!(inspection.frame.marker, 0xc0 | 0xc1) {
         let blocks = u64::from(inspection.frame.width).div_ceil(32)
             * u64::from(inspection.frame.height).div_ceil(32)
             * u64::from(inspection.frame.components);
@@ -189,7 +189,7 @@ fn jpeg(
         if entropy_bytes < blocks.div_ceil(4) {
             return Err(ForensicError::Malformed {
                 offset: 0,
-                reason: "baseline JPEG entropy below two-bit-per-block minimum",
+                reason: "sequential JPEG entropy below two-bit-per-block minimum",
             });
         }
     }

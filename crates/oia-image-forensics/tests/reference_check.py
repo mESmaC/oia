@@ -67,6 +67,8 @@ def check(binary):
         assert report["learned_ai_detection"]["coverage"] == "not_implemented"
         assert "private prompt" not in json.dumps(report)
         assert report["schema_version"] == 2
+        assert all("JPEG decoder" not in limitation
+                   for limitation in report["raster_validation"]["limitations"])
         assert report["rgb_histograms"]["coverage"] == "complete"
         assert report["rgb_histograms"]["result"] == [
             raster.histogram()[start:start + 256] for start in (0, 256, 512)
@@ -117,6 +119,9 @@ def check(binary):
         omitted = invoke(binary, auxiliary, expected=2)["metadata"]["result"]["uninspected"]
         assert {field["container"] for field in omitted} == {"pHYs", "sRGB", "gAMA", "tIME", "bKGD"}
         assert all("fixed-layout ancillary metadata" in field["reason"] for field in omitted)
+        time_reason = next(field["reason"] for field in omitted if field["container"] == "tIME")
+        assert "tIME modification time" in time_reason
+        assert "not a generation/edit text field" not in time_reason
         multi_buffer = Image.frombytes(
             "RGBA", (65, 65), hashlib.shake_256(b"oia synthetic stream-boundary fixture").digest(65 * 65 * 4)
         )
@@ -184,6 +189,11 @@ def check(binary):
                 grossly_truncated = temporary / "exaggerated-frame.jpg"
                 grossly_truncated.write_bytes(exaggerated)
                 invoke(binary, grossly_truncated, expected=1)
+                extended = bytearray(exaggerated)
+                extended[frame + 1] = 0xc1
+                exaggerated_extended = temporary / "exaggerated-extended-frame.jpg"
+                exaggerated_extended.write_bytes(extended)
+                invoke(binary, exaggerated_extended, expected=1)
                 scan = retained.index(b"\xff\xda")
                 length, = struct.unpack_from(">H", retained, scan + 2)
                 entropy_start = scan + 2 + length
@@ -195,7 +205,7 @@ def check(binary):
                 for method in ("rgb_histograms", "repeated_blocks", "jpeg_recompression"):
                     assert recovered[method]["coverage"] == "partial"
                     assert recovered["raster_validation"]["result"] in recovered[method]["limitations"]
-    print("PASS: independent Pillow samples; PNG zlib integrity/refusals; JPEG coverage propagation and gross truncation refusal; APP0/ancillary omissions; pre-IDAT labels; source/overwrite preservation")
+    print("PASS: independent Pillow samples; PNG zlib integrity/refusals and format-specific limitations; JPEG coverage propagation and SOF0/SOF1 gross truncation refusal; APP0/ancillary omissions; pre-IDAT labels; source/overwrite preservation")
 
 
 if __name__ == "__main__":

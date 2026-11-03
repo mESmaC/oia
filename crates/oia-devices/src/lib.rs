@@ -13,6 +13,7 @@
 
 pub mod radio;
 pub mod station;
+pub mod station_trigger;
 pub mod uav;
 
 /// Crate boundary marker for `oia-devices` (`docs/architecture.md` §1.2, `#9`).

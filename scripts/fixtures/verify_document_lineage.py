@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 MAX_FILE_BYTES = 1024 * 1024
 MAX_GRAPH_NODES = 200
 MAX_GRAPH_EDGES = 500
+MAX_EXTERNAL_CITATION_REFERENCE_BYTES = 4096
 LINEAGE_EDGE_KINDS = ("republishes", "quotes", "cites", "translates")
 VERSION_CHAIN_KINDS = ("supersedes", "alternate_redaction", "preprint_version")
 
@@ -256,10 +257,24 @@ def evaluate_corroboration_query(
 ) -> None:
     adj, cyclic_sccs, cycle_witnesses = compute_lineage_sccs(list(records.keys()), relations)
     cyclic_members = {m for comp in cyclic_sccs for m in comp}
+    cycle_idx_by_member = {
+        member: idx for idx, component in enumerate(cyclic_sccs) for member in component
+    }
+    supporting_inputs = query["citing_inputs"]
+    contradicting_inputs = query.get("contradicting_inputs", [])
+    external_citations = query.get("unresolved_external_citations", [])
+    require(
+        len(supporting_inputs) + len(contradicting_inputs) <= MAX_GRAPH_NODES,
+        "Combined corroboration claim inputs exceed graph node budget",
+    )
+    require(
+        len(external_citations) <= MAX_GRAPH_EDGES,
+        "Unresolved external citations exceed graph edge budget",
+    )
 
     supporting_records: list[str] = []
     excluded_derivatives: list[str] = []
-    for item_id in query["citing_inputs"]:
+    for item_id in supporting_inputs:
         if item_id in derivations:
             deriv = derivations[item_id]
             require(
@@ -272,8 +287,23 @@ def evaluate_corroboration_query(
         else:
             raise ValueError(f"Unknown citing input in corroboration query: {item_id}")
 
-    supporting_records.sort()
-    excluded_derivatives.sort()
+    contradicting_records: list[str] = []
+    for item_id in contradicting_inputs:
+        if item_id in derivations:
+            deriv = derivations[item_id]
+            require(
+                deriv["origin_class"] != "simulation",
+                "Derivation must declare analytical_inference or extracted_claim origin_class",
+            )
+            excluded_derivatives.append(item_id)
+        elif item_id in records:
+            contradicting_records.append(item_id)
+        else:
+            raise ValueError(f"Unknown contradicting input in corroboration query: {item_id}")
+
+    supporting_records = sorted(set(supporting_records))
+    contradicting_records = sorted(set(contradicting_records))
+    excluded_derivatives = sorted(set(excluded_derivatives))
     require(
         supporting_records == query["expected_supporting_record_versions"],
         f"Supporting records mismatch: {supporting_records}",
@@ -283,128 +313,167 @@ def evaluate_corroboration_query(
         f"Excluded derivatives mismatch: {excluded_derivatives}",
     )
 
-    # Trace upstream roots for each supporting record
-    circular_only: list[str] = []
-    upstream_roots: set[str] = set()
-    for rec_id in supporting_records:
-        visited: set[str] = set()
-        stack = [rec_id]
-        reached_roots: set[str] = set()
-        hit_cycle = False
-        while stack:
-            curr = stack.pop()
-            if curr in visited:
-                continue
-            visited.add(curr)
-            if curr in cyclic_members:
-                hit_cycle = True
-            outs = adj[curr]
-            if not outs:
-                if curr not in cyclic_members:
-                    reached_roots.add(curr)
-            else:
-                for nxt in outs:
-                    if nxt not in visited:
-                        stack.append(nxt)
-        if not reached_roots and hit_cycle:
-            circular_only.append(rec_id)
-        upstream_roots.update(reached_roots)
+    def trace_ancestry(
+        input_records: list[str],
+    ) -> tuple[set[str], list[str], set[str], set[int], dict[str, int]]:
+        circular: list[str] = []
+        roots: set[str] = set()
+        reached_records: set[str] = set()
+        encountered_cycles: set[int] = set()
+        cycle_for_circular: dict[str, int] = {}
+        for rec_id in input_records:
+            visited: set[str] = set()
+            stack = [rec_id]
+            reached_roots: set[str] = set()
+            reached_cycle_indices: set[int] = set()
+            while stack:
+                curr = stack.pop()
+                if curr in visited:
+                    continue
+                visited.add(curr)
+                reached_records.add(curr)
+                if curr in cyclic_members:
+                    encountered_cycles.add(cycle_idx_by_member[curr])
+                    reached_cycle_indices.add(cycle_idx_by_member[curr])
+                outs = adj[curr]
+                if not outs:
+                    if curr not in cyclic_members:
+                        reached_roots.add(curr)
+                else:
+                    for nxt in outs:
+                        if nxt not in visited:
+                            stack.append(nxt)
+            if not reached_roots and reached_cycle_indices:
+                circular.append(rec_id)
+                cycle_for_circular[rec_id] = min(reached_cycle_indices)
+            roots.update(reached_roots)
+        circular.sort()
+        return roots, circular, reached_records, encountered_cycles, cycle_for_circular
 
-    circular_only.sort()
+    (
+        upstream_roots,
+        circular_only,
+        supporting_reached,
+        supporting_cycles,
+        supporting_cycle_for_circular,
+    ) = trace_ancestry(supporting_records)
+    (
+        contradicting_upstream_roots,
+        _,
+        contradicting_reached,
+        contradicting_cycles,
+        _,
+    ) = trace_ancestry(contradicting_records)
+    reached_records = supporting_reached | contradicting_reached
+    encountered_cycles = supporting_cycles | contradicting_cycles
+
     require(
         circular_only == query["expected_circular_only_record_versions"],
         f"Circular-only records mismatch: {circular_only}",
     )
     if circular_only:
-        witness = cycle_witnesses[circular_only[0]]
+        first_circular = circular_only[0]
+        cycle_idx = cycle_idx_by_member.get(first_circular)
+        if cycle_idx is None:
+            cycle_idx = supporting_cycle_for_circular[first_circular]
+        witness = cycle_witnesses[cyclic_sccs[cycle_idx][0]]
         require(
             witness == query["expected_cycle_witness"],
             f"Cycle witness mismatch: {witness} != {query['expected_cycle_witness']}",
         )
 
-    # Collapse version chains, shared document/source identities, and exact-byte duplicates
-    # among upstream roots after ordering by earliest publication instant -> retrieval instant -> lexical ID.
-    ordered_roots = sorted(upstream_roots, key=lambda r: record_priority_key(records[r]))
-    version_parent: dict[str, str] = {r: r for r in records}
+    def collapse_roots(candidate_roots: set[str]) -> list[str]:
+        # Collapse version chains, shared document/source identities, and exact-byte duplicates
+        # after ordering by publication instant -> retrieval instant -> lexical ID.
+        ordered_roots = sorted(candidate_roots, key=lambda r: record_priority_key(records[r]))
+        version_parent: dict[str, str] = {r: r for r in records}
 
-    def find_rep(x: str) -> str:
-        while version_parent[x] != x:
-            version_parent[x] = version_parent[version_parent[x]]
-            x = version_parent[x]
-        return x
+        def find_rep(x: str) -> str:
+            while version_parent[x] != x:
+                version_parent[x] = version_parent[version_parent[x]]
+                x = version_parent[x]
+            return x
 
-    def union_rep(a: str, b: str) -> None:
-        ra, rb = find_rep(a), find_rep(b)
-        if ra != rb:
-            if ra < rb:
-                version_parent[rb] = ra
+        def union_rep(a: str, b: str) -> None:
+            ra, rb = find_rep(a), find_rep(b)
+            if ra != rb:
+                if ra < rb:
+                    version_parent[rb] = ra
+                else:
+                    version_parent[ra] = rb
+
+        by_doc_id: dict[str, str] = {}
+        for ver_id, rec in sorted(records.items()):
+            doc_id = rec["id"]
+            if doc_id in by_doc_id:
+                union_rep(ver_id, by_doc_id[doc_id])
             else:
-                version_parent[ra] = rb
+                by_doc_id[doc_id] = ver_id
+            pred = rec.get("predecessor_version_id")
+            if pred in records:
+                union_rep(ver_id, pred)
+        for rel in relations:
+            if (
+                rel["kind"] in VERSION_CHAIN_KINDS
+                and rel["from"] in records
+                and rel["to"] in records
+            ):
+                union_rep(rel["from"], rel["to"])
 
-    by_doc_id: dict[str, str] = {}
-    for ver_id, rec in sorted(records.items()):
-        doc_id = rec["id"]
-        if doc_id in by_doc_id:
-            union_rep(ver_id, by_doc_id[doc_id])
-        else:
-            by_doc_id[doc_id] = ver_id
-        pred = rec.get("predecessor_version_id")
-        if pred in records:
-            union_rep(ver_id, pred)
-    for rel in relations:
-        if rel["kind"] in VERSION_CHAIN_KINDS and rel["from"] in records and rel["to"] in records:
-            union_rep(rel["from"], rel["to"])
+        root_parent: dict[str, str] = {r: r for r in ordered_roots}
 
-    root_parent: dict[str, str] = {r: r for r in ordered_roots}
+        def find_root_rep(x: str) -> str:
+            while root_parent[x] != x:
+                root_parent[x] = root_parent[root_parent[x]]
+                x = root_parent[x]
+            return x
 
-    def find_root_rep(x: str) -> str:
-        while root_parent[x] != x:
-            root_parent[x] = root_parent[root_parent[x]]
-            x = root_parent[x]
-        return x
+        def union_root_rep(a: str, b: str) -> None:
+            ra, rb = find_root_rep(a), find_root_rep(b)
+            if ra != rb:
+                if ra < rb:
+                    root_parent[rb] = ra
+                else:
+                    root_parent[ra] = rb
 
-    def union_root_rep(a: str, b: str) -> None:
-        ra, rb = find_root_rep(a), find_root_rep(b)
-        if ra != rb:
-            if ra < rb:
-                root_parent[rb] = ra
+        first_by_hash: dict[str, str] = {}
+        first_by_chain: dict[str, str] = {}
+        first_by_source: dict[str, str] = {}
+        for root_id in ordered_roots:
+            rec = records[root_id]
+            page_hashes = tuple(
+                artifacts[p["artifact_id"]]["sha256"]
+                for p in rec["pages"]
+                if p["artifact_id"] is not None
+            )
+            hash_key = "|".join(page_hashes) if page_hashes else f"no-bytes:{root_id}"
+            chain_key = find_rep(root_id)
+            source_key = rec["source_id"]
+            if hash_key in first_by_hash:
+                union_root_rep(root_id, first_by_hash[hash_key])
             else:
-                root_parent[ra] = rb
+                first_by_hash[hash_key] = root_id
+            if chain_key in first_by_chain:
+                union_root_rep(root_id, first_by_chain[chain_key])
+            else:
+                first_by_chain[chain_key] = root_id
+            if source_key in first_by_source:
+                union_root_rep(root_id, first_by_source[source_key])
+            else:
+                first_by_source[source_key] = root_id
 
-    first_by_hash: dict[str, str] = {}
-    first_by_chain: dict[str, str] = {}
-    first_by_source: dict[str, str] = {}
-    for root_id in ordered_roots:
-        rec = records[root_id]
-        page_hashes = tuple(
-            artifacts[p["artifact_id"]]["sha256"]
-            for p in rec["pages"]
-            if p["artifact_id"] is not None
-        )
-        hash_key = "|".join(page_hashes) if page_hashes else f"no-bytes:{root_id}"
-        chain_key = find_rep(root_id)
-        source_key = rec["source_id"]
-        if hash_key in first_by_hash:
-            union_root_rep(root_id, first_by_hash[hash_key])
-        else:
-            first_by_hash[hash_key] = root_id
-        if chain_key in first_by_chain:
-            union_root_rep(root_id, first_by_chain[chain_key])
-        else:
-            first_by_chain[chain_key] = root_id
-        if source_key in first_by_source:
-            union_root_rep(root_id, first_by_source[source_key])
-        else:
-            first_by_source[source_key] = root_id
+        deduped: list[str] = []
+        emitted_classes: set[str] = set()
+        for root_id in ordered_roots:
+            class_rep = find_root_rep(root_id)
+            if class_rep not in emitted_classes:
+                emitted_classes.add(class_rep)
+                deduped.append(root_id)
+        deduped.sort()
+        return deduped
 
-    deduped_roots: list[str] = []
-    emitted_classes: set[str] = set()
-    for root_id in ordered_roots:
-        class_rep = find_root_rep(root_id)
-        if class_rep not in emitted_classes:
-            emitted_classes.add(class_rep)
-            deduped_roots.append(root_id)
-    deduped_roots.sort()
+    deduped_roots = collapse_roots(upstream_roots)
+    contradicting_roots = collapse_roots(contradicting_upstream_roots)
 
     require(
         deduped_roots == query["expected_independent_supporting_roots"],
@@ -413,6 +482,21 @@ def evaluate_corroboration_query(
     require(
         len(deduped_roots) == query["expected_independent_root_count"],
         "Independent root count mismatch",
+    )
+    require(
+        contradicting_roots == query["expected_contradicting_independent_roots"],
+        f"Contradicting independent roots mismatch: {contradicting_roots}",
+    )
+    supporting_hashes = {
+        artifacts[page["artifact_id"]]["sha256"]
+        for record_id in supporting_records
+        if records[record_id]["retention"] == "retained"
+        for page in records[record_id]["pages"]
+        if page["artifact_id"] is not None
+    }
+    require(
+        len(supporting_hashes) == query["expected_exact_duplicate_group_count"],
+        "Exact retained supporting content-hash count mismatch",
     )
 
     # Check earliest-known-source view semantics (no invented timestamps for undated roots)
@@ -429,11 +513,19 @@ def evaluate_corroboration_query(
         )
     dated_roots.sort(key=lambda r: (parse_rfc3339_instant(records[r]["publication_time"]), r))
     earliest_view = query["earliest_known_source_view"]
-    if undated_roots and dated_roots:
-        require(
-            earliest_view["resolution"] == "ambiguous_candidates",
-            "Presence of undated independent root must report ambiguous_candidates",
-        )
+    has_earliest_tie = len(dated_roots) > 1 and parse_rfc3339_instant(
+        records[dated_roots[0]]["publication_time"]
+    ) == parse_rfc3339_instant(records[dated_roots[1]]["publication_time"])
+    if not deduped_roots:
+        expected_resolution = "no_independent_roots"
+    elif undated_roots or has_earliest_tie:
+        expected_resolution = "ambiguous_candidates"
+    else:
+        expected_resolution = "single_earliest_dated"
+    require(
+        earliest_view["resolution"] == expected_resolution,
+        f"Earliest-source resolution mismatch: {earliest_view['resolution']} != {expected_resolution}",
+    )
     require(
         earliest_view["earliest_dated_root"] == (dated_roots[0] if dated_roots else None),
         "Earliest dated root mismatch",
@@ -442,13 +534,37 @@ def evaluate_corroboration_query(
         earliest_view["undated_candidate_roots"] == undated_roots,
         "Undated candidate roots mismatch",
     )
-    ref_only = sorted(
-        r["version_id"] for r in records.values() if r["retention"] == "reference_only"
+    omitted_records = sorted(
+        record_id
+        for record_id in reached_records
+        if records[record_id]["retention"] == "reference_only"
+        or records[record_id]["availability"] in {"reference_only", "restricted", "missing"}
     )
+    unresolved_external: list[dict] = []
+    seen_external: set[tuple[str, str]] = set()
+    for citation in sorted(
+        external_citations,
+        key=lambda item: (item["citing_record_version_id"], item["reference"]),
+    ):
+        citing_id = citation["citing_record_version_id"]
+        reference = citation["reference"]
+        require(citing_id in records, f"Unknown external-citation record: {citing_id}")
+        require(bool(reference.strip()), "External bibliographic reference must not be empty")
+        require(
+            len(reference.encode("utf-8")) <= MAX_EXTERNAL_CITATION_REFERENCE_BYTES,
+            "External bibliographic reference exceeds 4096 UTF-8 bytes",
+        )
+        key = (citing_id, reference)
+        if citing_id in reached_records and key not in seen_external:
+            seen_external.add(key)
+            unresolved_external.append(
+                {"citing_record_version_id": citing_id, "reference": reference}
+            )
     cov = earliest_view["coverage_qualification"]
     require(
-        cov["omitted_reference_only_records"] == ref_only
-        and cov["detected_cycle_count"] == len(cyclic_sccs),
+        cov["omitted_reference_only_records"] == omitted_records
+        and cov["unresolved_external_citations"] == unresolved_external
+        and cov["detected_cycle_count"] == len(encountered_cycles),
         "Earliest-known-source coverage qualification mismatch",
     )
 
@@ -857,6 +973,18 @@ def run_self_test(root: Path) -> None:
         "foia-release-2024-v1",
     ]
     q["expected_independent_root_count"] = 2
+    q["expected_exact_duplicate_group_count"] = 2
+    q["earliest_known_source_view"] = {
+        "resolution": "single_earliest_dated",
+        "earliest_dated_root": "foia-release-2024-v1",
+        "undated_candidate_roots": [],
+        "coverage_qualification": {
+            "scope": "retained_and_cataloged_workspace_records",
+            "omitted_reference_only_records": [],
+            "unresolved_external_citations": [],
+            "detected_cycle_count": 0,
+        },
+    }
     try:
         verify_manifest_data(bad_transitive, payloads)
     except ValueError:

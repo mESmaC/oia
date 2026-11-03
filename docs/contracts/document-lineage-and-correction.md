@@ -75,8 +75,8 @@ Unlike analysis derivation graphs (which must be strictly acyclic), real-world d
 1. **Bounded SCC decomposition:** Lineage evaluation runs deterministic Tarjan strongly connected components (SCC) decomposition over `{republishes, quotes, cites, translates}` edges within configured graph budgets (`max_lineage_nodes`, `max_lineage_edges`).
 2. **Cycle classification:**
    - An SCC with more than one record, or a single record with a self-edge, is marked `circular_reference_detected = true` with a deterministic cycle witness path `(v_0 -> v_1 -> ... -> v_0)`.
-   - **Unanchored circular cluster (`unanchored_cycle`):** If an SCC has no outbound lineage edge to any upstream record outside the SCC, none of its members may be counted as an independent primary source; the entire SCC is reported as a mutually citing cycle requiring external corroboration.
-   - **Anchored cycle (`anchored_cycle`):** If members of a cycle also cite an external upstream record `R` outside the cycle, lineage tracing resolves `R` as the upstream root while preserving the `circular_reference_detected` warning on the downstream loop.
+   - **Unanchored circular cluster (`unanchored_cycle`):** If no path from an SCC reaches a terminal, non-cyclic upstream root, none of its members may be counted as an independent primary source; the entire SCC is reported as a mutually citing cycle requiring external corroboration. An outbound edge into another rootless cycle does not provide an anchor.
+   - **Anchored cycle (`anchored_cycle`):** If any path from members of a cycle reaches a terminal, non-cyclic upstream record `R` outside the cycle, lineage tracing resolves `R` as an upstream root while preserving the `circular_reference_detected` warning on the downstream loop. The path may traverse another cycle that also reaches `R`.
 
 ### 4.3 Earliest-known-source view (`INTEL-01`, `GEO-01`)
 
@@ -90,8 +90,8 @@ For any claim, event, or document cluster, the earliest-known-source view traces
 3. **Mandatory `coverage_qualification`:** Every earliest-known-source result carries:
    - `scope`: `"retained_and_cataloged_workspace_records"`,
    - `omitted_reference_only_records`: IDs of known upstream records whose payloads are `reference_only`, `restricted`, or `missing`,
-   - `unresolved_external_citations`: cited bibliographic references not yet ingested as `SourceRecord`s,
-   - `detected_cycles`: all cycle witness paths encountered during upstream traversal.
+   - `unresolved_external_citations`: explicit caller-supplied `(citing_record_version_id, reference)` bibliographic references not yet ingested as `SourceRecord`s, filtered to records reached during upstream traversal; references are not inferred or scraped from untrusted document prose. Each reference is limited to 4,096 UTF-8 bytes before cloning, in addition to the configured citation-count bound,
+   - `detected_cycles`: all cycle witness paths encountered during upstream traversal, excluding unrelated graph cycles.
 
 ## 5. Corroboration independence accounting
 
@@ -106,8 +106,8 @@ A `CorroborationSummary` for a proposition or claim must compute and expose:
 | `independent_supporting_roots` | Upstream lineage roots reached from supporting records after collapsing all `{republishes, quotes, cites, translates}` copy/citation chains, collapsing `{supersedes, alternate_redaction, preprint_version}` version chains and shared document/`source_id` identities (selecting the earliest verified publication instant, then retrieval instant, then lexical `version_id`), collapsing shared-hash duplicate groups, and excluding unanchored citation cycles. |
 | `independent_root_count` | `len(independent_supporting_roots)`. Only records with distinct upstream sources, distinct document version chains, distinct content hashes, and non-circular lineage contribute to this count. |
 | `circular_only_record_versions` | Supporting records whose upstream lineage terminates solely in a citation cycle (`unanchored_cycle`). |
-| `contradicting_independent_roots` | Upstream lineage roots of records linked via `contradicts`. |
-| `excluded_derivative_runs` | Inferences, AI summaries (`origin_class = analytical_inference`), and simulations, which are never counted as source corroboration. |
+| `contradicting_independent_roots` | Upstream lineage roots of records linked via `contradicts`, computed with the same traversal and collapse rules as supporting roots but reported separately; supporting and contradicting counts are never netted into a truth score. |
+| `excluded_derivative_runs` | Inferences, AI summaries (`origin_class = analytical_inference`), and simulations supplied for either stance, which are never counted as source corroboration. |
 
 ## 6. Correction, retraction, and removal propagation
 

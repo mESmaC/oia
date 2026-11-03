@@ -10,8 +10,8 @@ use oia_analysis::geo_context::{
     NavigationNotice, NavigationalStatus, NoticeEnvelopeOverlap, NoticeKind,
     NoticePositionIntersection, NoticeSpatialBoundary, ObservationSource, PositionSource,
     SceneTrafficAssessment, SensorCoverageMask, SoundingLevel, SpatioTemporalEnvelope, StopReason,
-    UnobservedReason, VesselIdentity, VesselType, WeatherRecord, WeatherReportKind,
-    reconstruct_geographic_context, spherical_slerp,
+    UnobservedReason, VesselAltitudeBasis, VesselIdentity, VesselType, WeatherRecord,
+    WeatherReportKind, reconstruct_geographic_context, spherical_slerp,
 };
 use oia_domain::{OpaqueId, VersionId};
 
@@ -368,7 +368,7 @@ fn test_spherical_slerp_great_circle_accuracy() -> Result<(), Box<dyn std::error
 #[test]
 fn test_maritime_vessel_track_and_interpolation() -> Result<(), Box<dyn std::error::Error>> {
     let limits = ContextLimits::default();
-    // Unallocated ITU MID 111 (SAR prefix under ITU-R M.585)
+    // ITU-R Recommendation M.585 SAR aircraft prefix 111
     // No commercial IMO number is assigned.
     let identity = VesselIdentity {
         mmsi: 111_987_654,
@@ -1275,6 +1275,269 @@ fn test_nb3_speed_bounds_at_construction_and_validate() -> Result<(), Box<dyn st
     assert!(matches!(
         bad_track,
         Err(GeoContextError::ImpliedSpeedExceedsLimit { .. })
+    ));
+
+    Ok(())
+}
+
+/// S3 Contract: Extreme timestamps (e.g. i64::MIN and i64::MAX - 20) do not overflow on subtraction.
+#[test]
+fn test_s3_subtraction_overflow_prevention() -> Result<(), Box<dyn std::error::Error>> {
+    let limits = ContextLimits::default();
+
+    let p1 = AircraftTrackPoint {
+        transmit_instant_utc_ms: Some(i64::MIN),
+        receiver_instant_utc_ms: Some(i64::MIN),
+        retrieval_instant_utc_ms: Some(i64::MIN),
+        target_interpolation_instant_utc_ms: None,
+        position: GeoPointWgs84::new(0.0, 0.0)?,
+        barometric_altitude: None,
+        geometric_altitude: None,
+        ground_speed_mps: None,
+        track_angle_deg: None,
+        vertical_rate_mps: None,
+        squawk_octal: None,
+        observation_source: ObservationSource::DirectObservation,
+        raw_source_hash: None,
+    };
+    let p2 = AircraftTrackPoint {
+        transmit_instant_utc_ms: Some(i64::MAX - 20),
+        receiver_instant_utc_ms: Some(i64::MAX - 20),
+        retrieval_instant_utc_ms: Some(i64::MAX - 20),
+        position: GeoPointWgs84::new(0.0, 0.0001)?,
+        ..p1.clone()
+    };
+
+    // Must not panic on subtraction!
+    let track_res = AircraftTrack::new(
+        "AABBCC",
+        None,
+        None,
+        PositionSource::Adsb,
+        OpaqueId::new("synth:src")?,
+        vec![p1, p2],
+        &limits,
+    );
+    assert!(track_res.is_ok());
+
+    Ok(())
+}
+
+/// V1 Contract: vessel_altitude_basis is Some(AssumedSeaSurface) when evaluated against an altitude band
+/// (even when excluded), and None when no altitude band is evaluated.
+#[test]
+fn test_v1_vessel_altitude_basis_disclosure_conditions() -> Result<(), Box<dyn std::error::Error>> {
+    let limits = ContextLimits::default();
+    let bbox = GeoBoundingBoxWgs84::new(10.0, 12.0, 20.0, 22.0)?;
+    let time_window = TimeWindow::new(1_000_000, 1_200_000)?;
+
+    let vessel_point = MaritimeTrackPoint {
+        transmit_instant_utc_ms: Some(1_100_000),
+        receiver_instant_utc_ms: Some(1_100_000),
+        retrieval_instant_utc_ms: Some(1_100_050),
+        target_interpolation_instant_utc_ms: None,
+        position: GeoPointWgs84::new(11.0, 21.0)?,
+        speed_over_ground_mps: Some(5.0),
+        course_over_ground_deg: Some(45.0),
+        true_heading_deg: Some(45.0),
+        observation_source: ObservationSource::DirectObservation,
+    };
+    let identity = VesselIdentity {
+        mmsi: 111_000_005,
+        vessel_name: Some("SYNTHETIC PATROL".to_string()),
+        imo_number: None,
+        callsign: Some("PAT01".to_string()),
+        vessel_type: VesselType::SearchAndRescue,
+        nav_status: NavigationalStatus::UnderwayUsingEngine,
+        draught_m: Some(4.0),
+    };
+    let vessel_track = MaritimeVesselTrack::new(
+        identity,
+        OpaqueId::new("synth:source:coastal")?,
+        vec![vessel_point],
+        &limits,
+    )?;
+
+    let covering_sensor = SensorCoverageMask {
+        sensor_id: OpaqueId::new("sensor:synth-coastal-radar")?,
+        source_id: OpaqueId::new("synth:source:coastal")?,
+        coverage_bounds: GeoBoundingBoxWgs84::new(9.0, 13.0, 19.0, 23.0)?,
+        altitude_band: None,
+        operational_window: TimeWindow::new(900_000, 1_300_000)?,
+        sensor_type: PositionSource::PrimaryRadar,
+        is_operational: true,
+        last_feed_update_utc_ms: 1_250_000,
+    };
+
+    // Case 1: Elevated MSL band [10m, 1000m].
+    // Vessel is inside bbox and window, but excluded because assumed sea surface 0.0m is outside [10, 1000].
+    // Result is ObservedAbsenceWithinCoverage, AND vessel_altitude_basis is Some(AssumedSeaSurface)!
+    let elevated_band = AltitudeBand::new(
+        Altitude::new(10.0, AltitudeReference::OrthometricMsl)?,
+        Altitude::new(1000.0, AltitudeReference::OrthometricMsl)?,
+    )?;
+    let elevated_envelope = SpatioTemporalEnvelope::new(bbox, Some(elevated_band), time_window);
+    let inputs1 = ContextReconstructionInputs {
+        weather_records: &[],
+        aircraft_tracks: &[],
+        vessel_tracks: std::slice::from_ref(&vessel_track),
+        notices: &[],
+        sensor_masks: std::slice::from_ref(&covering_sensor),
+    };
+    let res1 =
+        reconstruct_geographic_context(&elevated_envelope, &inputs1, &limits, 1_250_000, None)?;
+    assert_eq!(res1.vessel_tracks.len(), 0);
+    assert_eq!(
+        res1.vessel_altitude_basis,
+        Some(VesselAltitudeBasis::AssumedSeaSurface)
+    );
+    assert!(matches!(
+        res1.traffic_assessment,
+        SceneTrafficAssessment::ObservedAbsenceWithinCoverage { .. }
+    ));
+
+    // Case 2: No altitude band on envelope.
+    // Vessel matches 2D box & window. No vertical assumption was evaluated!
+    // Result has vessel_tracks non-empty, but vessel_altitude_basis is None!
+    let unbounded_envelope = SpatioTemporalEnvelope::new(bbox, None, time_window);
+    let inputs2 = ContextReconstructionInputs {
+        weather_records: &[],
+        aircraft_tracks: &[],
+        vessel_tracks: std::slice::from_ref(&vessel_track),
+        notices: &[],
+        sensor_masks: std::slice::from_ref(&covering_sensor),
+    };
+    let res2 =
+        reconstruct_geographic_context(&unbounded_envelope, &inputs2, &limits, 1_250_000, None)?;
+    assert_eq!(res2.vessel_tracks.len(), 1);
+    assert_eq!(res2.vessel_altitude_basis, None);
+
+    Ok(())
+}
+
+/// Live Sensor Staleness Tolerance: For in-progress/live windows (window.end >= eval),
+/// feeds reporting within max_sensor_staleness_ms are active and covering.
+#[test]
+fn test_live_sensor_feed_staleness_tolerance() -> Result<(), Box<dyn std::error::Error>> {
+    let limits = ContextLimits {
+        max_sensor_staleness_ms: 300_000, // 5 minutes
+        ..ContextLimits::default()
+    };
+    let bbox = GeoBoundingBoxWgs84::new(10.0, 12.0, 20.0, 22.0)?;
+    // Live window ending 10 seconds into the future relative to eval instant
+    let eval_instant = 1_700_000_000_000;
+    let live_window = TimeWindow::new(eval_instant - 60_000, eval_instant + 10_000)?;
+    let envelope = SpatioTemporalEnvelope::new(bbox, None, live_window);
+
+    // Feed updated 1 second before eval instant (well within 5 minute staleness limit)
+    let fresh_sensor = SensorCoverageMask {
+        sensor_id: OpaqueId::new("sensor:synth-radar-01")?,
+        source_id: OpaqueId::new("synth:source:provider-01")?,
+        coverage_bounds: GeoBoundingBoxWgs84::new(9.0, 13.0, 19.0, 23.0)?,
+        altitude_band: None,
+        operational_window: TimeWindow::new(eval_instant - 100_000, eval_instant + 100_000)?,
+        sensor_type: PositionSource::PrimaryRadar,
+        is_operational: true,
+        last_feed_update_utc_ms: eval_instant - 1_000, // 1 sec ago
+    };
+    let inputs_fresh = ContextReconstructionInputs {
+        weather_records: &[],
+        aircraft_tracks: &[],
+        vessel_tracks: &[],
+        notices: &[],
+        sensor_masks: &[fresh_sensor],
+    };
+    let res_fresh =
+        reconstruct_geographic_context(&envelope, &inputs_fresh, &limits, eval_instant, None)?;
+    assert!(matches!(
+        res_fresh.traffic_assessment,
+        SceneTrafficAssessment::ObservedAbsenceWithinCoverage { .. }
+    ));
+
+    // Feed updated 6 minutes before eval instant (exceeds 5 minute limit)
+    let stale_sensor = SensorCoverageMask {
+        last_feed_update_utc_ms: eval_instant - 360_000,
+        ..inputs_fresh.sensor_masks[0].clone()
+    };
+    let inputs_stale = ContextReconstructionInputs {
+        weather_records: &[],
+        aircraft_tracks: &[],
+        vessel_tracks: &[],
+        notices: &[],
+        sensor_masks: &[stale_sensor],
+    };
+    let res_stale =
+        reconstruct_geographic_context(&envelope, &inputs_stale, &limits, eval_instant, None)?;
+    assert_eq!(
+        res_stale.traffic_assessment,
+        SceneTrafficAssessment::InconclusiveUnobserved {
+            reason: UnobservedReason::SensorFeedDownOrStale,
+        }
+    );
+
+    Ok(())
+}
+
+/// NB6 Contract: Aircraft point with geometric (ellipsoidal) and barometric altitudes
+/// correctly selects the matching datum when query envelope specifies BarometricUnadjusted.
+#[test]
+fn test_nb6_aircraft_altitude_datum_fallback_matching() -> Result<(), Box<dyn std::error::Error>> {
+    let limits = ContextLimits::default();
+    let bbox = GeoBoundingBoxWgs84::new(10.0, 12.0, 20.0, 22.0)?;
+    let time_window = TimeWindow::new(1_000_000, 1_200_000)?;
+
+    let baro_band = AltitudeBand::new(
+        Altitude::new(3000.0, AltitudeReference::BarometricUnadjusted)?,
+        Altitude::new(6000.0, AltitudeReference::BarometricUnadjusted)?,
+    )?;
+    let envelope = SpatioTemporalEnvelope::new(bbox, Some(baro_band), time_window);
+
+    // Aircraft has geometric altitude in Wgs84Ellipsoid and barometric in BarometricUnadjusted
+    let pt = AircraftTrackPoint {
+        transmit_instant_utc_ms: Some(1_100_000),
+        receiver_instant_utc_ms: Some(1_100_000),
+        retrieval_instant_utc_ms: Some(1_100_050),
+        target_interpolation_instant_utc_ms: None,
+        position: GeoPointWgs84::new(11.0, 21.0)?,
+        barometric_altitude: Some(Altitude::new(
+            4500.0,
+            AltitudeReference::BarometricUnadjusted,
+        )?),
+        geometric_altitude: Some(Altitude::new(4600.0, AltitudeReference::Wgs84Ellipsoid)?),
+        ground_speed_mps: None,
+        track_angle_deg: None,
+        vertical_rate_mps: None,
+        squawk_octal: None,
+        observation_source: ObservationSource::DirectObservation,
+        raw_source_hash: None,
+    };
+    let track = AircraftTrack::new(
+        "AABBCC",
+        None,
+        None,
+        PositionSource::Adsb,
+        OpaqueId::new("synth:src")?,
+        vec![pt],
+        &limits,
+    )?;
+
+    let inputs = ContextReconstructionInputs {
+        weather_records: &[],
+        aircraft_tracks: &[track],
+        vessel_tracks: &[],
+        notices: &[],
+        sensor_masks: &[],
+    };
+
+    let res = reconstruct_geographic_context(&envelope, &inputs, &limits, 1_250_000, None)?;
+    // Must successfully match using the matching barometric altitude!
+    assert_eq!(res.aircraft_tracks.len(), 1);
+    assert!(matches!(
+        res.traffic_assessment,
+        SceneTrafficAssessment::ObservedTrafficPresent {
+            observed_aircraft_count: 1,
+            ..
+        }
     ));
 
     Ok(())

@@ -199,7 +199,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 4. Maritime vessel track
-    // Synthetic test vessel: unassigned ITU MID 111 (SAR prefix under ITU-R M.585)
+    // Synthetic test vessel: ITU-R Recommendation M.585 SAR aircraft prefix 111
     // No commercial IMO number is assigned.
     let vessel_identity = VesselIdentity {
         mmsi: 111_000_001,

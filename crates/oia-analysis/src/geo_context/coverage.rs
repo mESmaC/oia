@@ -121,16 +121,16 @@ pub fn evaluate_sensor_coverage(
     for mask in sensor_masks {
         mask.validate()?;
 
+        // Skip sensors that do not overlap the query envelope spatially
+        if !mask.coverage_bounds.overlaps_box(&envelope.spatial_bounds) {
+            continue;
+        }
+
         // Refuse sensor feeds with last_update in the future relative to the evaluation instant
         if mask.last_feed_update_utc_ms > evaluation_instant_utc_ms {
             return Err(GeoContextError::InvalidTemporalOrdering(
                 "sensor feed last_feed_update_utc_ms cannot be later than evaluation_instant_utc_ms",
             ));
-        }
-
-        // Skip sensors that do not overlap the query envelope spatially
-        if !mask.coverage_bounds.overlaps_box(&envelope.spatial_bounds) {
-            continue;
         }
 
         // Liveness check: sensor must be operational
@@ -148,22 +148,25 @@ pub fn evaluate_sensor_coverage(
             continue;
         }
 
-        // Staleness check: feed must have reported through the envelope's time window.
-        // If last update is before the window's end, telemetry inside the window is incomplete.
-        if mask.last_feed_update_utc_ms < envelope.time_window.end_utc_ms() {
-            any_sensor_stale = true;
-            continue;
-        }
-
-        // Age check: applies ONLY when the envelope window reaches into or beyond the evaluation instant
-        // (i.e. real-time or in-progress evaluation). For an archived window that ended in the past,
-        // log completeness through envelope.time_window.end_utc_ms() is sufficient regardless of evaluation age.
-        if envelope.time_window.end_utc_ms() >= evaluation_instant_utc_ms
-            && evaluation_instant_utc_ms.saturating_sub(mask.last_feed_update_utc_ms)
-                > limits.max_sensor_staleness_ms as i64
-        {
-            any_sensor_stale = true;
-            continue;
+        // Freshness / staleness check:
+        // - Archived window (ended before evaluation instant): log completeness through window end
+        //   is required and sufficient, regardless of how old the archive is at evaluation time.
+        // - Live / ongoing window (reaches into or beyond evaluation instant): telemetry up to future
+        //   window.end is not physically available yet, so feed age relative to evaluation instant
+        //   is evaluated against max_sensor_staleness_ms.
+        if envelope.time_window.end_utc_ms() < evaluation_instant_utc_ms {
+            if mask.last_feed_update_utc_ms < envelope.time_window.end_utc_ms() {
+                any_sensor_stale = true;
+                continue;
+            }
+        } else {
+            let max_staleness = limits.max_sensor_staleness_ms.min(i64::MAX as u64) as i64;
+            if evaluation_instant_utc_ms.saturating_sub(mask.last_feed_update_utc_ms)
+                > max_staleness
+            {
+                any_sensor_stale = true;
+                continue;
+            }
         }
 
         // Horizontal spatial containment check: mask must completely contain the envelope box

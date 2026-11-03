@@ -243,10 +243,12 @@ impl AircraftTrack {
                 if t_p == t_prev {
                     return Err(GeoContextError::DuplicateTimestamp(t_p));
                 }
-                let dt_s = (t_p - t_prev) as f64 / 1000.0;
+                let dt_s = t_p.abs_diff(t_prev) as f64 / 1000.0;
                 if dt_s > 0.0 {
                     let dist_m = p.position.great_circle_distance_m(prev.position);
-                    let speed_mps = dist_m / dt_s;
+                    let effective_dist_m =
+                        (dist_m - 2.0 * limits.base_observation_uncertainty_m).max(0.0);
+                    let speed_mps = effective_dist_m / dt_s;
                     if speed_mps > limits.max_aircraft_speed_mps {
                         return Err(GeoContextError::ImpliedSpeedExceedsLimit {
                             speed_mps,
@@ -338,10 +340,12 @@ impl AircraftTrack {
                 if t_p == t_prev {
                     return Err(GeoContextError::DuplicateTimestamp(t_p));
                 }
-                let dt_s = (t_p - t_prev) as f64 / 1000.0;
+                let dt_s = t_p.abs_diff(t_prev) as f64 / 1000.0;
                 if dt_s > 0.0 {
                     let dist_m = p.position.great_circle_distance_m(prev.position);
-                    let speed_mps = dist_m / dt_s;
+                    let effective_dist_m =
+                        (dist_m - 2.0 * limits.base_observation_uncertainty_m).max(0.0);
+                    let speed_mps = effective_dist_m / dt_s;
                     if speed_mps > limits.max_aircraft_speed_mps {
                         return Err(GeoContextError::ImpliedSpeedExceedsLimit {
                             speed_mps,
@@ -460,7 +464,9 @@ impl AircraftTrack {
         let distance_gap_m = p1.position.great_circle_distance_m(p2.position);
         let dt_seconds = (gap_ms as f64) / 1000.0;
         if dt_seconds > 0.0 {
-            let speed_mps = distance_gap_m / dt_seconds;
+            let effective_gap_m =
+                (distance_gap_m - 2.0 * limits.base_observation_uncertainty_m).max(0.0);
+            let speed_mps = effective_gap_m / dt_seconds;
             if speed_mps > limits.max_aircraft_speed_mps {
                 return Err(GeoContextError::ImpliedSpeedExceedsLimit {
                     speed_mps,
@@ -803,10 +809,12 @@ impl MaritimeVesselTrack {
                 if t_p == t_prev {
                     return Err(GeoContextError::DuplicateTimestamp(t_p));
                 }
-                let dt_s = (t_p - t_prev) as f64 / 1000.0;
+                let dt_s = t_p.abs_diff(t_prev) as f64 / 1000.0;
                 if dt_s > 0.0 {
                     let dist_m = p.position.great_circle_distance_m(prev.position);
-                    let speed_mps = dist_m / dt_s;
+                    let effective_dist_m =
+                        (dist_m - 2.0 * limits.base_observation_uncertainty_m).max(0.0);
+                    let speed_mps = effective_dist_m / dt_s;
                     if speed_mps > limits.max_vessel_speed_mps {
                         return Err(GeoContextError::ImpliedSpeedExceedsLimit {
                             speed_mps,
@@ -878,10 +886,12 @@ impl MaritimeVesselTrack {
                 if t_p == t_prev {
                     return Err(GeoContextError::DuplicateTimestamp(t_p));
                 }
-                let dt_s = (t_p - t_prev) as f64 / 1000.0;
+                let dt_s = t_p.abs_diff(t_prev) as f64 / 1000.0;
                 if dt_s > 0.0 {
                     let dist_m = p.position.great_circle_distance_m(prev.position);
-                    let speed_mps = dist_m / dt_s;
+                    let effective_dist_m =
+                        (dist_m - 2.0 * limits.base_observation_uncertainty_m).max(0.0);
+                    let speed_mps = effective_dist_m / dt_s;
                     if speed_mps > limits.max_vessel_speed_mps {
                         return Err(GeoContextError::ImpliedSpeedExceedsLimit {
                             speed_mps,
@@ -997,7 +1007,9 @@ impl MaritimeVesselTrack {
         let distance_gap_m = p1.position.great_circle_distance_m(p2.position);
         let dt_seconds = (gap_ms as f64) / 1000.0;
         if dt_seconds > 0.0 {
-            let speed_mps = distance_gap_m / dt_seconds;
+            let effective_gap_m =
+                (distance_gap_m - 2.0 * limits.base_observation_uncertainty_m).max(0.0);
+            let speed_mps = effective_gap_m / dt_seconds;
             if speed_mps > limits.max_vessel_speed_mps {
                 return Err(GeoContextError::ImpliedSpeedExceedsLimit {
                     speed_mps,

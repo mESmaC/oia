@@ -108,10 +108,10 @@ impl ContextLimits {
                 reason: "must be > 0",
             });
         }
-        if self.max_sensor_staleness_ms == 0 {
+        if self.max_sensor_staleness_ms == 0 || self.max_sensor_staleness_ms > i64::MAX as u64 {
             return Err(GeoContextError::InvalidLimitValue {
                 field: "ContextLimits.max_sensor_staleness_ms",
-                reason: "must be > 0",
+                reason: "must be > 0 and <= i64::MAX",
             });
         }
         if !self.max_aircraft_speed_mps.is_finite() || self.max_aircraft_speed_mps <= 0.0 {
@@ -559,12 +559,24 @@ pub fn reconstruct_geographic_context(
 
             // Horizontal & temporal match. Check vertical band if envelope specifies one.
             if let Some(ref env_band) = envelope.altitude_band {
-                let alt_opt = pt
-                    .geometric_altitude
-                    .as_ref()
-                    .or(pt.barometric_altitude.as_ref());
-                match alt_opt {
-                    Some(alt) => match env_band.contains_altitude(alt) {
+                let mut matched_datum_alt = None;
+                let mut has_any_alt = false;
+
+                if let Some(ref geom) = pt.geometric_altitude {
+                    has_any_alt = true;
+                    if geom.reference() == env_band.reference() {
+                        matched_datum_alt = Some(geom);
+                    }
+                }
+                if let Some(ref baro) = pt.barometric_altitude {
+                    has_any_alt = true;
+                    if matched_datum_alt.is_none() && baro.reference() == env_band.reference() {
+                        matched_datum_alt = Some(baro);
+                    }
+                }
+
+                if let Some(alt) = matched_datum_alt {
+                    match env_band.contains_altitude(alt) {
                         Ok(true) => {
                             track_matches = true;
                             if pt.observation_source == ObservationSource::DirectObservation {
@@ -578,12 +590,16 @@ pub fn reconstruct_geographic_context(
                                 has_unresolved_altitude_observation = true;
                             }
                         }
-                    },
-                    None => {
-                        // Point inside 2D box & time window lacks altitude: cannot declare absence!
-                        if pt.observation_source == ObservationSource::DirectObservation {
-                            has_unresolved_altitude_observation = true;
-                        }
+                    }
+                } else if has_any_alt {
+                    // Has altitude observation(s), but none match the envelope's vertical datum
+                    if pt.observation_source == ObservationSource::DirectObservation {
+                        has_unresolved_altitude_observation = true;
+                    }
+                } else {
+                    // Point inside 2D box & time window lacks altitude: cannot declare absence!
+                    if pt.observation_source == ObservationSource::DirectObservation {
+                        has_unresolved_altitude_observation = true;
                     }
                 }
             } else {
@@ -613,6 +629,7 @@ pub fn reconstruct_geographic_context(
     // the sea surface height is not 0 (due to local geoid undulation or pressure variation).
     let mut filtered_vessels = Vec::new();
     let mut observed_vessel_count = 0;
+    let mut assumed_sea_surface_evaluated = false;
 
     for track in inputs.vessel_tracks {
         track.validate(limits)?;
@@ -634,6 +651,7 @@ pub fn reconstruct_geographic_context(
             if let Some(ref env_band) = envelope.altitude_band {
                 match env_band.reference() {
                     AltitudeReference::OrthometricMsl | AltitudeReference::AboveGroundLevel => {
+                        assumed_sea_surface_evaluated = true;
                         let sea_level_alt = Altitude::new(0.0, env_band.reference())?;
                         match env_band.contains_altitude(&sea_level_alt) {
                             Ok(true) => {
@@ -743,7 +761,7 @@ pub fn reconstruct_geographic_context(
         }
     };
 
-    let vessel_altitude_basis = if !filtered_vessels.is_empty() {
+    let vessel_altitude_basis = if assumed_sea_surface_evaluated {
         Some(VesselAltitudeBasis::AssumedSeaSurface)
     } else {
         None

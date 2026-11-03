@@ -18,7 +18,7 @@ Exit: a fixture can be imported, queried, annotated, versioned, exported, reimpo
 
 ### P1: document and news research release
 
-Deliver local document import, one verified remote acquisition adapter, searchable text/OCR, cited AI drafts through at least one evaluated model option, document revisions, claim/source lineage, news event grouping, and an editable report. Introduce report and portable-bundle export before collaborative hosting.
+Deliver local document import, one verified remote acquisition adapter, a bounded public-web scraping path, searchable text/OCR, cited AI drafts through at least one evaluated model option, document revisions, claim/source lineage, news event grouping, and an editable report. Introduce report and portable-bundle export before collaborative hosting.
 
 The first usable release must let a researcher answer a bounded question from a small collection, inspect every substantive generated statement, correct it, and export an auditable result. It must show failed/partial extraction, duplicate coverage, conflicting claims, and corrections. The terminal visual system must be recognizable and usable without a globe being required for every task.
 
@@ -60,6 +60,7 @@ Exit: privacy tools preserve originals, document the limits of supported formats
 | --- | --- | --- |
 | CASE-01–CASE-05 | P0/P1 | A01 |
 | UX-01–UX-05 | P1, extended by each view | A02 |
+| SOURCE-01–SOURCE-04 | P0 contracts, P1 API/feed/web acquisition; extended by each integration | A19 |
 | DOC-01–DOC-05 | P1 | A03 |
 | GEO-01–GEO-05 | P2 | A04 |
 | SPACE-01–SPACE-05 | P2 | A05 |
@@ -152,6 +153,12 @@ Export and import a case with originals, restricted references, missing assets, 
 ### A18: privacy and change monitoring
 
 Inspect a supported file with known identifying metadata, produce a cleaned copy, and re-inspect it. Preserve the original and disclose content-level identifiers that metadata removal cannot address. Evaluate ambiguous account matches without asserting identity. Track a user's declared domain scope and a public-page revision; verify dated source evidence, supported-format limits, and explained notifications.
+
+### A19: internet collection and derived intelligence
+
+Exercise a registered external API, RSS/Atom feed, and public HTML source through application services; include a user-supplied URL and a discovered link outside the initial seed list. Perform interactive and scheduled jobs with declared limits. Verify source registration, scoped credentials, destination/redirect validation, pagination and crawl bounds, rate-limit backoff, cancellation, partial coverage, source revisions, and exact provenance. A redirect or page instruction must not grant access to local networks, credentials, or additional collection scope. Distinguish permitted reading from restricted retention or redistribution and unknown conditions; verify a reference-only result where applicable.
+
+Build a linked event, map/timeline view, and cited analytical result from retained versions; preserve observation/inference distinctions and uncertainty through export. Disconnect and verify retained work stays usable while live acquisition is unavailable. Deterministic transport fixtures establish failure behavior; separately record a dated live API/feed/page acquisition with actual provider, configuration, response/coverage, and limitations before claiming end-to-end online support. The offline fixture alone does not satisfy this scenario. These are planned checks, not passing results.
 
 ## 3. Cross-cutting release gates
 

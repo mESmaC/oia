@@ -37,7 +37,7 @@ body.reduced .canvas-bg { display: none; }
 * { box-sizing: border-box; margin: 0; }
 html, body { height: 100%; }
 body { background: var(--canvas); color: var(--text); font: 13px/1.45 var(--sans); overflow: hidden; -webkit-font-smoothing: antialiased; }
-button, input { font: inherit; color: inherit; }
+button, input, textarea, select { font: inherit; color: inherit; }
 button { background: none; border: 0; cursor: pointer; }
 button:disabled, button[aria-disabled="true"] { cursor: default; }
 [hidden] { display: none !important; }
@@ -279,6 +279,32 @@ tr.selected td { background: var(--accent-dim); }
 .seg-ctl button:last-child { border-right: 0; }
 .seg-ctl button:hover { color: var(--text); background: var(--fill-2); }
 .seg-ctl button[aria-pressed="true"] { color: var(--accent); background: var(--accent-dim); }
+
+/* Witness: exact reported text and append-only session history */
+.witness-scroll { position: absolute; inset: 0; overflow: auto; padding: 0 4px 12px 0; }
+.witness-scroll > #witness-retention { margin: 0 0 8px; }
+.witness-panel { padding: 12px 14px; margin-bottom: 12px; }
+.witness-panel-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-bottom: 8px; }
+.witness-panel-head h2, .witness-history h2 { font: 500 16px/1.2 var(--sans); margin-right: auto; }
+.witness-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; margin-top: 12px; }
+.witness-form label { display: flex; flex-direction: column; gap: 5px; min-width: 0; font: 11px var(--mono); letter-spacing: .04em; color: var(--text-2); }
+.witness-form input, .witness-form textarea, .witness-form select { width: 100%; min-width: 0; background: rgba(0,0,0,.32); border: 1px solid var(--line-2); border-radius: var(--r-ctl); padding: 7px 9px; color: var(--text); font: 13px/1.5 var(--sans); letter-spacing: normal; }
+.witness-form textarea { resize: vertical; min-height: 64px; }
+.witness-form input::placeholder { color: var(--text-3); }
+.witness-wide { grid-column: 1 / -1; }
+.witness-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.witness-fields { grid-template-columns: 128px minmax(0, 1fr); margin-top: 10px; }
+.witness-text { white-space: pre-wrap; unicode-bidi: plaintext; }
+#witness-expose { margin-top: 10px; }
+.witness-checklist { margin: 10px 0 0 18px; color: var(--text-2); }
+.witness-checklist li { padding: 3px 0; }
+.witness-history { margin: 16px 0 12px; }
+.witness-history > .k { display: block; margin-bottom: 5px; }
+.witness-version { padding: 12px 14px; margin-top: 10px; }
+.witness-version-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.witness-version > .note { margin-top: 10px; }
+#witness-status { margin-bottom: 12px; }
+@media (max-width: 700px) { .witness-form { grid-template-columns: 1fr; } .witness-wide { grid-column: 1; } }
 
 /* ---- Jobs strip ---- */
 .jobs { grid-area: jobs; z-index: 2; display: flex; align-items: center; gap: 12px; padding: 0 14px; }

@@ -8,7 +8,7 @@ Rust and selective Lean verification are established direction. The process layo
 
 ### 1.1 Proposed deployment model
 
-Begin with a local-first application: a Rust domain/service runtime, local evidence storage, background workers, and a UI connected through typed interfaces. Basic document import, case editing, offline search over downloaded material, and report export must work without an OIA account. Provider integrations and remote AI require their respective access and connectivity.
+Begin with a local-first application: a Rust domain/service runtime, local evidence storage, background workers, and a UI connected through typed interfaces. Basic document import, case editing, offline search over downloaded material, and report export must work without an OIA account. Provider integrations and remote AI require their respective access and connectivity. Local-first is a storage and continuity contract, not an offline-only product or development rule: public internet discovery, APIs, feeds, downloads, streams, and bounded scraping/crawling are first-class acquisition paths (SOURCE-01–SOURCE-04).
 
 Separate these responsibilities even if the first release packages them in one process:
 
@@ -139,7 +139,15 @@ A source registration must declare provider identity, source class, retrieval me
 
 Supported capabilities may include catalog search, historical query, live polling, streaming, media retrieval, and hardware telemetry. A source can support some without the others. The application must not manufacture history from a currently live feed.
 
-Source operations must receive an explicit bounded query, cancellation/deadline, and resource budget and return a normalized batch plus source/version/coverage metadata. Network transport is injected so fixtures can exercise the same parser and normalization logic offline.
+Source operations must receive an explicit bounded query, cancellation/deadline, and resource budget and return a normalized batch plus source/version/coverage metadata. Network transport is injected so fixtures can exercise the same parser and normalization logic offline. Deterministic offline fixtures complement live integration checks; they do not prohibit online source research, dependency acquisition, development, or configured runtime collection.
+
+### 4.1.1 Web discovery and collection boundary
+
+Rust source adapters own API calls, feed polling, direct downloads, and scraping/crawling jobs through shared application services. Discovery may return candidate URLs beyond the seed collection; candidates are validated and registered under configured source rules before acquisition. A discovered link, redirect, imported bundle, or document instruction cannot grant itself network or credential authority. Validate destinations and redirects, keep local/private network access separate, and scope credentials to the registered provider.
+
+Web collection profiles must declare entry URLs, allowed destinations and link-following scope, applicable source conditions (including published crawling directives), pagination/depth/item/byte/duration budgets, cadence, concurrency, retry/backoff, deadline, and cancellation. Retain retrieval/version metadata and extraction provenance alongside permitted source bytes or an explicit omission reason. Script-dependent pages may require a separately isolated rendering adapter; this is an acquisition capability to design when needed, not permission to execute source scripts inside the privileged application UI. No scraping framework or provider is selected here.
+
+The WebView CSP constrains presentation-origin traffic; it does not define the catalog of sources that Rust adapters can acquire. Direct renderer loads follow ADR 0008's registered-origin rules. Sources acquired by Rust do not each require a new WebView origin. Parsers and model synthesis can remain without independent network authority while collection tools retrieve research material through scoped application services. Opening an offline report or bundle remains passive; an explicit acquisition job can later retrieve permitted referenced sources.
 
 ### 4.2 Result envelope
 

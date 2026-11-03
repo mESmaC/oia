@@ -4,6 +4,7 @@
 //! acquire market data, select production providers, persist evidence, or resolve D11.
 
 pub mod calendar;
+pub mod event_study;
 pub mod model;
 pub mod point_in_time;
 
@@ -11,7 +12,7 @@ use std::fmt;
 
 use oia_domain::VersionId;
 
-use crate::model::ExclusionReason;
+use crate::model::{CalendarDate, ExclusionReason};
 
 /// Hard upper bound for any caller-configured record budget.
 pub const MAX_RECORDS: usize = 10_000;
@@ -108,6 +109,11 @@ pub enum MarketError {
         version: VersionId,
         reason: ExclusionReason,
     },
+    InvalidEventStudy(&'static str),
+    AnchorExcluded(ExclusionReason),
+    CalendarCoverageUnknown(CalendarDate),
+    StudySpanBeyondCalendar,
+    NonFiniteResult,
     Stopped(StopReason),
 }
 
@@ -146,6 +152,18 @@ impl fmt::Display for MarketError {
             Self::QuoteExcluded { version, reason } => {
                 write!(f, "quote {version} is inadmissible at the cutoff: {reason:?}")
             }
+            Self::InvalidEventStudy(message) => write!(f, "invalid event study: {message}"),
+            Self::AnchorExcluded(reason) => {
+                write!(f, "event awareness record is inadmissible at the cutoff: {reason:?}")
+            }
+            Self::CalendarCoverageUnknown(date) => write!(
+                f,
+                "trading calendar has no session or closure for {date} inside the study span"
+            ),
+            Self::StudySpanBeyondCalendar => {
+                f.write_str("event-study span extends beyond the calendar's listed sessions")
+            }
+            Self::NonFiniteResult => f.write_str("event-study aggregation produced a non-finite value"),
             Self::Stopped(reason) => write!(f, "market operation stopped: {reason:?}"),
         }
     }

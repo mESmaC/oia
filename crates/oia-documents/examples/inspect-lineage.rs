@@ -10,12 +10,12 @@ use std::time::{Duration, Instant};
 
 use oia_documents::StopReason;
 use oia_documents::lineage::{
-    ArtifactDescriptor, AvailabilityState, ComparisonSegmentKind, DerivationNode,
-    DerivationOriginClass, LineageLimits, PageAttachment, RecordRelation, RelationKind,
-    ReleaseComparisonSegment, ReleaseRedactionComparison, RetentionMode, SourceLifecycleState,
-    SourceRecordDescriptor, Utf8ByteCitation, compute_exact_duplicate_groups,
-    compute_invalidation_propagation, evaluate_corroboration, validate_records,
-    verify_release_comparison, verify_utf8_byte_citation,
+    ArtifactDescriptor, AvailabilityState, ClaimCorroborationInputs, ComparisonSegmentKind,
+    DerivationNode, DerivationOriginClass, LineageLimits, PageAttachment, RecordRelation,
+    RelationKind, ReleaseComparisonSegment, ReleaseRedactionComparison, RetentionMode,
+    SourceLifecycleState, SourceRecordDescriptor, UnresolvedExternalCitation, Utf8ByteCitation,
+    compute_exact_duplicate_groups, compute_invalidation_propagation, evaluate_claim_corroboration,
+    validate_records, verify_release_comparison, verify_utf8_byte_citation,
 };
 
 fn invalid_argument(message: &str) -> io::Error {
@@ -430,6 +430,16 @@ fn build_a03_a08_lineage_fixture(root: &Path) -> Result<LineageFixture, Box<dyn 
             to: "retracted-advisory-v1".to_owned(),
             kind: RelationKind::RetractedBy,
         },
+        RecordRelation {
+            from: "retraction-notice-v2".to_owned(),
+            to: "retracted-advisory-v1".to_owned(),
+            kind: RelationKind::Quotes,
+        },
+        RecordRelation {
+            from: "dispatch-primary-v2".to_owned(),
+            to: "cycle-memo-a-v1".to_owned(),
+            kind: RelationKind::Cites,
+        },
     ];
 
     let derivations = vec![
@@ -675,8 +685,43 @@ fn run() -> Result<ExitCode, Box<dyn Error>> {
         .iter()
         .map(|d| (d.version_id.clone(), d.clone()))
         .collect();
-    let corroboration = evaluate_corroboration(
-        &citing_inputs,
+    let corroboration = evaluate_claim_corroboration(
+        ClaimCorroborationInputs {
+            supporting: &citing_inputs,
+            ..ClaimCorroborationInputs::default()
+        },
+        &records,
+        &derivations_map,
+        &relations,
+        &artifacts,
+        limits,
+        &mut check_control,
+    )?;
+    let external_citations = vec![
+        UnresolvedExternalCitation {
+            citing_record_version_id: "retracted-advisory-v1".to_owned(),
+            reference: "Synthetic Calibration Board advisory bibliography entry CB-EXT-1"
+                .to_owned(),
+        },
+        UnresolvedExternalCitation {
+            citing_record_version_id: "retraction-notice-v2".to_owned(),
+            reference: "Synthetic Calibration Board retraction bibliography entry RN-EXT-2"
+                .to_owned(),
+        },
+        UnresolvedExternalCitation {
+            citing_record_version_id: "removed-endpoint-v1".to_owned(),
+            reference: "UNRELATED citation excluded from calibration claim coverage".to_owned(),
+        },
+    ];
+    let stance_corroboration = evaluate_claim_corroboration(
+        ClaimCorroborationInputs {
+            supporting: &["retracted-advisory-v1".to_owned()],
+            contradicting: &[
+                "retraction-notice-v2".to_owned(),
+                "summary-coastal-track-v1".to_owned(),
+            ],
+            external_citations: &external_citations,
+        },
         &records,
         &derivations_map,
         &relations,
@@ -725,9 +770,11 @@ fn run() -> Result<ExitCode, Box<dyn Error>> {
     }
     writeln!(
         output,
-        "corroboration: independent_roots={:?} (count={}); circular_only={:?}; excluded_derivatives={:?}; earliest_resolution={:?}; earliest_dated={:?}; undated_roots={:?}; omitted_reference_only={:?}",
+        "corroboration: independent_roots={:?} (count={}); exact_duplicate_group_count={}; contradicting_roots={:?}; circular_only={:?}; excluded_derivatives={:?}; earliest_resolution={:?}; earliest_dated={:?}; undated_roots={:?}; omitted_reference_only={:?}",
         corroboration.independent_supporting_roots,
         corroboration.independent_root_count,
+        corroboration.exact_duplicate_group_count,
+        corroboration.contradicting_independent_roots,
         corroboration.circular_only_record_versions,
         corroboration.excluded_derivative_runs,
         corroboration.earliest_known_source_view.resolution,
@@ -739,6 +786,25 @@ fn run() -> Result<ExitCode, Box<dyn Error>> {
             .earliest_known_source_view
             .coverage_qualification
             .omitted_reference_only_records
+    )?;
+    writeln!(
+        output,
+        "calibration_claim: supporting_roots={:?}; contradicting_roots={:?}; excluded_derivatives={:?}; omitted_reference_only={:?}; unresolved_external_citations={:?}; detected_cycle_count={}",
+        stance_corroboration.independent_supporting_roots,
+        stance_corroboration.contradicting_independent_roots,
+        stance_corroboration.excluded_derivative_runs,
+        stance_corroboration
+            .earliest_known_source_view
+            .coverage_qualification
+            .omitted_reference_only_records,
+        stance_corroboration
+            .earliest_known_source_view
+            .coverage_qualification
+            .unresolved_external_citations,
+        stance_corroboration
+            .earliest_known_source_view
+            .coverage_qualification
+            .detected_cycle_count
     )?;
     for notice in &invalidation.needs_reassessment {
         writeln!(

@@ -12,6 +12,9 @@ use std::ops::Range;
 
 use crate::StopReason;
 
+/// Maximum UTF-8 bytes accepted for one caller-supplied external bibliographic reference.
+pub const MAX_EXTERNAL_CITATION_REFERENCE_BYTES: usize = 4_096;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LineageLimit {
     Nodes,
@@ -133,6 +136,10 @@ pub enum LineageError {
     RemovedEndpointAutoRetracted {
         record_version_id: String,
     },
+    InvalidExternalCitation {
+        citing_record_version_id: String,
+        reason: &'static str,
+    },
     AllocationFailed,
     Stopped(StopReason),
 }
@@ -239,6 +246,13 @@ impl fmt::Display for LineageError {
             Self::RemovedEndpointAutoRetracted { record_version_id } => write!(
                 formatter,
                 "removed record {record_version_id:?} must not be auto-marked retracted"
+            ),
+            Self::InvalidExternalCitation {
+                citing_record_version_id,
+                reason,
+            } => write!(
+                formatter,
+                "invalid external citation on {citing_record_version_id:?}: {reason}"
             ),
             Self::AllocationFailed => write!(formatter, "unable to allocate lineage metadata"),
             Self::Stopped(reason) => write!(formatter, "lineage operation stopped: {reason:?}"),
@@ -421,9 +435,16 @@ pub enum EarliestSourceResolution {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnresolvedExternalCitation {
+    pub citing_record_version_id: String,
+    pub reference: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EarliestSourceCoverageQualification {
     pub scope: &'static str,
     pub omitted_reference_only_records: Vec<String>,
+    pub unresolved_external_citations: Vec<UnresolvedExternalCitation>,
     pub detected_cycle_count: usize,
 }
 
@@ -435,14 +456,23 @@ pub struct EarliestKnownSourceView {
     pub coverage_qualification: EarliestSourceCoverageQualification,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ClaimCorroborationInputs<'a> {
+    pub supporting: &'a [String],
+    pub contradicting: &'a [String],
+    pub external_citations: &'a [UnresolvedExternalCitation],
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CorroborationSummary {
     pub supporting_record_versions: Vec<String>,
+    pub exact_duplicate_group_count: usize,
     pub excluded_derivative_runs: Vec<String>,
     pub circular_only_record_versions: Vec<String>,
     pub primary_cycle_witness: Option<Vec<String>>,
     pub independent_supporting_roots: Vec<String>,
     pub independent_root_count: usize,
+    pub contradicting_independent_roots: Vec<String>,
     pub earliest_known_source_view: EarliestKnownSourceView,
 }
 
@@ -1240,25 +1270,72 @@ pub fn compute_lineage_sccs(
         if comp.len() > 1 || has_self_edge {
             let comp_set: BTreeSet<String> = comp.iter().cloned().collect();
             let witness_path = build_closed_cycle_witness(first, &comp_set, &adj)?;
-            let has_external_outbound = comp.iter().any(|member| {
-                adj.get(member).is_some_and(|outs| {
-                    outs.iter()
-                        .any(|target| !comp_set.contains(target.as_str()))
-                })
-            });
-            let classification = if has_external_outbound {
-                CycleClassification::AnchoredCycle
-            } else {
-                CycleClassification::UnanchoredCycle
-            };
             detected_cycles
                 .try_reserve(1)
                 .map_err(|_| LineageError::AllocationFailed)?;
             detected_cycles.push(DetectedCycle {
                 members: comp,
                 witness_path,
-                classification,
+                classification: CycleClassification::UnanchoredCycle,
             });
+        }
+    }
+
+    // A cycle is anchored only when its ancestry can reach a terminal,
+    // non-cyclic upstream root. An outbound edge into another rootless cycle
+    // does not provide an anchor.
+    let cyclic_nodes: BTreeSet<String> = detected_cycles
+        .iter()
+        .flat_map(|cycle| cycle.members.iter().cloned())
+        .collect();
+    let mut reverse_adj: BTreeMap<String, Vec<String>> = adj
+        .keys()
+        .map(|node_id| (node_id.clone(), Vec::new()))
+        .collect();
+    for (from, targets) in &adj {
+        check_control().map_err(LineageError::Stopped)?;
+        for target in targets {
+            if let Some(predecessors) = reverse_adj.get_mut(target) {
+                predecessors
+                    .try_reserve(1)
+                    .map_err(|_| LineageError::AllocationFailed)?;
+                predecessors.push(from.clone());
+            }
+        }
+    }
+    let mut reaches_terminal_root = BTreeSet::new();
+    let mut root_stack = Vec::new();
+    for (node_id, targets) in &adj {
+        check_control().map_err(LineageError::Stopped)?;
+        if targets.is_empty() && !cyclic_nodes.contains(node_id) {
+            reaches_terminal_root.insert(node_id.clone());
+            root_stack
+                .try_reserve(1)
+                .map_err(|_| LineageError::AllocationFailed)?;
+            root_stack.push(node_id.clone());
+        }
+    }
+    while let Some(curr) = root_stack.pop() {
+        check_control().map_err(LineageError::Stopped)?;
+        if let Some(predecessors) = reverse_adj.get(&curr) {
+            for predecessor in predecessors {
+                if reaches_terminal_root.insert(predecessor.clone()) {
+                    root_stack
+                        .try_reserve(1)
+                        .map_err(|_| LineageError::AllocationFailed)?;
+                    root_stack.push(predecessor.clone());
+                }
+            }
+        }
+    }
+    for cycle in &mut detected_cycles {
+        check_control().map_err(LineageError::Stopped)?;
+        if cycle
+            .members
+            .iter()
+            .any(|member| reaches_terminal_root.contains(member))
+        {
+            cycle.classification = CycleClassification::AnchoredCycle;
         }
     }
 
@@ -1452,8 +1529,9 @@ fn build_closed_cycle_witness(
     Ok(witness)
 }
 
-/// Evaluate corroboration independence and earliest-known-source candidates for a
-/// set of citing inputs (`INTEL-01`, `DOC-05`, `A08`).
+/// Evaluate positive-support corroboration for compatibility with callers that
+/// predate stance-separated claims. Use [`evaluate_claim_corroboration`] to
+/// supply contradicting records and unresolved external citations.
 pub fn evaluate_corroboration(
     citing_inputs: &[String],
     records: &BTreeMap<String, SourceRecordDescriptor>,
@@ -1461,14 +1539,57 @@ pub fn evaluate_corroboration(
     relations: &[RecordRelation],
     artifacts: &BTreeMap<String, ArtifactDescriptor>,
     limits: LineageLimits,
+    check_control: impl FnMut() -> Result<(), StopReason>,
+) -> Result<CorroborationSummary, LineageError> {
+    evaluate_claim_corroboration(
+        ClaimCorroborationInputs {
+            supporting: citing_inputs,
+            ..ClaimCorroborationInputs::default()
+        },
+        records,
+        derivations,
+        relations,
+        artifacts,
+        limits,
+        check_control,
+    )
+}
+
+/// Evaluate stance-separated corroboration independence and earliest-known-source
+/// candidates (`INTEL-01`, `DOC-05`, `A08`). Supporting and contradicting roots
+/// are reported separately and never combined into a truth score. External
+/// citations are explicit bibliographic inputs, not text scraped from documents;
+/// only citations attached to reached claim ancestry enter coverage reporting.
+pub fn evaluate_claim_corroboration(
+    inputs: ClaimCorroborationInputs<'_>,
+    records: &BTreeMap<String, SourceRecordDescriptor>,
+    derivations: &BTreeMap<String, DerivationNode>,
+    relations: &[RecordRelation],
+    artifacts: &BTreeMap<String, ArtifactDescriptor>,
+    limits: LineageLimits,
     mut check_control: impl FnMut() -> Result<(), StopReason>,
 ) -> Result<CorroborationSummary, LineageError> {
+    let ClaimCorroborationInputs {
+        supporting: supporting_inputs,
+        contradicting: contradicting_inputs,
+        external_citations,
+    } = inputs;
     check_control().map_err(LineageError::Stopped)?;
-    if citing_inputs.len() > limits.max_nodes {
+    let input_count = supporting_inputs
+        .len()
+        .checked_add(contradicting_inputs.len());
+    if input_count.is_none_or(|count| count > limits.max_nodes) {
         return Err(LineageError::LineageGraphBudgetExceeded {
             limit: LineageLimit::Nodes,
-            actual: citing_inputs.len(),
+            actual: input_count.unwrap_or(usize::MAX),
             max: limits.max_nodes,
+        });
+    }
+    if external_citations.len() > limits.max_edges {
+        return Err(LineageError::LineageGraphBudgetExceeded {
+            limit: LineageLimit::Edges,
+            actual: external_citations.len(),
+            max: limits.max_edges,
         });
     }
     for version_id in records.keys() {
@@ -1490,26 +1611,259 @@ pub fn evaluate_corroboration(
     }
 
     let mut supporting_set = BTreeSet::new();
+    let mut contradicting_set = BTreeSet::new();
     let mut excluded_set = BTreeSet::new();
-    for item_id in citing_inputs {
-        check_control().map_err(LineageError::Stopped)?;
-        if derivations.contains_key(item_id) {
-            excluded_set.insert(item_id.clone());
-        } else if records.contains_key(item_id) {
-            supporting_set.insert(item_id.clone());
-        } else {
-            return Err(LineageError::UnknownReference {
-                context: "corroboration citing_input",
-                target_id: item_id.clone(),
-            });
+    for (stance, inputs) in [
+        ("supporting", supporting_inputs),
+        ("contradicting", contradicting_inputs),
+    ] {
+        for item_id in inputs {
+            check_control().map_err(LineageError::Stopped)?;
+            if derivations.contains_key(item_id) {
+                excluded_set.insert(item_id.clone());
+            } else if records.contains_key(item_id) {
+                if stance == "supporting" {
+                    supporting_set.insert(item_id.clone());
+                } else {
+                    contradicting_set.insert(item_id.clone());
+                }
+            } else {
+                return Err(LineageError::UnknownReference {
+                    context: if stance == "supporting" {
+                        "corroboration citing_input"
+                    } else {
+                        "corroboration contradicting_input"
+                    },
+                    target_id: item_id.clone(),
+                });
+            }
         }
     }
     let supporting_record_versions: Vec<String> = supporting_set.into_iter().collect();
+    let contradicting_record_versions: Vec<String> = contradicting_set.into_iter().collect();
     let excluded_derivative_runs: Vec<String> = excluded_set.into_iter().collect();
 
-    let mut circular_only_record_versions = Vec::new();
-    let mut upstream_roots = BTreeSet::new();
-    for rec_id in &supporting_record_versions {
+    let supporting_trace = trace_claim_ancestry(
+        &supporting_record_versions,
+        &adj,
+        &cyclic_members,
+        &cycle_idx_by_member,
+        &mut check_control,
+    )?;
+    let contradicting_trace = trace_claim_ancestry(
+        &contradicting_record_versions,
+        &adj,
+        &cyclic_members,
+        &cycle_idx_by_member,
+        &mut check_control,
+    )?;
+    let circular_only_record_versions = supporting_trace.circular_only_record_versions.clone();
+    let primary_cycle_witness = circular_only_record_versions
+        .first()
+        .and_then(|member| {
+            cycle_idx_by_member
+                .get(member)
+                .or_else(|| supporting_trace.cycle_idx_by_circular_input.get(member))
+        })
+        .and_then(|&idx| graph_report.detected_cycles.get(idx))
+        .map(|cycle| cycle.witness_path.clone());
+
+    let mut supporting_content_hashes = BTreeSet::new();
+    for record_id in &supporting_record_versions {
+        check_control().map_err(LineageError::Stopped)?;
+        let record = records
+            .get(record_id)
+            .ok_or_else(|| LineageError::UnknownReference {
+                context: "supporting record",
+                target_id: record_id.clone(),
+            })?;
+        if record.retention != RetentionMode::Retained {
+            continue;
+        }
+        for page in &record.pages {
+            check_control().map_err(LineageError::Stopped)?;
+            let Some(artifact_id) = page.artifact_id.as_deref() else {
+                continue;
+            };
+            let artifact =
+                artifacts
+                    .get(artifact_id)
+                    .ok_or_else(|| LineageError::UnknownReference {
+                        context: "supporting record artifact",
+                        target_id: artifact_id.to_owned(),
+                    })?;
+            supporting_content_hashes.insert(artifact.sha256.clone());
+        }
+    }
+    let exact_duplicate_group_count = supporting_content_hashes.len();
+
+    // Build version-chain equivalence classes over `{Supersedes, AlternateRedaction, PreprintVersion}`,
+    // `predecessor_version_id`, and shared document `id`.
+    let version_chain_rep = build_version_chain_representatives(records, relations)?;
+
+    let independent_supporting_roots = collapse_independent_roots(
+        &supporting_trace.upstream_roots,
+        records,
+        &version_chain_rep,
+        artifacts,
+        &mut check_control,
+    )?;
+    let contradicting_independent_roots = collapse_independent_roots(
+        &contradicting_trace.upstream_roots,
+        records,
+        &version_chain_rep,
+        artifacts,
+        &mut check_control,
+    )?;
+
+    let mut dated_roots: Vec<(i128, String)> = Vec::new();
+    let mut undated_candidate_roots: Vec<String> = Vec::new();
+    for root_id in &independent_supporting_roots {
+        let rec = records
+            .get(root_id)
+            .ok_or_else(|| LineageError::UnknownReference {
+                context: "independent root record",
+                target_id: root_id.clone(),
+            })?;
+        if let Some(pub_time) = rec.publication_time.as_deref() {
+            let pub_nanos = parse_rfc3339_utc_nanos(root_id, "publication_time", pub_time)?;
+            dated_roots
+                .try_reserve(1)
+                .map_err(|_| LineageError::AllocationFailed)?;
+            dated_roots.push((pub_nanos, root_id.clone()));
+        } else {
+            undated_candidate_roots
+                .try_reserve(1)
+                .map_err(|_| LineageError::AllocationFailed)?;
+            undated_candidate_roots.push(root_id.clone());
+        }
+    }
+    dated_roots.sort();
+    let earliest_dated_root = dated_roots.first().map(|(_, id)| id.clone());
+    let has_earliest_tie = match (dated_roots.first(), dated_roots.get(1)) {
+        (Some((first_ts, _)), Some((second_ts, _))) => first_ts == second_ts,
+        _ => false,
+    };
+    let resolution = if independent_supporting_roots.is_empty() {
+        EarliestSourceResolution::NoIndependentRoots
+    } else if !undated_candidate_roots.is_empty() || has_earliest_tie {
+        EarliestSourceResolution::AmbiguousCandidates
+    } else {
+        EarliestSourceResolution::SingleEarliestDated
+    };
+
+    let reached_records: BTreeSet<String> = supporting_trace
+        .reached_records
+        .union(&contradicting_trace.reached_records)
+        .cloned()
+        .collect();
+    let encountered_cycles: BTreeSet<usize> = supporting_trace
+        .encountered_cycles
+        .union(&contradicting_trace.encountered_cycles)
+        .copied()
+        .collect();
+    let mut omitted_reference_only_records = Vec::new();
+    for record_id in &reached_records {
+        check_control().map_err(LineageError::Stopped)?;
+        let record = records
+            .get(record_id)
+            .ok_or_else(|| LineageError::UnknownReference {
+                context: "reached coverage record",
+                target_id: record_id.clone(),
+            })?;
+        if record.retention == RetentionMode::ReferenceOnly
+            || matches!(
+                record.availability,
+                AvailabilityState::ReferenceOnly
+                    | AvailabilityState::Restricted
+                    | AvailabilityState::Missing
+            )
+        {
+            omitted_reference_only_records
+                .try_reserve(1)
+                .map_err(|_| LineageError::AllocationFailed)?;
+            omitted_reference_only_records.push(record_id.clone());
+        }
+    }
+
+    let mut unresolved_external_citations = Vec::new();
+    for citation in external_citations {
+        check_control().map_err(LineageError::Stopped)?;
+        if !records.contains_key(&citation.citing_record_version_id) {
+            return Err(LineageError::UnknownReference {
+                context: "external citation citing_record_version_id",
+                target_id: citation.citing_record_version_id.clone(),
+            });
+        }
+        if citation.reference.trim().is_empty() {
+            return Err(LineageError::InvalidExternalCitation {
+                citing_record_version_id: citation.citing_record_version_id.clone(),
+                reason: "bibliographic reference must not be empty",
+            });
+        }
+        if citation.reference.len() > MAX_EXTERNAL_CITATION_REFERENCE_BYTES {
+            return Err(LineageError::InvalidExternalCitation {
+                citing_record_version_id: citation.citing_record_version_id.clone(),
+                reason: "bibliographic reference exceeds 4096 UTF-8 bytes",
+            });
+        }
+        if reached_records.contains(&citation.citing_record_version_id) {
+            unresolved_external_citations
+                .try_reserve(1)
+                .map_err(|_| LineageError::AllocationFailed)?;
+            unresolved_external_citations.push(citation.clone());
+        }
+    }
+    unresolved_external_citations.sort_by(|left, right| {
+        left.citing_record_version_id
+            .cmp(&right.citing_record_version_id)
+            .then_with(|| left.reference.cmp(&right.reference))
+    });
+    unresolved_external_citations.dedup();
+
+    let independent_root_count = independent_supporting_roots.len();
+    check_control().map_err(LineageError::Stopped)?;
+    Ok(CorroborationSummary {
+        supporting_record_versions,
+        exact_duplicate_group_count,
+        excluded_derivative_runs,
+        circular_only_record_versions,
+        primary_cycle_witness,
+        independent_supporting_roots,
+        independent_root_count,
+        contradicting_independent_roots,
+        earliest_known_source_view: EarliestKnownSourceView {
+            resolution,
+            earliest_dated_root,
+            undated_candidate_roots,
+            coverage_qualification: EarliestSourceCoverageQualification {
+                scope: "retained_and_cataloged_workspace_records",
+                omitted_reference_only_records,
+                unresolved_external_citations,
+                detected_cycle_count: encountered_cycles.len(),
+            },
+        },
+    })
+}
+
+#[derive(Default)]
+struct ClaimAncestryTrace {
+    upstream_roots: BTreeSet<String>,
+    reached_records: BTreeSet<String>,
+    encountered_cycles: BTreeSet<usize>,
+    circular_only_record_versions: Vec<String>,
+    cycle_idx_by_circular_input: BTreeMap<String, usize>,
+}
+
+fn trace_claim_ancestry(
+    record_ids: &[String],
+    adj: &BTreeMap<String, BTreeSet<String>>,
+    cyclic_members: &BTreeSet<String>,
+    cycle_idx_by_member: &BTreeMap<String, usize>,
+    check_control: &mut impl FnMut() -> Result<(), StopReason>,
+) -> Result<ClaimAncestryTrace, LineageError> {
+    let mut trace = ClaimAncestryTrace::default();
+    for rec_id in record_ids {
         check_control().map_err(LineageError::Stopped)?;
         let mut visited = BTreeSet::new();
         let mut stack = Vec::new();
@@ -1518,15 +1872,19 @@ pub fn evaluate_corroboration(
             .map_err(|_| LineageError::AllocationFailed)?;
         stack.push(rec_id.clone());
         let mut reached_roots = BTreeSet::new();
-        let mut hit_cycle = false;
+        let mut reached_cycle_indices = BTreeSet::new();
 
         while let Some(curr) = stack.pop() {
             check_control().map_err(LineageError::Stopped)?;
             if !visited.insert(curr.clone()) {
                 continue;
             }
-            if cyclic_members.contains(&curr) {
-                hit_cycle = true;
+            trace.reached_records.insert(curr.clone());
+            if cyclic_members.contains(&curr)
+                && let Some(cycle_idx) = cycle_idx_by_member.get(&curr)
+            {
+                trace.encountered_cycles.insert(*cycle_idx);
+                reached_cycle_indices.insert(*cycle_idx);
             }
             let outs = adj.get(&curr);
             let has_outs = outs.is_some_and(|set| !set.is_empty());
@@ -1545,25 +1903,31 @@ pub fn evaluate_corroboration(
                 }
             }
         }
-        if reached_roots.is_empty() && hit_cycle {
-            circular_only_record_versions
+        if reached_roots.is_empty()
+            && let Some(cycle_idx) = reached_cycle_indices.first()
+        {
+            trace
+                .circular_only_record_versions
                 .try_reserve(1)
                 .map_err(|_| LineageError::AllocationFailed)?;
-            circular_only_record_versions.push(rec_id.clone());
+            trace.circular_only_record_versions.push(rec_id.clone());
+            trace
+                .cycle_idx_by_circular_input
+                .insert(rec_id.clone(), *cycle_idx);
         }
-        upstream_roots.extend(reached_roots);
+        trace.upstream_roots.extend(reached_roots);
     }
-    circular_only_record_versions.sort();
-    let primary_cycle_witness = circular_only_record_versions
-        .first()
-        .and_then(|member| cycle_idx_by_member.get(member))
-        .and_then(|&idx| graph_report.detected_cycles.get(idx))
-        .map(|cycle| cycle.witness_path.clone());
+    trace.circular_only_record_versions.sort();
+    Ok(trace)
+}
 
-    // Build version-chain equivalence classes over `{Supersedes, AlternateRedaction, PreprintVersion}`,
-    // `predecessor_version_id`, and shared document `id`.
-    let version_chain_rep = build_version_chain_representatives(records, relations)?;
-
+fn collapse_independent_roots(
+    upstream_roots: &BTreeSet<String>,
+    records: &BTreeMap<String, SourceRecordDescriptor>,
+    version_chain_rep: &BTreeMap<String, String>,
+    artifacts: &BTreeMap<String, ArtifactDescriptor>,
+    check_control: &mut impl FnMut() -> Result<(), StopReason>,
+) -> Result<Vec<String>, LineageError> {
     // Sort candidate upstream roots by earliest verified publication instant -> retrieval instant -> lexical version_id
     // before collapsing transitive equivalence classes over shared hash, version chain, and `source_id`.
     let mut prioritized_roots: Vec<((u8, i128, i128, String), String)> = Vec::new();
@@ -1571,8 +1935,9 @@ pub fn evaluate_corroboration(
         .try_reserve(upstream_roots.len())
         .map_err(|_| LineageError::AllocationFailed)?;
     for root_id in upstream_roots {
+        check_control().map_err(LineageError::Stopped)?;
         let rec = records
-            .get(&root_id)
+            .get(root_id)
             .ok_or_else(|| LineageError::UnknownReference {
                 context: "upstream root record",
                 target_id: root_id.clone(),
@@ -1589,7 +1954,7 @@ pub fn evaluate_corroboration(
             }
         }
         let key = record_priority_key(rec)?;
-        prioritized_roots.push((key, root_id));
+        prioritized_roots.push((key, root_id.clone()));
     }
     prioritized_roots.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -1653,83 +2018,20 @@ pub fn evaluate_corroboration(
         }
     }
 
-    let mut independent_supporting_roots = Vec::new();
+    let mut independent_roots = Vec::new();
     let mut emitted_classes = BTreeSet::new();
     for root_id in ordered_root_ids {
         check_control().map_err(LineageError::Stopped)?;
         let class_rep = find_str_rep(&root_id, &mut root_parent);
         if emitted_classes.insert(class_rep) {
-            independent_supporting_roots
+            independent_roots
                 .try_reserve(1)
                 .map_err(|_| LineageError::AllocationFailed)?;
-            independent_supporting_roots.push(root_id);
+            independent_roots.push(root_id);
         }
     }
-    independent_supporting_roots.sort();
-
-    let mut dated_roots: Vec<(i128, String)> = Vec::new();
-    let mut undated_candidate_roots: Vec<String> = Vec::new();
-    for root_id in &independent_supporting_roots {
-        let rec = records
-            .get(root_id)
-            .ok_or_else(|| LineageError::UnknownReference {
-                context: "independent root record",
-                target_id: root_id.clone(),
-            })?;
-        if let Some(pub_time) = rec.publication_time.as_deref() {
-            let pub_nanos = parse_rfc3339_utc_nanos(root_id, "publication_time", pub_time)?;
-            dated_roots
-                .try_reserve(1)
-                .map_err(|_| LineageError::AllocationFailed)?;
-            dated_roots.push((pub_nanos, root_id.clone()));
-        } else {
-            undated_candidate_roots
-                .try_reserve(1)
-                .map_err(|_| LineageError::AllocationFailed)?;
-            undated_candidate_roots.push(root_id.clone());
-        }
-    }
-    dated_roots.sort();
-    let earliest_dated_root = dated_roots.first().map(|(_, id)| id.clone());
-    let has_earliest_tie = match (dated_roots.first(), dated_roots.get(1)) {
-        (Some((first_ts, _)), Some((second_ts, _))) => first_ts == second_ts,
-        _ => false,
-    };
-    let resolution = if independent_supporting_roots.is_empty() {
-        EarliestSourceResolution::NoIndependentRoots
-    } else if !undated_candidate_roots.is_empty() || has_earliest_tie {
-        EarliestSourceResolution::AmbiguousCandidates
-    } else {
-        EarliestSourceResolution::SingleEarliestDated
-    };
-
-    let mut omitted_reference_only_records: Vec<String> = records
-        .values()
-        .filter(|rec| rec.retention == RetentionMode::ReferenceOnly)
-        .map(|rec| rec.version_id.clone())
-        .collect();
-    omitted_reference_only_records.sort();
-
-    let independent_root_count = independent_supporting_roots.len();
-    check_control().map_err(LineageError::Stopped)?;
-    Ok(CorroborationSummary {
-        supporting_record_versions,
-        excluded_derivative_runs,
-        circular_only_record_versions,
-        primary_cycle_witness,
-        independent_supporting_roots,
-        independent_root_count,
-        earliest_known_source_view: EarliestKnownSourceView {
-            resolution,
-            earliest_dated_root,
-            undated_candidate_roots,
-            coverage_qualification: EarliestSourceCoverageQualification {
-                scope: "retained_and_cataloged_workspace_records",
-                omitted_reference_only_records,
-                detected_cycle_count: graph_report.detected_cycles.len(),
-            },
-        },
-    })
+    independent_roots.sort();
+    Ok(independent_roots)
 }
 
 fn find_str_rep(node: &str, parent: &mut BTreeMap<String, String>) -> String {

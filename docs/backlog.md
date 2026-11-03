@@ -81,6 +81,7 @@ The repository was empty on GitHub when this backlog was created, so issue bodie
 - [#41: Integrate point-in-time market data and public disclosures](https://github.com/mESmaC/oia/issues/41)
   - [Point-in-time normalization slice and remaining integration](implementation/market-point-in-time.md)
 - [#42: Build market charts, exposure graphs, and event studies](https://github.com/mESmaC/oia/issues/42)
+  - [Daily event-study slice and remaining integration](implementation/market-event-study.md)
 - [#43: Implement immutable forecasts, scenarios, outcomes, and evaluation](https://github.com/mESmaC/oia/issues/43)
 - [#44: Forecast market effects from news, weather, releases, and scenarios](https://github.com/mESmaC/oia/issues/44)
 - [#45: Forecast general event responses using historical precedents](https://github.com/mESmaC/oia/issues/45)
@@ -91,6 +92,12 @@ The repository was empty on GitHub when this backlog was created, so issue bodie
 - [#47: Audit personal public exposure and owned infrastructure](https://github.com/mESmaC/oia/issues/47)
 - [#48: Monitor local situations and changes in public sources](https://github.com/mESmaC/oia/issues/48)
 - [#49: Package supported releases and complete operational quality gates](https://github.com/mESmaC/oia/issues/49)
+
+## Specification clarification: internet collection
+
+[#110](https://github.com/mESmaC/oia/issues/110) tracks the documentation audit and owner-directed clarification of internet collection. SOURCE-01–SOURCE-04 and A19 supplement the initial requirement inventory above. This documentation does not complete the existing runtime packages or select providers.
+
+Implementation mapping: #13 owns shared source registration and bounded collection contracts; #17 owns document URL/API/web acquisition; #20 owns news/feed ingestion; #36 owns discovery and collection planning; #48 owns source-change monitoring. Geographic, space, and camera integrations (#23–#28) apply the same contracts. These are cross-cutting requirement references, not new claims on those packages. Each package must apply the relevant A19 subset when delivering its collection path; full A19 remains an integrated acceptance requirement.
 
 ## Maintenance
 

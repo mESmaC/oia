@@ -12,6 +12,7 @@ use crate::{Coverage, Extraction, StopReason};
 pub enum CorpusLimit {
     Documents,
     InputBytes,
+    Pages,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,6 +62,7 @@ pub enum CorpusError {
     ZeroLimit(CorpusLimit),
     LimitExceeded { limit: CorpusLimit, maximum: usize },
     AllocationFailed,
+    PageLimitReached { maximum: usize },
     Search(SearchError),
 }
 
@@ -74,6 +76,10 @@ impl fmt::Display for CorpusError {
                     "corpus exceeds {limit:?} limit of {maximum}; no result returned"
                 )
             }
+            Self::PageLimitReached { maximum } => write!(
+                f,
+                "corpus page limit {maximum} reached; search remains unfinished"
+            ),
             Self::AllocationFailed => write!(f, "unable to allocate corpus search metadata"),
             Self::Search(error) => write!(f, "{error}"),
         }
@@ -257,4 +263,194 @@ pub fn search_corpus<'input>(
         limits,
         mode,
     })
+}
+
+/// One page contains only inputs visited during this call. A resumed input's
+/// search coverage is cumulative, while its hits belong only to this page.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CorpusPage<'input> {
+    documents: Vec<DocumentResult<'input>>,
+    match_count: usize,
+    next_input_index: usize,
+    next_byte: usize,
+    exhausted: bool,
+    complete: bool,
+}
+
+impl<'input> CorpusPage<'input> {
+    pub fn documents(&self) -> &[DocumentResult<'input>] {
+        &self.documents
+    }
+    pub fn match_count(&self) -> usize {
+        self.match_count
+    }
+    /// All later slots remain unvisited. This slot may have a searched prefix.
+    /// Equals the input count when the session is exhausted.
+    pub fn next_input_index(&self) -> usize {
+        self.next_input_index
+    }
+    pub fn next_byte(&self) -> usize {
+        self.next_byte
+    }
+    /// All available extracted text was visited, even if extraction has gaps.
+    pub fn is_exhausted(&self) -> bool {
+        self.exhausted
+    }
+    /// Cumulative: exhausted with no unavailable inputs or extraction gaps.
+    pub fn is_complete(&self) -> bool {
+        self.complete
+    }
+}
+
+/// An in-memory cursor bound to immutable borrowed selection, text and query.
+/// Admission bounds the entire selection. Hit limits apply per page and the
+/// positive page cap bounds total successful calls. No cursor serialization,
+/// source identity, ranking, I/O or authorization is implemented.
+#[derive(Debug)]
+pub struct CorpusSession<'session, 'input> {
+    inputs: &'session [CorpusInput<'session, 'input>],
+    query: &'session str,
+    limits: CorpusLimits,
+    mode: SearchMode,
+    max_pages: usize,
+    pages_returned: usize,
+    next_input_index: usize,
+    next_byte: usize,
+    has_gaps: bool,
+    exhausted: bool,
+}
+
+impl<'session, 'input> CorpusSession<'session, 'input> {
+    pub fn new(
+        inputs: &'session [CorpusInput<'session, 'input>],
+        query: &'session str,
+        limits: CorpusLimits,
+        mode: SearchMode,
+        max_pages: usize,
+        mut check_control: impl FnMut() -> Result<(), StopReason>,
+    ) -> Result<Self, CorpusError> {
+        check_control().map_err(SearchError::Stopped)?;
+        crate::search::validate_query(query, limits.search, mode)?;
+        if max_pages == 0 {
+            return Err(CorpusError::ZeroLimit(CorpusLimit::Pages));
+        }
+        if inputs.len() > limits.max_documents {
+            return Err(CorpusError::LimitExceeded {
+                limit: CorpusLimit::Documents,
+                maximum: limits.max_documents,
+            });
+        }
+        let mut total = 0_usize;
+        for input in inputs {
+            check_control().map_err(SearchError::Stopped)?;
+            if let CorpusInput::Text(extraction) = input {
+                total = total
+                    .checked_add(extraction.coverage().input_bytes())
+                    .filter(|sum| *sum <= limits.max_input_bytes)
+                    .ok_or(CorpusError::LimitExceeded {
+                        limit: CorpusLimit::InputBytes,
+                        maximum: limits.max_input_bytes,
+                    })?;
+            }
+        }
+        check_control().map_err(SearchError::Stopped)?;
+        Ok(Self {
+            inputs,
+            query,
+            limits,
+            mode,
+            max_pages,
+            pages_returned: 0,
+            next_input_index: 0,
+            next_byte: 0,
+            has_gaps: false,
+            exhausted: false,
+        })
+    }
+
+    pub fn pages_returned(&self) -> usize {
+        self.pages_returned
+    }
+
+    /// Failure leaves every cursor field and the successful-page count intact.
+    /// None means exhausted available text; the last page retains any gaps.
+    /// A full page may require an additional empty page to establish exhaustion.
+    pub fn next_page(
+        &mut self,
+        mut check_control: impl FnMut() -> Result<(), StopReason>,
+    ) -> Result<Option<CorpusPage<'input>>, CorpusError> {
+        check_control().map_err(SearchError::Stopped)?;
+        if self.exhausted {
+            return Ok(None);
+        }
+        if self.pages_returned == self.max_pages {
+            return Err(CorpusError::PageLimitReached {
+                maximum: self.max_pages,
+            });
+        }
+        let mut index = self.next_input_index;
+        let mut offset = self.next_byte;
+        let mut has_gaps = self.has_gaps;
+        let mut documents = Vec::new();
+        let mut match_count = 0;
+        while let Some(input) = self.inputs.get(index) {
+            check_control().map_err(SearchError::Stopped)?;
+            if match_count == self.limits.search.max_matches() {
+                break;
+            }
+            let input_index = index;
+            let outcome = match input {
+                CorpusInput::Unavailable(reason) => {
+                    has_gaps = true;
+                    index += 1;
+                    DocumentOutcome::Unavailable(*reason)
+                }
+                CorpusInput::Text(extraction) => {
+                    let search_limits = SearchLimits::new(
+                        self.limits.search.max_query_bytes(),
+                        self.limits.search.max_matches() - match_count,
+                    )?;
+                    let result = crate::search::search_from(
+                        extraction,
+                        self.query,
+                        search_limits,
+                        self.mode,
+                        offset,
+                        &mut check_control,
+                    )?;
+                    offset = result.coverage().searched_bytes();
+                    match_count += result.matches().len();
+                    has_gaps |= extraction.coverage().unprocessed_range().is_some();
+                    if offset == extraction.coverage().extracted_bytes() {
+                        index += 1;
+                        offset = 0;
+                    }
+                    DocumentOutcome::Searched(result)
+                }
+            };
+            documents
+                .try_reserve(1)
+                .map_err(|_| CorpusError::AllocationFailed)?;
+            documents.push(DocumentResult {
+                input_index,
+                outcome,
+            });
+        }
+        let exhausted = index == self.inputs.len();
+        check_control().map_err(SearchError::Stopped)?;
+        let page = CorpusPage {
+            documents,
+            match_count,
+            next_input_index: index,
+            next_byte: offset,
+            exhausted,
+            complete: exhausted && !has_gaps,
+        };
+        self.next_input_index = index;
+        self.next_byte = offset;
+        self.has_gaps = has_gaps;
+        self.exhausted = exhausted;
+        self.pages_returned += 1;
+        Ok(Some(page))
+    }
 }

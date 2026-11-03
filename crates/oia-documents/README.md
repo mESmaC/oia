@@ -31,7 +31,9 @@ size; see the search documentation for commands and limitations.
 [`corpus::search_corpus` and `find-corpus`](../../docs/implementation/document-corpus-search.md)
 search an explicit list with shared document/byte/hit limits, input-slot attribution,
 and separate unavailable, unsearched and unextracted coverage. The CLI searches
-multiple local UTF-8 files without modifying them.
+multiple local UTF-8 files without modifying them. `corpus::CorpusSession` and
+`find-corpus-pages` resume across those inputs with per-page hit limits, a total
+page cap, explicit gaps and retry-safe cursor updates; see the same contract.
 
 PDF parsing, OCR, providers, source-version persistence, citation reassessment,
 and complete A03 acceptance remain open. The merged A03 synthetic originals are

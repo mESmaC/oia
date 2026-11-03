@@ -1,0 +1,6 @@
+{
+  "identifier": "main-window",
+  "description": "Bundled main window only. The page calls the five application commands through core invoke and uses no plugin, window, menu, tray, path, image or webview API. File dialogs and bounded file operations run in Rust commands; no filesystem, shell or network plugins.",
+  "windows": ["main"],
+  "permissions": ["core:event:default"]
+}

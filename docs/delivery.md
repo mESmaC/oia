@@ -194,7 +194,7 @@ Decisions belong to the project owner and implementing maintainers. Each resolut
 
 | ID | Decision | Proposed direction or open question | Needed before |
 | --- | --- | --- | --- |
-| D01 | Deployment and UI | Proposed in [ADR 0001](adr/0001-d01-deployment-and-ui-boundary.md): local-first Rust workspace and renderer-independent shell state contract (`oia-app`) established in #9; graphical renderer options compared in #16; awaiting owner confirmation | P0 application shell (proposed) |
+| D01 | Deployment and UI | Accepted: local-first Rust boundary ([ADR 0001](adr/0001-d01-deployment-and-ui-boundary.md)) and owner-selected Tauri 2 renderer ([ADR 0008](adr/0008-d01-workspace-renderer.md)), including the WebView2 traffic disclosure condition. Local file workbench implemented; persistent cases/services remain #14/#16. | P0/P1 application shell |
 | D02 | Storage/indexes | Accepted in [ADR 0002](adr/0002-d02-storage-and-indexing.md) ([owner decision](https://github.com/mESmaC/oia/pull/56#issuecomment-6568675966)): embedded SQLite (`rusqlite` in WAL mode with FTS5 and R-Tree as needed) plus content-addressed managed blobs; runtime implementation in #11 | P0 persistence (decided; #11 in progress) |
 | D03 | Seed corpus and news sources | [ADR 0005](adr/0005-d03-seed-corpus-and-news-sources.md): small, documented UAP/disclosure and regional collection with verified source access | P1 adapters |
 | D04 | AI execution | [ADR 0007](adr/0007-d04-ai-execution-and-grounding.md): provider-neutral local/remote interface; select evaluated summarization/OCR/embedding options and data-handling defaults | P1 AI features |

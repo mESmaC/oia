@@ -1,7 +1,7 @@
 # ADR 0001: Deployment Model, Application Shell, and UI Boundary (D01)
 
 - **Date:** 2026-11-01
-- **Status:** Proposed (local-first Rust workspace and crate boundaries in `#9`; graphical renderer and shell contract comparison in `#16` / `ADR 0008`; awaiting project-owner confirmation)
+- **Status:** Accepted for the local-first Rust application boundary and Tauri 2 desktop renderer (owner selection on 2026-11-02 America/New_York, [#16 comment 6591833455](https://github.com/mESmaC/oia/issues/16#issuecomment-6591833455), confirmed in [#16 comment 6591848264](https://github.com/mESmaC/oia/issues/16#issuecomment-6591848264); ADR 0008). Persistent services and case-shell integration remain in #14/#16.
 - **Decision ID:** D01
 - **Issues:** #9, #14, #16
 - **Requirements:** `CASE-01`–`CASE-05`, `UX-01`–`UX-05`
@@ -12,14 +12,14 @@
 
 ## Decision
 
-1. **Proposed for P0 (`#9` Local-First Rust Workspace & Crate Boundaries):**
+1. **Local-first boundary (`#9` Rust Workspace & Crate Boundaries):**
    - OIA runs local-first as a single-process Rust workspace (`edition = "2024"`, pinned to `rustc 1.99.0` via `rust-toolchain.toml`, licensed `MIT OR Apache-2.0`) with zero mandatory cloud accounts for local case creation, document import, evidence inspection, search, or report/bundle export.
    - `oia-domain` defines core identifiers (`OpaqueId`, `VersionId`, `ActorId`, `SchemaVersion`) with `#![forbid(unsafe_code)]` and zero dependencies on UI toolkits, HTTP clients, database engines, or model SDKs. Versioned evidence records and provenance graphs follow in `#10`.
-   - `oia-app` establishes the application shell and CLI boundary (`oia` binary and `status_banner()`), strictly isolated from `oia-domain`. Application service wiring, durable jobs, localhost session-token/origin guards (`docs/architecture.md` §9), and renderer-independent workspace shell navigation state (`CASE-02`, `UX-01`–`UX-05`) are evaluated in `#16` (`ADR 0008`) and integrated in `#14` once `D01` is confirmed.
+   - `oia-app` establishes the application shell and CLI boundary (`oia` binary and `status_banner()`), strictly isolated from `oia-domain`. Application service wiring, durable jobs, localhost session-token/origin guards (`docs/architecture.md` §9), and renderer-independent workspace shell navigation state (`CASE-02`, `UX-01`–`UX-05`) are evaluated in `#16` (`ADR 0008`) and integrated in `#14` against the accepted D01 boundary.
    - Validated initial development and runtime target: `x86_64-pc-windows-msvc` (with portable pure-Rust standard library code compatible with `x86_64-unknown-linux-gnu`).
 
-2. **Open Proposal for Graphical Renderer (`#16` / `ADR 0008`, `#23`):**
-   - The interactive graphical windowing and 3D globe adapter (native Rust WGPU/egui/iced/Slint shell versus a Tauri 2 rendering adapter) and the shared shell state contract remain an open proposal evaluated in `#16` (`ADR 0008`) and `#23` for the project owner to decide. `D01` stays **Proposed** until the project owner resolves the renderer choice.
+2. **Graphical Renderer (`#16` / `ADR 0008`, `#23`):**
+   - The project owner selected Tauri 2 for the desktop presentation adapter, with Rust owning application operations and the WebView2 runtime-traffic condition in ADR 0008. The first `oia` workbench opens real local files; persistent case services await #14. The 3D globe choice remains with #23.
 
 ## Alternatives Considered
 

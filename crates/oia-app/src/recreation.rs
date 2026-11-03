@@ -4,9 +4,12 @@
 //! The desktop builds a [`RecreationPromptInput`] from one retained witness version: each
 //! nonempty reported field and each nonempty narrative line becomes a reported detail pinned
 //! to that version; fields the witness did not report stay explicit unknowns unless the user
-//! ties them to a declared assumption. The merged `oia-media` kernel validates and renders the
-//! portable text; this adapter never edits its label, caveat or wording. Nothing here is a
-//! case record, a durable save, an observation or a generated image.
+//! ties them to a declared assumption. The account's origin (reported or simulated), its
+//! after-explanations marker and its revision rationale travel with every pinned item and in
+//! the prompt header, so a simulated account never leaves the app looking like testimony.
+//! The merged `oia-media` kernel validates and renders the portable text; this adapter never
+//! edits its label, caveat or wording. Nothing here is a case record, a durable save, an
+//! observation or a generated image.
 
 use oia_domain::{OpaqueId, VersionId};
 use oia_media::recreation::{
@@ -19,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::local_tools::{Result, ToolError};
-use crate::witness::{AccountVersionView, WitnessFormData, WitnessView};
+use crate::witness::{AccountVersionView, WitnessFormData, WitnessOrigin, WitnessView};
 
 /// Reported details (fields plus narrative lines) accepted in one prompt.
 pub const MAX_REPORTED_DETAILS: usize = 64;
@@ -36,6 +39,9 @@ const PROMPT_ID: &str = "prompt:witness-session-1";
 const CASE_ID: &str = "case:local-session";
 const RETENTION: &str = "Memory only; discarded on exit. The prompt is a portable illustration brief, not evidence, a case record or a generated image.";
 const SCALE_UNKNOWN_REASON: &str = "The witness form records apparent size as reported wording only; no range, calibration or multi-station baseline is captured.";
+const SESSION_IDS: &str =
+    "session-local identifiers, not a case record; they do not resolve after this session";
+const AFTER_EXPLANATIONS: &str = "recorded after candidate explanations were exposed";
 
 /// One declared assumption from the page.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -98,6 +104,9 @@ pub struct PromptView {
     pub case_id: String,
     pub title: String,
     pub source_version: String,
+    pub source_origin: &'static str,
+    pub source_after_explanations: bool,
+    pub source_rationale: Option<String>,
     pub reported_details: usize,
     pub assumptions: usize,
     pub unknowns: usize,
@@ -136,8 +145,52 @@ pub struct RecreationState {
 #[derive(Debug)]
 struct Exported {
     prompt: ExportedRecreationPrompt,
-    source_version: String,
+    source: Source,
     context: Vec<ContextRow>,
+}
+
+/// The witness version a prompt is pinned to, with the qualifications that must travel
+/// with it: origin, the after-explanations marker and the revision rationale.
+#[derive(Clone, Debug)]
+struct Source {
+    version: VersionId,
+    origin: &'static str,
+    after_explanations: bool,
+    rationale: Option<String>,
+}
+
+impl Source {
+    /// One-line provenance label used in every source note and in the prompt header.
+    fn label(&self) -> String {
+        let mut label = format!("{} · {}", self.version.as_str(), self.origin);
+        if self.after_explanations {
+            label.push_str(" · ");
+            label.push_str(AFTER_EXPLANATIONS);
+        }
+        if let Some(rationale) = &self.rationale {
+            label.push_str(" · revision rationale: ");
+            label.push_str(&single_line(rationale));
+        }
+        label
+    }
+    fn note(&self, item: &str) -> Option<String> {
+        Some(format!("{} · {item}", self.label()))
+    }
+}
+
+/// Control characters shown as visible `\u{..}` escapes so a qualification string can sit in
+/// a single-line kernel field. Used for the revision rationale only; reported wording is
+/// never rewritten, and the kernel refuses controls in it.
+fn single_line(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() {
+            out.extend(c.escape_unicode());
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn limits() -> Result<RecreationLimits> {
@@ -165,7 +218,7 @@ fn map_kernel_error(error: RecreationError) -> ToolError {
         RecreationError::LimitExceeded { .. } | RecreationError::ZeroLimit(_) => "limit",
         RecreationError::InvalidId(_) => "invalid_version",
         RecreationError::AllocationFailed => "allocation_failed",
-        _ => "internal",
+        _ => "recreation_refused",
     };
     let message = match &error {
         RecreationError::ControlCharacterInField { field } => format!(
@@ -174,19 +227,31 @@ fn map_kernel_error(error: RecreationError) -> ToolError {
         RecreationError::EmptyField { field } => {
             format!("{field} is empty. Declarations need wording; nothing was changed.")
         }
-        other => other.to_string(),
+        other => format!("The recreation kernel refused the prompt: {other}. Nothing was changed."),
     };
     ToolError::new(code, message)
 }
 
-fn find_version<'a>(view: &'a WitnessView, version: &str) -> Result<&'a AccountVersionView> {
+fn control_character(what: &str) -> ToolError {
+    ToolError::new(
+        "control_character",
+        format!(
+            "{what} contains a tab or another control character, which the prompt cannot carry. Revise the account wording; nothing was changed."
+        ),
+    )
+}
+
+fn find_version<'a>(
+    view: &'a WitnessView,
+    version: &str,
+) -> Result<(&'a AccountVersionView, Source)> {
     let capture = view.capture.as_ref().ok_or_else(|| {
         ToolError::new(
             "capture_missing",
             "Capture a witness account before building a recreation prompt.",
         )
     })?;
-    std::iter::once(&capture.initial)
+    let account = std::iter::once(&capture.initial)
         .chain(capture.revisions.iter())
         .find(|account| account.version == version)
         .ok_or_else(|| {
@@ -194,11 +259,32 @@ fn find_version<'a>(view: &'a WitnessView, version: &str) -> Result<&'a AccountV
                 "invalid_version",
                 "The chosen witness version is not held in this session. Inspect the account and retry.",
             )
-        })
+        })?;
+    let source = Source {
+        version: VersionId::new(version)
+            .map_err(|_| ToolError::new("invalid_version", "The witness version is invalid."))?,
+        origin: match capture.origin {
+            WitnessOrigin::Reported => "reported testimony",
+            WitnessOrigin::Simulated => "simulated account",
+        },
+        after_explanations: account.after_explanations,
+        rationale: account.rationale.clone(),
+    };
+    Ok((account, source))
 }
 
 fn reported(value: &Option<String>) -> Option<&str> {
     value.as_deref().filter(|text| !text.trim().is_empty())
+}
+
+/// Reported wording goes to the kernel exactly; this only names the field or line a control
+/// character sits in, since the kernel's own refusal does not say which.
+fn checked<'a>(what: &str, text: &'a str) -> Result<&'a str> {
+    if text.chars().any(char::is_control) {
+        Err(control_character(what))
+    } else {
+        Ok(text)
+    }
 }
 
 /// Builds one context field: reported wording pinned to the version, the chosen declared
@@ -209,20 +295,23 @@ fn context_field(
     value: Option<&str>,
     choice: Option<usize>,
     assumptions: &[AssumptionInput],
-    version: &VersionId,
+    source: &Source,
 ) -> Result<(ContextField, ContextRow)> {
     match (value, choice) {
-        (Some(text), None) => Ok((
-            ContextField::Reported {
-                description: text.to_owned(),
-                source_versions: vec![version.clone()],
-            },
-            ContextRow {
-                field,
-                status: "reported",
-                text: text.to_owned(),
-            },
-        )),
+        (Some(text), None) => {
+            let text = checked(&format!("the reported {field} field"), text)?;
+            Ok((
+                ContextField::Reported {
+                    description: text.to_owned(),
+                    source_versions: vec![source.version.clone()],
+                },
+                ContextRow {
+                    field,
+                    status: "reported",
+                    text: text.to_owned(),
+                },
+            ))
+        }
         (Some(_), Some(_)) => Err(ToolError::new(
             "reported_field_assumed",
             format!(
@@ -249,7 +338,7 @@ fn context_field(
             ))
         }
         (None, None) => {
-            let reason = format!("{field} was not reported in {}.", version.as_str());
+            let reason = format!("{field} was not reported in {}.", source.version.as_str());
             Ok((
                 ContextField::Unknown {
                     reason: reason.clone(),
@@ -268,22 +357,23 @@ fn field_detail(
     id: &str,
     label: &str,
     value: &Option<String>,
-    version: &VersionId,
+    source: &Source,
 ) -> Result<Option<ReportedDetail>> {
     let Some(text) = reported(value) else {
         return Ok(None);
     };
+    let text = checked(&format!("the reported {label} field"), text)?;
     Ok(Some(ReportedDetail {
         detail_id: opaque(format!("detail:{id}"))?,
         statement: text.to_owned(),
-        source_versions: vec![version.clone()],
-        source_note: Some(format!("{} · {label}", version.as_str())),
+        source_versions: vec![source.version.clone()],
+        source_note: source.note(label),
     }))
 }
 
 /// Reported details from one version: the narrative line by line (blank lines skipped,
 /// numbering kept), then the free-text fields that are not context. Wording is exact.
-fn reported_details(form: &WitnessFormData, version: &VersionId) -> Result<Vec<ReportedDetail>> {
+fn reported_details(form: &WitnessFormData, source: &Source) -> Result<Vec<ReportedDetail>> {
     let mut details = Vec::new();
     for (index, line) in form.narrative.split('\n').enumerate() {
         let line = line.strip_suffix('\r').unwrap_or(line);
@@ -291,11 +381,12 @@ fn reported_details(form: &WitnessFormData, version: &VersionId) -> Result<Vec<R
             continue;
         }
         let number = index + 1;
+        let line = checked(&format!("narrative line {number}"), line)?;
         details.push(ReportedDetail {
             detail_id: opaque(format!("detail:narrative-l{number}"))?,
             statement: line.to_owned(),
-            source_versions: vec![version.clone()],
-            source_note: Some(format!("{} · narrative line {number}", version.as_str())),
+            source_versions: vec![source.version.clone()],
+            source_note: source.note(&format!("narrative line {number}")),
         });
     }
     for (id, label, value) in [
@@ -304,7 +395,7 @@ fn reported_details(form: &WitnessFormData, version: &VersionId) -> Result<Vec<R
         ("motion", "motion", &form.motion),
         ("sound", "sound", &form.sound),
     ] {
-        details.extend(field_detail(id, label, value, version)?);
+        details.extend(field_detail(id, label, value, source)?);
     }
     Ok(details)
 }
@@ -320,7 +411,10 @@ impl RecreationState {
                     prompt_version: e.prompt.prompt_version().as_str().to_owned(),
                     case_id: e.prompt.case_id().as_str().to_owned(),
                     title: e.prompt.title().to_owned(),
-                    source_version: e.source_version.clone(),
+                    source_version: e.source.version.as_str().to_owned(),
+                    source_origin: e.source.origin,
+                    source_after_explanations: e.source.after_explanations,
+                    source_rationale: e.source.rationale.clone(),
                     reported_details: e.prompt.shared_reported_details().len(),
                     assumptions: e.prompt.assumptions().len(),
                     unknowns: e.prompt.unknowns().len(),
@@ -350,9 +444,6 @@ impl RecreationState {
         witness: &WitnessView,
         request: &RecreationRequest,
     ) -> Result<RecreationView> {
-        let account = find_version(witness, &request.version)?;
-        let version = VersionId::new(request.version.as_str())
-            .map_err(|_| ToolError::new("invalid_version", "The witness version is invalid."))?;
         if request.assumptions.len() > MAX_ASSUMPTIONS || request.unknowns.len() > MAX_UNKNOWNS {
             return Err(ToolError::new(
                 "limit",
@@ -361,6 +452,28 @@ impl RecreationState {
                 ),
             ));
         }
+        // Declared text is measured before anything is copied; the kernel charges the exact
+        // budget again over the full input.
+        let declared_bytes = request.title.len()
+            + request
+                .assumptions
+                .iter()
+                .map(|a| a.assumption.len() + a.rationale.len())
+                .sum::<usize>()
+            + request
+                .unknowns
+                .iter()
+                .map(|u| u.aspect.len() + u.impact.len())
+                .sum::<usize>();
+        if declared_bytes > MAX_TEXT_BYTES {
+            return Err(ToolError::new(
+                "limit",
+                format!(
+                    "The title and declarations total {declared_bytes} UTF-8 bytes; the prompt text budget is {MAX_TEXT_BYTES}. Nothing was changed."
+                ),
+            ));
+        }
+        let (account, source) = find_version(witness, &request.version)?;
         let assumptions = request
             .assumptions
             .iter()
@@ -392,44 +505,50 @@ impl RecreationState {
             reported(&form.location),
             choices.scene,
             &request.assumptions,
-            &version,
+            &source,
         )?;
         let (time_context, time_row) = context_field(
             "time",
             reported(&form.reported_time),
             choices.time,
             &request.assumptions,
-            &version,
+            &source,
         )?;
         let (viewpoint, viewpoint_row) = context_field(
             "viewpoint",
             None,
             choices.viewpoint,
             &request.assumptions,
-            &version,
+            &source,
         )?;
         let (lighting, lighting_row) = context_field(
             "lighting",
             reported(&form.conditions),
             choices.lighting,
             &request.assumptions,
-            &version,
+            &source,
         )?;
         let (apparent_scale, scale_row) = match reported(&form.apparent_size) {
-            Some(text) => (
-                ApparentScale::ReportedAngularOrRelative {
-                    description: text.to_owned(),
-                    source_versions: vec![version.clone()],
-                    physical_size_unknown_reason: SCALE_UNKNOWN_REASON.to_owned(),
-                },
-                ContextRow {
-                    field: "apparent scale",
-                    status: "reported",
-                    text: format!("{text} · physical size unknown"),
-                },
-            ),
+            Some(text) => {
+                let text = checked("the reported apparent size field", text)?;
+                (
+                    ApparentScale::ReportedAngularOrRelative {
+                        description: text.to_owned(),
+                        source_versions: vec![source.version.clone()],
+                        physical_size_unknown_reason: SCALE_UNKNOWN_REASON.to_owned(),
+                    },
+                    ContextRow {
+                        field: "apparent scale",
+                        status: "reported",
+                        text: format!("{text} · physical size unknown"),
+                    },
+                )
+            }
             None => {
-                let reason = format!("apparent size was not reported in {}.", version.as_str());
+                let reason = format!(
+                    "apparent size was not reported in {}.",
+                    source.version.as_str()
+                );
                 (
                     ApparentScale::Unknown {
                         reason: reason.clone(),
@@ -442,14 +561,21 @@ impl RecreationState {
                 )
             }
         };
-        let shared_reported_details = reported_details(form, &version)?;
+        let shared_reported_details = reported_details(form, &source)?;
         let next = self.exports + 1;
+        // The header carries the source qualification for the context lines, which have no
+        // note of their own, and states that the identifiers are session-local.
+        let title = format!(
+            "{} [source: {} · {SESSION_IDS}]",
+            request.title,
+            source.label()
+        );
         let input = RecreationPromptInput {
             prompt_id: opaque(PROMPT_ID.to_owned())?,
             prompt_version: VersionId::new(format!("ver:recreation-{next}"))
                 .map_err(|e| ToolError::new("internal", e))?,
             case_id: opaque(CASE_ID.to_owned())?,
-            title: request.title.clone(),
+            title,
             context: SceneContext {
                 scene,
                 time_context,
@@ -469,7 +595,7 @@ impl RecreationState {
         self.exports = next;
         self.exported = Some(Exported {
             prompt,
-            source_version: request.version.clone(),
+            source,
             context: vec![scene_row, time_row, viewpoint_row, lighting_row, scale_row],
         });
         Ok(self.view())
@@ -477,23 +603,26 @@ impl RecreationState {
 
     /// The held prompt's text, only if it is still the version the page is looking at.
     pub fn text(&self, prompt_version: &str) -> Result<String> {
-        self.exported
-            .as_ref()
-            .filter(|e| e.prompt.prompt_version().as_str() == prompt_version)
-            .map(|e| e.prompt.portable_prompt_text().to_owned())
-            .ok_or_else(|| {
-                ToolError::new(
-                    "stale_prompt",
-                    "The prompt changed since it was shown. Build it again and retry.",
-                )
-            })
+        let held = self.exported.as_ref().ok_or_else(|| {
+            ToolError::new(
+                "no_prompt",
+                "No recreation prompt is held. Build one before saving.",
+            )
+        })?;
+        if held.prompt.prompt_version().as_str() != prompt_version {
+            return Err(ToolError::new(
+                "stale_prompt",
+                "The prompt changed since it was shown. Build it again and retry.",
+            ));
+        }
+        Ok(held.prompt.portable_prompt_text().to_owned())
     }
 
     #[must_use]
     pub fn file_stem(&self) -> String {
         self.exported.as_ref().map_or_else(
             || "recreation-prompt".to_owned(),
-            |e| format!("recreation-prompt-{}", e.source_version),
+            |e| format!("recreation-prompt-{}", e.source.version.as_str()),
         )
     }
 }
@@ -503,34 +632,45 @@ mod tests {
     use super::*;
     use crate::witness::{WitnessOrigin, WitnessState};
 
-    fn witness(narrative: &str, apparent_size: Option<&str>) -> Result<WitnessView> {
-        let mut state = WitnessState::default();
-        state.capture_initial(
-            WitnessOrigin::Simulated,
-            WitnessFormData {
-                narrative: narrative.to_owned(),
-                reported_time: Some("Around dusk; date uncertain".to_owned()),
-                location: None,
-                duration: Some("about 40 s".to_owned()),
-                direction: None,
-                apparent_size: apparent_size.map(str::to_owned),
-                motion: None,
-                sound: None,
-                conditions: None,
-            },
-        )
+    fn form(narrative: &str, apparent_size: Option<&str>) -> WitnessFormData {
+        WitnessFormData {
+            narrative: narrative.to_owned(),
+            reported_time: Some("Around dusk; date uncertain".to_owned()),
+            location: None,
+            duration: Some("about 40 s".to_owned()),
+            direction: None,
+            apparent_size: apparent_size.map(str::to_owned),
+            motion: None,
+            sound: None,
+            conditions: None,
+        }
     }
 
-    /// MEDIA-04 adapter slice: reported wording is pinned verbatim to the witness version,
-    /// unreported fields stay unknown and cannot be overwritten by an assumption, a refused
-    /// build keeps the previous prompt, and saving a superseded prompt is refused.
+    fn witness(
+        narrative: &str,
+        apparent_size: Option<&str>,
+    ) -> Result<(WitnessState, WitnessView)> {
+        let mut state = WitnessState::default();
+        let view =
+            state.capture_initial(WitnessOrigin::Simulated, form(narrative, apparent_size))?;
+        Ok((state, view))
+    }
+
+    /// MEDIA-04 adapter slice: reported wording is pinned verbatim to the witness version with
+    /// its origin and workflow markers, unreported fields stay unknown and cannot be
+    /// overwritten by an assumption, a refused build keeps the previous prompt, and saving a
+    /// missing or superseded prompt is refused.
     #[test]
     fn prompt_keeps_reported_assumed_and_unknown_apart() -> Result<()> {
-        let view = witness(
+        let (mut witness_state, view) = witness(
             "Two lights\r\n\n  moved west",
             Some("thumb-width at arm's length"),
         )?;
         let mut state = RecreationState::default();
+        assert_eq!(
+            state.text("ver:recreation-1").err().map(|e| e.code),
+            Some("no_prompt")
+        );
         let request = RecreationRequest {
             version: "witness-v1".to_owned(),
             title: "Illustrative recreation".to_owned(),
@@ -552,6 +692,8 @@ mod tests {
             .prompt
             .ok_or_else(|| ToolError::new("internal", "prompt missing after export"))?;
         assert_eq!(prompt.source_version, "witness-v1");
+        assert_eq!(prompt.source_origin, "simulated account");
+        assert!(!prompt.source_after_explanations);
         assert_eq!(prompt.reported_details, 3); // two narrative lines + duration; the blank line is skipped
         assert_eq!(prompt.prompt_version, "ver:recreation-1");
         let statuses: Vec<_> = prompt.context.iter().map(|c| (c.field, c.status)).collect();
@@ -571,7 +713,21 @@ mod tests {
                 .starts_with(&format!("# {VISIBLE_RECREATION_LABEL}"))
         );
         assert!(prompt.text.contains("\"  moved west\""));
-        assert!(prompt.text.contains("witness-v1 · narrative line 3"));
+        // B1: the origin travels in the header and in every pinned item's note.
+        assert!(
+            prompt
+                .text
+                .contains("witness-v1 · simulated account · narrative line 3")
+        );
+        assert!(
+            prompt
+                .text
+                .contains("witness-v1 · simulated account · duration")
+        );
+        assert!(prompt.text.contains(&format!(
+            "title: \"Illustrative recreation [source: witness-v1 · simulated account · {SESSION_IDS}]\""
+        )));
+        assert!(!prompt.text.contains(AFTER_EXPLANATIONS));
         assert!(prompt.text.contains(SCALE_UNKNOWN_REASON));
         assert_eq!(prompt.bytes, prompt.text.len());
 
@@ -615,6 +771,56 @@ mod tests {
             state.text("ver:recreation-0").err().map(|e| e.code),
             Some("stale_prompt")
         );
+
+        // A revision recorded after exposure carries the marker and its rationale; a tab in
+        // the account names the line and changes nothing.
+        witness_state.expose_explanations("witness-v1")?;
+        let view = witness_state.revise(
+            "witness-v1",
+            form("One light\tbright\nthen two", None),
+            "Recalled a second light\nafter review".to_owned(),
+        )?;
+        let tabbed = state.export(
+            &view,
+            &RecreationRequest {
+                version: "witness-v2".to_owned(),
+                ..request.clone()
+            },
+        );
+        let error = tabbed
+            .err()
+            .ok_or_else(|| ToolError::new("internal", "tab accepted"))?;
+        assert_eq!(error.code, "control_character");
+        assert!(error.message.contains("narrative line 1"));
+        assert_eq!(
+            state.view().prompt.map(|p| p.prompt_version),
+            Some("ver:recreation-1".to_owned())
+        );
+        let view = witness_state.revise(
+            "witness-v2",
+            form("One light\nthen two", None),
+            "Recalled a second light\nafter review".to_owned(),
+        )?;
+        let prompt = state
+            .export(
+                &view,
+                &RecreationRequest {
+                    version: "witness-v3".to_owned(),
+                    ..request
+                },
+            )?
+            .prompt
+            .ok_or_else(|| ToolError::new("internal", "prompt missing after revision export"))?;
+        assert_eq!(prompt.prompt_version, "ver:recreation-2");
+        assert!(prompt.source_after_explanations);
+        assert_eq!(
+            prompt.source_rationale.as_deref(),
+            Some("Recalled a second light\nafter review")
+        );
+        // The kernel quotes the note, so the visible `\u{a}` escape carries a doubled backslash.
+        assert!(prompt.text.contains(&format!(
+            "witness-v3 · simulated account · {AFTER_EXPLANATIONS} · revision rationale: Recalled a second light\\\\u{{a}}after review · narrative line 2"
+        )));
         Ok(())
     }
 }

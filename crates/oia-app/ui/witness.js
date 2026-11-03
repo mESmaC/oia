@@ -119,11 +119,18 @@ const Witness = (() => {
     const wanted = $('recreation-version').value;
     return versionsOf(capture).find(v => v.version === wanted) ?? capture.latest;
   }
+  let rowSequence = 0;
   function declarationRows(hostId) {
     return [...$(hostId).querySelectorAll('.rec-row')].map(row => [...row.querySelectorAll('input')].map(input => input.value));
   }
+  // Context choices are bound to a row's stable id, so removing an earlier assumption never
+  // silently re-binds a field to a different one; the index is computed only when sending.
+  function assumptionIds() {
+    return [...$('recreation-assumptions').querySelectorAll('.rec-row')].map(row => row.dataset.rowId);
+  }
   function addDeclaration(hostId, placeholders) {
     const row = node('div', undefined, 'rec-row');
+    row.dataset.rowId = String(++rowSequence);
     for (const placeholder of placeholders) {
       const input = node('input');
       input.placeholder = placeholder; input.maxLength = 2048; input.required = true;
@@ -156,6 +163,7 @@ const Witness = (() => {
     if (!capture) return;
     const account = selectedAccount(capture);
     const assumptions = declarationRows('recreation-assumptions').map(([assumption]) => assumption);
+    const ids = assumptionIds();
     for (const [key, label, field] of CONTEXT) {
       const reported = field ? account.form[field] : null;
       const row = node('div', undefined, 'rec-ctx');
@@ -174,7 +182,7 @@ const Witness = (() => {
         select.append(unknown);
         assumptions.forEach((assumption, i) => {
           const option = node('option', `Assumption ${i + 1}: ${assumption || '(empty)'}`);
-          option.value = String(i);
+          option.value = ids[i];
           select.append(option);
         });
         select.value = [...select.options].some(o => o.value === previous) ? previous : '';
@@ -186,10 +194,12 @@ const Witness = (() => {
   }
   function readRecreationRequest(capture) {
     const context = {};
+    const ids = assumptionIds();
     for (const [key] of CONTEXT) {
       if (key === 'scale') continue;
       const select = $(`recreation-ctx-${key}`);
-      context[key] = select && select.value !== '' ? Number(select.value) : null;
+      const index = select && select.value !== '' ? ids.indexOf(select.value) : -1;
+      context[key] = index >= 0 ? index : null;
     }
     return {
       version: selectedAccount(capture).version,
@@ -208,7 +218,8 @@ const Witness = (() => {
       ['Prompt ID', prompt?.prompt_id ?? null],
       ['Version', prompt?.prompt_version ?? null],
       ['Case', prompt ? `${prompt.case_id} · session-local, no case record` : null],
-      ['Source', prompt?.source_version ?? null],
+      ['Source', prompt ? `${prompt.source_version} · ${prompt.source_origin}${prompt.source_after_explanations ? ' · recorded after candidate explanations were exposed' : ''}` : null],
+      ['Rationale', prompt ? (prompt.source_rationale ?? '— initial account, no revision rationale') : null],
       ['Bytes', prompt ? prompt.bytes.toLocaleString('en-US') : null],
       ['SHA-256', prompt?.sha256 ?? null],
       ['Saved', recreationSaved && recreationSaved.prompt_version === prompt?.prompt_version ? recreationSaved.path : null]
@@ -219,7 +230,8 @@ const Witness = (() => {
       : 'Recreation limits have not been loaded.';
     if (!prompt) return;
     $('recreation-prompt-version').textContent = prompt.prompt_version;
-    $('recreation-source-version').textContent = `from ${prompt.source_version}`;
+    $('recreation-source-version').textContent = `from ${prompt.source_version} · ${prompt.source_origin}${prompt.source_after_explanations ? ' · after explanations' : ''}`;
+    $('recreation-source-version').className = prompt.source_origin === 'simulated account' || prompt.source_after_explanations ? 'chip warn' : 'chip';
     $('recreation-label').textContent = recreation.visible_label;
     $('recreation-caveat').textContent = recreation.caveat;
     const context = $('recreation-context-rows');

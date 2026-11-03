@@ -23,6 +23,14 @@
 //!    capture geometries at the analysis boundary, retain capture geometry, and flag confounding
 //!    limitations. Without an actual pixel detector or pinned evidence, change detection is reported
 //!    as `RasterDetectorNotPerformed` and never fabricates candidates or synthetic anomaly scores.
+//! 5. **Multi-Source Globe Composite Stitching & De-Censoring (`GEO-02`, `GEO-04`, `SPACE-01`, `SPACE-02`, `MEDIA-02`, `MEDIA-03`, `FIELD-03`, `A04`, `A05`):**
+//!    Synthesizes terrestrial observations across orbital Earth-observation satellites, space-station
+//!    crew frames, national aerial orthophotos, calibrated UAV orthomosaics, and 3D-posed ground imagery.
+//!    Enforces verifiable optical resolution (`max(native_gsd_m, served_grid_spacing_m)`), replaces
+//!    localized statutory blur/redaction masks and cloud/shadow obscurations with unedited passes when
+//!    available, rejects outreach/simulated/predictive inpainting and uncalibrated placements, isolates
+//!    SAR radar backscatter fallbacks, and reports explicit multi-temporal seam boundaries without
+//!    fabricating single-instant continuous coverage.
 
 use std::error::Error;
 use std::fmt;
@@ -49,6 +57,9 @@ pub struct SpaceCatalogLimits {
     pub max_change_candidates: usize,
     pub max_footprints_per_mosaic: usize,
     pub max_previews_per_observation: usize,
+    pub max_composite_candidates: usize,
+    pub max_composite_grid_cells: usize,
+    pub max_defect_regions_per_patch: usize,
 }
 
 impl Default for SpaceCatalogLimits {
@@ -61,6 +72,9 @@ impl Default for SpaceCatalogLimits {
             max_change_candidates: 100,
             max_footprints_per_mosaic: 256,
             max_previews_per_observation: 32,
+            max_composite_candidates: 512,
+            max_composite_grid_cells: 4_096,
+            max_defect_regions_per_patch: 64,
         }
     }
 }
@@ -113,10 +127,26 @@ pub enum SpaceImageryError {
     DuplicateFeedId {
         id: String,
     },
+    DuplicateCandidatePatchId {
+        id: String,
+    },
+    DuplicateDefectId {
+        patch_id: String,
+        defect_id: String,
+    },
     ObservationNotFound {
         id: String,
     },
     IncompatibleBaselineComparison {
+        reason: &'static str,
+    },
+    InvalidCompositePolicy {
+        reason: &'static str,
+    },
+    InvalidPatchIntegrity {
+        reason: &'static str,
+    },
+    InvalidRegistration {
         reason: &'static str,
     },
     Stopped(StopReason),
@@ -173,11 +203,32 @@ impl fmt::Display for SpaceImageryError {
             Self::DuplicateFeedId { id } => {
                 write!(f, "duplicate space mission feed ID: '{id}'")
             }
+            Self::DuplicateCandidatePatchId { id } => {
+                write!(f, "duplicate composite candidate patch ID: '{id}'")
+            }
+            Self::DuplicateDefectId {
+                patch_id,
+                defect_id,
+            } => {
+                write!(
+                    f,
+                    "duplicate localized defect ID '{defect_id}' on patch '{patch_id}'"
+                )
+            }
             Self::ObservationNotFound { id } => {
                 write!(f, "space observation ID not found: '{id}'")
             }
             Self::IncompatibleBaselineComparison { reason } => {
                 write!(f, "incompatible baseline comparison: {reason}")
+            }
+            Self::InvalidCompositePolicy { reason } => {
+                write!(f, "invalid composite stitch policy: {reason}")
+            }
+            Self::InvalidPatchIntegrity { reason } => {
+                write!(f, "invalid candidate patch integrity state: {reason}")
+            }
+            Self::InvalidRegistration { reason } => {
+                write!(f, "invalid cross-view spatial registration: {reason}")
             }
             Self::Stopped(reason) => write!(f, "operation stopped: {reason:?}"),
         }
@@ -1559,6 +1610,1694 @@ impl SpaceImageryCatalog {
     pub fn feeds(&self) -> &[SpaceMissionFeed] {
         &self.feeds
     }
+
+    /// Plans a multi-source terrestrial globe composite over a target envelope (`GEO-02`, `GEO-04`, `SPACE-01`, `SPACE-02`, `A04`, `A05`).
+    pub fn plan_globe_composite(
+        &self,
+        request: &CompositeStitchRequest,
+        limits: &SpaceCatalogLimits,
+        cancel: Option<CancelToken<'_>>,
+    ) -> Result<GlobeCompositePlan, SpaceImageryError> {
+        plan_globe_composite(request, limits, cancel)
+    }
+}
+
+/// Acquisition platform class for multi-source terrestrial composite stitching (`GEO-02`, `SPACE-01`, `MEDIA-02`, `FIELD-03`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CompositeSourcePlatform {
+    /// Orbital Earth-observation satellite sensor (e.g., Sentinel-2, Landsat-8/9, Planet NICFI, WorldView/Capella Open Data).
+    SatelliteEarthObservation,
+    /// Crew-operated or external camera frame from an orbital station or spacecraft (e.g., ISS Gateway to Astronaut Photography).
+    SpacecraftHandheldOrCrewFrame,
+    /// National or regional photogrammetric aerial orthophoto (e.g., USGS NAIP/3DEP, Swisstopo SWISSIMAGE, IGN BD ORTHO, PDOK).
+    AerialOrthophoto,
+    /// Georeferenced photogrammetric UAV / drone orthomosaic (e.g., OpenAerialMap).
+    CalibratedUavOrDroneOrtho,
+    /// 3D-posed street-level or field camera frame intersected with terrain (e.g., Mapillary, Panoramax, KartaView).
+    CalibratedGroundOrStreetFrame,
+}
+
+impl fmt::Display for CompositeSourcePlatform {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SatelliteEarthObservation => write!(f, "Satellite Earth Observation"),
+            Self::SpacecraftHandheldOrCrewFrame => write!(f, "Spacecraft Crew / Handheld Frame"),
+            Self::AerialOrthophoto => write!(f, "Aerial Orthophoto"),
+            Self::CalibratedUavOrDroneOrtho => write!(f, "Calibrated UAV / Drone Orthomosaic"),
+            Self::CalibratedGroundOrStreetFrame => write!(f, "Calibrated Ground / Street Frame"),
+        }
+    }
+}
+
+/// Radiometric modality of a surface observation patch (`SPACE-01`, `SPACE-02`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SurfaceRadiometricClass {
+    /// Natural visible RGB optical observation.
+    OpticalTrueColor,
+    /// True-color RGB fused with a higher-resolution native panchromatic band from the same pass.
+    OpticalPansharpenedTrueColor,
+    /// Single-band visible/NIR panchromatic optical reflectance.
+    OpticalPanchromatic,
+    /// Non-RGB multispectral band assignment (e.g., NIR-Red-Green or SWIR false color).
+    OpticalMultispectralFalseColor,
+    /// Active microwave Synthetic Aperture Radar (SAR) amplitude/backscatter (penetrates clouds; never relabeled as optical).
+    SyntheticApertureRadar,
+}
+
+impl SurfaceRadiometricClass {
+    /// Returns true if this radiometric class is a passive optical observation.
+    #[must_use]
+    pub fn is_optical(&self) -> bool {
+        !matches!(self, Self::SyntheticApertureRadar)
+    }
+}
+
+/// Integrity, obscuration, or editing state of a candidate imagery patch (`GEO-04`, `SPACE-02`, `MEDIA-03`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum PatchIntegrityState {
+    /// Unedited native sensor pixels with measured cloud/haze fraction in `[0.0, 1.0]`.
+    UneditedClearNative { cloud_or_haze_fraction: f64 },
+    /// Deliberately blurred, pixelated, or redacted region (e.g., statutory security mask in national aerial tiles).
+    DeliberatelyBlurredOrRedacted {
+        reason: String,
+        coarse_effective_gsd_m: f64,
+    },
+    /// Raster resampled onto a finer pixel grid spacing than the sensor's true native optical resolution.
+    UpsampledBeyondNative {
+        native_gsd_m: f64,
+        served_grid_spacing_m: f64,
+    },
+    /// Obscured by opaque cloud deck, dense cloud shadow, or smoke plume in `(0.0, 1.0]`.
+    ObscuredByCloudShadowOrSmoke { obscuration_fraction: f64 },
+    /// Missing sensor data wedge, scan-line corrector gap (e.g., Landsat-7 SLC-off), or detector saturation artifact.
+    SensorSwathGapOrArtifact { artifact_description: String },
+    /// Generative super-resolution or AI-inpainted texture synthesis (never treated as physical observation).
+    PredictiveSuperResolutionOrInpainted {
+        model_id: String,
+        base_native_gsd_m: f64,
+    },
+}
+
+impl PatchIntegrityState {
+    pub fn validate(&self) -> Result<(), SpaceImageryError> {
+        match self {
+            Self::UneditedClearNative {
+                cloud_or_haze_fraction,
+            } => {
+                if !cloud_or_haze_fraction.is_finite()
+                    || !(0.0..=1.0).contains(cloud_or_haze_fraction)
+                {
+                    return Err(SpaceImageryError::InvalidPatchIntegrity {
+                        reason: "cloud_or_haze_fraction must be finite and within [0.0, 1.0]",
+                    });
+                }
+                Ok(())
+            }
+            Self::DeliberatelyBlurredOrRedacted {
+                reason,
+                coarse_effective_gsd_m,
+            } => {
+                validate_str("blur_or_redaction_reason", reason)?;
+                if !coarse_effective_gsd_m.is_finite() || *coarse_effective_gsd_m <= 0.0 {
+                    return Err(SpaceImageryError::InvalidPatchIntegrity {
+                        reason: "coarse_effective_gsd_m for blurred/redacted patch must be finite and positive",
+                    });
+                }
+                Ok(())
+            }
+            Self::UpsampledBeyondNative {
+                native_gsd_m,
+                served_grid_spacing_m,
+            } => {
+                if !native_gsd_m.is_finite()
+                    || *native_gsd_m <= 0.0
+                    || !served_grid_spacing_m.is_finite()
+                    || *served_grid_spacing_m <= 0.0
+                    || *served_grid_spacing_m >= *native_gsd_m
+                {
+                    return Err(SpaceImageryError::InvalidPatchIntegrity {
+                        reason: "upsampled patch requires 0 < served_grid_spacing_m < native_gsd_m",
+                    });
+                }
+                Ok(())
+            }
+            Self::ObscuredByCloudShadowOrSmoke {
+                obscuration_fraction,
+            } => {
+                if !obscuration_fraction.is_finite()
+                    || *obscuration_fraction <= 0.0
+                    || *obscuration_fraction > 1.0
+                {
+                    return Err(SpaceImageryError::InvalidPatchIntegrity {
+                        reason: "obscuration_fraction must be finite and within (0.0, 1.0]",
+                    });
+                }
+                Ok(())
+            }
+            Self::SensorSwathGapOrArtifact {
+                artifact_description,
+            } => validate_str("artifact_description", artifact_description),
+            Self::PredictiveSuperResolutionOrInpainted {
+                model_id,
+                base_native_gsd_m,
+            } => {
+                validate_str("model_id", model_id)?;
+                if !base_native_gsd_m.is_finite() || *base_native_gsd_m <= 0.0 {
+                    return Err(SpaceImageryError::InvalidPatchIntegrity {
+                        reason: "base_native_gsd_m must be finite and positive",
+                    });
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn severity_rank(&self) -> u8 {
+        match self {
+            Self::UneditedClearNative { .. } => 0,
+            Self::UpsampledBeyondNative { .. } => 1,
+            Self::DeliberatelyBlurredOrRedacted { .. } => 2,
+            Self::ObscuredByCloudShadowOrSmoke { .. } => 3,
+            Self::SensorSwathGapOrArtifact { .. } => 4,
+            Self::PredictiveSuperResolutionOrInpainted { .. } => 5,
+        }
+    }
+}
+
+/// Localized polygon/bounding-box defect within an otherwise clean imagery patch (`GEO-04`, `SPACE-02`).
+///
+/// Models statutory blur zones inside high-resolution national aerial orthophotos, isolated
+/// cumulus clouds/shadows, or localized sensor artifacts so the stitcher only replaces the
+/// affected cells while keeping the crisp surrounding pixels.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocalizedPatchDefect {
+    pub defect_id: String,
+    pub bounds: GeoBoundingBoxWgs84,
+    pub defect_state: PatchIntegrityState,
+}
+
+impl LocalizedPatchDefect {
+    pub fn new(
+        defect_id: impl Into<String>,
+        bounds: GeoBoundingBoxWgs84,
+        defect_state: PatchIntegrityState,
+    ) -> Result<Self, SpaceImageryError> {
+        let d = Self {
+            defect_id: defect_id.into(),
+            bounds,
+            defect_state,
+        };
+        d.validate()?;
+        Ok(d)
+    }
+
+    pub fn validate(&self) -> Result<(), SpaceImageryError> {
+        validate_str("defect_id", &self.defect_id)?;
+        self.bounds
+            .validate()
+            .map_err(|_| SpaceImageryError::InvalidCoordinates {
+                reason: "invalid localized defect bounding box",
+            })?;
+        self.defect_state.validate()?;
+        if matches!(
+            self.defect_state,
+            PatchIntegrityState::UneditedClearNative { .. }
+        ) {
+            return Err(SpaceImageryError::InvalidPatchIntegrity {
+                reason: "localized defect cannot declare UneditedClearNative state",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Vertical terrain reference surface used for orthorectification (`GEO-02`, `A04`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum VerticalReference {
+    /// Projected onto the smooth WGS84 reference ellipsoid without local terrain relief correction.
+    EllipsoidWgs84,
+    /// Orthorectified against a Digital Elevation/Surface Model (e.g., Copernicus DEM, USGS 3DEP LiDAR).
+    OrthometricDem {
+        dem_source: String,
+        vertical_rmse_m: f64,
+    },
+    /// Unrectified perspective camera plane (subject to severe relief displacement on oblique views).
+    UnrectifiedSensorPlane,
+}
+
+impl VerticalReference {
+    pub fn validate(&self) -> Result<(), SpaceImageryError> {
+        match self {
+            Self::EllipsoidWgs84 | Self::UnrectifiedSensorPlane => Ok(()),
+            Self::OrthometricDem {
+                dem_source,
+                vertical_rmse_m,
+            } => {
+                validate_str("dem_source", dem_source)?;
+                if !vertical_rmse_m.is_finite() || *vertical_rmse_m < 0.0 {
+                    return Err(SpaceImageryError::InvalidRegistration {
+                        reason: "DEM vertical RMSE must be finite and non-negative",
+                    });
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Geometric correspondence method pinning an image patch to WGS84 coordinates (`GEO-02`, `MEDIA-02`, `FIELD-03`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CorrespondenceMethod {
+    /// Orbital ephemeris / WCS rational polynomial coefficients (RPC) with DEM orthorectification.
+    OrbitalWcsAndDemOrthorectification,
+    /// Photogrammetric bundle adjustment tied to surveyed ground control points (`gcp_count >= 3`).
+    GroundControlPointsBundleAdjustment { gcp_count: u32 },
+    /// Calibrated 6-DoF camera intrinsics/extrinsics intersected with a 3D terrain mesh.
+    CalibratedCameraPoseAndTerrainIntersection,
+    /// Uncalibrated manual pin or EXIF-only approximate placement without geometric verification.
+    UncalibratedApproximatePlacement,
+}
+
+impl CorrespondenceMethod {
+    pub fn validate(&self) -> Result<(), SpaceImageryError> {
+        if let Self::GroundControlPointsBundleAdjustment { gcp_count } = self
+            && *gcp_count < 3
+        {
+            return Err(SpaceImageryError::InvalidRegistration {
+                reason: "bundle adjustment requires at least 3 ground control points",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Cross-view 3D spatial registration metadata for stitching heterogeneous imagery (`GEO-02`, `MEDIA-02`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CrossViewRegistration {
+    pub vertical_reference: VerticalReference,
+    pub correspondence_method: CorrespondenceMethod,
+    pub horizontal_rmse_m: f64,
+    pub off_nadir_angle_deg: f64,
+}
+
+impl CrossViewRegistration {
+    pub fn new(
+        vertical_reference: VerticalReference,
+        correspondence_method: CorrespondenceMethod,
+        horizontal_rmse_m: f64,
+        off_nadir_angle_deg: f64,
+    ) -> Result<Self, SpaceImageryError> {
+        let r = Self {
+            vertical_reference,
+            correspondence_method,
+            horizontal_rmse_m,
+            off_nadir_angle_deg,
+        };
+        r.validate()?;
+        Ok(r)
+    }
+
+    pub fn validate(&self) -> Result<(), SpaceImageryError> {
+        self.vertical_reference.validate()?;
+        self.correspondence_method.validate()?;
+        if !self.horizontal_rmse_m.is_finite() || self.horizontal_rmse_m < 0.0 {
+            return Err(SpaceImageryError::InvalidRegistration {
+                reason: "horizontal registration RMSE must be finite and non-negative",
+            });
+        }
+        if !self.off_nadir_angle_deg.is_finite()
+            || !(0.0..=90.0).contains(&self.off_nadir_angle_deg)
+        {
+            return Err(SpaceImageryError::InvalidRegistration {
+                reason: "off-nadir angle must be finite and within [0.0, 90.0] degrees",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Candidate imagery patch from a satellite, spacecraft crew camera, aerial survey, UAV, or ground source (`GEO-02`, `GEO-04`, `SPACE-01`, `SPACE-02`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompositeCandidatePatch {
+    pub patch_id: String,
+    pub source_id: String,
+    pub platform: CompositeSourcePlatform,
+    pub provider: SpaceDataProvider,
+    pub mission_or_collection: String,
+    pub instrument_or_sensor: String,
+    pub footprint: GeoBoundingBoxWgs84,
+    pub time_window: TimeWindow,
+    pub native_gsd_m: f64,
+    pub served_grid_spacing_m: f64,
+    pub radiometric_class: SurfaceRadiometricClass,
+    pub calibration_level: CalibrationLevel,
+    pub color_mapping: ColorMapping,
+    pub base_integrity: PatchIntegrityState,
+    pub localized_defects: Vec<LocalizedPatchDefect>,
+    pub registration: CrossViewRegistration,
+}
+
+impl CompositeCandidatePatch {
+    pub fn validate(&self, limits: &SpaceCatalogLimits) -> Result<(), SpaceImageryError> {
+        validate_str("patch_id", &self.patch_id)?;
+        validate_str("source_id", &self.source_id)?;
+        self.provider.validate()?;
+        validate_str("mission_or_collection", &self.mission_or_collection)?;
+        validate_str("instrument_or_sensor", &self.instrument_or_sensor)?;
+        self.footprint
+            .validate()
+            .map_err(|_| SpaceImageryError::InvalidCoordinates {
+                reason: "invalid candidate patch footprint bounding box",
+            })?;
+        self.time_window
+            .validate()
+            .map_err(|_| SpaceImageryError::InvalidTimeWindow {
+                reason: "invalid candidate patch capture time window",
+            })?;
+        if !self.native_gsd_m.is_finite() || self.native_gsd_m <= 0.0 {
+            return Err(SpaceImageryError::InvalidResolution {
+                value: self.native_gsd_m,
+                reason: "candidate native_gsd_m must be finite and positive",
+            });
+        }
+        if !self.served_grid_spacing_m.is_finite() || self.served_grid_spacing_m <= 0.0 {
+            return Err(SpaceImageryError::InvalidResolution {
+                value: self.served_grid_spacing_m,
+                reason: "candidate served_grid_spacing_m must be finite and positive",
+            });
+        }
+        self.color_mapping.validate()?;
+        self.base_integrity.validate()?;
+        self.registration.validate()?;
+
+        if self.localized_defects.len() > limits.max_defect_regions_per_patch {
+            return Err(SpaceImageryError::BudgetExceeded {
+                resource: "patch_localized_defects",
+                limit: limits.max_defect_regions_per_patch,
+            });
+        }
+        for (idx, defect) in self.localized_defects.iter().enumerate() {
+            defect.validate()?;
+            if self.localized_defects[..idx]
+                .iter()
+                .any(|d| d.defect_id == defect.defect_id)
+            {
+                return Err(SpaceImageryError::DuplicateDefectId {
+                    patch_id: self.patch_id.clone(),
+                    defect_id: defect.defect_id.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns true if the raster grid was upsampled beyond its native optical resolution.
+    #[must_use]
+    pub fn was_upsampled_beyond_native(&self) -> bool {
+        self.served_grid_spacing_m < self.native_gsd_m
+            || matches!(
+                self.base_integrity,
+                PatchIntegrityState::UpsampledBeyondNative { .. }
+            )
+    }
+
+    /// Evaluates the effective integrity state of this patch over `cell_bounds`, combining
+    /// `base_integrity` with any overlapping `localized_defects`.
+    #[must_use]
+    pub fn effective_integrity_for_cell(
+        &self,
+        cell_bounds: &GeoBoundingBoxWgs84,
+    ) -> PatchIntegrityState {
+        let mut effective = if self.served_grid_spacing_m < self.native_gsd_m
+            && matches!(
+                self.base_integrity,
+                PatchIntegrityState::UneditedClearNative {
+                    cloud_or_haze_fraction: 0.0
+                }
+            ) {
+            PatchIntegrityState::UpsampledBeyondNative {
+                native_gsd_m: self.native_gsd_m,
+                served_grid_spacing_m: self.served_grid_spacing_m,
+            }
+        } else {
+            self.base_integrity.clone()
+        };
+
+        for defect in &self.localized_defects {
+            if boxes_have_interior_overlap(cell_bounds, &defect.bounds) {
+                let cur_rank = effective.severity_rank();
+                let def_rank = defect.defect_state.severity_rank();
+                if def_rank > cur_rank {
+                    effective = defect.defect_state.clone();
+                } else if def_rank == cur_rank {
+                    match (&effective, &defect.defect_state) {
+                        (
+                            PatchIntegrityState::DeliberatelyBlurredOrRedacted {
+                                coarse_effective_gsd_m: cur_gsd,
+                                ..
+                            },
+                            PatchIntegrityState::DeliberatelyBlurredOrRedacted {
+                                coarse_effective_gsd_m: new_gsd,
+                                ..
+                            },
+                        ) if new_gsd > cur_gsd => {
+                            effective = defect.defect_state.clone();
+                        }
+                        (
+                            PatchIntegrityState::ObscuredByCloudShadowOrSmoke {
+                                obscuration_fraction: cur_obs,
+                            },
+                            PatchIntegrityState::ObscuredByCloudShadowOrSmoke {
+                                obscuration_fraction: new_obs,
+                            },
+                        ) if new_obs > cur_obs => {
+                            effective = defect.defect_state.clone();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        effective
+    }
+
+    /// Computes the true verifiable ground sample distance in metres for `cell_bounds`,
+    /// defending against interpolated tile pyramids (`max(native_gsd_m, served_grid_spacing_m)`)
+    /// and accounting for deliberate blur/redaction coarsening.
+    #[must_use]
+    pub fn effective_verifiable_gsd_m(&self, cell_integrity: &PatchIntegrityState) -> f64 {
+        let base_gsd = match self.base_integrity {
+            PatchIntegrityState::UpsampledBeyondNative {
+                native_gsd_m,
+                served_grid_spacing_m,
+            } => self
+                .native_gsd_m
+                .max(self.served_grid_spacing_m)
+                .max(native_gsd_m)
+                .max(served_grid_spacing_m),
+            _ => self.native_gsd_m.max(self.served_grid_spacing_m),
+        };
+        match cell_integrity {
+            PatchIntegrityState::DeliberatelyBlurredOrRedacted {
+                coarse_effective_gsd_m,
+                ..
+            } => base_gsd.max(*coarse_effective_gsd_m),
+            PatchIntegrityState::PredictiveSuperResolutionOrInpainted {
+                base_native_gsd_m, ..
+            } => base_gsd.max(*base_native_gsd_m),
+            PatchIntegrityState::UpsampledBeyondNative {
+                native_gsd_m,
+                served_grid_spacing_m,
+            } => base_gsd.max(*native_gsd_m).max(*served_grid_spacing_m),
+            _ => base_gsd,
+        }
+    }
+}
+
+impl SpaceObservationEntry {
+    /// Converts a catalogued `EarthObservation` entry into a `CompositeCandidatePatch` for multi-source
+    /// globe stitching, preserving its scientific provenance and any outreach/simulated preview flags.
+    #[allow(clippy::too_many_arguments)]
+    pub fn to_composite_candidate_patch(
+        &self,
+        patch_id: impl Into<String>,
+        platform: CompositeSourcePlatform,
+        served_grid_spacing_m: f64,
+        radiometric_class: SurfaceRadiometricClass,
+        base_integrity: PatchIntegrityState,
+        registration: CrossViewRegistration,
+        limits: &SpaceCatalogLimits,
+    ) -> Result<CompositeCandidatePatch, SpaceImageryError> {
+        self.validate(limits)?;
+        let footprint = match &self.target {
+            SpaceObservationTarget::EarthObservation { footprint, .. } => *footprint,
+            _ => {
+                return Err(SpaceImageryError::InvalidCoordinates {
+                    reason: "only EarthObservation entries can be converted to globe composite patches",
+                });
+            }
+        };
+        let native_gsd_m = match self.spatial_resolution {
+            Some(SpatialResolution::GroundSampleDistanceMeters(gsd)) => gsd,
+            _ => {
+                return Err(SpaceImageryError::InvalidResolution {
+                    value: 0.0,
+                    reason: "globe composite candidate requires GroundSampleDistanceMeters resolution",
+                });
+            }
+        };
+        let color_mapping = self
+            .previews
+            .iter()
+            .find(|p| p.color_mapping.is_outreach_or_simulated())
+            .or_else(|| self.previews.first())
+            .map_or(ColorMapping::TrueColor, |p| p.color_mapping.clone());
+
+        let patch = CompositeCandidatePatch {
+            patch_id: patch_id.into(),
+            source_id: self.observation_id.clone(),
+            platform,
+            provider: self.provider.clone(),
+            mission_or_collection: self.mission.clone(),
+            instrument_or_sensor: self.instrument.clone(),
+            footprint,
+            time_window: self.time_window,
+            native_gsd_m,
+            served_grid_spacing_m,
+            radiometric_class,
+            calibration_level: self.scientific_product.calibration_level,
+            color_mapping,
+            base_integrity,
+            localized_defects: Vec::new(),
+            registration,
+        };
+        patch.validate(limits)?;
+        Ok(patch)
+    }
+}
+
+/// Policy governing multi-source globe composite stitching and de-censoring (`GEO-02`, `GEO-04`, `SPACE-02`, `MEDIA-03`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompositeStitchPolicy {
+    pub max_cloud_or_haze_fraction: f64,
+    pub max_horizontal_registration_rmse_m: f64,
+    pub max_off_nadir_angle_deg: f64,
+    pub require_terrain_orthorectification_for_oblique: bool,
+    pub allow_sar_cloud_penetration_fallback: bool,
+    pub allow_degraded_fallback_when_no_clean_source: bool,
+}
+
+impl Default for CompositeStitchPolicy {
+    fn default() -> Self {
+        Self {
+            max_cloud_or_haze_fraction: 0.15,
+            max_horizontal_registration_rmse_m: 15.0,
+            max_off_nadir_angle_deg: 35.0,
+            require_terrain_orthorectification_for_oblique: true,
+            allow_sar_cloud_penetration_fallback: false,
+            allow_degraded_fallback_when_no_clean_source: true,
+        }
+    }
+}
+
+impl CompositeStitchPolicy {
+    pub fn validate(&self) -> Result<(), SpaceImageryError> {
+        if !self.max_cloud_or_haze_fraction.is_finite()
+            || !(0.0..=1.0).contains(&self.max_cloud_or_haze_fraction)
+        {
+            return Err(SpaceImageryError::InvalidCompositePolicy {
+                reason: "max_cloud_or_haze_fraction must be finite and within [0.0, 1.0]",
+            });
+        }
+        if !self.max_horizontal_registration_rmse_m.is_finite()
+            || self.max_horizontal_registration_rmse_m <= 0.0
+        {
+            return Err(SpaceImageryError::InvalidCompositePolicy {
+                reason: "max_horizontal_registration_rmse_m must be finite and positive",
+            });
+        }
+        if !self.max_off_nadir_angle_deg.is_finite()
+            || self.max_off_nadir_angle_deg <= 0.0
+            || self.max_off_nadir_angle_deg > 90.0
+        {
+            return Err(SpaceImageryError::InvalidCompositePolicy {
+                reason: "max_off_nadir_angle_deg must be finite and within (0.0, 90.0]",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Request to synthesize a multi-source globe composite over a gridded WGS84 envelope (`GEO-02`, `GEO-04`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompositeStitchRequest {
+    pub target_envelope: GeoBoundingBoxWgs84,
+    pub grid_rows: usize,
+    pub grid_cols: usize,
+    pub policy: CompositeStitchPolicy,
+    pub candidates: Vec<CompositeCandidatePatch>,
+}
+
+impl CompositeStitchRequest {
+    pub fn validate(&self, limits: &SpaceCatalogLimits) -> Result<(), SpaceImageryError> {
+        self.target_envelope
+            .validate()
+            .map_err(|_| SpaceImageryError::InvalidCoordinates {
+                reason: "invalid composite target envelope",
+            })?;
+        let lat_span = self.target_envelope.north_lat_deg() - self.target_envelope.south_lat_deg();
+        let lon_span = if self.target_envelope.west_lon_deg() <= self.target_envelope.east_lon_deg()
+        {
+            self.target_envelope.east_lon_deg() - self.target_envelope.west_lon_deg()
+        } else {
+            (180.0 - self.target_envelope.west_lon_deg())
+                + (self.target_envelope.east_lon_deg() - (-180.0))
+        };
+        if !lat_span.is_finite() || lat_span <= 0.0 || !lon_span.is_finite() || lon_span <= 0.0 {
+            return Err(SpaceImageryError::InvalidCoordinates {
+                reason: "composite target envelope must have positive non-zero area",
+            });
+        }
+        if self.grid_rows == 0 || self.grid_cols == 0 {
+            return Err(SpaceImageryError::InvalidCompositePolicy {
+                reason: "composite grid_rows and grid_cols must be at least 1",
+            });
+        }
+        let total_cells = self.grid_rows.checked_mul(self.grid_cols).ok_or(
+            SpaceImageryError::BudgetExceeded {
+                resource: "composite_grid_cells",
+                limit: limits.max_composite_grid_cells,
+            },
+        )?;
+        if total_cells > limits.max_composite_grid_cells {
+            return Err(SpaceImageryError::BudgetExceeded {
+                resource: "composite_grid_cells",
+                limit: limits.max_composite_grid_cells,
+            });
+        }
+        if self.candidates.len() > limits.max_composite_candidates {
+            return Err(SpaceImageryError::BudgetExceeded {
+                resource: "composite_candidates",
+                limit: limits.max_composite_candidates,
+            });
+        }
+        self.policy.validate()?;
+
+        for (idx, candidate) in self.candidates.iter().enumerate() {
+            candidate.validate(limits)?;
+            if self.candidates[..idx]
+                .iter()
+                .any(|c| c.patch_id == candidate.patch_id)
+            {
+                return Err(SpaceImageryError::DuplicateCandidatePatchId {
+                    id: candidate.patch_id.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Auditable reason why an overlapping candidate patch was rejected or bypassed on a cell (`GEO-04`, `SPACE-02`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum CandidateRejectionOrBypassReason {
+    /// Rejected because color mapping is an outreach aesthetic rendering or simulation (`SPACE-02`).
+    OutreachOrSimulatedPresentation,
+    /// Rejected because pixels were produced by generative super-resolution or AI inpainting (`AGENTS.md` §2).
+    PredictiveOrInpaintedContent,
+    /// Rejected because the cell falls inside a sensor swath gap or saturation artifact.
+    SensorSwathGapOrArtifact,
+    /// Rejected because spatial placement is uncalibrated or lacks verified ground correspondence.
+    UncalibratedSpatialCorrespondence,
+    /// Rejected because an oblique or non-nadir view lacks orthometric DEM terrain rectification.
+    MissingTerrainOrthorectificationForObliqueView,
+    /// Rejected because horizontal registration RMSE exceeds policy threshold.
+    HorizontalRegistrationRmseExceeded {
+        actual_rmse_m: f64,
+        max_allowed_rmse_m: f64,
+    },
+    /// Rejected because off-nadir viewing angle exceeds policy threshold.
+    OffNadirAngleExceeded {
+        actual_deg: f64,
+        max_allowed_deg: f64,
+    },
+    /// Rejected because the candidate footprint only partially overlaps the cell and does not cover it completely.
+    InsufficientCellFootprintCoverage,
+    /// Rejected because SAR radar fallback is disabled in the composite policy.
+    RadarModalityDisabledByPolicy,
+    /// Bypassed because the candidate is deliberately blurred or redacted in this cell.
+    DeliberateBlurOrRedactionBypassed,
+    /// Bypassed because cloud, shadow, smoke, or haze obscuration exceeds the clean optical policy limit.
+    CloudOrHazeObscurationBypassed,
+    /// Bypassed because another eligible candidate provided a cleaner tier or finer verifiable native resolution.
+    OutrankedByFinerOrCleanerSource {
+        winning_patch_id: String,
+        winning_effective_gsd_m: f64,
+        candidate_effective_gsd_m: f64,
+    },
+}
+
+/// Receipt documenting why an overlapping candidate patch was not selected for a grid cell (`GEO-04`, `SPACE-02`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RejectedCandidateReceipt {
+    pub patch_id: String,
+    pub reason: CandidateRejectionOrBypassReason,
+}
+
+/// Sensor modality of the winning patch assigned to a composite cell (`SPACE-01`, `SPACE-02`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssignedModality {
+    /// Passive optical reflectance (true color, pansharpened, panchromatic, or multispectral).
+    OpticalReflectance,
+    /// Active microwave SAR backscatter fallback (explicitly isolated from optical layers).
+    RadarBackscatterFallback,
+}
+
+/// Provenance-pinned patch assignment for a single composite grid cell (`GEO-02`, `GEO-04`, `SPACE-02`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompositeCellAssignment {
+    pub patch_id: String,
+    pub source_id: String,
+    pub platform: CompositeSourcePlatform,
+    pub provider_name: String,
+    pub mission_or_collection: String,
+    pub instrument_or_sensor: String,
+    pub assigned_modality: AssignedModality,
+    pub radiometric_class: SurfaceRadiometricClass,
+    pub calibration_level: CalibrationLevel,
+    pub color_mapping: ColorMapping,
+    pub effective_verifiable_gsd_m: f64,
+    pub native_gsd_m: f64,
+    pub served_grid_spacing_m: f64,
+    pub was_upsampled_beyond_native: bool,
+    pub time_window: TimeWindow,
+    pub capture_midpoint_utc_ms: i64,
+    pub horizontal_rmse_m: f64,
+    pub off_nadir_angle_deg: f64,
+    pub cell_integrity: PatchIntegrityState,
+    pub repaired_defect_patch_ids: Vec<String>,
+}
+
+/// Outcome of multi-source composite stitching for a single grid cell (`GEO-04`, `A04`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum CompositeCellOutcome {
+    /// Cell is covered by an unedited, cloud-compliant optical observation at its verifiable native resolution.
+    AssignedCleanOptical(CompositeCellAssignment),
+    /// Cell had no clean optical coverage and was filled via SAR cloud-penetration backscatter fallback.
+    AssignedRadarFallback(CompositeCellAssignment),
+    /// Cell had no clean optical or SAR coverage; a blurred or cloud-degraded patch was retained with an explicit warning.
+    AssignedDegradedOpticalFallback {
+        assignment: CompositeCellAssignment,
+        degradation_warning: String,
+    },
+    /// No eligible candidate patch covers the full cell bounds.
+    UncoveredGap { diagnostic: String },
+}
+
+impl CompositeCellOutcome {
+    /// Returns the underlying cell assignment if any patch was assigned.
+    #[must_use]
+    pub fn assignment(&self) -> Option<&CompositeCellAssignment> {
+        match self {
+            Self::AssignedCleanOptical(a)
+            | Self::AssignedRadarFallback(a)
+            | Self::AssignedDegradedOpticalFallback { assignment: a, .. } => Some(a),
+            Self::UncoveredGap { .. } => None,
+        }
+    }
+}
+
+/// Complete stitch plan and audit trail for a single grid cell (`GEO-04`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompositeCellPlan {
+    pub row: usize,
+    pub col: usize,
+    pub bounds: GeoBoundingBoxWgs84,
+    pub outcome: CompositeCellOutcome,
+    pub rejected_or_bypassed: Vec<RejectedCandidateReceipt>,
+}
+
+/// Seam segment between two adjacent composite cells assigned to different patches (`GEO-04`, `A04`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompositeSeamSegment {
+    pub first_cell_row: usize,
+    pub first_cell_col: usize,
+    pub second_cell_row: usize,
+    pub second_cell_col: usize,
+    pub first_patch_id: String,
+    pub second_patch_id: String,
+    pub capture_time_delta_ms: i64,
+    pub effective_gsd_ratio: f64,
+    pub crosses_sensor_modality: bool,
+    pub crosses_platform_class: bool,
+}
+
+/// Complete multi-source globe composite stitching plan (`GEO-02`, `GEO-04`, `SPACE-01`, `SPACE-02`, `A04`, `A05`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GlobeCompositePlan {
+    pub target_envelope: GeoBoundingBoxWgs84,
+    pub grid_rows: usize,
+    pub grid_cols: usize,
+    pub cells: Vec<CompositeCellPlan>,
+    pub seams: Vec<CompositeSeamSegment>,
+    pub clean_optical_cells_count: usize,
+    pub radar_fallback_cells_count: usize,
+    pub retained_degraded_cells_count: usize,
+    pub uncovered_cells_count: usize,
+    pub deblurred_or_repaired_cells_count: usize,
+    pub finest_verifiable_gsd_m: Option<f64>,
+    pub coarsest_verifiable_gsd_m: Option<f64>,
+    pub composite_capture_window: Option<TimeWindow>,
+    pub is_single_instant_observation: bool,
+}
+
+/// Plans a multi-source globe composite across satellite, spacecraft crew, aerial, UAV, and ground imagery
+/// while eliminating localized blur/redaction masks and cloud obscurations where clean coverage exists (`GEO-02`, `GEO-04`, `SPACE-01`, `SPACE-02`).
+pub fn plan_globe_composite(
+    request: &CompositeStitchRequest,
+    limits: &SpaceCatalogLimits,
+    cancel: Option<CancelToken<'_>>,
+) -> Result<GlobeCompositePlan, SpaceImageryError> {
+    request.validate(limits)?;
+
+    let mut cancel = cancel;
+    let total_cells = request.grid_rows * request.grid_cols;
+    let mut cells = Vec::with_capacity(total_cells);
+
+    let mut clean_optical_cells_count = 0usize;
+    let mut radar_fallback_cells_count = 0usize;
+    let mut retained_degraded_cells_count = 0usize;
+    let mut uncovered_cells_count = 0usize;
+    let mut deblurred_or_repaired_cells_count = 0usize;
+
+    let mut finest_gsd = f64::INFINITY;
+    let mut coarsest_gsd = f64::NEG_INFINITY;
+    let mut has_assigned_gsd = false;
+
+    let mut earliest_start_ms: Option<i64> = None;
+    let mut latest_end_ms: Option<i64> = None;
+    let mut unique_first_patch_id: Option<String> = None;
+    let mut all_same_patch = true;
+
+    for row in 0..request.grid_rows {
+        for col in 0..request.grid_cols {
+            let cell_idx = row * request.grid_cols + col;
+            if cell_idx.is_multiple_of(32)
+                && let Some(ref mut c) = cancel
+            {
+                c().map_err(SpaceImageryError::Stopped)?;
+            }
+
+            let cell_bounds = compute_grid_cell_bounds(
+                &request.target_envelope,
+                row,
+                col,
+                request.grid_rows,
+                request.grid_cols,
+            )?;
+
+            let cell_plan = evaluate_single_composite_cell(
+                row,
+                col,
+                cell_bounds,
+                &request.candidates,
+                &request.policy,
+            )?;
+
+            match &cell_plan.outcome {
+                CompositeCellOutcome::AssignedCleanOptical(a) => {
+                    clean_optical_cells_count += 1;
+                    if !a.repaired_defect_patch_ids.is_empty() {
+                        deblurred_or_repaired_cells_count += 1;
+                    }
+                    update_composite_stats(
+                        a,
+                        &mut finest_gsd,
+                        &mut coarsest_gsd,
+                        &mut has_assigned_gsd,
+                        &mut earliest_start_ms,
+                        &mut latest_end_ms,
+                        &mut unique_first_patch_id,
+                        &mut all_same_patch,
+                    );
+                }
+                CompositeCellOutcome::AssignedRadarFallback(a) => {
+                    radar_fallback_cells_count += 1;
+                    if !a.repaired_defect_patch_ids.is_empty() {
+                        deblurred_or_repaired_cells_count += 1;
+                    }
+                    update_composite_stats(
+                        a,
+                        &mut finest_gsd,
+                        &mut coarsest_gsd,
+                        &mut has_assigned_gsd,
+                        &mut earliest_start_ms,
+                        &mut latest_end_ms,
+                        &mut unique_first_patch_id,
+                        &mut all_same_patch,
+                    );
+                }
+                CompositeCellOutcome::AssignedDegradedOpticalFallback { assignment: a, .. } => {
+                    retained_degraded_cells_count += 1;
+                    update_composite_stats(
+                        a,
+                        &mut finest_gsd,
+                        &mut coarsest_gsd,
+                        &mut has_assigned_gsd,
+                        &mut earliest_start_ms,
+                        &mut latest_end_ms,
+                        &mut unique_first_patch_id,
+                        &mut all_same_patch,
+                    );
+                }
+                CompositeCellOutcome::UncoveredGap { .. } => {
+                    uncovered_cells_count += 1;
+                    all_same_patch = false;
+                }
+            }
+
+            cells.push(cell_plan);
+        }
+    }
+
+    let seams = compute_composite_seams(&cells, request.grid_rows, request.grid_cols)?;
+
+    let composite_capture_window = match (earliest_start_ms, latest_end_ms) {
+        (Some(s), Some(e)) => {
+            Some(
+                TimeWindow::new(s, e).map_err(|_| SpaceImageryError::InvalidTimeWindow {
+                    reason: "invalid composite capture time window",
+                })?,
+            )
+        }
+        _ => None,
+    };
+
+    let is_single_instant_observation = uncovered_cells_count == 0
+        && !cells.is_empty()
+        && all_same_patch
+        && unique_first_patch_id.is_some()
+        && seams.is_empty();
+
+    Ok(GlobeCompositePlan {
+        target_envelope: request.target_envelope,
+        grid_rows: request.grid_rows,
+        grid_cols: request.grid_cols,
+        cells,
+        seams,
+        clean_optical_cells_count,
+        radar_fallback_cells_count,
+        retained_degraded_cells_count,
+        uncovered_cells_count,
+        deblurred_or_repaired_cells_count,
+        finest_verifiable_gsd_m: if has_assigned_gsd {
+            Some(finest_gsd)
+        } else {
+            None
+        },
+        coarsest_verifiable_gsd_m: if has_assigned_gsd {
+            Some(coarsest_gsd)
+        } else {
+            None
+        },
+        composite_capture_window,
+        is_single_instant_observation,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_composite_stats(
+    assignment: &CompositeCellAssignment,
+    finest_gsd: &mut f64,
+    coarsest_gsd: &mut f64,
+    has_assigned_gsd: &mut bool,
+    earliest_start_ms: &mut Option<i64>,
+    latest_end_ms: &mut Option<i64>,
+    unique_first_patch_id: &mut Option<String>,
+    all_same_patch: &mut bool,
+) {
+    *has_assigned_gsd = true;
+    if assignment.effective_verifiable_gsd_m < *finest_gsd {
+        *finest_gsd = assignment.effective_verifiable_gsd_m;
+    }
+    if assignment.effective_verifiable_gsd_m > *coarsest_gsd {
+        *coarsest_gsd = assignment.effective_verifiable_gsd_m;
+    }
+    let s = assignment.time_window.start_utc_ms();
+    let e = assignment.time_window.end_utc_ms();
+    *earliest_start_ms = Some(earliest_start_ms.map_or(s, |cur| cur.min(s)));
+    *latest_end_ms = Some(latest_end_ms.map_or(e, |cur| cur.max(e)));
+
+    match unique_first_patch_id {
+        None => *unique_first_patch_id = Some(assignment.patch_id.clone()),
+        Some(first_id) => {
+            if first_id != &assignment.patch_id {
+                *all_same_patch = false;
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum CandidateTier {
+    CleanOptical = 0,
+    RadarFallback = 1,
+    DegradedOpticalFallback = 2,
+}
+
+struct EvaluatedCellCandidate<'a> {
+    patch: &'a CompositeCandidatePatch,
+    tier: CandidateTier,
+    cell_integrity: PatchIntegrityState,
+    effective_gsd_m: f64,
+    obscuration_metric: f64,
+    capture_midpoint_utc_ms: i64,
+}
+
+fn evaluate_single_composite_cell(
+    row: usize,
+    col: usize,
+    cell_bounds: GeoBoundingBoxWgs84,
+    candidates: &[CompositeCandidatePatch],
+    policy: &CompositeStitchPolicy,
+) -> Result<CompositeCellPlan, SpaceImageryError> {
+    let mut rejected_or_bypassed = Vec::new();
+    let mut eligible = Vec::new();
+    let mut degraded_or_blurred_covering_ids = Vec::new();
+
+    for patch in candidates {
+        if !boxes_have_interior_overlap(&cell_bounds, &patch.footprint) {
+            continue;
+        }
+
+        // 1. Exact cell containment check (partial cell overlap cannot cover the cell)
+        if !box_contains_box(&patch.footprint, &cell_bounds) {
+            rejected_or_bypassed.push(RejectedCandidateReceipt {
+                patch_id: patch.patch_id.clone(),
+                reason: CandidateRejectionOrBypassReason::InsufficientCellFootprintCoverage,
+            });
+            continue;
+        }
+
+        // 2. Outreach / simulated presentation check (SPACE-02)
+        if patch.color_mapping.is_outreach_or_simulated() {
+            rejected_or_bypassed.push(RejectedCandidateReceipt {
+                patch_id: patch.patch_id.clone(),
+                reason: CandidateRejectionOrBypassReason::OutreachOrSimulatedPresentation,
+            });
+            continue;
+        }
+
+        let cell_integrity = patch.effective_integrity_for_cell(&cell_bounds);
+
+        // 3. Predictive / AI inpainted content check (AGENTS.md §2)
+        if matches!(
+            cell_integrity,
+            PatchIntegrityState::PredictiveSuperResolutionOrInpainted { .. }
+        ) {
+            rejected_or_bypassed.push(RejectedCandidateReceipt {
+                patch_id: patch.patch_id.clone(),
+                reason: CandidateRejectionOrBypassReason::PredictiveOrInpaintedContent,
+            });
+            continue;
+        }
+
+        // 4. Sensor swath gap or saturation artifact check
+        if matches!(
+            cell_integrity,
+            PatchIntegrityState::SensorSwathGapOrArtifact { .. }
+        ) {
+            degraded_or_blurred_covering_ids.push(patch.patch_id.clone());
+            rejected_or_bypassed.push(RejectedCandidateReceipt {
+                patch_id: patch.patch_id.clone(),
+                reason: CandidateRejectionOrBypassReason::SensorSwathGapOrArtifact,
+            });
+            continue;
+        }
+
+        // 5. Spatial calibration and correspondence check (GEO-02, MEDIA-02)
+        if patch.registration.correspondence_method
+            == CorrespondenceMethod::UncalibratedApproximatePlacement
+        {
+            rejected_or_bypassed.push(RejectedCandidateReceipt {
+                patch_id: patch.patch_id.clone(),
+                reason: CandidateRejectionOrBypassReason::UncalibratedSpatialCorrespondence,
+            });
+            continue;
+        }
+
+        let requires_dem = policy.require_terrain_orthorectification_for_oblique
+            && (patch.registration.off_nadir_angle_deg > 15.0
+                || matches!(
+                    patch.platform,
+                    CompositeSourcePlatform::SpacecraftHandheldOrCrewFrame
+                        | CompositeSourcePlatform::CalibratedGroundOrStreetFrame
+                ));
+        if requires_dem
+            && patch.registration.vertical_reference == VerticalReference::UnrectifiedSensorPlane
+        {
+            rejected_or_bypassed.push(RejectedCandidateReceipt {
+                patch_id: patch.patch_id.clone(),
+                reason:
+                    CandidateRejectionOrBypassReason::MissingTerrainOrthorectificationForObliqueView,
+            });
+            continue;
+        }
+
+        if patch.registration.horizontal_rmse_m > policy.max_horizontal_registration_rmse_m {
+            rejected_or_bypassed.push(RejectedCandidateReceipt {
+                patch_id: patch.patch_id.clone(),
+                reason: CandidateRejectionOrBypassReason::HorizontalRegistrationRmseExceeded {
+                    actual_rmse_m: patch.registration.horizontal_rmse_m,
+                    max_allowed_rmse_m: policy.max_horizontal_registration_rmse_m,
+                },
+            });
+            continue;
+        }
+
+        if patch.registration.off_nadir_angle_deg > policy.max_off_nadir_angle_deg {
+            rejected_or_bypassed.push(RejectedCandidateReceipt {
+                patch_id: patch.patch_id.clone(),
+                reason: CandidateRejectionOrBypassReason::OffNadirAngleExceeded {
+                    actual_deg: patch.registration.off_nadir_angle_deg,
+                    max_allowed_deg: policy.max_off_nadir_angle_deg,
+                },
+            });
+            continue;
+        }
+
+        let effective_gsd_m = patch.effective_verifiable_gsd_m(&cell_integrity);
+        let capture_midpoint_utc_ms = compute_window_midpoint_ms(&patch.time_window);
+
+        // 6. Classify into CleanOptical, RadarFallback, or DegradedOpticalFallback
+        if patch.radiometric_class == SurfaceRadiometricClass::SyntheticApertureRadar {
+            if !policy.allow_sar_cloud_penetration_fallback {
+                rejected_or_bypassed.push(RejectedCandidateReceipt {
+                    patch_id: patch.patch_id.clone(),
+                    reason: CandidateRejectionOrBypassReason::RadarModalityDisabledByPolicy,
+                });
+                continue;
+            }
+            match &cell_integrity {
+                PatchIntegrityState::UneditedClearNative {
+                    cloud_or_haze_fraction,
+                } => {
+                    eligible.push(EvaluatedCellCandidate {
+                        patch,
+                        tier: CandidateTier::RadarFallback,
+                        cell_integrity: cell_integrity.clone(),
+                        effective_gsd_m,
+                        obscuration_metric: *cloud_or_haze_fraction,
+                        capture_midpoint_utc_ms,
+                    });
+                }
+                PatchIntegrityState::UpsampledBeyondNative { .. } => {
+                    eligible.push(EvaluatedCellCandidate {
+                        patch,
+                        tier: CandidateTier::RadarFallback,
+                        cell_integrity: cell_integrity.clone(),
+                        effective_gsd_m,
+                        obscuration_metric: 0.0,
+                        capture_midpoint_utc_ms,
+                    });
+                }
+                PatchIntegrityState::DeliberatelyBlurredOrRedacted { .. } => {
+                    degraded_or_blurred_covering_ids.push(patch.patch_id.clone());
+                    rejected_or_bypassed.push(RejectedCandidateReceipt {
+                        patch_id: patch.patch_id.clone(),
+                        reason: CandidateRejectionOrBypassReason::DeliberateBlurOrRedactionBypassed,
+                    });
+                }
+                _ => {
+                    degraded_or_blurred_covering_ids.push(patch.patch_id.clone());
+                    rejected_or_bypassed.push(RejectedCandidateReceipt {
+                        patch_id: patch.patch_id.clone(),
+                        reason: CandidateRejectionOrBypassReason::CloudOrHazeObscurationBypassed,
+                    });
+                }
+            }
+            continue;
+        }
+
+        // Optical candidate classification
+        match &cell_integrity {
+            PatchIntegrityState::UneditedClearNative {
+                cloud_or_haze_fraction,
+            } => {
+                if *cloud_or_haze_fraction <= policy.max_cloud_or_haze_fraction {
+                    eligible.push(EvaluatedCellCandidate {
+                        patch,
+                        tier: CandidateTier::CleanOptical,
+                        cell_integrity: cell_integrity.clone(),
+                        effective_gsd_m,
+                        obscuration_metric: *cloud_or_haze_fraction,
+                        capture_midpoint_utc_ms,
+                    });
+                } else {
+                    degraded_or_blurred_covering_ids.push(patch.patch_id.clone());
+                    if policy.allow_degraded_fallback_when_no_clean_source {
+                        eligible.push(EvaluatedCellCandidate {
+                            patch,
+                            tier: CandidateTier::DegradedOpticalFallback,
+                            cell_integrity: cell_integrity.clone(),
+                            effective_gsd_m,
+                            obscuration_metric: *cloud_or_haze_fraction,
+                            capture_midpoint_utc_ms,
+                        });
+                    } else {
+                        rejected_or_bypassed.push(RejectedCandidateReceipt {
+                            patch_id: patch.patch_id.clone(),
+                            reason:
+                                CandidateRejectionOrBypassReason::CloudOrHazeObscurationBypassed,
+                        });
+                    }
+                }
+            }
+            PatchIntegrityState::UpsampledBeyondNative { .. } => {
+                eligible.push(EvaluatedCellCandidate {
+                    patch,
+                    tier: CandidateTier::CleanOptical,
+                    cell_integrity: cell_integrity.clone(),
+                    effective_gsd_m,
+                    obscuration_metric: 0.0,
+                    capture_midpoint_utc_ms,
+                });
+            }
+            PatchIntegrityState::DeliberatelyBlurredOrRedacted { .. } => {
+                degraded_or_blurred_covering_ids.push(patch.patch_id.clone());
+                if policy.allow_degraded_fallback_when_no_clean_source {
+                    eligible.push(EvaluatedCellCandidate {
+                        patch,
+                        tier: CandidateTier::DegradedOpticalFallback,
+                        cell_integrity: cell_integrity.clone(),
+                        effective_gsd_m,
+                        obscuration_metric: 1.0,
+                        capture_midpoint_utc_ms,
+                    });
+                } else {
+                    rejected_or_bypassed.push(RejectedCandidateReceipt {
+                        patch_id: patch.patch_id.clone(),
+                        reason: CandidateRejectionOrBypassReason::DeliberateBlurOrRedactionBypassed,
+                    });
+                }
+            }
+            PatchIntegrityState::ObscuredByCloudShadowOrSmoke {
+                obscuration_fraction,
+            } => {
+                degraded_or_blurred_covering_ids.push(patch.patch_id.clone());
+                if policy.allow_degraded_fallback_when_no_clean_source {
+                    eligible.push(EvaluatedCellCandidate {
+                        patch,
+                        tier: CandidateTier::DegradedOpticalFallback,
+                        cell_integrity: cell_integrity.clone(),
+                        effective_gsd_m,
+                        obscuration_metric: *obscuration_fraction,
+                        capture_midpoint_utc_ms,
+                    });
+                } else {
+                    rejected_or_bypassed.push(RejectedCandidateReceipt {
+                        patch_id: patch.patch_id.clone(),
+                        reason: CandidateRejectionOrBypassReason::CloudOrHazeObscurationBypassed,
+                    });
+                }
+            }
+            PatchIntegrityState::SensorSwathGapOrArtifact { .. }
+            | PatchIntegrityState::PredictiveSuperResolutionOrInpainted { .. } => {}
+        }
+    }
+
+    if eligible.is_empty() {
+        return Ok(CompositeCellPlan {
+            row,
+            col,
+            bounds: cell_bounds,
+            outcome: CompositeCellOutcome::UncoveredGap {
+                diagnostic: format!(
+                    "No eligible imagery patch covers cell ({row}, {col}); {} overlapping candidates rejected",
+                    rejected_or_bypassed.len()
+                ),
+            },
+            rejected_or_bypassed,
+        });
+    }
+
+    eligible.sort_by(compare_evaluated_candidates);
+
+    let winner = &eligible[0];
+    let repaired_defect_patch_ids = if winner.tier != CandidateTier::DegradedOpticalFallback {
+        degraded_or_blurred_covering_ids
+    } else {
+        Vec::new()
+    };
+
+    for runner_up in &eligible[1..] {
+        let reason = match (&runner_up.cell_integrity, winner.tier, runner_up.tier) {
+            (
+                PatchIntegrityState::DeliberatelyBlurredOrRedacted { .. },
+                CandidateTier::CleanOptical | CandidateTier::RadarFallback,
+                CandidateTier::DegradedOpticalFallback,
+            ) => CandidateRejectionOrBypassReason::DeliberateBlurOrRedactionBypassed,
+            (
+                PatchIntegrityState::ObscuredByCloudShadowOrSmoke { .. }
+                | PatchIntegrityState::UneditedClearNative { .. },
+                CandidateTier::CleanOptical | CandidateTier::RadarFallback,
+                CandidateTier::DegradedOpticalFallback,
+            ) => CandidateRejectionOrBypassReason::CloudOrHazeObscurationBypassed,
+            _ => CandidateRejectionOrBypassReason::OutrankedByFinerOrCleanerSource {
+                winning_patch_id: winner.patch.patch_id.clone(),
+                winning_effective_gsd_m: winner.effective_gsd_m,
+                candidate_effective_gsd_m: runner_up.effective_gsd_m,
+            },
+        };
+        rejected_or_bypassed.push(RejectedCandidateReceipt {
+            patch_id: runner_up.patch.patch_id.clone(),
+            reason,
+        });
+    }
+
+    let assigned_modality =
+        if winner.patch.radiometric_class == SurfaceRadiometricClass::SyntheticApertureRadar {
+            AssignedModality::RadarBackscatterFallback
+        } else {
+            AssignedModality::OpticalReflectance
+        };
+
+    let assignment = CompositeCellAssignment {
+        patch_id: winner.patch.patch_id.clone(),
+        source_id: winner.patch.source_id.clone(),
+        platform: winner.patch.platform,
+        provider_name: winner.patch.provider.provider_name.clone(),
+        mission_or_collection: winner.patch.mission_or_collection.clone(),
+        instrument_or_sensor: winner.patch.instrument_or_sensor.clone(),
+        assigned_modality,
+        radiometric_class: winner.patch.radiometric_class,
+        calibration_level: winner.patch.calibration_level,
+        color_mapping: winner.patch.color_mapping.clone(),
+        effective_verifiable_gsd_m: winner.effective_gsd_m,
+        native_gsd_m: winner.patch.native_gsd_m,
+        served_grid_spacing_m: winner.patch.served_grid_spacing_m,
+        was_upsampled_beyond_native: winner.patch.was_upsampled_beyond_native(),
+        time_window: winner.patch.time_window,
+        capture_midpoint_utc_ms: winner.capture_midpoint_utc_ms,
+        horizontal_rmse_m: winner.patch.registration.horizontal_rmse_m,
+        off_nadir_angle_deg: winner.patch.registration.off_nadir_angle_deg,
+        cell_integrity: winner.cell_integrity.clone(),
+        repaired_defect_patch_ids,
+    };
+
+    let outcome = match winner.tier {
+        CandidateTier::CleanOptical => CompositeCellOutcome::AssignedCleanOptical(assignment),
+        CandidateTier::RadarFallback => CompositeCellOutcome::AssignedRadarFallback(assignment),
+        CandidateTier::DegradedOpticalFallback => {
+            let degradation_warning = match &winner.cell_integrity {
+                PatchIntegrityState::DeliberatelyBlurredOrRedacted {
+                    reason,
+                    coarse_effective_gsd_m,
+                } => format!(
+                    "No unblurred source available; retained blurred/redacted patch '{}' ({reason}, effective GSD {coarse_effective_gsd_m:.2} m)",
+                    winner.patch.patch_id
+                ),
+                PatchIntegrityState::ObscuredByCloudShadowOrSmoke {
+                    obscuration_fraction,
+                } => format!(
+                    "No cloud-free source available; retained obscured patch '{}' ({:.1}% obscured)",
+                    winner.patch.patch_id,
+                    obscuration_fraction * 100.0
+                ),
+                PatchIntegrityState::UneditedClearNative {
+                    cloud_or_haze_fraction,
+                } => format!(
+                    "No low-cloud source available; retained hazy patch '{}' ({:.1}% cloud/haze)",
+                    winner.patch.patch_id,
+                    cloud_or_haze_fraction * 100.0
+                ),
+                _ => format!(
+                    "Retained degraded fallback patch '{}'",
+                    winner.patch.patch_id
+                ),
+            };
+            CompositeCellOutcome::AssignedDegradedOpticalFallback {
+                assignment,
+                degradation_warning,
+            }
+        }
+    };
+
+    Ok(CompositeCellPlan {
+        row,
+        col,
+        bounds: cell_bounds,
+        outcome,
+        rejected_or_bypassed,
+    })
+}
+
+fn compare_evaluated_candidates(
+    a: &EvaluatedCellCandidate<'_>,
+    b: &EvaluatedCellCandidate<'_>,
+) -> std::cmp::Ordering {
+    // 1. Tier ordering: CleanOptical < RadarFallback < DegradedOpticalFallback
+    match a.tier.cmp(&b.tier) {
+        std::cmp::Ordering::Equal => {}
+        ord => return ord,
+    }
+
+    // 2. Finest verifiable native ground sample distance (smaller is better)
+    if (a.effective_gsd_m - b.effective_gsd_m).abs() > 1e-9 {
+        return a
+            .effective_gsd_m
+            .partial_cmp(&b.effective_gsd_m)
+            .unwrap_or(std::cmp::Ordering::Equal);
+    }
+
+    // 3. Prefer genuine un-upsampled native grids over oversampled grids when native GSD is equal
+    let a_upsampled = a.patch.was_upsampled_beyond_native();
+    let b_upsampled = b.patch.was_upsampled_beyond_native();
+    match a_upsampled.cmp(&b_upsampled) {
+        std::cmp::Ordering::Equal => {}
+        ord => return ord,
+    }
+
+    // 4. Prefer true-color optical over panchromatic/false-color when GSD is tied
+    let a_true_color = matches!(
+        a.patch.radiometric_class,
+        SurfaceRadiometricClass::OpticalTrueColor
+            | SurfaceRadiometricClass::OpticalPansharpenedTrueColor
+    );
+    let b_true_color = matches!(
+        b.patch.radiometric_class,
+        SurfaceRadiometricClass::OpticalTrueColor
+            | SurfaceRadiometricClass::OpticalPansharpenedTrueColor
+    );
+    match b_true_color.cmp(&a_true_color) {
+        std::cmp::Ordering::Equal => {}
+        ord => return ord,
+    }
+
+    // 5. Lower cloud/obscuration metric
+    if (a.obscuration_metric - b.obscuration_metric).abs() > 1e-9 {
+        return a
+            .obscuration_metric
+            .partial_cmp(&b.obscuration_metric)
+            .unwrap_or(std::cmp::Ordering::Equal);
+    }
+
+    // 6. Lower horizontal registration RMSE
+    if (a.patch.registration.horizontal_rmse_m - b.patch.registration.horizontal_rmse_m).abs()
+        > 1e-9
+    {
+        return a
+            .patch
+            .registration
+            .horizontal_rmse_m
+            .partial_cmp(&b.patch.registration.horizontal_rmse_m)
+            .unwrap_or(std::cmp::Ordering::Equal);
+    }
+
+    // 7. Lower off-nadir angle
+    if (a.patch.registration.off_nadir_angle_deg - b.patch.registration.off_nadir_angle_deg).abs()
+        > 1e-9
+    {
+        return a
+            .patch
+            .registration
+            .off_nadir_angle_deg
+            .partial_cmp(&b.patch.registration.off_nadir_angle_deg)
+            .unwrap_or(std::cmp::Ordering::Equal);
+    }
+
+    // 8. Deterministic tie-breaker on patch_id
+    a.patch.patch_id.cmp(&b.patch.patch_id)
+}
+
+fn compute_window_midpoint_ms(window: &TimeWindow) -> i64 {
+    let start = i128::from(window.start_utc_ms());
+    let end = i128::from(window.end_utc_ms());
+    let mid = start + (end - start) / 2;
+    mid.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
+}
+
+fn compute_grid_cell_bounds(
+    envelope: &GeoBoundingBoxWgs84,
+    row: usize,
+    col: usize,
+    grid_rows: usize,
+    grid_cols: usize,
+) -> Result<GeoBoundingBoxWgs84, SpaceImageryError> {
+    let south = envelope.south_lat_deg();
+    let north = envelope.north_lat_deg();
+    let lat_span = north - south;
+
+    let cell_south = south + lat_span * (row as f64) / (grid_rows as f64);
+    let cell_north = if row + 1 == grid_rows {
+        north
+    } else {
+        south + lat_span * ((row + 1) as f64) / (grid_rows as f64)
+    };
+
+    let west = envelope.west_lon_deg();
+    let east = envelope.east_lon_deg();
+    let (cell_west, cell_east) = if west <= east {
+        let lon_span = east - west;
+        let cw = west + lon_span * (col as f64) / (grid_cols as f64);
+        let ce = if col + 1 == grid_cols {
+            east
+        } else {
+            west + lon_span * ((col + 1) as f64) / (grid_cols as f64)
+        };
+        (cw, ce)
+    } else {
+        let lon_span = (180.0 - west) + (east - (-180.0));
+        let raw_w = west + lon_span * (col as f64) / (grid_cols as f64);
+        let raw_e = west + lon_span * ((col + 1) as f64) / (grid_cols as f64);
+        if raw_e <= 180.0 + 1e-12 {
+            (raw_w.min(180.0), raw_e.min(180.0))
+        } else if raw_w >= 180.0 - 1e-12 {
+            let cw = (raw_w - 360.0).max(-180.0);
+            let ce = if col + 1 == grid_cols {
+                east
+            } else {
+                (raw_e - 360.0).min(east)
+            };
+            (cw, ce)
+        } else {
+            let cw = raw_w;
+            let ce = if col + 1 == grid_cols {
+                east
+            } else {
+                raw_e - 360.0
+            };
+            (cw, ce)
+        }
+    };
+
+    GeoBoundingBoxWgs84::new(cell_south, cell_north, cell_west, cell_east).map_err(|_| {
+        SpaceImageryError::InvalidCoordinates {
+            reason: "failed to construct composite grid cell bounding box",
+        }
+    })
+}
+
+/// Evaluates whether two bounding boxes share a positive 2D interior area overlap
+/// (excluding zero-area edge or corner contact), supporting antimeridian wrapping.
+fn boxes_have_interior_overlap(b1: &GeoBoundingBoxWgs84, b2: &GeoBoundingBoxWgs84) -> bool {
+    let s = b1.south_lat_deg().max(b2.south_lat_deg());
+    let n = b1.north_lat_deg().min(b2.north_lat_deg());
+    if n - s <= 1e-9 {
+        return false;
+    }
+
+    let l1 = decompose_lon_intervals(b1.west_lon_deg(), b1.east_lon_deg());
+    let l2 = decompose_lon_intervals(b2.west_lon_deg(), b2.east_lon_deg());
+
+    for (w1, e1) in &l1 {
+        for (w2, e2) in &l2 {
+            if e1.min(*e2) - w1.max(*w2) > 1e-9 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Evaluates whether `outer` completely covers `inner`, supporting antimeridian wrapping on both boxes.
+fn box_contains_box(outer: &GeoBoundingBoxWgs84, inner: &GeoBoundingBoxWgs84) -> bool {
+    if outer.south_lat_deg() > inner.south_lat_deg() + 1e-9
+        || outer.north_lat_deg() + 1e-9 < inner.north_lat_deg()
+    {
+        return false;
+    }
+
+    let outer_pieces = decompose_lon_intervals(outer.west_lon_deg(), outer.east_lon_deg());
+    let inner_pieces = decompose_lon_intervals(inner.west_lon_deg(), inner.east_lon_deg());
+
+    inner_pieces.iter().all(|&(iw, ie)| {
+        outer_pieces
+            .iter()
+            .any(|&(ow, oe)| ow <= iw + 1e-9 && oe + 1e-9 >= ie)
+    })
+}
+
+fn compute_composite_seams(
+    cells: &[CompositeCellPlan],
+    grid_rows: usize,
+    grid_cols: usize,
+) -> Result<Vec<CompositeSeamSegment>, SpaceImageryError> {
+    let mut seams = Vec::new();
+
+    for row in 0..grid_rows {
+        for col in 0..grid_cols {
+            let idx = row * grid_cols + col;
+            let Some(first) = cells[idx].outcome.assignment() else {
+                continue;
+            };
+
+            // Horizontal neighbor (row, col + 1)
+            if col + 1 < grid_cols {
+                let right_idx = row * grid_cols + (col + 1);
+                if let Some(second) = cells[right_idx].outcome.assignment()
+                    && first.patch_id != second.patch_id
+                {
+                    seams.push(build_seam_segment(row, col, row, col + 1, first, second)?);
+                }
+            }
+
+            // Vertical neighbor (row + 1, col)
+            if row + 1 < grid_rows {
+                let down_idx = (row + 1) * grid_cols + col;
+                if let Some(second) = cells[down_idx].outcome.assignment()
+                    && first.patch_id != second.patch_id
+                {
+                    seams.push(build_seam_segment(row, col, row + 1, col, first, second)?);
+                }
+            }
+        }
+    }
+
+    Ok(seams)
+}
+
+fn build_seam_segment(
+    first_row: usize,
+    first_col: usize,
+    second_row: usize,
+    second_col: usize,
+    first: &CompositeCellAssignment,
+    second: &CompositeCellAssignment,
+) -> Result<CompositeSeamSegment, SpaceImageryError> {
+    let delta_i128 = (i128::from(first.capture_midpoint_utc_ms)
+        - i128::from(second.capture_midpoint_utc_ms))
+    .abs();
+    let capture_time_delta_ms =
+        i64::try_from(delta_i128).map_err(|_| SpaceImageryError::TimestampOverflow {
+            operation: "seam_capture_time_delta_ms",
+            reason: "capture timestamp difference between adjacent composite patches overflowed i64",
+        })?;
+
+    let min_gsd = first
+        .effective_verifiable_gsd_m
+        .min(second.effective_verifiable_gsd_m);
+    let max_gsd = first
+        .effective_verifiable_gsd_m
+        .max(second.effective_verifiable_gsd_m);
+    let effective_gsd_ratio = if min_gsd > 0.0 {
+        max_gsd / min_gsd
+    } else {
+        1.0
+    };
+
+    Ok(CompositeSeamSegment {
+        first_cell_row: first_row,
+        first_cell_col: first_col,
+        second_cell_row: second_row,
+        second_cell_col: second_col,
+        first_patch_id: first.patch_id.clone(),
+        second_patch_id: second.patch_id.clone(),
+        capture_time_delta_ms,
+        effective_gsd_ratio,
+        crosses_sensor_modality: first.assigned_modality != second.assigned_modality,
+        crosses_platform_class: first.platform != second.platform,
+    })
 }
 
 /// Decomposes a longitude interval into at most two non-wrapped intervals `[w, e]` where `w <= e`.

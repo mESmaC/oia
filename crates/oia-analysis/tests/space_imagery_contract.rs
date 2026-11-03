@@ -910,3 +910,560 @@ fn delay_float_to_i64_exclusive_bound_overflow() -> Result<(), Box<dyn std::erro
 
     Ok(())
 }
+
+#[test]
+fn multi_source_composite_stitching_deblurs_repairs_clouds_and_defends_against_upsampling()
+-> Result<(), Box<dyn std::error::Error>> {
+    let limits = SpaceCatalogLimits::default();
+    let envelope = GeoBoundingBoxWgs84::new(43.0, 43.2, 5.0, 5.2)?;
+
+    // 1. National aerial orthophoto (0.15 m native) covering full 2x2 grid,
+    //    with a statutory blur polygon in SW (row 0, col 0) and cumulus cloud in NE (row 1, col 1).
+    let mut aerial = CompositeCandidatePatch {
+        patch_id: "patch:ign:ortho_15cm".into(),
+        source_id: "src:ign:2025".into(),
+        platform: CompositeSourcePlatform::AerialOrthophoto,
+        provider: SpaceDataProvider::new("IGN France", "Geoservices", true)?,
+        mission_or_collection: "BD ORTHO".into(),
+        instrument_or_sensor: "DMC-III".into(),
+        footprint: envelope,
+        time_window: TimeWindow::new(1_718_000_000_000, 1_718_003_600_000)?,
+        native_gsd_m: 0.15,
+        served_grid_spacing_m: 0.15,
+        radiometric_class: SurfaceRadiometricClass::OpticalTrueColor,
+        calibration_level: CalibrationLevel::Level3GriddedComposite,
+        color_mapping: ColorMapping::TrueColor,
+        base_integrity: PatchIntegrityState::UneditedClearNative {
+            cloud_or_haze_fraction: 0.01,
+        },
+        localized_defects: Vec::new(),
+        registration: CrossViewRegistration::new(
+            VerticalReference::OrthometricDem {
+                dem_source: "RGE ALTI 1m".into(),
+                vertical_rmse_m: 0.25,
+            },
+            CorrespondenceMethod::GroundControlPointsBundleAdjustment { gcp_count: 16 },
+            0.30,
+            4.0,
+        )?,
+    };
+    aerial.localized_defects.push(LocalizedPatchDefect::new(
+        "def:blur_sw",
+        GeoBoundingBoxWgs84::new(43.0, 43.1, 5.0, 5.1)?,
+        PatchIntegrityState::DeliberatelyBlurredOrRedacted {
+            reason: "Statutory security redaction mask".into(),
+            coarse_effective_gsd_m: 25.0,
+        },
+    )?);
+    aerial.localized_defects.push(LocalizedPatchDefect::new(
+        "def:cloud_ne",
+        GeoBoundingBoxWgs84::new(43.1, 43.2, 5.1, 5.2)?,
+        PatchIntegrityState::ObscuredByCloudShadowOrSmoke {
+            obscuration_fraction: 0.90,
+        },
+    )?);
+
+    // 2. Sentinel-2 (10.0 m native GSD) bicubic-upsampled to a 0.05 m grid spacing.
+    //    Must be clamped to 10.0 m effective verifiable GSD and never outrank 0.50 m or 0.15 m native!
+    let upsampled_s2 = CompositeCandidatePatch {
+        patch_id: "patch:sentinel2:upsampled_5cm_grid".into(),
+        source_id: "src:copernicus:s2".into(),
+        platform: CompositeSourcePlatform::SatelliteEarthObservation,
+        provider: SpaceDataProvider::new("ESA Copernicus", "CDSE", true)?,
+        mission_or_collection: "Sentinel-2B".into(),
+        instrument_or_sensor: "MSI".into(),
+        footprint: envelope,
+        time_window: TimeWindow::new(1_718_500_000_000, 1_718_500_030_000)?,
+        native_gsd_m: 10.0,
+        served_grid_spacing_m: 0.05,
+        radiometric_class: SurfaceRadiometricClass::OpticalTrueColor,
+        calibration_level: CalibrationLevel::Level2Geophysical,
+        color_mapping: ColorMapping::TrueColor,
+        base_integrity: PatchIntegrityState::UneditedClearNative {
+            cloud_or_haze_fraction: 0.0,
+        },
+        localized_defects: Vec::new(),
+        registration: CrossViewRegistration::new(
+            VerticalReference::OrthometricDem {
+                dem_source: "GLO-30".into(),
+                vertical_rmse_m: 3.0,
+            },
+            CorrespondenceMethod::OrbitalWcsAndDemOrthorectification,
+            3.5,
+            5.0,
+        )?,
+    };
+    assert!(upsampled_s2.was_upsampled_beyond_native());
+
+    // 3. Uncensored commercial open-data satellite scene (0.50 m native GSD) covering full envelope.
+    let clean_sat = CompositeCandidatePatch {
+        patch_id: "patch:wv3:open_50cm".into(),
+        source_id: "src:maxar:wv3".into(),
+        platform: CompositeSourcePlatform::SatelliteEarthObservation,
+        provider: SpaceDataProvider::new("Maxar Open Data", "AWS STAC", true)?,
+        mission_or_collection: "WorldView-3".into(),
+        instrument_or_sensor: "WV110".into(),
+        footprint: envelope,
+        time_window: TimeWindow::new(1_719_000_000_000, 1_719_000_060_000)?,
+        native_gsd_m: 0.50,
+        served_grid_spacing_m: 0.50,
+        radiometric_class: SurfaceRadiometricClass::OpticalPansharpenedTrueColor,
+        calibration_level: CalibrationLevel::Level2Geophysical,
+        color_mapping: ColorMapping::TrueColor,
+        base_integrity: PatchIntegrityState::UneditedClearNative {
+            cloud_or_haze_fraction: 0.02,
+        },
+        localized_defects: Vec::new(),
+        registration: CrossViewRegistration::new(
+            VerticalReference::OrthometricDem {
+                dem_source: "GLO-30".into(),
+                vertical_rmse_m: 2.0,
+            },
+            CorrespondenceMethod::OrbitalWcsAndDemOrthorectification,
+            1.5,
+            10.0,
+        )?,
+    };
+
+    // 4. Calibrated UAV orthomosaic (0.04 m native GSD) covering SE cell (row 0, col 1).
+    let uav_se = CompositeCandidatePatch {
+        patch_id: "patch:oam:uav_4cm_se".into(),
+        source_id: "src:oam:uav".into(),
+        platform: CompositeSourcePlatform::CalibratedUavOrDroneOrtho,
+        provider: SpaceDataProvider::new("OpenAerialMap", "OAM", true)?,
+        mission_or_collection: "OAM Survey".into(),
+        instrument_or_sensor: "Zenmuse P1".into(),
+        footprint: GeoBoundingBoxWgs84::new(43.0, 43.1, 5.1, 5.2)?,
+        time_window: TimeWindow::new(1_719_500_000_000, 1_719_501_800_000)?,
+        native_gsd_m: 0.04,
+        served_grid_spacing_m: 0.04,
+        radiometric_class: SurfaceRadiometricClass::OpticalTrueColor,
+        calibration_level: CalibrationLevel::Level3GriddedComposite,
+        color_mapping: ColorMapping::TrueColor,
+        base_integrity: PatchIntegrityState::UneditedClearNative {
+            cloud_or_haze_fraction: 0.0,
+        },
+        localized_defects: Vec::new(),
+        registration: CrossViewRegistration::new(
+            VerticalReference::OrthometricDem {
+                dem_source: "RTK DSM".into(),
+                vertical_rmse_m: 0.05,
+            },
+            CorrespondenceMethod::GroundControlPointsBundleAdjustment { gcp_count: 10 },
+            0.05,
+            1.5,
+        )?,
+    };
+
+    let req = CompositeStitchRequest {
+        target_envelope: envelope,
+        grid_rows: 2,
+        grid_cols: 2,
+        policy: CompositeStitchPolicy::default(),
+        candidates: vec![aerial, upsampled_s2, clean_sat, uav_se],
+    };
+
+    let plan = plan_globe_composite(&req, &limits, None)?;
+    assert_eq!(plan.clean_optical_cells_count, 4);
+    assert_eq!(plan.radar_fallback_cells_count, 0);
+    assert_eq!(plan.retained_degraded_cells_count, 0);
+    assert_eq!(plan.uncovered_cells_count, 0);
+    assert_eq!(plan.deblurred_or_repaired_cells_count, 2);
+    assert!(!plan.is_single_instant_observation);
+    assert_eq!(plan.finest_verifiable_gsd_m, Some(0.04));
+    assert_eq!(plan.coarsest_verifiable_gsd_m, Some(0.50));
+    assert_eq!(plan.seams.len(), 4);
+
+    // SW cell (0, 0): aerial was blurred (25.0 m coarse), so 0.50 m satellite wins and repairs aerial
+    let sw = plan.cells[0]
+        .outcome
+        .assignment()
+        .ok_or("missing SW assignment")?;
+    assert_eq!(sw.patch_id, "patch:wv3:open_50cm");
+    assert_eq!(sw.effective_verifiable_gsd_m, 0.50);
+    assert_eq!(sw.repaired_defect_patch_ids, vec!["patch:ign:ortho_15cm"]);
+    assert!(plan.cells[0].rejected_or_bypassed.iter().any(|r| {
+        r.patch_id == "patch:ign:ortho_15cm"
+            && r.reason == CandidateRejectionOrBypassReason::DeliberateBlurOrRedactionBypassed
+    }));
+
+    // SE cell (0, 1): UAV (0.04 m) outranks unedited aerial (0.15 m) and satellite (0.50 m)
+    let se = plan.cells[1]
+        .outcome
+        .assignment()
+        .ok_or("missing SE assignment")?;
+    assert_eq!(se.patch_id, "patch:oam:uav_4cm_se");
+    assert_eq!(se.effective_verifiable_gsd_m, 0.04);
+    assert!(se.repaired_defect_patch_ids.is_empty());
+
+    // NW cell (1, 0): unedited aerial (0.15 m) wins over satellite (0.50 m) and upsampled S2 (10.0 m)
+    let nw = plan.cells[2]
+        .outcome
+        .assignment()
+        .ok_or("missing NW assignment")?;
+    assert_eq!(nw.patch_id, "patch:ign:ortho_15cm");
+    assert_eq!(nw.effective_verifiable_gsd_m, 0.15);
+
+    // NE cell (1, 1): aerial was cloudy (0.90), so 0.50 m satellite wins and repairs aerial
+    let ne = plan.cells[3]
+        .outcome
+        .assignment()
+        .ok_or("missing NE assignment")?;
+    assert_eq!(ne.patch_id, "patch:wv3:open_50cm");
+    assert_eq!(ne.repaired_defect_patch_ids, vec!["patch:ign:ortho_15cm"]);
+
+    Ok(())
+}
+
+#[test]
+fn composite_rejects_outreach_predictive_uncalibrated_and_isolates_sar_fallback()
+-> Result<(), Box<dyn std::error::Error>> {
+    let limits = SpaceCatalogLimits::default();
+    let envelope = GeoBoundingBoxWgs84::new(10.0, 11.0, 20.0, 21.0)?;
+    let provider = SpaceDataProvider::new("PublicArchive", "STAC", true)?;
+    let valid_reg = CrossViewRegistration::new(
+        VerticalReference::OrthometricDem {
+            dem_source: "Copernicus DEM".into(),
+            vertical_rmse_m: 1.5,
+        },
+        CorrespondenceMethod::OrbitalWcsAndDemOrthorectification,
+        2.0,
+        8.0,
+    )?;
+
+    // 1. Outreach aesthetic rendering -> rejected
+    let outreach_patch = CompositeCandidatePatch {
+        patch_id: "patch:outreach".into(),
+        source_id: "src:outreach".into(),
+        platform: CompositeSourcePlatform::SatelliteEarthObservation,
+        provider: provider.clone(),
+        mission_or_collection: "PressRelease".into(),
+        instrument_or_sensor: "Cam".into(),
+        footprint: envelope,
+        time_window: TimeWindow::new(1_700_000_000_000, 1_700_000_010_000)?,
+        native_gsd_m: 0.30,
+        served_grid_spacing_m: 0.30,
+        radiometric_class: SurfaceRadiometricClass::OpticalTrueColor,
+        calibration_level: CalibrationLevel::Level3GriddedComposite,
+        color_mapping: ColorMapping::OutreachRendering {
+            renderer_attribution: "Media Team".into(),
+            enhancement_notes: "Tone curve".into(),
+        },
+        base_integrity: PatchIntegrityState::UneditedClearNative {
+            cloud_or_haze_fraction: 0.0,
+        },
+        localized_defects: Vec::new(),
+        registration: valid_reg.clone(),
+    };
+
+    // 2. Predictive AI super-resolution / inpainted -> rejected
+    let ai_inpainted_patch = CompositeCandidatePatch {
+        patch_id: "patch:ai_inpaint".into(),
+        source_id: "src:ai".into(),
+        platform: CompositeSourcePlatform::SatelliteEarthObservation,
+        provider: provider.clone(),
+        mission_or_collection: "SynthSR".into(),
+        instrument_or_sensor: "GAN".into(),
+        footprint: envelope,
+        time_window: TimeWindow::new(1_700_000_000_000, 1_700_000_010_000)?,
+        native_gsd_m: 0.25,
+        served_grid_spacing_m: 0.25,
+        radiometric_class: SurfaceRadiometricClass::OpticalTrueColor,
+        calibration_level: CalibrationLevel::Level4ModelAssimilated,
+        color_mapping: ColorMapping::TrueColor,
+        base_integrity: PatchIntegrityState::PredictiveSuperResolutionOrInpainted {
+            model_id: "diffusion-sr-v2".into(),
+            base_native_gsd_m: 10.0,
+        },
+        localized_defects: Vec::new(),
+        registration: valid_reg.clone(),
+    };
+
+    // 3. Uncalibrated street-level photo -> rejected
+    let uncalibrated_ground = CompositeCandidatePatch {
+        patch_id: "patch:ground_uncalibrated".into(),
+        source_id: "src:street".into(),
+        platform: CompositeSourcePlatform::CalibratedGroundOrStreetFrame,
+        provider: provider.clone(),
+        mission_or_collection: "CrowdsourcedStreet".into(),
+        instrument_or_sensor: "ActionCam".into(),
+        footprint: envelope,
+        time_window: TimeWindow::new(1_700_000_000_000, 1_700_000_010_000)?,
+        native_gsd_m: 0.02,
+        served_grid_spacing_m: 0.02,
+        radiometric_class: SurfaceRadiometricClass::OpticalTrueColor,
+        calibration_level: CalibrationLevel::Level1BGeoreferenced,
+        color_mapping: ColorMapping::TrueColor,
+        base_integrity: PatchIntegrityState::UneditedClearNative {
+            cloud_or_haze_fraction: 0.0,
+        },
+        localized_defects: Vec::new(),
+        registration: CrossViewRegistration::new(
+            VerticalReference::UnrectifiedSensorPlane,
+            CorrespondenceMethod::UncalibratedApproximatePlacement,
+            50.0,
+            75.0,
+        )?,
+    };
+
+    // 4. Oblique ISS crew photo without DEM terrain rectification -> rejected
+    let unrectified_iss = CompositeCandidatePatch {
+        patch_id: "patch:iss_unrectified".into(),
+        source_id: "src:iss:eol".into(),
+        platform: CompositeSourcePlatform::SpacecraftHandheldOrCrewFrame,
+        provider: provider.clone(),
+        mission_or_collection: "ISS Crew Earth Observations".into(),
+        instrument_or_sensor: "Nikon Z9".into(),
+        footprint: envelope,
+        time_window: TimeWindow::new(1_700_000_000_000, 1_700_000_010_000)?,
+        native_gsd_m: 2.0,
+        served_grid_spacing_m: 2.0,
+        radiometric_class: SurfaceRadiometricClass::OpticalTrueColor,
+        calibration_level: CalibrationLevel::Level1BGeoreferenced,
+        color_mapping: ColorMapping::TrueColor,
+        base_integrity: PatchIntegrityState::UneditedClearNative {
+            cloud_or_haze_fraction: 0.0,
+        },
+        localized_defects: Vec::new(),
+        registration: CrossViewRegistration::new(
+            VerticalReference::UnrectifiedSensorPlane,
+            CorrespondenceMethod::CalibratedCameraPoseAndTerrainIntersection,
+            5.0,
+            25.0,
+        )?,
+    };
+
+    // 5. Partial footprint covering only half the cell -> rejected
+    let partial_patch = CompositeCandidatePatch {
+        patch_id: "patch:partial_half".into(),
+        source_id: "src:partial".into(),
+        platform: CompositeSourcePlatform::SatelliteEarthObservation,
+        provider: provider.clone(),
+        mission_or_collection: "Landsat-9".into(),
+        instrument_or_sensor: "OLI-2".into(),
+        footprint: GeoBoundingBoxWgs84::new(10.0, 10.5, 20.0, 21.0)?,
+        time_window: TimeWindow::new(1_700_000_000_000, 1_700_000_010_000)?,
+        native_gsd_m: 15.0,
+        served_grid_spacing_m: 15.0,
+        radiometric_class: SurfaceRadiometricClass::OpticalTrueColor,
+        calibration_level: CalibrationLevel::Level2Geophysical,
+        color_mapping: ColorMapping::TrueColor,
+        base_integrity: PatchIntegrityState::UneditedClearNative {
+            cloud_or_haze_fraction: 0.0,
+        },
+        localized_defects: Vec::new(),
+        registration: valid_reg.clone(),
+    };
+
+    // 6. Sentinel-1 SAR patch covering full envelope
+    let sar_patch = CompositeCandidatePatch {
+        patch_id: "patch:sentinel1:sar_5m".into(),
+        source_id: "src:copernicus:s1".into(),
+        platform: CompositeSourcePlatform::SatelliteEarthObservation,
+        provider,
+        mission_or_collection: "Sentinel-1A".into(),
+        instrument_or_sensor: "C-SAR".into(),
+        footprint: envelope,
+        time_window: TimeWindow::new(1_700_000_100_000, 1_700_000_120_000)?,
+        native_gsd_m: 5.0,
+        served_grid_spacing_m: 5.0,
+        radiometric_class: SurfaceRadiometricClass::SyntheticApertureRadar,
+        calibration_level: CalibrationLevel::Level1BGeoreferenced,
+        color_mapping: ColorMapping::SingleBandGreyscale {
+            band_name: "C-Band VV Backscatter".into(),
+        },
+        base_integrity: PatchIntegrityState::UneditedClearNative {
+            cloud_or_haze_fraction: 0.0,
+        },
+        localized_defects: Vec::new(),
+        registration: valid_reg,
+    };
+
+    // Policy A: default policy (SAR fallback disabled) -> cell must be UncoveredGap
+    let req_no_sar = CompositeStitchRequest {
+        target_envelope: envelope,
+        grid_rows: 1,
+        grid_cols: 1,
+        policy: CompositeStitchPolicy::default(),
+        candidates: vec![
+            outreach_patch.clone(),
+            ai_inpainted_patch.clone(),
+            uncalibrated_ground.clone(),
+            unrectified_iss.clone(),
+            partial_patch.clone(),
+            sar_patch.clone(),
+        ],
+    };
+    let plan_no_sar = plan_globe_composite(&req_no_sar, &limits, None)?;
+    assert_eq!(plan_no_sar.uncovered_cells_count, 1);
+    assert!(!plan_no_sar.is_single_instant_observation);
+    let reasons: Vec<_> = plan_no_sar.cells[0]
+        .rejected_or_bypassed
+        .iter()
+        .map(|r| (&r.patch_id as &str, &r.reason))
+        .collect();
+    assert!(reasons.contains(&(
+        "patch:outreach",
+        &CandidateRejectionOrBypassReason::OutreachOrSimulatedPresentation
+    )));
+    assert!(reasons.contains(&(
+        "patch:ai_inpaint",
+        &CandidateRejectionOrBypassReason::PredictiveOrInpaintedContent
+    )));
+    assert!(reasons.contains(&(
+        "patch:ground_uncalibrated",
+        &CandidateRejectionOrBypassReason::UncalibratedSpatialCorrespondence
+    )));
+    assert!(reasons.contains(&(
+        "patch:iss_unrectified",
+        &CandidateRejectionOrBypassReason::MissingTerrainOrthorectificationForObliqueView
+    )));
+    assert!(reasons.contains(&(
+        "patch:partial_half",
+        &CandidateRejectionOrBypassReason::InsufficientCellFootprintCoverage
+    )));
+    assert!(reasons.contains(&(
+        "patch:sentinel1:sar_5m",
+        &CandidateRejectionOrBypassReason::RadarModalityDisabledByPolicy
+    )));
+
+    // Policy B: enable SAR cloud-penetration fallback -> cell gets AssignedRadarFallback (never relabeled as optical)
+    let policy_sar = CompositeStitchPolicy {
+        allow_sar_cloud_penetration_fallback: true,
+        ..Default::default()
+    };
+    let req_sar = CompositeStitchRequest {
+        target_envelope: envelope,
+        grid_rows: 1,
+        grid_cols: 1,
+        policy: policy_sar,
+        candidates: req_no_sar.candidates,
+    };
+    let plan_sar = plan_globe_composite(&req_sar, &limits, None)?;
+    assert_eq!(plan_sar.clean_optical_cells_count, 0);
+    assert_eq!(plan_sar.radar_fallback_cells_count, 1);
+    match &plan_sar.cells[0].outcome {
+        CompositeCellOutcome::AssignedRadarFallback(a) => {
+            assert_eq!(a.patch_id, "patch:sentinel1:sar_5m");
+            assert_eq!(
+                a.assigned_modality,
+                AssignedModality::RadarBackscatterFallback
+            );
+        }
+        other => return Err(format!("expected AssignedRadarFallback, got {other:?}").into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn composite_antimeridian_grid_and_boundary_revalidation() -> Result<(), Box<dyn std::error::Error>>
+{
+    let limits = SpaceCatalogLimits::default();
+    let dateline_env = GeoBoundingBoxWgs84::new(0.0, 6.0, 174.0, -174.0)?;
+    let wrapped_footprint = GeoBoundingBoxWgs84::new(-1.0, 7.0, 170.0, -170.0)?;
+    let provider = SpaceDataProvider::new("USGS/NASA", "Landsat", true)?;
+
+    let obs = SpaceObservationEntry {
+        observation_id: "obs:landsat9:dateline".into(),
+        mission: "Landsat-9".into(),
+        instrument: "OLI-2".into(),
+        target: SpaceObservationTarget::EarthObservation {
+            footprint: wrapped_footprint,
+            region_label: Some("Pacific Dateline".into()),
+        },
+        spectral_regime: SpectralRegime::OpticalVisible,
+        wavelength_range_nm: Some(WavelengthRangeNm::new(430.0, 670.0)?),
+        time_window: TimeWindow::new(1_710_000_000_000, 1_710_000_030_000)?,
+        spatial_resolution: Some(SpatialResolution::GroundSampleDistanceMeters(15.0)),
+        provider,
+        scientific_product: ScientificProductRecord::new(
+            "l9:dl:l2",
+            ScientificProductFormat::GeoTiffCalibratedRadiance,
+            CalibrationLevel::Level2Geophysical,
+            0.025,
+            "C2_L2",
+        )?,
+        previews: Vec::new(),
+    };
+
+    let reg = CrossViewRegistration::new(
+        VerticalReference::OrthometricDem {
+            dem_source: "Copernicus GLO-30".into(),
+            vertical_rmse_m: 2.0,
+        },
+        CorrespondenceMethod::OrbitalWcsAndDemOrthorectification,
+        3.0,
+        4.0,
+    )?;
+
+    let wrapped_patch = obs.to_composite_candidate_patch(
+        "patch:l9:dateline_wrapped",
+        CompositeSourcePlatform::SatelliteEarthObservation,
+        15.0,
+        SurfaceRadiometricClass::OpticalPansharpenedTrueColor,
+        PatchIntegrityState::UneditedClearNative {
+            cloud_or_haze_fraction: 0.02,
+        },
+        reg.clone(),
+        &limits,
+    )?;
+
+    // 1x3 grid across [174, -174]: cell (0, 1) straddles the antimeridian [178, -178]
+    let req_dl = CompositeStitchRequest {
+        target_envelope: dateline_env,
+        grid_rows: 1,
+        grid_cols: 3,
+        policy: CompositeStitchPolicy::default(),
+        candidates: vec![wrapped_patch.clone()],
+    };
+    let plan_dl = plan_globe_composite(&req_dl, &limits, None)?;
+    assert_eq!(plan_dl.clean_optical_cells_count, 3);
+    assert_eq!(plan_dl.uncovered_cells_count, 0);
+    assert!(plan_dl.is_single_instant_observation);
+    assert!(plan_dl.seams.is_empty());
+    assert!(plan_dl.cells[1].bounds.west_lon_deg() > plan_dl.cells[1].bounds.east_lon_deg());
+
+    // Boundary revalidation: localized defect with UneditedClearNative must be rejected even if constructed directly
+    let mut invalid_defect_patch = wrapped_patch.clone();
+    invalid_defect_patch
+        .localized_defects
+        .push(LocalizedPatchDefect {
+            defect_id: "def:invalid_clean".into(),
+            bounds: GeoBoundingBoxWgs84::new(0.0, 2.0, 175.0, 177.0)?,
+            defect_state: PatchIntegrityState::UneditedClearNative {
+                cloud_or_haze_fraction: 0.0,
+            },
+        });
+    let mut bad_req = req_dl.clone();
+    bad_req.candidates = vec![invalid_defect_patch];
+    assert!(matches!(
+        plan_globe_composite(&bad_req, &limits, None),
+        Err(SpaceImageryError::InvalidPatchIntegrity { .. })
+    ));
+
+    // Boundary revalidation: seam timestamp delta overflow across extreme i64 timestamps
+    let mut west_patch = wrapped_patch.clone();
+    west_patch.patch_id = "patch:extreme_early".into();
+    west_patch.footprint = GeoBoundingBoxWgs84::new(0.0, 6.0, 174.0, 180.0)?;
+    west_patch.time_window = TimeWindow::new(i64::MIN, i64::MIN + 10)?;
+
+    let mut east_patch = wrapped_patch;
+    east_patch.patch_id = "patch:extreme_late".into();
+    east_patch.footprint = GeoBoundingBoxWgs84::new(0.0, 6.0, -180.0, -174.0)?;
+    east_patch.time_window = TimeWindow::new(i64::MAX - 10, i64::MAX)?;
+
+    let overflow_req = CompositeStitchRequest {
+        target_envelope: dateline_env,
+        grid_rows: 1,
+        grid_cols: 2,
+        policy: CompositeStitchPolicy::default(),
+        candidates: vec![west_patch, east_patch],
+    };
+    assert!(matches!(
+        plan_globe_composite(&overflow_req, &limits, None),
+        Err(SpaceImageryError::TimestampOverflow { .. })
+    ));
+
+    Ok(())
+}

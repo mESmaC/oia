@@ -1,0 +1,1 @@
+Synthetic fixture, not observed evidence. `synthetic-texture-jpeg.hex` encodes a 32 × 16 RGB gradient made with Windows System.Drawing on 2026-11-03 using RGB = (7x, 15y, 5(x+y)) and its default JPEG encoder. No people, real photograph or external asset. Used only to check derivative labeling and source preservation; not detector accuracy.

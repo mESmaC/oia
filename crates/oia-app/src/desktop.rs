@@ -237,6 +237,60 @@ async fn analyze_image(
     .await
 }
 
+#[derive(Debug, Serialize)]
+struct ResidualExportView {
+    path: String,
+    bytes: usize,
+    sha256: String,
+    source_sha256: String,
+}
+
+#[tauri::command]
+async fn export_residual(
+    state: State<'_, Services>,
+    window: tauri::WebviewWindow,
+    sha256: String,
+) -> Result<Envelope<Option<ResidualExportView>>> {
+    let mut operation = state.begin()?;
+    worker(move || {
+        let snapshot = operation.snapshot(FileKind::Image, &sha256)?;
+        if tools::media_type(snapshot.bytes()) != Some("image/jpeg") {
+            return Err(ToolError::new(
+                "forensic_unsupported",
+                "Residual maps require a JPEG image.",
+            ));
+        }
+        let stem = std::path::Path::new(&snapshot.info.name)
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy();
+        let Some(destination) = rfd::FileDialog::new()
+            .set_parent(&window)
+            .set_title("Save a diagnostic residual map — choose a new filename")
+            .set_file_name(format!("{stem}-residual-diagnostic.png"))
+            .add_filter("Diagnostic PNG", &["png"])
+            .save_file()
+        else {
+            return Ok(envelope(None));
+        };
+        operation.control = operation.control.processing();
+        let bytes = tools::residual_map(&snapshot, &operation.control)?;
+        use sha2::{Digest, Sha256};
+        let sha256 = format!("{:x}", Sha256::digest(&bytes));
+        let staged = PreparedExport::prepare(&destination, &bytes, &operation.control)?;
+        operation.publish(|_| {
+            let path = staged.commit(&operation.control)?;
+            Ok(envelope(Some(ResidualExportView {
+                path: path.to_string_lossy().into_owned(),
+                bytes: bytes.len(),
+                sha256,
+                source_sha256: snapshot.info.sha256,
+            })))
+        })
+    })
+    .await
+}
+
 /// Serves the held image snapshot's original bytes to the page, read-only, keyed by its
 /// SHA-256. Anything else under the scheme is a 404. No path, file or other state is
 /// reachable through it, and nothing is cached. The response allows cross-origin reads
@@ -404,6 +458,7 @@ pub fn run() -> std::result::Result<(), tauri::Error> {
             search_document,
             export_cleaned,
             analyze_image,
+            export_residual,
             cancel_operation,
             globe_view,
             globe_select,

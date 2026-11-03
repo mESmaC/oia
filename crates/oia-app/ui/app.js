@@ -125,6 +125,7 @@ function renderShell() {
   for (const id of ['query', 'search-submit', 'clear-search']) $(id).disabled = busy || !documentView;
   $('media-run').disabled = $('run-forensics').disabled = busy || !imageView;
   $('media-empty-action').disabled = busy;
+  $('export-residual').disabled = busy || !imageView || !imageView.profile.startsWith('oia-jpeg');
 
   // Session instrument
   $('session-title').textContent = sessionRecords ? 'Records in this session' : 'No session records';
@@ -270,6 +271,7 @@ function clearSearch(focusQuery) {
 function openImage(target = 'privacy') {
   operation('open_image', {}, 'Choose a PNG or JPEG · inspection begins after selection', data => {
     imageView = data; selectedRow = null;
+    $('residual-result').hidden = true;
     forensicView = null; selectedBlock = null; // a new snapshot invalidates any earlier report
     $('privacy-empty').hidden = true; $('privacy-loaded').hidden = false; $('export-result').hidden = true;
     $('insp-img-name').textContent = data.file.name;
@@ -543,6 +545,14 @@ $('open-image').onclick = () => openImage(instrument === 'media' ? 'media' : 'pr
 $('media-empty-action').onclick = () => openImage('media');
 $('media-run').onclick = runForensics;
 $('run-forensics').onclick = runForensics;
+$('export-residual').onclick = () => {
+  if (!imageView) return;
+  operation('export_residual', { sha256: imageView.file.sha256 }, 'Choose a new filename · computing a labeled JPEG residual diagnostic follows', data => {
+    const result = $('residual-result'); result.hidden = false;
+    result.replaceChildren(node('b', 'Derived diagnostic PNG saved · JPEG coverage partial'), node('div', data.path), node('div', `${fmt(data.bytes)} bytes · quality 90 · gain 8 · original unchanged`), node('div', `Source SHA-256 ${data.source_sha256}`), node('div', `PNG SHA-256 ${data.sha256}`));
+    return 'Saved residual diagnostic · JPEG entropy unverified · not an authenticity verdict';
+  });
+};
 $('media-image').onload = positionBlocks;
 window.addEventListener('resize', () => { if (instrument === 'media') positionBlocks(); });
 // Any layout change of the stage (Focus, inspector, narrow layout) reprojects the overlays.

@@ -104,3 +104,35 @@ pub fn analyze_image(snapshot: &Snapshot, control: &Control) -> Result<ForensicV
         report: analysis.report,
     })
 }
+
+/// Produce the kernel's labeled diagnostic PNG from the retained JPEG bytes.
+/// This is a conventional derivative; JPEG decoder coverage remains partial.
+pub fn residual_map(snapshot: &Snapshot, control: &Control) -> Result<Vec<u8>> {
+    require_kind(snapshot, FileKind::Image)?;
+    control.check()?;
+    if media_type(snapshot.bytes()) != Some("image/jpeg") {
+        return Err(ToolError::new(
+            "forensic_unsupported",
+            "Residual maps require a JPEG image. PNG recompression residuals are not applicable.",
+        ));
+    }
+    let mut settings = config();
+    settings.emit_residual_map = true;
+    let analysis = analyze(snapshot.bytes(), &settings, || {
+        control.check().map_err(|e| {
+            if e.code == "cancelled" {
+                StopReason::Cancelled
+            } else {
+                StopReason::DeadlineExceeded
+            }
+        })
+    })
+    .map_err(map_error)?;
+    control.check()?;
+    analysis.residual_png.ok_or_else(|| {
+        ToolError::new(
+            "forensic_unsupported",
+            "The kernel produced no residual map; nothing was saved.",
+        )
+    })
+}

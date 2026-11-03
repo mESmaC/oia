@@ -170,6 +170,9 @@ pub enum ReviewLedgerError {
     MateriallyMisleadingWithoutFaultCategory {
         review_version_id: String,
     },
+    HeadlineMismatchMissingHeadlineAnchor {
+        review_version_id: String,
+    },
     AllocationFailed,
 }
 
@@ -255,6 +258,10 @@ impl fmt::Display for ReviewLedgerError {
             Self::MateriallyMisleadingWithoutFaultCategory { review_version_id } => write!(
                 f,
                 "materially misleading review {review_version_id} must declare at least one fault category"
+            ),
+            Self::HeadlineMismatchMissingHeadlineAnchor { review_version_id } => write!(
+                f,
+                "headline/caption mismatch review {review_version_id} requires a headline passage anchor on the claim"
             ),
             Self::AllocationFailed => write!(f, "memory allocation failed"),
         }
@@ -492,6 +499,15 @@ impl<'a> ClaimReviewLedger<'a> {
                     review_version_id: entry.review_version_id.to_owned(),
                 },
             );
+        }
+        if entry
+            .fault_categories
+            .contains(&FaultCategory::HeadlineCaptionMismatch)
+            && self.claim.headline_passage_id.is_none()
+        {
+            return Err(ReviewLedgerError::HeadlineMismatchMissingHeadlineAnchor {
+                review_version_id: entry.review_version_id.to_owned(),
+            });
         }
 
         self.validate_evidence(&entry, entry.supporting_evidence)?;

@@ -445,6 +445,17 @@ fn rejects_invalid_reviews_without_mutating_history_or_projection() {
         }
     ));
 
+    let headline_mismatch_without_anchor = ReviewEntry {
+        assessment: ClaimAssessmentState::MateriallyMisleading,
+        contrary_evidence: CONTRARY_EVIDENCE,
+        fault_categories: &[FaultCategory::HeadlineCaptionMismatch],
+        ..candidate_review()
+    };
+    assert!(matches!(
+        rejected_without_mutation(&mut ledger, headline_mismatch_without_anchor),
+        ReviewLedgerError::HeadlineMismatchMissingHeadlineAnchor { .. }
+    ));
+
     let excessive_evidence = ReviewEntry {
         assessment: ClaimAssessmentState::Supported,
         supporting_evidence: TWO_SUPPORTING_PASSAGES,

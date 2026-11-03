@@ -90,7 +90,7 @@ For any claim, event, or document cluster, the earliest-known-source view traces
 3. **Mandatory `coverage_qualification`:** Every earliest-known-source result carries:
    - `scope`: `"retained_and_cataloged_workspace_records"`,
    - `omitted_reference_only_records`: IDs of known upstream records whose payloads are `reference_only`, `restricted`, or `missing`,
-   - `unresolved_external_citations`: explicit caller-supplied `(citing_record_version_id, reference)` bibliographic references not yet ingested as `SourceRecord`s, filtered to records reached during upstream traversal; references are not inferred or scraped from untrusted document prose,
+   - `unresolved_external_citations`: explicit caller-supplied `(citing_record_version_id, reference)` bibliographic references not yet ingested as `SourceRecord`s, filtered to records reached during upstream traversal; references are not inferred or scraped from untrusted document prose. Each reference is limited to 4,096 UTF-8 bytes before cloning, in addition to the configured citation-count bound,
    - `detected_cycles`: all cycle witness paths encountered during upstream traversal, excluding unrelated graph cycles.
 
 ## 5. Corroboration independence accounting

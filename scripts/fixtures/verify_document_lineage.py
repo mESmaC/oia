@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 MAX_FILE_BYTES = 1024 * 1024
 MAX_GRAPH_NODES = 200
 MAX_GRAPH_EDGES = 500
+MAX_EXTERNAL_CITATION_REFERENCE_BYTES = 4096
 LINEAGE_EDGE_KINDS = ("republishes", "quotes", "cites", "translates")
 VERSION_CHAIN_KINDS = ("supersedes", "alternate_redaction", "preprint_version")
 
@@ -549,6 +550,10 @@ def evaluate_corroboration_query(
         reference = citation["reference"]
         require(citing_id in records, f"Unknown external-citation record: {citing_id}")
         require(bool(reference.strip()), "External bibliographic reference must not be empty")
+        require(
+            len(reference.encode("utf-8")) <= MAX_EXTERNAL_CITATION_REFERENCE_BYTES,
+            "External bibliographic reference exceeds 4096 UTF-8 bytes",
+        )
         key = (citing_id, reference)
         if citing_id in reached_records and key not in seen_external:
             seen_external.add(key)

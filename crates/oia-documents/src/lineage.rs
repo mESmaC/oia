@@ -12,6 +12,9 @@ use std::ops::Range;
 
 use crate::StopReason;
 
+/// Maximum UTF-8 bytes accepted for one caller-supplied external bibliographic reference.
+pub const MAX_EXTERNAL_CITATION_REFERENCE_BYTES: usize = 4_096;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LineageLimit {
     Nodes,
@@ -1796,6 +1799,12 @@ pub fn evaluate_claim_corroboration(
             return Err(LineageError::InvalidExternalCitation {
                 citing_record_version_id: citation.citing_record_version_id.clone(),
                 reason: "bibliographic reference must not be empty",
+            });
+        }
+        if citation.reference.len() > MAX_EXTERNAL_CITATION_REFERENCE_BYTES {
+            return Err(LineageError::InvalidExternalCitation {
+                citing_record_version_id: citation.citing_record_version_id.clone(),
+                reason: "bibliographic reference exceeds 4096 UTF-8 bytes",
             });
         }
         if reached_records.contains(&citation.citing_record_version_id) {

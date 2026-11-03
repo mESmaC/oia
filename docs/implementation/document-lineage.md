@@ -96,7 +96,9 @@ graph algorithms with explicit `LineageLimits`, fallible allocations
      unrelated restricted/reference-only/missing records and unrelated cycles do
      not appear. `unresolved_external_citations` are bounded, deterministic,
      caller-supplied `(citing_record_version_id, reference)` pairs filtered to
-     reached records; the kernel does not infer or scrape citations from prose.
+     reached records. Each reference is limited to 4,096 UTF-8 bytes before cloning,
+     in addition to the citation-count bound; the kernel does not infer or scrape
+     citations from prose.
    - Parses RFC 3339 timestamps (`parse_rfc3339_utc_nanos`) requiring strict
      ASCII digit fields and explicit timezone offsets into UTC instants while
      preserving original strings for display; preserves undated upstream roots

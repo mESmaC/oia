@@ -875,6 +875,30 @@ fn claim_stance_and_coverage_are_scoped_to_reached_ancestry() -> Result<(), Box<
             .collect::<Vec<_>>()
     );
 
+    let oversized_citations = vec![UnresolvedExternalCitation {
+        citing_record_version_id: "retracted-advisory-v1".to_owned(),
+        reference: "x".repeat(oia_documents::lineage::MAX_EXTERNAL_CITATION_REFERENCE_BYTES + 1),
+    }];
+    assert_eq!(
+        evaluate_claim_corroboration(
+            ClaimCorroborationInputs {
+                supporting: &["retracted-advisory-v1".to_owned()],
+                contradicting: &[],
+                external_citations: &oversized_citations,
+            },
+            &records,
+            &derivations,
+            &relations,
+            &artifacts,
+            limits,
+            || Ok(()),
+        ),
+        Err(LineageError::InvalidExternalCitation {
+            citing_record_version_id: "retracted-advisory-v1".to_owned(),
+            reason: "bibliographic reference exceeds 4096 UTF-8 bytes",
+        })
+    );
+
     let coverage = evaluate_claim_corroboration(
         ClaimCorroborationInputs {
             supporting: &["restricted-deck-log-v1".to_owned()],

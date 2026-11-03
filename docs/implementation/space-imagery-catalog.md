@@ -38,9 +38,13 @@ The `oia_analysis::space_imagery` module enforces four analytical and evidence i
    and declared clock offsets. Feeds enforce host matching and reject bookmarks created for other feeds.
 4. **Exact Mosaic Coverage Accounting (`GEO-04`):** Terrestrial mosaic queries evaluate all contributing observation
    footprints (`GeoBoundingBoxWgs84`). Rather than checking isolated sample points or corners, `evaluate_mosaic_coverage`
-   computes exact clipped envelope rectangle union coverage via latitude slice decomposition. If coverage across the envelope
-   is incomplete, the report returns `MosaicCoverageAssessment::PartialCoverageWithGaps` with exact uncovered area fraction
-   and uncovered slice gap counts. Seamless continuous coverage is never assumed or claimed when coverage is partial.
+   computes clipped envelope rectangle-union coverage via latitude slice decomposition across non-wrapped sub-intervals.
+   Antimeridian dateline crossings on both query envelopes and observation footprints are decomposed into non-wrapped
+   pieces (`[west, 180.0]` and `[-180.0, east]`), preventing clamp panics and omission of wrapped coverage.
+   The resulting coverage assessment reports `uncovered_angular_area_fraction` as a planar angular-coordinate area fraction
+   ($(\Delta\text{lat}^\circ \times \Delta\text{lon}^\circ) / (\Delta\text{lat}_\text{env}^\circ \times \Delta\text{lon}_\text{env}^\circ)$)
+   with latitude slice cut tolerance $1\times 10^{-7\circ}$ and longitude merge tolerance $1\times 10^{-9\circ}$ (rather than
+   geodetic ellipsoidal ground area). Seamless continuous coverage is never assumed or claimed when coverage is partial.
 5. **Geometry-Aware Baseline Comparison Without Fabricated Detections (`INTEL-03`):** Pairwise baseline comparison
    (`compare_baselines`) evaluates viewing and illumination geometry differences (sun elevation delta, off-nadir angle delta,
    seasonal day gap, resolution ratio) and flags confounding limitations (`SignificantSunElevationDifference`,
@@ -76,7 +80,7 @@ cargo +1.99.0 test -p oia-analysis --test space_imagery_contract --locked
 cargo +1.99.0 run -p oia-analysis --example inspect-space-observations --locked
 ```
 
-Six contract tests in `space_imagery_contract.rs` verify:
+Nine contract tests in `space_imagery_contract.rs` verify:
 1. `scientific_provenance_and_outreach_rendering_integrity`: FITS metadata preservation, Level-1B calibration, stacking
    residuals, outreach preview labeling, and strict outreach exclusion in queries.
 2. `mosaic_coverage_and_absence_without_seamless_illusion`: Evaluation of empty, partial, four-corner disconnected, and complete
@@ -88,6 +92,12 @@ Six contract tests in `space_imagery_contract.rs` verify:
    pinning, and event timestamp calculation from stream delays.
 6. `geometry_aware_baseline_comparison_never_fabricates_detections`: Baseline comparison returns `RasterDetectorNotPerformed`
    with zero candidates, preventing fabricated detections while evaluating geometry limitations.
+7. `dateline_crossing_mosaic_union_and_wrapped_footprint`: Correctly handles antimeridian crossings in query envelopes
+   and observation footprints without clamp panics or dropped coverage.
+8. `bookmark_timestamp_checked_arithmetic_overflow`: Enforces checked integer arithmetic on bookmark event timestamps and
+   propagation delay conversions, rejecting overflow with typed errors.
+9. `baseline_comparison_revalidates_geometry_inputs`: Revalidates input capture geometries at the analysis boundary,
+   rejecting non-finite or invalid parameters.
 
 ## Limitations and Remaining Scope
 

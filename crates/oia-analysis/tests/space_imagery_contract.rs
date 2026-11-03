@@ -154,11 +154,11 @@ fn mosaic_coverage_and_absence_without_seamless_illusion() -> Result<(), Box<dyn
     // Critical contract check: Partial coverage MUST NOT claim complete or seamless coverage
     match report_partial.assessment {
         MosaicCoverageAssessment::PartialCoverageWithGaps {
-            uncovered_area_fraction,
+            uncovered_angular_area_fraction,
             uncovered_bands_count,
             ..
         } => {
-            assert!(uncovered_area_fraction > 0.0);
+            assert!(uncovered_angular_area_fraction > 0.0);
             assert!(uncovered_bands_count > 0);
         }
         _ => return Err("expected PartialCoverageWithGaps".into()),
@@ -244,12 +244,12 @@ fn mosaic_coverage_and_absence_without_seamless_illusion() -> Result<(), Box<dyn
     let corner_report = corner_catalog.evaluate_mosaic_coverage(&corner_env, None, &limits)?;
     match corner_report.assessment {
         MosaicCoverageAssessment::PartialCoverageWithGaps {
-            uncovered_area_fraction,
+            uncovered_angular_area_fraction,
             uncovered_bands_count,
             ..
         } => {
             // Envelope area is 100, four 1x1 corners cover 4 units; uncovered fraction is 96%
-            assert!((uncovered_area_fraction - 0.96).abs() < 1e-4);
+            assert!((uncovered_angular_area_fraction - 0.96).abs() < 1e-4);
             assert!(uncovered_bands_count > 0);
         }
         MosaicCoverageAssessment::CompleteVerifiedCoverage { .. } => {
@@ -598,6 +598,213 @@ fn geometry_aware_baseline_comparison_never_fabricates_detections()
     assert_eq!(self_report.sun_elevation_diff_deg, 0.0);
     assert_eq!(self_report.off_nadir_diff_deg, 0.0);
     assert_eq!(self_report.seasonal_day_gap, 0);
+
+    Ok(())
+}
+
+#[test]
+fn dateline_crossing_mosaic_union_and_wrapped_footprint() -> Result<(), Box<dyn std::error::Error>>
+{
+    let limits = SpaceCatalogLimits::default();
+    let mut catalog = SpaceImageryCatalog::new();
+    let provider = SpaceDataProvider::new("DatelineTest", "Archive", true)?;
+
+    // 1. Dateline query (0, 10, 170, -170) with one tile (0, 10, 170, 180)
+    let query_dateline = GeoBoundingBoxWgs84::new(0.0, 10.0, 170.0, -170.0)?;
+    let tile_east = GeoBoundingBoxWgs84::new(0.0, 10.0, 170.0, 180.0)?;
+
+    let entry_east = SpaceObservationEntry {
+        observation_id: "obs:dateline:east".into(),
+        mission: "DatelineMission".into(),
+        instrument: "DL-1".into(),
+        target: SpaceObservationTarget::EarthObservation {
+            footprint: tile_east,
+            region_label: None,
+        },
+        spectral_regime: SpectralRegime::OpticalVisible,
+        wavelength_range_nm: None,
+        time_window: TimeWindow::new(1_700_000_000_000, 1_700_000_010_000)?,
+        spatial_resolution: Some(SpatialResolution::GroundSampleDistanceMeters(20.0)),
+        provider: provider.clone(),
+        scientific_product: ScientificProductRecord::new(
+            "p:dl:east",
+            ScientificProductFormat::FitsPrimaryImage,
+            CalibrationLevel::Level1BGeoreferenced,
+            1.0,
+            "v1",
+        )?,
+        previews: Vec::new(),
+    };
+    catalog.add_observation(entry_east, &limits)?;
+
+    let report_dateline = catalog.evaluate_mosaic_coverage(&query_dateline, None, &limits)?;
+    match report_dateline.assessment {
+        MosaicCoverageAssessment::PartialCoverageWithGaps {
+            uncovered_angular_area_fraction,
+            uncovered_bands_count,
+            ..
+        } => {
+            // Half the longitudinal span [170, -170] is covered ([170, 180]), half is uncovered ([-180, -170])
+            assert!((uncovered_angular_area_fraction - 0.5).abs() < 1e-4);
+            assert!(uncovered_bands_count > 0);
+        }
+        _ => return Err("expected PartialCoverageWithGaps for half-covered dateline query".into()),
+    }
+
+    // 2. Wrapped footprint (0, 10, 170, -170) fully containing ordinary query (0, 10, 175, 179)
+    let mut catalog_wrapped = SpaceImageryCatalog::new();
+    let query_ordinary = GeoBoundingBoxWgs84::new(0.0, 10.0, 175.0, 179.0)?;
+    let footprint_wrapped = GeoBoundingBoxWgs84::new(0.0, 10.0, 170.0, -170.0)?;
+
+    let entry_wrapped = SpaceObservationEntry {
+        observation_id: "obs:dateline:wrapped".into(),
+        mission: "DatelineMission".into(),
+        instrument: "DL-1".into(),
+        target: SpaceObservationTarget::EarthObservation {
+            footprint: footprint_wrapped,
+            region_label: None,
+        },
+        spectral_regime: SpectralRegime::OpticalVisible,
+        wavelength_range_nm: None,
+        time_window: TimeWindow::new(1_700_000_000_000, 1_700_000_010_000)?,
+        spatial_resolution: Some(SpatialResolution::GroundSampleDistanceMeters(20.0)),
+        provider,
+        scientific_product: ScientificProductRecord::new(
+            "p:dl:wrapped",
+            ScientificProductFormat::FitsPrimaryImage,
+            CalibrationLevel::Level1BGeoreferenced,
+            1.0,
+            "v1",
+        )?,
+        previews: Vec::new(),
+    };
+    catalog_wrapped.add_observation(entry_wrapped, &limits)?;
+
+    let report_ordinary =
+        catalog_wrapped.evaluate_mosaic_coverage(&query_ordinary, None, &limits)?;
+    match report_ordinary.assessment {
+        MosaicCoverageAssessment::CompleteVerifiedCoverage {
+            observation_count,
+            min_resolution_m,
+            max_resolution_m,
+        } => {
+            assert_eq!(observation_count, 1);
+            assert_eq!(min_resolution_m, Some(20.0));
+            assert_eq!(max_resolution_m, Some(20.0));
+        }
+        _ => {
+            return Err(
+                "expected CompleteVerifiedCoverage for wrapped footprint covering query".into(),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn bookmark_timestamp_checked_arithmetic_overflow() -> Result<(), Box<dyn std::error::Error>> {
+    let feed_live = SpaceMissionFeed::new(
+        "feed:iss:live",
+        "ISS",
+        "ISS Live",
+        StreamClassification::LiveCamera,
+        MissionFeedStatus::NominalActive,
+        1, // +1 ms clock offset
+    )?;
+
+    // display_utc_ms = i64::MAX with clock offset +1 must overflow checked addition
+    let err_live = feed_live.create_bookmark(
+        "bm:overflow:live",
+        i64::MAX,
+        "Overflowing timestamp",
+        10,
+        "None",
+    );
+    assert!(matches!(
+        err_live,
+        Err(SpaceImageryError::TimestampOverflow { .. })
+    ));
+
+    // DelayedTransmission with huge delay seconds overflowing integer conversion
+    let feed_delayed = SpaceMissionFeed::new(
+        "feed:probe:deep",
+        "DeepSpace",
+        "Deep Space Video",
+        StreamClassification::DelayedTransmission {
+            delay_seconds: 1e20,
+            delay_reason: "Extreme interstellar transit".into(),
+        },
+        MissionFeedStatus::NominalActive,
+        0,
+    )?;
+
+    let err_delayed = feed_delayed.create_bookmark(
+        "bm:overflow:delayed",
+        1_000_000_000,
+        "Overflowing delay",
+        10,
+        "None",
+    );
+    assert!(matches!(
+        err_delayed,
+        Err(SpaceImageryError::TimestampOverflow { .. })
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn baseline_comparison_revalidates_geometry_inputs() -> Result<(), Box<dyn std::error::Error>> {
+    let limits = SpaceCatalogLimits::default();
+    let mut catalog = SpaceImageryCatalog::new();
+    let env = GeoBoundingBoxWgs84::new(0.0, 1.0, 0.0, 1.0)?;
+    let provider = SpaceDataProvider::new("Prov", "Archive", true)?;
+
+    let entry = SpaceObservationEntry {
+        observation_id: "obs:geom:test".into(),
+        mission: "TestMission".into(),
+        instrument: "TestInst".into(),
+        target: SpaceObservationTarget::EarthObservation {
+            footprint: env,
+            region_label: None,
+        },
+        spectral_regime: SpectralRegime::OpticalVisible,
+        wavelength_range_nm: None,
+        time_window: TimeWindow::new(1_700_000_000_000, 1_700_000_010_000)?,
+        spatial_resolution: Some(SpatialResolution::GroundSampleDistanceMeters(10.0)),
+        provider,
+        scientific_product: ScientificProductRecord::new(
+            "p:geom:test",
+            ScientificProductFormat::FitsPrimaryImage,
+            CalibrationLevel::Level1BGeoreferenced,
+            1.0,
+            "v1",
+        )?,
+        previews: Vec::new(),
+    };
+    catalog.add_observation(entry, &limits)?;
+
+    // Directly constructed invalid geometry (bypass constructor)
+    let invalid_geom = ImageryCaptureGeometry {
+        sun_elevation_deg: f64::NAN,
+        sun_azimuth_deg: 0.0,
+        off_nadir_angle_deg: 0.0,
+        day_of_year: 0,
+    };
+    let valid_geom = ImageryCaptureGeometry::new(45.0, 180.0, 5.0, 100)?;
+
+    let err_comp = catalog.compare_baselines(
+        "obs:geom:test",
+        "obs:geom:test",
+        &invalid_geom,
+        &valid_geom,
+        &limits,
+    );
+    assert!(matches!(
+        err_comp,
+        Err(SpaceImageryError::InvalidCoordinates { .. })
+    ));
 
     Ok(())
 }

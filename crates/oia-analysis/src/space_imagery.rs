@@ -11,17 +11,18 @@
 //!    and false-color composites are strictly labeled and **NEVER** presented as natural
 //!    observations or physical truth measurements.
 //! 2. **Continuous Coverage Not Implied (`GEO-04`, `A04`):** Mosaic queries over terrestrial
-//!    envelopes compute exact clipped polygon/interval union coverage. Seamless continuous coverage
-//!    is never assumed or claimed when coverage is partial.
+//!    envelopes compute exact clipped polygon/interval union coverage, supporting antimeridian
+//!    dateline crossings on both envelopes and footprints. Seamless continuous coverage is never
+//!    assumed or claimed when coverage is partial.
 //! 3. **Stream Classification Rigor (`SPACE-03`, `A05`):** Public space mission feeds are classified
 //!    into distinct, immutable categories: `LiveCamera`, `DelayedTransmission`, `ReplayArchive`,
 //!    `CommentaryBroadcast`, and `SimulationOrRecreation`. Simulated animations or replays never
 //!    masquerade as live camera telemetry. Bookmarks pin feed identity and calculate event time from
-//!    stream timing metadata.
-//! 4. **Geometry-Aware Baseline Comparison (`INTEL-03`):** Baseline comparisons retain capture
-//!    geometry (sun elevation, off-nadir angle, seasonal baseline) and flag confounding limitations.
-//!    Without an actual pixel detector or pinned evidence, change detection is reported as
-//!    `RasterDetectorNotPerformed` and never fabricates candidates or synthetic anomaly scores.
+//!    stream timing metadata using checked arithmetic.
+//! 4. **Geometry-Aware Baseline Comparison (`INTEL-03`):** Baseline comparisons revalidate input
+//!    capture geometries at the analysis boundary, retain capture geometry, and flag confounding
+//!    limitations. Without an actual pixel detector or pinned evidence, change detection is reported
+//!    as `RasterDetectorNotPerformed` and never fabricates candidates or synthetic anomaly scores.
 
 use std::error::Error;
 use std::fmt;
@@ -94,6 +95,10 @@ pub enum SpaceImageryError {
     InvalidTimeWindow {
         reason: &'static str,
     },
+    TimestampOverflow {
+        operation: &'static str,
+        reason: &'static str,
+    },
     InvalidFeedAssociation {
         bookmark_feed_id: String,
         host_feed_id: String,
@@ -144,6 +149,9 @@ impl fmt::Display for SpaceImageryError {
                 write!(f, "invalid spatial coordinates: {reason}")
             }
             Self::InvalidTimeWindow { reason } => write!(f, "invalid time window: {reason}"),
+            Self::TimestampOverflow { operation, reason } => {
+                write!(f, "timestamp overflow during '{operation}': {reason}")
+            }
             Self::InvalidFeedAssociation {
                 bookmark_feed_id,
                 host_feed_id,
@@ -903,7 +911,7 @@ pub enum MissionFeedStatus {
 /// Bookmark on a mission stream feed (`SPACE-03`).
 ///
 /// Pins source feed identity, stream classification interpretation, and explicit
-/// distinct display vs. derived event timestamps.
+/// distinct display vs. derived event timestamps with checked arithmetic.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MissionFeedBookmark {
     pub bookmark_id: String,
@@ -989,7 +997,14 @@ impl SpaceMissionFeed {
     }
 
     /// Creates a bookmark bound to this feed, preserving the stream classification snapshot,
-    /// clock offset, and calculating estimated event time from display time.
+    /// clock offset, and calculating estimated event time from display time using checked arithmetic.
+    ///
+    /// ### Timing Sign Convention and Invariants (`C1`)
+    /// - `display_utc_ms`: UTC epoch timestamp at presentation/viewing.
+    /// - `declared_clock_offset_ms`: Clock correction added to stream time (`event = display + offset`).
+    /// - `DelayedTransmission`: Propagation delay in milliseconds $D = \text{round}(\text{delay\_seconds} \times 1000.0)$.
+    ///   The physical event occurred earlier: `event = display - D + offset`.
+    /// - Arithmetic is strictly checked against `i64` bounds; overflow returns `SpaceImageryError::TimestampOverflow`.
     pub fn create_bookmark(
         &self,
         bookmark_id: impl Into<String>,
@@ -1000,21 +1015,41 @@ impl SpaceMissionFeed {
     ) -> Result<MissionFeedBookmark, SpaceImageryError> {
         let estimated_event_utc_ms = match &self.classification {
             StreamClassification::DelayedTransmission { delay_seconds, .. } => {
-                let delay_ms = (delay_seconds * 1000.0).round() as i64;
-                display_utc_ms
-                    .saturating_sub(delay_ms)
-                    .saturating_add(self.declared_clock_offset_ms)
+                let delay_ms_f64 = (*delay_seconds * 1000.0).round();
+                if !delay_ms_f64.is_finite()
+                    || delay_ms_f64 < 0.0
+                    || delay_ms_f64 > (i64::MAX as f64)
+                {
+                    return Err(SpaceImageryError::TimestampOverflow {
+                        operation: "delay_seconds_to_ms",
+                        reason: "propagation delay seconds conversion to millisecond integer overflowed",
+                    });
+                }
+                let delay_ms = delay_ms_f64 as i64;
+                let event_before_offset = display_utc_ms.checked_sub(delay_ms).ok_or(
+                    SpaceImageryError::TimestampOverflow {
+                        operation: "display_utc_ms - delay_ms",
+                        reason: "display timestamp minus delay underflowed i64",
+                    },
+                )?;
+                event_before_offset
+                    .checked_add(self.declared_clock_offset_ms)
+                    .ok_or(SpaceImageryError::TimestampOverflow {
+                        operation: "event_time + clock_offset",
+                        reason: "event timestamp plus clock offset overflowed i64",
+                    })?
             }
             StreamClassification::ReplayArchive {
                 original_event_utc_ms,
             } => *original_event_utc_ms,
-            StreamClassification::LiveCamera => {
-                display_utc_ms.saturating_add(self.declared_clock_offset_ms)
-            }
-            StreamClassification::CommentaryBroadcast
-            | StreamClassification::SimulationOrRecreation { .. } => {
-                display_utc_ms.saturating_add(self.declared_clock_offset_ms)
-            }
+            StreamClassification::LiveCamera
+            | StreamClassification::CommentaryBroadcast
+            | StreamClassification::SimulationOrRecreation { .. } => display_utc_ms
+                .checked_add(self.declared_clock_offset_ms)
+                .ok_or(SpaceImageryError::TimestampOverflow {
+                    operation: "display_utc_ms + clock_offset",
+                    reason: "display timestamp plus clock offset overflowed i64",
+                })?,
         };
 
         let bm = MissionFeedBookmark {
@@ -1074,9 +1109,12 @@ pub enum MosaicCoverageAssessment {
         max_resolution_m: Option<f64>,
     },
     /// Partial coverage with identified gaps or missing scenes.
+    ///
+    /// Evaluates planar coordinate angular area fraction ($(\Delta\text{lat}^\circ \times \Delta\text{lon}^\circ)$)
+    /// with latitude cut tolerance $1\times 10^{-7\circ}$ and longitude merge tolerance $1\times 10^{-9\circ}$.
     PartialCoverageWithGaps {
         contributing_observation_count: usize,
-        uncovered_area_fraction: f64,
+        uncovered_angular_area_fraction: f64,
         uncovered_bands_count: usize,
         diagnostic: String,
     },
@@ -1108,32 +1146,41 @@ impl ImageryCaptureGeometry {
         off_nadir_angle_deg: f64,
         day_of_year: u32,
     ) -> Result<Self, SpaceImageryError> {
-        if !sun_elevation_deg.is_finite() || !(-90.0..=90.0).contains(&sun_elevation_deg) {
-            return Err(SpaceImageryError::InvalidCoordinates {
-                reason: "sun elevation must be in [-90.0, 90.0] degrees",
-            });
-        }
-        if !sun_azimuth_deg.is_finite() || !(0.0..360.0).contains(&sun_azimuth_deg) {
-            return Err(SpaceImageryError::InvalidCoordinates {
-                reason: "sun azimuth must be in [0.0, 360.0) degrees",
-            });
-        }
-        if !off_nadir_angle_deg.is_finite() || !(0.0..=90.0).contains(&off_nadir_angle_deg) {
-            return Err(SpaceImageryError::InvalidCoordinates {
-                reason: "off-nadir angle must be in [0.0, 90.0] degrees",
-            });
-        }
-        if !(1..=366).contains(&day_of_year) {
-            return Err(SpaceImageryError::InvalidTimeWindow {
-                reason: "day of year must be in 1..=366",
-            });
-        }
-        Ok(Self {
+        let g = Self {
             sun_elevation_deg,
             sun_azimuth_deg,
             off_nadir_angle_deg,
             day_of_year,
-        })
+        };
+        g.validate()?;
+        Ok(g)
+    }
+
+    pub fn validate(&self) -> Result<(), SpaceImageryError> {
+        if !self.sun_elevation_deg.is_finite() || !(-90.0..=90.0).contains(&self.sun_elevation_deg)
+        {
+            return Err(SpaceImageryError::InvalidCoordinates {
+                reason: "sun elevation must be finite and within [-90.0, 90.0] degrees",
+            });
+        }
+        if !self.sun_azimuth_deg.is_finite() || !(0.0..360.0).contains(&self.sun_azimuth_deg) {
+            return Err(SpaceImageryError::InvalidCoordinates {
+                reason: "sun azimuth must be finite and within [0.0, 360.0) degrees",
+            });
+        }
+        if !self.off_nadir_angle_deg.is_finite()
+            || !(0.0..=90.0).contains(&self.off_nadir_angle_deg)
+        {
+            return Err(SpaceImageryError::InvalidCoordinates {
+                reason: "off-nadir angle must be finite and within [0.0, 90.0] degrees",
+            });
+        }
+        if !(1..=366).contains(&self.day_of_year) {
+            return Err(SpaceImageryError::InvalidTimeWindow {
+                reason: "day of year must be in 1..=366",
+            });
+        }
+        Ok(())
     }
 }
 
@@ -1287,6 +1334,9 @@ impl SpaceImageryCatalog {
     }
 
     /// Evaluates mosaic coverage for a terrestrial envelope using exact clipped rectangle union (`GEO-04`).
+    ///
+    /// Decomposes antimeridian-crossing envelopes and footprints into non-wrapped sub-intervals,
+    /// preventing clamp panics and omission of wrapped coverage.
     pub fn evaluate_mosaic_coverage(
         &self,
         envelope: &GeoBoundingBoxWgs84,
@@ -1356,7 +1406,7 @@ impl SpaceImageryCatalog {
             } else {
                 MosaicCoverageAssessment::PartialCoverageWithGaps {
                     contributing_observation_count: footprints.len(),
-                    uncovered_area_fraction: uncovered_fraction,
+                    uncovered_angular_area_fraction: uncovered_fraction,
                     uncovered_bands_count: uncovered_bands,
                     diagnostic: format!(
                         "Mosaic incomplete: {:.1}% of envelope uncovered across {} latitude slice gaps",
@@ -1376,9 +1426,9 @@ impl SpaceImageryCatalog {
 
     /// Performs pairwise geometry and observational compatibility comparison (`INTEL-03`).
     ///
-    /// Evaluates viewing geometry, seasonal gap, and resolution ratio. Without attached pixel
-    /// detector outputs or pinned evidence, status is `RasterDetectorNotPerformed` and no change
-    /// candidates or synthetic anomaly scores are fabricated.
+    /// Revalidates input capture geometries at the analysis boundary and evaluates viewing geometry,
+    /// seasonal gap, and resolution ratio. Without attached pixel detector outputs or pinned evidence,
+    /// status is `RasterDetectorNotPerformed` and no change candidates or synthetic anomaly scores are fabricated.
     pub fn compare_baselines(
         &self,
         baseline_id: &str,
@@ -1387,6 +1437,10 @@ impl SpaceImageryCatalog {
         comparison_geom: &ImageryCaptureGeometry,
         _limits: &SpaceCatalogLimits,
     ) -> Result<ImageryChangeReport, SpaceImageryError> {
+        // C2: Revalidate both input capture geometries at analysis boundary
+        baseline_geom.validate()?;
+        comparison_geom.validate()?;
+
         let baseline = self
             .observations
             .iter()
@@ -1414,11 +1468,25 @@ impl SpaceImageryCatalog {
             (
                 Some(SpatialResolution::GroundSampleDistanceMeters(b)),
                 Some(SpatialResolution::GroundSampleDistanceMeters(c)),
-            ) if b > 0.0 => Some(c / b),
+            ) if b > 0.0 && c > 0.0 && b.is_finite() && c.is_finite() => {
+                let ratio = c / b;
+                if ratio.is_finite() && ratio > 0.0 {
+                    Some(ratio)
+                } else {
+                    None
+                }
+            }
             (
                 Some(SpatialResolution::AngularResolutionArcsec(b)),
                 Some(SpatialResolution::AngularResolutionArcsec(c)),
-            ) if b > 0.0 => Some(c / b),
+            ) if b > 0.0 && c > 0.0 && b.is_finite() && c.is_finite() => {
+                let ratio = c / b;
+                if ratio.is_finite() && ratio > 0.0 {
+                    Some(ratio)
+                } else {
+                    None
+                }
+            }
             _ => None,
         };
 
@@ -1446,13 +1514,7 @@ impl SpaceImageryCatalog {
             (
                 SpaceObservationTarget::EarthObservation { footprint: f1, .. },
                 SpaceObservationTarget::EarthObservation { footprint: f2, .. },
-            ) if f1.overlaps_box(f2) => {
-                let s = f1.south_lat_deg().max(f2.south_lat_deg());
-                let n = f1.north_lat_deg().min(f2.north_lat_deg());
-                let w = f1.west_lon_deg().max(f2.west_lon_deg());
-                let e = f1.east_lon_deg().min(f2.east_lon_deg());
-                GeoBoundingBoxWgs84::new(s, n, w, e).ok()
-            }
+            ) => compute_box_intersection(f1, f2),
             _ => None,
         };
 
@@ -1483,97 +1545,200 @@ impl SpaceImageryCatalog {
     }
 }
 
-/// Evaluates exact envelope rectangle union coverage using latitude band slicing.
+/// Decomposes a longitude interval into at most two non-wrapped intervals `[w, e]` where `w <= e`.
+fn decompose_lon_intervals(west: f64, east: f64) -> Vec<(f64, f64)> {
+    if west <= east {
+        vec![(west, east)]
+    } else {
+        vec![(west, 180.0), (-180.0, east)]
+    }
+}
+
+/// Computes the exact geometric spatial intersection of two WGS84 bounding boxes,
+/// correctly supporting antimeridian dateline crossing.
+fn compute_box_intersection(
+    b1: &GeoBoundingBoxWgs84,
+    b2: &GeoBoundingBoxWgs84,
+) -> Option<GeoBoundingBoxWgs84> {
+    let s = b1.south_lat_deg().max(b2.south_lat_deg());
+    let n = b1.north_lat_deg().min(b2.north_lat_deg());
+    if s >= n {
+        return None;
+    }
+
+    let l1 = decompose_lon_intervals(b1.west_lon_deg(), b1.east_lon_deg());
+    let l2 = decompose_lon_intervals(b2.west_lon_deg(), b2.east_lon_deg());
+
+    let mut intersections = Vec::new();
+    for (w1, e1) in &l1 {
+        for (w2, e2) in &l2 {
+            let w = w1.max(*w2);
+            let e = e1.min(*e2);
+            if w < e {
+                intersections.push((w, e));
+            }
+        }
+    }
+
+    if intersections.is_empty() {
+        return None;
+    }
+
+    if intersections.len() == 1 {
+        let (w, e) = intersections[0];
+        return GeoBoundingBoxWgs84::new(s, n, w, e).ok();
+    }
+
+    // Check if intervals wrap across antimeridian: one ends at 180.0 and one starts at -180.0
+    let pos_piece = intersections
+        .iter()
+        .find(|(_w, e)| (*e - 180.0).abs() < 1e-7);
+    let neg_piece = intersections
+        .iter()
+        .find(|(w, _e)| (*w - (-180.0)).abs() < 1e-7);
+    if let (Some(&(w, _)), Some(&(_, e))) = (pos_piece, neg_piece) {
+        return GeoBoundingBoxWgs84::new(s, n, w, e).ok();
+    }
+
+    // Otherwise pick the interval with the largest longitudinal span
+    intersections.sort_by(|a, b| {
+        (b.1 - b.0)
+            .partial_cmp(&(a.1 - a.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let (w, e) = intersections[0];
+    GeoBoundingBoxWgs84::new(s, n, w, e).ok()
+}
+
+/// Evaluates envelope rectangle union coverage using latitude band slicing across
+/// decomposed non-wrapped longitude intervals.
 fn evaluate_envelope_union_coverage(
     envelope: &GeoBoundingBoxWgs84,
     footprints: &[ObservationFootprint],
 ) -> (f64, usize) {
     let env_south = envelope.south_lat_deg();
     let env_north = envelope.north_lat_deg();
-    let env_west = envelope.west_lon_deg();
-    let env_east = envelope.east_lon_deg();
-
     let total_lat_span = env_north - env_south;
-    let total_lon_span = if env_west <= env_east {
-        env_east - env_west
-    } else {
-        (180.0 - env_west) + (env_east - (-180.0))
-    };
-    let total_area = total_lat_span * total_lon_span;
-    if total_area <= 0.0 || footprints.is_empty() {
+    if total_lat_span <= 0.0 || footprints.is_empty() {
         return (1.0, 1);
     }
 
-    // Collect all latitude cut planes within [env_south, env_north]
-    let mut lat_cuts = vec![env_south, env_north];
-    for f in footprints {
-        let f_s = f.bounding_box.south_lat_deg().clamp(env_south, env_north);
-        let f_n = f.bounding_box.north_lat_deg().clamp(env_south, env_north);
-        lat_cuts.push(f_s);
-        lat_cuts.push(f_n);
+    // Decompose envelope into non-wrapped longitude pieces
+    let env_lon_pieces = decompose_lon_intervals(envelope.west_lon_deg(), envelope.east_lon_deg());
+
+    // Decompose each footprint into non-wrapped longitude pieces clipped to envelope latitude
+    struct FootprintPiece {
+        south: f64,
+        north: f64,
+        west: f64,
+        east: f64,
     }
-    lat_cuts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    lat_cuts.dedup_by(|a, b| (*a - *b).abs() < 1e-7);
 
-    let mut covered_area = 0.0;
-    let mut uncovered_bands = 0;
-
-    for i in 0..lat_cuts.len().saturating_sub(1) {
-        let y0 = lat_cuts[i];
-        let y1 = lat_cuts[i + 1];
-        let dy = y1 - y0;
-        if dy <= 1e-9 {
+    let mut footprint_pieces = Vec::new();
+    for f in footprints {
+        let fs = f.bounding_box.south_lat_deg().max(env_south);
+        let fn_ = f.bounding_box.north_lat_deg().min(env_north);
+        if fs >= fn_ {
             continue;
         }
+        for (fw, fe) in
+            decompose_lon_intervals(f.bounding_box.west_lon_deg(), f.bounding_box.east_lon_deg())
+        {
+            footprint_pieces.push(FootprintPiece {
+                south: fs,
+                north: fn_,
+                west: fw,
+                east: fe,
+            });
+        }
+    }
 
-        let mut intervals = Vec::new();
-        for f in footprints {
-            if f.bounding_box.south_lat_deg() <= y0 + 1e-9
-                && f.bounding_box.north_lat_deg() >= y1 - 1e-9
-            {
-                let fw = f.bounding_box.west_lon_deg();
-                let fe = f.bounding_box.east_lon_deg();
-                if fw <= fe {
-                    let w = fw.clamp(env_west, env_east);
-                    let e = fe.clamp(env_west, env_east);
-                    if e > w {
-                        intervals.push((w, e));
-                    }
-                }
+    let mut total_envelope_area = 0.0;
+    let mut total_covered_area = 0.0;
+    let mut total_uncovered_bands = 0;
+
+    for (target_w, target_e) in env_lon_pieces {
+        let piece_lon_span = target_e - target_w;
+        if piece_lon_span <= 0.0 {
+            continue;
+        }
+        let piece_envelope_area = total_lat_span * piece_lon_span;
+        total_envelope_area += piece_envelope_area;
+
+        // Collect relevant footprint pieces clipped to this target piece
+        let mut relevant_pieces = Vec::new();
+        let mut lat_cuts = vec![env_south, env_north];
+
+        for fp in &footprint_pieces {
+            let cw = fp.west.max(target_w);
+            let ce = fp.east.min(target_e);
+            if cw < ce {
+                relevant_pieces.push(FootprintPiece {
+                    south: fp.south,
+                    north: fp.north,
+                    west: cw,
+                    east: ce,
+                });
+                lat_cuts.push(fp.south);
+                lat_cuts.push(fp.north);
             }
         }
 
-        if intervals.is_empty() {
-            uncovered_bands += 1;
-            continue;
-        }
+        lat_cuts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        lat_cuts.dedup_by(|a, b| (*a - *b).abs() < 1e-7);
 
-        intervals.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        let mut merged: Vec<(f64, f64)> = Vec::new();
-        for (w, e) in intervals {
-            if let Some(last) = merged.last_mut() {
-                if w <= last.1 + 1e-9 {
-                    if e > last.1 {
-                        last.1 = e;
+        for i in 0..lat_cuts.len().saturating_sub(1) {
+            let y0 = lat_cuts[i];
+            let y1 = lat_cuts[i + 1];
+            let dy = y1 - y0;
+            if dy <= 1e-9 {
+                continue;
+            }
+
+            let mut intervals = Vec::new();
+            for rp in &relevant_pieces {
+                if rp.south <= y0 + 1e-9 && rp.north >= y1 - 1e-9 {
+                    intervals.push((rp.west, rp.east));
+                }
+            }
+
+            if intervals.is_empty() {
+                total_uncovered_bands += 1;
+                continue;
+            }
+
+            intervals.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            let mut merged: Vec<(f64, f64)> = Vec::new();
+            for (w, e) in intervals {
+                if let Some(last) = merged.last_mut() {
+                    if w <= last.1 + 1e-9 {
+                        if e > last.1 {
+                            last.1 = e;
+                        }
+                    } else {
+                        merged.push((w, e));
                     }
                 } else {
                     merged.push((w, e));
                 }
-            } else {
-                merged.push((w, e));
             }
-        }
 
-        let slice_covered_lon: f64 = merged.iter().map(|(w, e)| e - w).sum();
-        covered_area += dy * slice_covered_lon;
+            let slice_covered_lon: f64 = merged.iter().map(|(w, e)| e - w).sum();
+            total_covered_area += dy * slice_covered_lon;
 
-        if slice_covered_lon < total_lon_span - 1e-6 {
-            uncovered_bands += 1;
+            if slice_covered_lon < piece_lon_span - 1e-6 {
+                total_uncovered_bands += 1;
+            }
         }
     }
 
-    let uncovered_fraction = ((total_area - covered_area) / total_area).clamp(0.0, 1.0);
-    (uncovered_fraction, uncovered_bands)
+    if total_envelope_area <= 0.0 {
+        return (1.0, 1);
+    }
+
+    let uncovered_fraction =
+        ((total_envelope_area - total_covered_area) / total_envelope_area).clamp(0.0, 1.0);
+    (uncovered_fraction, total_uncovered_bands)
 }
 
 fn validate_str(field: &'static str, s: &str) -> Result<(), SpaceImageryError> {

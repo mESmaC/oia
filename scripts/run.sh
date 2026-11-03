@@ -2,16 +2,17 @@
 # Build, check, and launch the OIA desktop workbench and CLI examples.
 #
 # Runs Cargo against the root OIA workspace (`Cargo.toml`) using the
-# pinned Rust toolchain (1.99.0), and runs `lake build` in `proofs/` during
-# `check` when the `proofs/` directory exists and `lake` is available on PATH.
+# pinned Rust toolchain (1.99.0). `proofs` checks Lean and fixture synchronization;
+# `check` requires both Rust checks and the complete Lean validation gate.
 #
-# Usage: scripts/run.sh [fetch|build|fmt|lint|test|check|run|inspect|search] [-- ARGS...]
+# Usage: scripts/run.sh [fetch|build|fmt|lint|test|proofs|check|run|inspect|search] [-- ARGS...]
 #   fetch             Download the locked dependencies once (the only online step).
 #   build             Build the entire workspace (`--workspace --all-targets`).
 #   fmt               Check formatting across the workspace.
 #   lint              Run clippy across the workspace (`-D warnings`).
 #   test              Run all workspace tests.
-#   check             Run workspace fmt, clippy, test, and (when `proofs/` exists) `lake build`.
+#   proofs            Check the pinned Lean package, axiom audit, and shared fixture.
+#   check             Run proofs plus workspace fmt, clippy, and test (nothing skipped).
 #   run               Launch the OIA desktop workbench (arguments retain the inspect alias).
 #   inspect [ARGS...] Run inspect-text: PATH [MAX_INPUT_BYTES] [MAX_PASSAGES].
 #                     Defaults to README.md when no PATH is given.
@@ -26,6 +27,29 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 MANIFEST="$ROOT/Cargo.toml"
 PROOFS_DIR="$ROOT/proofs"
 TOOLCHAIN=${OIA_RUST_TOOLCHAIN:-1.99.0}
+
+proofs() {
+    if [ ! -f "$PROOFS_DIR/lean-toolchain" ]; then
+        echo "run.sh: required proofs/ package is missing" >&2
+        exit 1
+    fi
+    if ! command -v lake >/dev/null 2>&1; then
+        echo "run.sh: lake not found; install elan, then: elan toolchain install leanprover/lean4:v4.35.0 (see proofs/README.md)" >&2
+        exit 1
+    fi
+    # Re-audit on every run to detect new modules outside the cached import graph.
+    (cd "$PROOFS_DIR" && lake build && lake env lean Audit.lean &&
+        lake env lean --run ExportFixtures.lean --check)
+}
+# Proof-only validation does not require Cargo.
+if [ "${1:-}" = "proofs" ]; then
+    proofs
+    exit 0
+fi
+if [ "${1:-}" = "check" ] && ! command -v lake >/dev/null 2>&1; then
+    echo "run.sh: lake is required for check; install elan, then: elan toolchain install leanprover/lean4:v4.35.0 (see proofs/README.md). Use fmt/lint/test for Rust-only checks." >&2
+    exit 1
+fi
 
 if ! command -v cargo >/dev/null 2>&1; then
     echo "run.sh: cargo not found; install Rust $TOOLCHAIN with rustup" >&2
@@ -71,12 +95,10 @@ case $action in
         ws test --workspace
         ;;
     check)
+        proofs
         cargo fmt --manifest-path "$MANIFEST" --all -- --check
         ws clippy --workspace --all-targets -- -D warnings
         ws test --workspace
-        if [ -d "$PROOFS_DIR" ] && command -v lake >/dev/null 2>&1; then
-            (cd "$PROOFS_DIR" && lake build)
-        fi
         ;;
     run)
         if [ $# -eq 0 ]; then
@@ -99,7 +121,7 @@ case $action in
         sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
         ;;
     *)
-        echo "run.sh: unknown command '$action'; use fetch, build, fmt, lint, test, check, run, inspect, or search" >&2
+        echo "run.sh: unknown command '$action'; use fetch, build, fmt, lint, test, proofs, check, run, inspect, or search" >&2
         exit 1
         ;;
 esac

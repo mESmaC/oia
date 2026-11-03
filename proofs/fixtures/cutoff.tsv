@@ -1,0 +1,25 @@
+# Generated from kernel-checked OiaProofs.cutoffFixtures; see proofs/README.md.
+strict-before	strict	1000	900	900/950	accept
+strict-equality	strict	1000	1000	1000/1000	accept
+strict-unknown-public	strict	1000	900	?/950	reject
+strict-future-public	strict	1000	900	1001/950	reject
+strict-unknown-ingestion	strict	1000	900	900/?	reject
+strict-future-ingestion	strict	1000	900	900/1001	reject
+strict-unknown-model	strict	1000	?	900/950	reject
+strict-future-model	strict	1000	1001	900/950	reject
+strict-empty	strict	1000	900	-	reject
+strict-bad-second	strict	1000	900	900/950;900/?	reject
+strict-two-valid	strict	1000	900	900/950;1000/1000	accept
+retro-before	retro	1000	900	900/950	accept
+retro-equality	retro	1000	1000	1000/1000	accept
+retro-unknown-public	retro	1000	?	?/950	reject
+retro-future-public	retro	1000	900	1001/?	reject
+retro-unknown-ingestion	retro	1000	900	900/?	accept
+retro-future-ingestion	retro	1000	900	900/1001	accept
+retro-unknown-model	retro	1000	?	900/?	disclosed
+retro-future-model	retro	1000	1001	900/1001	disclosed
+retro-empty	retro	1000	?	-	reject
+retro-bad-second	retro	1000	900	900/?;?/?	reject
+strict-negative-time	strict	-1000	-1001	-1001/-1000	accept
+strict-min-time	strict	-62135596800000	-62135596800000	-62135596800000/-62135596800000	accept
+strict-near-max-time	strict	253402300799998	253402300799998	253402300799998/253402300799998	accept

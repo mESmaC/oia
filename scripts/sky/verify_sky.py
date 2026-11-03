@@ -8,7 +8,8 @@ Offline and read-only. Checks that:
 - each case's outcome matches its declared expectation (ephemeris vs provider error);
 - each recorded query is exactly the encoding of its recorded parameters;
 - the manifest matches the case definitions in fetch_horizons.py, so editing a
-  case without re-retrieving its reference is reported as drift.
+  case without re-retrieving its reference is reported as drift;
+- a case retrieved on another date carries its own matching provider citations.
 
 Integrity here means byte and bookkeeping consistency. It does not establish
 that Horizons is correct, nor that any OIA calculation agrees with it.
@@ -65,11 +66,24 @@ def verify(root: Path) -> list[str]:
     else:
         if provider != provider_block(retrieved_on):
             errors.append("manifest: provider citation/terms differ from fetch_horizons.py")
-        stamps = {str(c.get("retrieval", {}).get("requested_at_utc", ""))[:10]
-                  for c in cases if isinstance(c, dict)}
-        if stamps != {retrieved_on.isoformat()}:
-            errors.append(f"manifest: provider.retrieved_on_utc {retrieved_on} does not match "
-                          f"case retrieval dates {sorted(stamps)}")
+        for case in cases:
+            if not isinstance(case, dict):
+                continue
+            retrieval = case.get("retrieval", {})
+            if not isinstance(retrieval, dict):
+                continue
+            stamp = str(retrieval.get("requested_at_utc", ""))[:10]
+            try:
+                case_date = dt.date.fromisoformat(stamp)
+            except ValueError:
+                errors.append(f"{case.get('id', 'case')}: invalid retrieval date {stamp!r}")
+                continue  # The timestamp shape check below also reports malformed values.
+            if case_date != retrieved_on:
+                expected = provider_block(case_date)
+                for key in ("citation", "ssd_citation"):
+                    if retrieval.get(key) != expected[key]:
+                        errors.append(f"{case.get('id', 'case')}: retrieval.{key} does not "
+                                      f"match its actual retrieval date {case_date}")
 
     for entry in sorted(root.iterdir()):
         if entry.name not in ALLOWED_TOP_LEVEL:

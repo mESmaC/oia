@@ -87,3 +87,10 @@ SOFTWARE.
 - **Licence:** Public domain (U.S. Government work; USDA National Agriculture Imagery Program and USGS), per the USGS copyrights and credits policy (https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits). The service states that its 10 m Alaska SPOT imagery is licence-restricted; Alaska lies outside the registered rectangle and is not requested.
 - **Attribution (shown in the instrument whenever the tier is drawn):** "USDA, USGS The National Map: Orthoimagery". USGS and USDA endorsement is not implied.
 - **Scope in repository:** No tiles are stored. The page requests them at runtime for the visible view only, from imagery level 13 to 16, with at most six requests in flight. Turning detail off stops all requests to this origin.
+
+
+## 7. USGS NAIP dynamic natural-colour imagery — closer Globe detail
+
+- **Service:** https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer (description and bounded export checked 2026-11-03).
+- **Licence and attribution:** Public domain USDA/USGS work; https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits. Shown as “USDA NAIP / USGS The National Map: NAIP Imagery”. No endorsement implied.
+- **Use:** Visible-view 256 × 256 transparent PNG exports, bands 0/1/2, nearest-neighbour sampling, levels 16–18, six requests in flight, continental-US bounds. No bulk download or retained tile artifacts. These are orthorectified aerial mosaics, primarily 0.6 m with variable flight dates/resolution, not raw satellite data. Metadata grid spacing (0.3 m) is not asserted as native resolution.

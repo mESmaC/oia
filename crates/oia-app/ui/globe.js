@@ -17,6 +17,7 @@ const Globe = (() => {
   let rendererState = 'idle'; // idle | loading | ready | unavailable
   let overlays = true;
   let reduced = false;
+  let neutralImagery = true; // display only; provider processing remains in the pixels
   let active = false;
   let plottedKey = '';
   let cameraTimer = null;
@@ -146,9 +147,9 @@ const Globe = (() => {
     scene.backgroundColor = Cesium.Color.BLACK;
     scene.globe.baseColor = Cesium.Color.fromCssColorString('#0b0d10'); // missing tiles show as dark surface, not sea
     scene.globe.enableLighting = false; // a live sun would be a live cue on a historical case
-    scene.globe.showGroundAtmosphere = !reduced;
-    scene.skyAtmosphere.show = !reduced;
-    scene.fog.enabled = !reduced;
+    scene.globe.showGroundAtmosphere = !reduced && !neutralImagery;
+    scene.skyAtmosphere.show = !reduced && !neutralImagery;
+    scene.fog.enabled = !reduced && !neutralImagery;
     if (scene.sun) scene.sun.show = false;   // not created when skyBox is false
     if (scene.moon) scene.moon.show = false;
     scene.highDynamicRange = false;
@@ -289,7 +290,7 @@ const Globe = (() => {
     const source = layer.source;
     const r = source.coverage_rectangle;
     const rectangle = r ? Cesium.Rectangle.fromDegrees(r.west_deg, r.south_deg, r.east_deg, r.north_deg) : undefined;
-    const provider = source.addressing === 'xyz'
+    const provider = source.addressing === 'xyz' || source.addressing === 'image_export'
       ? new Cesium.UrlTemplateImageryProvider({ url: layer.url, tilingScheme: new Cesium.WebMercatorTilingScheme(), maximumLevel: source.maximum_level, rectangle })
       : new Cesium.WebMapTileServiceImageryProvider({
         url: layer.url, layer: source.layer, style: 'default', format: source.format,
@@ -326,7 +327,7 @@ const Globe = (() => {
       });
     };
     provider.errorEvent.addEventListener(error => { if (!notPublished(error) && !belowTier(error)) note('provider', error?.message || error); }); // counted above; keep the console quiet
-    const options = fromGlobeLevel === undefined ? {} : { minimumTerrainLevel: fromGlobeLevel };
+    const options = { brightness: 1, contrast: 1, hue: 0, saturation: 1, gamma: 1, ...(fromGlobeLevel === undefined ? {} : { minimumTerrainLevel: fromGlobeLevel }) };
     const imageryLayer = new Cesium.ImageryLayer(provider, options);
     viewer.imageryLayers.add(imageryLayer, index); // returns nothing; keep the layer to remove it later
     return imageryLayer;
@@ -751,7 +752,18 @@ const Globe = (() => {
     kv($('globe-imagery-active'), [['Layer', a.source.layer], ['Provider', a.source.provider], ['Origin', a.source.origin], ['Date', a.date ? `${a.date} (UTC day)` : 'composite · none'], ['Capture', a.source.capture_statement], ['Tiles', `${countsText(a.source.id)} · ${fmt(tiles.pending)} pending (all layers)`, sourceTiles.get(a.source.id)?.failed ? 'est' : ''], ['Drawn now', drawnNow.includes(a.source.id) ? (drawnSources().some(e => e.tier) ? 'yes, beneath the detail tiers or at the edges' : 'yes') : 'no: every drawn surface tile uses a detail tier'], ['Overlay', view.imagery.coastlines ? `${view.imagery.coastlines.source.layer} · ${view.imagery.coastlines.source.license} · ${view.imagery.coastlines.source.attribution}` : 'none'], ['Coverage note', a.coverage_note || null], ['Licence', a.source.license], ['Attribution', a.source.attribution], ['Checked', `capabilities ${a.source.capabilities_checked_on}`]]);
     $('globe-ack').textContent = view.imagery.acknowledgement;
     renderDetail();
-    kv($('globe-renderer'), [['Renderer', `${view.renderer.name} ${view.renderer.pinned_version} · ${rendererState}`], ['Embedded build', view.renderer.bundled_version ? `${view.renderer.bundled_version}${view.renderer.bundle === 'present' ? '' : ' (not the pinned version)'}` : 'none: not fetched before this build', view.renderer.bundle === 'present' ? '' : 'est'], ['Ion', view.renderer.ion], ['Terrain', view.renderer.terrain], ['Effects', reduced ? 'reduced: no atmosphere or fog' : 'atmosphere and fog (display only)']]);
+    const products = node('div');
+    products.append(node('h4', 'Original source products'), node('p', 'Map tiles are processed display imagery. Copy a provider address into your browser to search and download individual source products. These references do not download or import evidence into OIA.', 'note'));
+    for (const product of view.imagery.source_products) {
+      const entry = node('details'), heading = node('summary', product.label);
+      const label = node('label', 'Provider address'), address = node('input');
+      address.type = 'url'; address.readOnly = true; address.value = product.url;
+      address.setAttribute('aria-label', `${product.label} address`);
+      address.onclick = () => address.select();
+      label.append(address); entry.append(heading, label, node('p', product.statement, 'note')); products.append(entry);
+    }
+    $('globe-imagery-detail').append(products);
+    kv($('globe-renderer'), [['Renderer', `${view.renderer.name} ${view.renderer.pinned_version} · ${rendererState}`], ['Embedded build', view.renderer.bundled_version ? `${view.renderer.bundled_version}${view.renderer.bundle === 'present' ? '' : ' (not the pinned version)'}` : 'none: not fetched before this build', view.renderer.bundle === 'present' ? '' : 'est'], ['Ion', view.renderer.ion], ['Terrain', view.renderer.terrain], ['Effects', (reduced || neutralImagery) ? 'reduced: no atmosphere or fog' : 'atmosphere and fog (display only)']]);
   }
   const lonText = v => `${Math.abs(v)}° ${v < 0 ? 'W' : 'E'}`, latText = v => `${Math.abs(v)}° ${v < 0 ? 'S' : 'N'}`;
   function renderDetail() {
@@ -761,14 +773,14 @@ const Globe = (() => {
     for (const tier of view.imagery.detail) {
       const s = tier.source, r = s.coverage_rectangle;
       const dl = node('dl', undefined, 'kv');
-      kv(dl, [['Source', s.label], ['Drawn now', !drawnNow.includes(s.id) ? 'no' : drawnSources().find(e => e.tier)?.source.id === s.id ? 'yes, on top where it has tiles' : 'yes, beneath a finer tier or at the edges'], ['Provider', s.provider], ['Origin', s.origin], ['Layer', s.layer], ['From', `globe level ${tier.from_globe_level} to imagery level ${s.maximum_level}, then magnified`], ['Source pixels', `${fmt(s.source_resolution_m)} m nominal (provider's statement)`], ['Coverage', r ? `${lonText(r.west_deg)} to ${lonText(r.east_deg)}, ${latText(r.south_deg)} to ${latText(r.north_deg)}; places without tiles answer 404 and are counted as not published` : 'global'], ['Capture', s.capture_statement], ['Time', tier.time_relation, 'est'], ['Tiles', countsText(s.id), sourceTiles.get(s.id)?.failed ? 'est' : ''], ['Licence', s.license], ['Attribution', s.attribution], ['Terms', s.terms_url], ['Checked', `capabilities ${s.capabilities_checked_on}`]]);
+      kv(dl, [['Source', s.label], ['Drawn now', !drawnNow.includes(s.id) ? 'no' : drawnSources().find(e => e.tier)?.source.id === s.id ? 'yes, on top where it has tiles' : 'yes, beneath a finer tier or at the edges'], ['Provider', s.provider], ['Origin', s.origin], ['Layer', s.layer], ['From', `globe level ${tier.from_globe_level} to imagery level ${s.maximum_level}, then magnified`], ['Source pixels', `${fmt(s.source_resolution_m)} m nominal (provider's statement)`], ['Coverage', r ? `${lonText(r.west_deg)} to ${lonText(r.east_deg)}, ${latText(r.south_deg)} to ${latText(r.north_deg)}; coverage within the bounds may have gaps; 404 is counted as not published; transparent no-data reveals lower layers` : 'global'], ['Capture', s.capture_statement], ['Time', tier.time_relation, 'est'], ['Tiles', countsText(s.id), sourceTiles.get(s.id)?.failed ? 'est' : ''], ['Licence', s.license], ['Attribution', s.attribution], ['Terms', s.terms_url], ['Checked', `capabilities ${s.capabilities_checked_on}`]]);
       host.append(dl);
     }
   }
   function renderImageryForm() {
     const form = $('globe-imagery-form');
     const current = form.dataset.rendered;
-    const stamp = JSON.stringify([view.imagery.sources.map(s => s.id), view.imagery.active.source.id, view.imagery.active.date, !!view.imagery.coastlines, view.imagery.detail_enabled, view.imagery.today_utc]);
+    const stamp = JSON.stringify([view.imagery.sources.map(s => s.id), view.imagery.active.source.id, view.imagery.active.date, !!view.imagery.coastlines, view.imagery.detail_enabled, neutralImagery, view.imagery.today_utc]);
     if (current === stamp) return;
     form.dataset.rendered = stamp;
     form.replaceChildren();
@@ -803,6 +815,11 @@ const Globe = (() => {
       text.append(node('small', `${detailSources.map(s => s.label).join('; ')}. Each is another capture period than the basemap; turn off to keep one VIIRS day at every zoom.`));
       label.append(input, text); form.append(label);
     }
+    const neutral = node('label', undefined, 'row'), neutralInput = node('input');
+    neutralInput.type = 'checkbox'; neutralInput.checked = neutralImagery;
+    neutralInput.onchange = () => { neutralImagery = neutralInput.checked; setReduced(reduced); };
+    neutral.append(neutralInput, node('span', 'Neutral imagery display · no atmosphere or fog (provider processing remains)'));
+    form.append(neutral);
     const apply = node('button', 'Apply imagery', 'btn primary'); apply.type = 'submit';
     form.append(apply, node('p', 'Tiles are requested from the registered origin only; a day the source has not published is refused as a gap.', 'note'));
     const syncDate = () => {
@@ -875,9 +892,9 @@ const Globe = (() => {
   function setReduced(on) {
     reduced = on;
     if (!viewer) return;
-    viewer.scene.skyAtmosphere.show = !on;
-    viewer.scene.globe.showGroundAtmosphere = !on;
-    viewer.scene.fog.enabled = !on;
+    viewer.scene.skyAtmosphere.show = !on && !neutralImagery;
+    viewer.scene.globe.showGroundAtmosphere = !on && !neutralImagery;
+    viewer.scene.fog.enabled = !on && !neutralImagery;
     viewer.scene.requestRender();
     renderInspector();
   }

@@ -20,7 +20,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const GIBS_ORIGIN: &str = "https://gibs.earthdata.nasa.gov";
 /// EOX IT Services: the global detail origin (Sentinel-2 cloudless).
 pub const EOX_ORIGIN: &str = "https://tiles.maps.eox.at";
-/// USGS The National Map: the United States orthoimagery origin.
+/// USGS The National Map: dynamic NAIP image exports.
+pub const USGS_NAIP_ORIGIN: &str = "https://imagery.nationalmap.gov";
+/// Cached USGS basemap origin.
 pub const USGS_TNM_ORIGIN: &str = "https://basemap.nationalmap.gov";
 /// When the GIBS `epsg3857/best` WMTS capabilities were last read for this registry.
 pub const CAPABILITIES_CHECKED_ON: &str = "2026-11-03";
@@ -33,9 +35,10 @@ const GIBS_LICENSE: &str = "U.S. Government work, public domain (NASA Earthdata 
 pub const SOURCE_BLUE_MARBLE: &str = "gibs-bluemarble";
 pub const SOURCE_VIIRS_TRUE_COLOR: &str = "gibs-viirs-truecolor";
 pub const SOURCE_S2_CLOUDLESS: &str = "eox-s2cloudless-2025";
+pub const SOURCE_USGS_NAIP: &str = "usgs-naip-natural-color";
 pub const SOURCE_USGS_ORTHO: &str = "usgs-tnm-orthoimagery";
 
-/// Requests in flight per origin. GIBS asks for no bulk use; the two detail origins publish
+/// Requests in flight per origin. GIBS asks for no bulk use; the detail origins publish
 /// no rate figure, so they get the same conservative bound (Cesium's default is 18).
 const REQUESTS_IN_FLIGHT: u8 = 6;
 
@@ -60,6 +63,8 @@ pub enum ImageryRole {
 pub enum TileAddressing {
     /// WMTS REST: `{TileMatrixSet}`, `{TileMatrix}`, `{TileRow}`, `{TileCol}`.
     WmtsRest,
+    /// Web Mercator bounding boxes sent to a dynamic image export endpoint.
+    ImageExport,
     /// Web Mercator `{z}/{y}/{x}`, rows counted from the north.
     Xyz,
 }
@@ -117,6 +122,14 @@ pub struct ImagerySource {
     pub attribution: &'static str,
     pub terms_url: &'static str,
     pub capabilities_checked_on: &'static str,
+}
+
+/// External discovery/download references; these are not acquired evidence or raw tile layers.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SourceProductReference {
+    pub label: &'static str,
+    pub url: &'static str,
+    pub statement: &'static str,
 }
 
 /// The page's imagery intent. Validated by [`resolve`].
@@ -181,6 +194,7 @@ pub struct ImageryView {
     /// Coarse to fine; empty when `detail_enabled` is false.
     pub detail: Vec<DetailTier>,
     pub sources: Vec<ImagerySource>,
+    pub source_products: Vec<SourceProductReference>,
     pub acknowledgement: &'static str,
     /// Today's UTC civil date, so the page can bound its date control without a clock of its own.
     pub today_utc: String,
@@ -309,6 +323,35 @@ pub fn sources() -> Vec<ImagerySource> {
             capture_statement: "Orthorectified aerial photography, mostly from the USDA National Agriculture Imagery Program (NAIP), 1 m, leaf-on, flown 2017 to 2021 for the conterminous United States (service refreshed June 2024). The flight year differs by state and is not identified per tile here. Aerial, not satellite. It shows nothing from the case period.",
             license: "Public domain (USDA and USGS, U.S. Government work)",
             attribution: "USDA, USGS The National Map: Orthoimagery",
+            terms_url: "https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits",
+            capabilities_checked_on: CAPABILITIES_CHECKED_ON,
+        },
+        ImagerySource {
+            id: SOURCE_USGS_NAIP,
+            label: "USGS NAIP natural colour (continental US), primarily 0.6 m",
+            provider: "USGS The National Map / USDA NAIP",
+            origin: USGS_NAIP_ORIGIN,
+            layer: "USGSNAIPImagery",
+            url_template: "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer/exportImage?bbox={westProjected},{southProjected},{eastProjected},{northProjected}&bboxSR=3857&imageSR=3857&size=256,256&format=png32&bandIds=0,1,2&interpolation=RSP_NearestNeighbor&f=image",
+            addressing: TileAddressing::ImageExport,
+            tile_matrix_set: "",
+            // 0.597 m/pixel at the equator, finer at US latitudes. Beyond this
+            // level we magnify rather than imply new source detail.
+            maximum_level: 18,
+            source_resolution_m: 0.6,
+            coverage_rectangle: Some(GeoRectangle {
+                west_deg: -124.83,
+                south_deg: 24.48,
+                east_deg: -66.86,
+                north_deg: 49.56,
+            }),
+            max_requests_in_flight: REQUESTS_IN_FLIGHT,
+            format: "image/png",
+            role: ImageryRole::Detail,
+            time: None,
+            capture_statement: "Dynamic natural-colour view of orthorectified NAIP aerial photographs, primarily 0.6 m source pixels (resolution varies). Aerial, not satellite; processed mosaic, not raw sensor data. Flight dates vary by location and are not identified per displayed tile. Transparent no-data areas reveal the lower tier; they are not observed absence. No case-period or selected-day match is claimed. Nearest-neighbour sampling adds no generated detail.",
+            license: "Public domain (USDA and USGS, U.S. Government work)",
+            attribution: "USDA NAIP / USGS The National Map: NAIP Imagery",
             terms_url: "https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits",
             capabilities_checked_on: CAPABILITIES_CHECKED_ON,
         },
@@ -493,6 +536,7 @@ fn detail_ladder(basemap: &ActiveImagery) -> Vec<DetailTier> {
     };
     let from = |source: &ImagerySource| match source.id {
         SOURCE_USGS_ORTHO => USGS_FROM_GLOBE_LEVEL,
+        SOURCE_USGS_NAIP => 16,
         _ => basemap.source.maximum_level.saturating_sub(1),
     };
     sources()
@@ -531,6 +575,58 @@ pub fn resolve(selection: &ImagerySelection, today: CivilDate) -> Result<Imagery
         detail_enabled: selection.detail,
         detail,
         sources: sources(),
+        source_products: vec![
+            SourceProductReference {
+                label: "Sentinel-2 scientific products — Copernicus Browser",
+                url: "https://browser.dataspace.copernicus.eu/",
+                statement: "Search single acquisitions and download original ESA products (account required for downloads). L1C is orthorectified top-of-atmosphere reflectance; L2A is atmospherically corrected surface reflectance. Neither is untouched sensor telemetry. RGB previews and cloudless mosaics are derived displays; retain product ID, acquisition time, processing level, bands and metadata with downloads. Best Sentinel-2 bands are 10 m, not sub-metre.",
+            },
+            SourceProductReference {
+                label: "Landsat scientific products — USGS EarthExplorer",
+                url: "https://earthexplorer.usgs.gov/",
+                statement: "Search individual scenes and download delivered products (account required). Level-1 is geometrically/radiometrically processed; Level-2 adds science processing. Preserve scene ID, acquisition time, processing level, bands and metadata. Landsat 8/9 multispectral bands are 30 m; panchromatic is 15 m.",
+            },
+            SourceProductReference {
+                label: "Sentinel-1 radar products - Copernicus Data Space",
+                url: "https://dataspace.copernicus.eu/data-collections/copernicus-sentinel-missions/sentinel-1",
+                statement: "Radar acquisitions can complement cloud-obscured optical coverage. Backscatter is not a natural-colour photograph; preserve orbit, polarization, acquisition time and processing level. Search and downloads are external; account and product conditions apply.",
+            },
+            SourceProductReference {
+                label: "JAXA ALOS open products / G-Portal",
+                url: "https://www.eorc.jaxa.jp/ALOS/en/dataset/alos_open_and_free_e.htm",
+                statement: "Explore open ALOS/PALSAR and ALOS-2 ScanSAR products and product-specific releases. Radar is not optical photography. Availability, registration and use conditions vary by product; do not assume all PRISM or high-resolution ALOS imagery is freely downloadable.",
+            },
+            SourceProductReference {
+                label: "JAXA AW3D30 surface elevation",
+                url: "https://www.eorc.jaxa.jp/ALOS/en/dataset/aw3d30/aw3d30_e.htm",
+                statement: "AW3D30 is an approximately 30 m digital surface model derived from PRISM imagery, not a 30 m optical photo or access to every original PRISM scene. Check product version, coverage and terms.",
+            },
+            SourceProductReference {
+                label: "INPE CBERS / Amazonia-1 image catalog",
+                url: "https://www.obt.inpe.br/OBT/assuntos/catalogo-cbers-amz-1",
+                statement: "Search Brazilian Earth observation acquisitions for regional and historical gaps. Coverage, sensor resolution and processing vary; inspect the actual footprint, acquisition time, cloud cover and download conditions. No global seamless coverage is claimed.",
+            },
+            SourceProductReference {
+                label: "ISRO Bhuvan open data archive",
+                url: "https://bhuvan.nrsc.gov.in/",
+                statement: "Regional imagery and thematic products for India. Open and priced products differ; free archive imagery can have time and resolution limits. A portal preview is not permission to download every high-resolution layer. Check the selected product and account requirements.",
+            },
+            SourceProductReference {
+                label: "ISRO MOSDAC weather / ocean data",
+                url: "https://www.mosdac.gov.in/",
+                statement: "Meteorological and oceanographic imagery and products. Useful for weather context, not a substitute for close optical ground detail. Check instrument, acquisition time, processing, coverage and product access terms.",
+            },
+            SourceProductReference {
+                label: "NOAA GOES browse imagery",
+                url: "https://www.star.nesdis.noaa.gov/goes/",
+                statement: "GOES browse imagery supplies weather context. These are derived informational products; outages may occur. Geostationary weather imagery does not resolve buildings. Himawari is operated by JMA; retain originating agency, instrument, time and any redistribution conditions. Browse images are derived products, not raw telemetry.",
+            },
+            SourceProductReference {
+                label: "NAIP source orthophotos — The National Map Downloader",
+                url: "https://apps.nationalmap.gov/downloader/",
+                statement: "Download public-domain NAIP orthophotos and metadata rather than display tiles. These are aerial, orthorectified products, not raw satellite measurements. Check the individual footprint, flight date and source resolution. External discovery only: OIA does not ingest or retain these products here.",
+            },
+        ],
         acknowledgement: GIBS_ACKNOWLEDGEMENT,
         today_utc: today.to_string(),
     })
@@ -541,7 +637,8 @@ mod tests {
     use super::*;
 
     /// Every registered origin; the CSP must allow exactly these.
-    const REGISTERED_ORIGINS: [&str; 3] = [GIBS_ORIGIN, EOX_ORIGIN, USGS_TNM_ORIGIN];
+    const REGISTERED_ORIGINS: [&str; 4] =
+        [GIBS_ORIGIN, EOX_ORIGIN, USGS_TNM_ORIGIN, USGS_NAIP_ORIGIN];
 
     fn day(text: &str) -> CivilDate {
         CivilDate::parse(text).unwrap_or(CivilDate {
@@ -625,7 +722,14 @@ mod tests {
                     .collect()
             })
             .unwrap_or_default();
-        assert_eq!(tiers, [(SOURCE_S2_CLOUDLESS, 8), (SOURCE_USGS_ORTHO, 13)]);
+        assert_eq!(
+            tiers,
+            [
+                (SOURCE_S2_CLOUDLESS, 8),
+                (SOURCE_USGS_ORTHO, 13),
+                (SOURCE_USGS_NAIP, 16)
+            ]
+        );
         assert!(view.is_some_and(|v| {
             v.detail.iter().all(|t| {
                 t.time_relation.contains("2026-10-01")

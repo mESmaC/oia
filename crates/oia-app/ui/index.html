@@ -171,6 +171,36 @@
             </form>
           </section>
 
+          <section class="witness-panel glass" id="witness-recreation" aria-labelledby="witness-recreation-title">
+            <div class="witness-panel-head"><span class="k">MEDIA-04 · illustrative recreation</span><h2 id="witness-recreation-title">Recreation prompt</h2><span class="chip warn">▮ Illustration brief · not evidence</span></div>
+            <p class="note">Build a portable image-generation brief from one retained version of this account. Reported wording is pinned to that version verbatim, line by line for the narrative. Fields the witness did not report stay explicit unknowns unless you tie them to an assumption you declare here. No image is generated, and nothing is saved until you choose a file.</p>
+            <form class="witness-form" id="recreation-form">
+              <label>Witness version<select id="recreation-version"></select></label>
+              <label>Title<input id="recreation-title" maxlength="512" value="Illustrative recreation of the witness account" required></label>
+              <fieldset class="witness-wide rec-set"><legend class="k">Assumptions · declared for framing only</legend>
+                <div id="recreation-assumptions" class="rec-rows"></div>
+                <button type="button" class="btn" id="recreation-add-assumption">Add assumption</button>
+              </fieldset>
+              <fieldset class="witness-wide rec-set"><legend class="k">Unknowns · must not be read as observed</legend>
+                <div id="recreation-unknowns" class="rec-rows"></div>
+                <button type="button" class="btn" id="recreation-add-unknown">Add unknown</button>
+              </fieldset>
+              <fieldset class="witness-wide rec-set"><legend class="k">Context · reported, assumed or unknown</legend>
+                <div id="recreation-context" class="rec-context"></div>
+              </fieldset>
+              <div class="witness-actions witness-wide"><button type="submit" class="btn primary" id="recreation-build">Build prompt</button><span class="note" id="recreation-build-note">The recreation kernel validates and renders the text. A refused build keeps the previous prompt and changes nothing.</span></div>
+            </form>
+            <div id="recreation-result" hidden>
+              <div class="witness-panel-head rec-result-head"><span class="k">Portable prompt · read-only</span><div class="chips"><span class="chip" id="recreation-prompt-version"></span><span class="chip" id="recreation-source-version"></span></div></div>
+              <p class="coverage partial" id="recreation-label"></p>
+              <p class="note" id="recreation-caveat"></p>
+              <dl class="kv witness-fields" id="recreation-context-rows"></dl>
+              <textarea id="recreation-text" class="rec-text" readonly rows="14" aria-label="Portable prompt text, read-only"></textarea>
+              <div class="witness-actions"><button type="button" class="btn primary" id="recreation-save" data-operation>Save prompt as text ↗</button><span class="note" id="recreation-counts"></span></div>
+              <div class="result" id="recreation-saved" role="status" hidden></div>
+            </div>
+          </section>
+
           <section class="witness-history" aria-labelledby="witness-history-title"><span class="k">Retained history</span><h2 id="witness-history-title">Revisions</h2><p class="note" id="witness-no-revisions">No revisions recorded.</p><div id="witness-revisions"></div></section>
         </div>
         <p class="coverage" id="witness-status" role="status" aria-live="polite">No witness account captured.</p>
@@ -298,6 +328,7 @@
       <div class="body" tabindex="0">
         <section class="sec"><span class="k">Session record</span><dl class="kv" id="witness-record"></dl></section>
         <section class="sec"><span class="k" id="insp-witness-exposure">Explanations not exposed here</span><p class="note" id="witness-exposure-qualification"></p><p class="note">External explanation exposure is not observed by this workflow. A before-explanations marker does not establish independent testimony.</p></section>
+        <section class="sec"><span class="k">Recreation prompt · MEDIA-04</span><dl class="kv" id="recreation-record"></dl><p class="note" id="recreation-limits"></p></section>
         <section class="sec"><span class="k">Boundary and limits</span><p class="note" id="witness-limits"></p></section>
       </div>
     </div>

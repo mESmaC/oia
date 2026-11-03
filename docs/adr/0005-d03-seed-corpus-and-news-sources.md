@@ -52,7 +52,7 @@ Every retained blob in `fixtures/news/a06/blobs/` begins with an explicit banner
 
 ### 3.2 Tier 2 (Proposed): Candidate P1 seed source profiles and four-part policy requirement
 
-Live and scheduled P1 source selection remains **Proposed** until the P0 source registry (`#13`), domain records (`#10`), and regional selection (`D06`) merge and each candidate source completes item-level access and rights verification as outlined in [docs/research/public-information-sources.md](../research/public-information-sources.md):
+Live and scheduled P1 source profiles remain **Proposed**. Production integration uses the shared P0 source registry (`#13`) and domain records (`#10`); regional choices additionally depend on `D06`. **Scope clarification (2026-11-03, #110):** these dependencies do not prohibit online research, provider evaluation, or bounded development acquisitions while runtime integration is pending. `D06` is not a prerequisite for non-regional public-document/API evaluation. Evaluate access and rights for the specific operation as outlined in [docs/research/public-information-sources.md](../research/public-information-sources.md): ordinary reading, automated processing, retained bytes, and redistribution have separate conditions. Do not require redistribution permission merely to evaluate an ordinarily accessible source. The candidate set below is an initial research collection, not a permanent allow-list for OIA (SOURCE-01–SOURCE-04).
 
 | Candidate category | Initial research leads ([public-information-sources.md](../research/public-information-sources.md)) | Current verification state | Required admission and bundle rule |
 | --- | --- | --- | --- |

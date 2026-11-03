@@ -30,7 +30,7 @@ No AI or embedding provider is required for core case operation. When any or all
 
 ### 2.2 Workspace data-handling defaults and remote-egress policy
 
-1. **Local-only default:** Workspaces default to local-only execution (loopback or in-process adapters with no external network egress). Transmitting document passages, queries, or metadata to a remote provider requires an explicit workspace configuration opt-in and surfaces a visible remote-provider disclosure before execution (`docs/architecture.md` §6.3).
+1. **Local model execution default (scope clarified 2026-11-03, #110):** OCR, embedding, and synthesis default to local model execution (loopback or in-process adapters with no external model-provider egress). This protects selected workspace material sent for inference; it does not disable public-source discovery, APIs, feeds, scraping, or other configured acquisition services under SOURCE-01–SOURCE-04. Transmitting document passages, queries, or metadata to a remote provider requires an explicit workspace configuration opt-in and surfaces a visible remote-provider disclosure before execution (`docs/architecture.md` §6.3).
 2. **Authorization and source-condition filtering:** Before assembling any embedding or synthesis input batch, the application service filters candidate passages against:
    - The caller's workspace and case authorization scope (`docs/architecture.md` §9).
    - Each source record's `automated_processing` use condition (records prohibiting automated processing or remote transmission are excluded and recorded in the run's coverage omissions).

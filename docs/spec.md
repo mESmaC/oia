@@ -18,6 +18,8 @@ Requirement identifiers such as `DOC-01` are stable references. **Must** is requ
 
 OIA is a Rust-based suite of public intelligence and research tools that helps people understand their surroundings, investigate events, evaluate information, and improve their individual privacy. It also demonstrates how much information and analytical capability is already accessible to the public.
 
+OIA serves civilians, former military personnel, researchers, journalists, and other independent investigators. Public internet collection is a core product capability: external APIs, websites, feeds, archives, and streams supply evidence that users can connect, analyze, and reconstruct into new intelligence. Local-first operation preserves user control and access to retained work; it does not limit OIA to local files or offline development.
+
 UAP research and disclosure are a primary organizing use case. The same infrastructure supports regional awareness, public-record research, space observation, media forensics, financial research, and historical forecasting.
 
 The central product outcome is a traceable investigation: a user can move from a question to relevant observations, inspect their origins, test explanations, and produce a report that another person can examine. Collection, analysis, visualization, and reporting must feel like one workspace.
@@ -27,7 +29,7 @@ The central product outcome is a traceable investigation: a user can move from a
 - Rust is the implementation language for the application's core, services, algorithms, and integrations. Specific UI and rendering technology remains an explicit decision.
 - Lean supports selected formal specifications and proofs during development; it need not be present in distributed Rust binaries.
 - God's Eye View is prior implementation work to reuse selectively, including contracts, algorithms, tests, and operational lessons.
-- The visual identity combines a futuristic military terminal, Call of Duty-style cinematic atmosphere, modern glass materials, and Apple-like polish.
+- The visual identity combines a futuristic military terminal, Call of Duty-style cinematic atmosphere, modern glass materials, and Apple-like polish. The workspace should evoke a SCIF workstation or satellite intelligence console through real public-source capabilities, connected evidence, and analytical depth. Source and access labels must remain accurate.
 - Camera scope includes ordinarily accessible feeds and existing business/street camera directories without requiring proof of intentional publication by the owner. OIA must not attempt to gain additional access. Home interiors are excluded.
 - All capabilities recorded below belong to the intended product scope. A proposed implementation order appears in the delivery document.
 
@@ -92,6 +94,15 @@ The intended emotional response is: "I feel like I shouldn't have access to this
 **Forecast:** Select a current or hypothetical event; define outcome, target, horizon, and information cutoff; inspect comparable history or market exposure; adjust assumptions; save a forecast; track new evidence and revisions; evaluate the original forecast after resolution.
 
 ## 4. Research and information capabilities
+
+### 4.0 Internet discovery and collection
+
+These requirements apply across document, news, geographic, camera, space, market, and research tools. They define intended capability, not a claim that collection adapters already exist.
+
+- **SOURCE-01:** Support discovering and registering public internet sources, including user-supplied URLs, external search/API results, linked public records, catalogs, RSS/Atom feeds, archives, downloads, and streams. Support keyless sources and providers requiring ordinary user-authorized accounts, API keys, or subscriptions. Prefer free sources where suitable; a fixed seed corpus or provider list must not become a permanent product boundary.
+- **SOURCE-02:** Support interactive and scheduled acquisition through external APIs, feed polling, direct downloads, and bounded web scraping/crawling where appropriate to the source. Public HTML pages are valid sources even without an official API. Each collection job must declare its scope, page/depth/item/byte or stream-duration limits as applicable, cadence, concurrency, deadline, and cancellation. Record visited sources, retrieval/version metadata, extraction method, failures, and limits reached; expose incomplete coverage and stop or back off on restrictions and rate limits.
+- **SOURCE-03:** Record source-specific access, automated processing, retention, and redistribution conditions separately. Unknown conditions must remain explicit and be resolved for the requested operation; they must not be converted into a blanket ban on internet research or a universal requirement for individual owner permission. Reading, indexing, retaining originals, and exporting copies are separate uses. Where a use is unsupported or restricted, explain it and preserve permitted references/metadata. Source registration and configured collection rules must permit routine authorized research without repeated approval screens. Camera access continues to follow CAM-01/CAM-02.
+- **SOURCE-04:** Acquired internet material must enter the shared evidence and application contracts. Support constructing linked events, maps, timelines, source graphs, reconstructions, and forecasts from acquired information, with inspectable inputs, methods, assumptions, uncertainty, and source versions. Derived intelligence must remain distinct from observations; live acquisition and retained historical evidence must remain recognizable throughout analysis and export.
 
 ### 4.1 Public document library
 

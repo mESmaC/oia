@@ -62,6 +62,7 @@ The repository was empty on GitHub when this backlog was created, so issue bodie
 - [#29: Detect and review camera anomalies with source-aware alerts](https://github.com/mESmaC/oia/issues/29)
 - [#30: Build the image and video forensic workbench](https://github.com/mESmaC/oia/issues/30)
   - [Still-image diagnostic slice and remaining integration](implementation/image-forensics.md)
+  - [Frame-timing metadata inspection and remaining video integration](implementation/frame-timing.md)
 - [#31: Add predictive restoration and recreation-prompt export](https://github.com/mESmaC/oia/issues/31)
 - [#32: Build radio listening with shared and local receivers](https://github.com/mESmaC/oia/issues/32)
   - [Receive-only session kernel and remaining integration](implementation/radio-session.md)

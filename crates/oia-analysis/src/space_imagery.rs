@@ -1,26 +1,27 @@
 //! Space observation, satellite imagery catalog, scientific provenance, and mission stream kernel (`SPACE-01`–`SPACE-03`, `GEO-02`, `GEO-04`, `INTEL-03`, `A05`).
 //!
 //! Provides provider-independent cataloguing, multi-criteria filtering, scientific product vs.
-//! preview provenance tracking, public mission/station stream classification, mosaic coverage
-//! boundary accounting, and geometry-aware baseline change comparison.
+//! preview provenance tracking, public mission/station stream classification, exact mosaic coverage
+//! boundary accounting, and geometry-aware baseline comparison without fabricated detections.
 //!
 //! ### Core Contracts and Integrity Invariants (§2, §3, §6; `SPACE-01`–`SPACE-03`, `A05`)
 //! 1. **Scientific vs. Preview Provenance (`SPACE-02`, `A05`):** Raw scientific products (FITS,
-//!    calibrated radiance cubes) remain linked to derived previews with explicit calibration
+//!    calibrated radiance GeoTIFFs) remain linked to derived previews with explicit calibration
 //!    levels, exposure durations, stacking histories, and color mappings. Outreach renderings
 //!    and false-color composites are strictly labeled and **NEVER** presented as natural
 //!    observations or physical truth measurements.
-//! 2. **Continuous Coverage Not Implied (`GEO-04`, `A04`):** Mosaic queries over terrestrial or
-//!    celestial envelopes report explicit coverage boundaries, footprint unions, and gaps.
-//!    Seamless continuous coverage is never assumed or claimed when coverage is partial.
+//! 2. **Continuous Coverage Not Implied (`GEO-04`, `A04`):** Mosaic queries over terrestrial
+//!    envelopes compute exact clipped polygon/interval union coverage. Seamless continuous coverage
+//!    is never assumed or claimed when coverage is partial.
 //! 3. **Stream Classification Rigor (`SPACE-03`, `A05`):** Public space mission feeds are classified
 //!    into distinct, immutable categories: `LiveCamera`, `DelayedTransmission`, `ReplayArchive`,
 //!    `CommentaryBroadcast`, and `SimulationOrRecreation`. Simulated animations or replays never
-//!    masquerade as live camera telemetry.
-//! 4. **Geometry-Aware Change Detection (`INTEL-03`):** Baseline comparisons retain capture
-//!    geometry (sun elevation, off-nadir angle, seasonal baseline) and flag false change triggers
-//!    caused by illumination or parallax. Candidate scores remain uncalibrated without an empirical
-//!    evaluation record (`AGENTS.md` §2).
+//!    masquerade as live camera telemetry. Bookmarks pin feed identity and calculate event time from
+//!    stream timing metadata.
+//! 4. **Geometry-Aware Baseline Comparison (`INTEL-03`):** Baseline comparisons retain capture
+//!    geometry (sun elevation, off-nadir angle, seasonal baseline) and flag confounding limitations.
+//!    Without an actual pixel detector or pinned evidence, change detection is reported as
+//!    `RasterDetectorNotPerformed` and never fabricates candidates or synthetic anomaly scores.
 
 use std::error::Error;
 use std::fmt;
@@ -46,6 +47,7 @@ pub struct SpaceCatalogLimits {
     pub max_stack_inputs: usize,
     pub max_change_candidates: usize,
     pub max_footprints_per_mosaic: usize,
+    pub max_previews_per_observation: usize,
 }
 
 impl Default for SpaceCatalogLimits {
@@ -57,6 +59,7 @@ impl Default for SpaceCatalogLimits {
             max_stack_inputs: 64,
             max_change_candidates: 100,
             max_footprints_per_mosaic: 256,
+            max_previews_per_observation: 32,
         }
     }
 }
@@ -91,11 +94,18 @@ pub enum SpaceImageryError {
     InvalidTimeWindow {
         reason: &'static str,
     },
+    InvalidFeedAssociation {
+        bookmark_feed_id: String,
+        host_feed_id: String,
+    },
     BudgetExceeded {
         resource: &'static str,
         limit: usize,
     },
     DuplicateObservationId {
+        id: String,
+    },
+    DuplicateFeedId {
         id: String,
     },
     ObservationNotFound {
@@ -134,6 +144,15 @@ impl fmt::Display for SpaceImageryError {
                 write!(f, "invalid spatial coordinates: {reason}")
             }
             Self::InvalidTimeWindow { reason } => write!(f, "invalid time window: {reason}"),
+            Self::InvalidFeedAssociation {
+                bookmark_feed_id,
+                host_feed_id,
+            } => {
+                write!(
+                    f,
+                    "bookmark belongs to feed '{bookmark_feed_id}', not host feed '{host_feed_id}'"
+                )
+            }
             Self::BudgetExceeded { resource, limit } => {
                 write!(
                     f,
@@ -143,20 +162,23 @@ impl fmt::Display for SpaceImageryError {
             Self::DuplicateObservationId { id } => {
                 write!(f, "duplicate space observation ID: '{id}'")
             }
+            Self::DuplicateFeedId { id } => {
+                write!(f, "duplicate space mission feed ID: '{id}'")
+            }
             Self::ObservationNotFound { id } => {
                 write!(f, "space observation ID not found: '{id}'")
             }
             Self::IncompatibleBaselineComparison { reason } => {
                 write!(f, "incompatible baseline comparison: {reason}")
             }
-            Self::Stopped(reason) => write!(f, "processing stopped: {reason:?}"),
+            Self::Stopped(reason) => write!(f, "operation stopped: {reason:?}"),
         }
     }
 }
 
 impl Error for SpaceImageryError {}
 
-/// Broad spectral electromagnetic regime (`SPACE-01`).
+/// Broad electromagnetic spectrum regimes for space observations (`SPACE-01`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SpectralRegime {
     Radio,
@@ -181,7 +203,7 @@ impl fmt::Display for SpectralRegime {
             Self::FarInfrared => write!(f, "Far-Infrared"),
             Self::MidInfrared => write!(f, "Mid-Infrared"),
             Self::NearInfrared => write!(f, "Near-Infrared"),
-            Self::OpticalVisible => write!(f, "Optical/Visible"),
+            Self::OpticalVisible => write!(f, "Optical / Visible"),
             Self::Ultraviolet => write!(f, "Ultraviolet"),
             Self::ExtremeUltraviolet => write!(f, "Extreme Ultraviolet"),
             Self::XRay => write!(f, "X-Ray"),
@@ -192,7 +214,7 @@ impl fmt::Display for SpectralRegime {
     }
 }
 
-/// Explicit spectral band or wavelength interval in nanometres (`SPACE-01`).
+/// Explicit wavelength range in nanometres (`SPACE-01`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WavelengthRangeNm {
     pub min_nm: f64,
@@ -201,21 +223,27 @@ pub struct WavelengthRangeNm {
 
 impl WavelengthRangeNm {
     pub fn new(min_nm: f64, max_nm: f64) -> Result<Self, SpaceImageryError> {
-        if !min_nm.is_finite() || min_nm <= 0.0 {
+        let range = Self { min_nm, max_nm };
+        range.validate()?;
+        Ok(range)
+    }
+
+    pub fn validate(&self) -> Result<(), SpaceImageryError> {
+        if !self.min_nm.is_finite() || self.min_nm <= 0.0 {
             return Err(SpaceImageryError::InvalidWavelengthRange {
-                min_nm,
-                max_nm,
+                min_nm: self.min_nm,
+                max_nm: self.max_nm,
                 reason: "minimum wavelength must be finite and positive",
             });
         }
-        if !max_nm.is_finite() || max_nm < min_nm {
+        if !self.max_nm.is_finite() || self.max_nm < self.min_nm {
             return Err(SpaceImageryError::InvalidWavelengthRange {
-                min_nm,
-                max_nm,
+                min_nm: self.min_nm,
+                max_nm: self.max_nm,
                 reason: "maximum wavelength must be finite and >= minimum wavelength",
             });
         }
-        Ok(Self { min_nm, max_nm })
+        Ok(())
     }
 
     /// Checks if this range overlaps with another wavelength interval.
@@ -289,12 +317,18 @@ pub enum SpaceObservationTarget {
 impl SpaceObservationTarget {
     pub fn validate(&self) -> Result<(), SpaceImageryError> {
         match self {
-            Self::EarthObservation { footprint, .. } => {
+            Self::EarthObservation {
+                footprint,
+                region_label,
+            } => {
                 footprint
                     .validate()
                     .map_err(|_e| SpaceImageryError::InvalidCoordinates {
                         reason: "invalid Earth observation bounding box",
                     })?;
+                if let Some(l) = region_label {
+                    validate_str("region_label", l)?;
+                }
             }
             Self::Celestial {
                 target_name,
@@ -350,9 +384,6 @@ impl SpaceObservationTarget {
 }
 
 /// Provider candidate identification (`SPACE-01`).
-///
-/// Follows `SPACE-01` rule: "NASA, ESA, STScI/MAST, and mission archives are candidate
-/// providers, not confirmed integrations."
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpaceDataProvider {
     pub provider_name: String,
@@ -371,9 +402,14 @@ impl SpaceDataProvider {
             archive_service: archive_service.into(),
             is_candidate_catalog_entry,
         };
-        validate_str("provider_name", &p.provider_name)?;
-        validate_str("archive_service", &p.archive_service)?;
+        p.validate()?;
         Ok(p)
+    }
+
+    pub fn validate(&self) -> Result<(), SpaceImageryError> {
+        validate_str("provider_name", &self.provider_name)?;
+        validate_str("archive_service", &self.archive_service)?;
+        Ok(())
     }
 }
 
@@ -432,23 +468,35 @@ impl StackingHistory {
         method: StackingMethod,
         alignment_residual_error: f64,
     ) -> Result<Self, SpaceImageryError> {
-        if input_frame_count == 0 {
+        let s = Self {
+            input_frame_count,
+            method,
+            alignment_residual_error,
+        };
+        s.validate(usize::MAX)?;
+        Ok(s)
+    }
+
+    pub fn validate(&self, max_inputs: usize) -> Result<(), SpaceImageryError> {
+        if self.input_frame_count == 0 {
             return Err(SpaceImageryError::InvalidExposureDuration {
                 seconds: 0.0,
                 reason: "stacking history must have at least 1 input frame",
             });
         }
-        if !alignment_residual_error.is_finite() || alignment_residual_error < 0.0 {
+        if self.input_frame_count > max_inputs {
+            return Err(SpaceImageryError::BudgetExceeded {
+                resource: "stacking_input_frames",
+                limit: max_inputs,
+            });
+        }
+        if !self.alignment_residual_error.is_finite() || self.alignment_residual_error < 0.0 {
             return Err(SpaceImageryError::InvalidResolution {
-                value: alignment_residual_error,
+                value: self.alignment_residual_error,
                 reason: "alignment residual error must be non-negative and finite",
             });
         }
-        Ok(Self {
-            input_frame_count,
-            method,
-            alignment_residual_error,
-        })
+        Ok(())
     }
 }
 
@@ -496,11 +544,11 @@ impl ScientificProductRecord {
             scientific_data_uri: None,
             checksum_sha256: None,
         };
-        rec.validate()?;
+        rec.validate(usize::MAX)?;
         Ok(rec)
     }
 
-    pub fn validate(&self) -> Result<(), SpaceImageryError> {
+    pub fn validate(&self, max_stack_inputs: usize) -> Result<(), SpaceImageryError> {
         validate_str("product_id", &self.product_id)?;
         validate_str("source_version", &self.source_version)?;
         if !self.exposure_time_seconds.is_finite() || self.exposure_time_seconds <= 0.0 {
@@ -508,6 +556,9 @@ impl ScientificProductRecord {
                 seconds: self.exposure_time_seconds,
                 reason: "exposure time must be positive and finite",
             });
+        }
+        if let Some(ref sh) = self.stacking_history {
+            sh.validate(max_stack_inputs)?;
         }
         if let Some(ref pub_ref) = self.publication_reference {
             validate_str("publication_reference", pub_ref)?;
@@ -523,9 +574,6 @@ impl ScientificProductRecord {
 }
 
 /// Color mapping and presentation category (`SPACE-02`).
-///
-/// CRITICAL CONTRACT: Outreach renderings and false-color composites must be explicitly identified
-/// and must never masquerade as natural true-color observations or raw scientific data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ColorMapping {
     /// True color: mapped directly from natural spectral RGB bands.
@@ -568,6 +616,33 @@ impl ColorMapping {
             Self::IllustrativeSimulation { .. } => "ILLUSTRATIVE_SIMULATION",
         }
     }
+
+    pub fn validate(&self) -> Result<(), SpaceImageryError> {
+        match self {
+            Self::TrueColor => Ok(()),
+            Self::FalseColor {
+                red_channel_source,
+                green_channel_source,
+                blue_channel_source,
+            } => {
+                validate_str("red_channel_source", red_channel_source)?;
+                validate_str("green_channel_source", green_channel_source)?;
+                validate_str("blue_channel_source", blue_channel_source)?;
+                Ok(())
+            }
+            Self::SingleBandGreyscale { band_name } => validate_str("band_name", band_name),
+            Self::OutreachRendering {
+                renderer_attribution,
+                enhancement_notes,
+            } => {
+                validate_str("renderer_attribution", renderer_attribution)?;
+                validate_str("enhancement_notes", enhancement_notes)
+            }
+            Self::IllustrativeSimulation { generator_model } => {
+                validate_str("generator_model", generator_model)
+            }
+        }
+    }
 }
 
 /// Derived image preview record (`SPACE-02`).
@@ -598,16 +673,22 @@ impl ImagePreviewRecord {
             mime_type: mime_type.into(),
             preview_uri: preview_uri.into(),
         };
-        validate_str("preview_id", &p.preview_id)?;
-        validate_str("mime_type", &p.mime_type)?;
-        validate_str("preview_uri", &p.preview_uri)?;
-        if p.width_px == 0 || p.height_px == 0 {
+        p.validate()?;
+        Ok(p)
+    }
+
+    pub fn validate(&self) -> Result<(), SpaceImageryError> {
+        validate_str("preview_id", &self.preview_id)?;
+        validate_str("mime_type", &self.mime_type)?;
+        validate_str("preview_uri", &self.preview_uri)?;
+        self.color_mapping.validate()?;
+        if self.width_px == 0 || self.height_px == 0 {
             return Err(SpaceImageryError::InvalidResolution {
                 value: 0.0,
                 reason: "preview image dimensions must be non-zero",
             });
         }
-        Ok(p)
+        Ok(())
     }
 }
 
@@ -628,22 +709,32 @@ pub struct SpaceObservationEntry {
 }
 
 impl SpaceObservationEntry {
-    pub fn validate(&self) -> Result<(), SpaceImageryError> {
+    pub fn validate(&self, limits: &SpaceCatalogLimits) -> Result<(), SpaceImageryError> {
         validate_str("observation_id", &self.observation_id)?;
         validate_str("mission", &self.mission)?;
         validate_str("instrument", &self.instrument)?;
         self.target.validate()?;
+        if let Some(ref w) = self.wavelength_range_nm {
+            w.validate()?;
+        }
+        self.time_window
+            .validate()
+            .map_err(|_| SpaceImageryError::InvalidTimeWindow {
+                reason: "observation time window invalid",
+            })?;
         if let Some(ref res) = self.spatial_resolution {
             res.validate()?;
         }
-        self.scientific_product.validate()?;
+        self.provider.validate()?;
+        self.scientific_product.validate(limits.max_stack_inputs)?;
+        if self.previews.len() > limits.max_previews_per_observation {
+            return Err(SpaceImageryError::BudgetExceeded {
+                resource: "observation_previews",
+                limit: limits.max_previews_per_observation,
+            });
+        }
         for preview in &self.previews {
-            if preview.width_px == 0 || preview.height_px == 0 {
-                return Err(SpaceImageryError::InvalidResolution {
-                    value: 0.0,
-                    reason: "preview dimension must be non-zero",
-                });
-            }
+            preview.validate()?;
         }
         Ok(())
     }
@@ -742,9 +833,6 @@ impl SpaceObservationQuery {
 }
 
 /// Spacecraft or mission feed stream classification (`SPACE-03`).
-///
-/// Follows `SPACE-03` requirement: "Distinguish live camera imagery, delayed transmission,
-/// replay, commentary, and simulation. Bookmarks must retain source and timing limitations."
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamClassification {
     /// Live unaltered camera imagery from orbit or spacecraft.
@@ -780,6 +868,26 @@ impl StreamClassification {
             Self::SimulationOrRecreation { .. } => "SIMULATION_OR_RECREATION",
         }
     }
+
+    pub fn validate(&self) -> Result<(), SpaceImageryError> {
+        match self {
+            Self::LiveCamera => Ok(()),
+            Self::DelayedTransmission {
+                delay_seconds,
+                delay_reason,
+            } => {
+                if !delay_seconds.is_finite() || *delay_seconds < 0.0 {
+                    return Err(SpaceImageryError::InvalidTimeWindow {
+                        reason: "delay seconds must be finite and non-negative",
+                    });
+                }
+                validate_str("delay_reason", delay_reason)
+            }
+            Self::ReplayArchive { .. } => Ok(()),
+            Self::CommentaryBroadcast => Ok(()),
+            Self::SimulationOrRecreation { engine } => validate_str("engine", engine),
+        }
+    }
 }
 
 /// Current operating status of a public mission stream feed (`SPACE-03`).
@@ -793,37 +901,30 @@ pub enum MissionFeedStatus {
 }
 
 /// Bookmark on a mission stream feed (`SPACE-03`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Pins source feed identity, stream classification interpretation, and explicit
+/// distinct display vs. derived event timestamps.
+#[derive(Debug, Clone, PartialEq)]
 pub struct MissionFeedBookmark {
     pub bookmark_id: String,
-    pub timestamp_utc_ms: i64,
-    pub stream_type_code: &'static str,
-    pub description: String,
+    pub source_feed_id: String,
+    pub stream_classification: StreamClassification,
+    pub display_utc_ms: i64,
+    pub estimated_event_utc_ms: i64,
+    pub declared_clock_offset_ms: i64,
     pub timing_uncertainty_ms: u64,
+    pub description: String,
     pub source_limitations: String,
 }
 
 impl MissionFeedBookmark {
-    pub fn new(
-        bookmark_id: impl Into<String>,
-        timestamp_utc_ms: i64,
-        stream_type: &StreamClassification,
-        description: impl Into<String>,
-        timing_uncertainty_ms: u64,
-        source_limitations: impl Into<String>,
-    ) -> Result<Self, SpaceImageryError> {
-        let b = Self {
-            bookmark_id: bookmark_id.into(),
-            timestamp_utc_ms,
-            stream_type_code: stream_type.classification_token(),
-            description: description.into(),
-            timing_uncertainty_ms,
-            source_limitations: source_limitations.into(),
-        };
-        validate_str("bookmark_id", &b.bookmark_id)?;
-        validate_str("description", &b.description)?;
-        validate_str("source_limitations", &b.source_limitations)?;
-        Ok(b)
+    pub fn validate(&self) -> Result<(), SpaceImageryError> {
+        validate_str("bookmark_id", &self.bookmark_id)?;
+        validate_str("source_feed_id", &self.source_feed_id)?;
+        validate_str("description", &self.description)?;
+        validate_str("source_limitations", &self.source_limitations)?;
+        self.stream_classification.validate()?;
+        Ok(())
     }
 }
 
@@ -860,7 +961,75 @@ impl SpaceMissionFeed {
         validate_str("feed_id", &f.feed_id)?;
         validate_str("mission_name", &f.mission_name)?;
         validate_str("feed_title", &f.feed_title)?;
+        f.classification.validate()?;
         Ok(f)
+    }
+
+    pub fn validate(&self, limits: &SpaceCatalogLimits) -> Result<(), SpaceImageryError> {
+        validate_str("feed_id", &self.feed_id)?;
+        validate_str("mission_name", &self.mission_name)?;
+        validate_str("feed_title", &self.feed_title)?;
+        self.classification.validate()?;
+        if self.bookmarks.len() > limits.max_bookmarks_per_feed {
+            return Err(SpaceImageryError::BudgetExceeded {
+                resource: "feed_bookmarks",
+                limit: limits.max_bookmarks_per_feed,
+            });
+        }
+        for bookmark in &self.bookmarks {
+            bookmark.validate()?;
+            if bookmark.source_feed_id != self.feed_id {
+                return Err(SpaceImageryError::InvalidFeedAssociation {
+                    bookmark_feed_id: bookmark.source_feed_id.clone(),
+                    host_feed_id: self.feed_id.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Creates a bookmark bound to this feed, preserving the stream classification snapshot,
+    /// clock offset, and calculating estimated event time from display time.
+    pub fn create_bookmark(
+        &self,
+        bookmark_id: impl Into<String>,
+        display_utc_ms: i64,
+        description: impl Into<String>,
+        timing_uncertainty_ms: u64,
+        source_limitations: impl Into<String>,
+    ) -> Result<MissionFeedBookmark, SpaceImageryError> {
+        let estimated_event_utc_ms = match &self.classification {
+            StreamClassification::DelayedTransmission { delay_seconds, .. } => {
+                let delay_ms = (delay_seconds * 1000.0).round() as i64;
+                display_utc_ms
+                    .saturating_sub(delay_ms)
+                    .saturating_add(self.declared_clock_offset_ms)
+            }
+            StreamClassification::ReplayArchive {
+                original_event_utc_ms,
+            } => *original_event_utc_ms,
+            StreamClassification::LiveCamera => {
+                display_utc_ms.saturating_add(self.declared_clock_offset_ms)
+            }
+            StreamClassification::CommentaryBroadcast
+            | StreamClassification::SimulationOrRecreation { .. } => {
+                display_utc_ms.saturating_add(self.declared_clock_offset_ms)
+            }
+        };
+
+        let bm = MissionFeedBookmark {
+            bookmark_id: bookmark_id.into(),
+            source_feed_id: self.feed_id.clone(),
+            stream_classification: self.classification.clone(),
+            display_utc_ms,
+            estimated_event_utc_ms,
+            declared_clock_offset_ms: self.declared_clock_offset_ms,
+            timing_uncertainty_ms,
+            description: description.into(),
+            source_limitations: source_limitations.into(),
+        };
+        bm.validate()?;
+        Ok(bm)
     }
 
     pub fn add_bookmark(
@@ -868,6 +1037,13 @@ impl SpaceMissionFeed {
         bookmark: MissionFeedBookmark,
         limits: &SpaceCatalogLimits,
     ) -> Result<(), SpaceImageryError> {
+        bookmark.validate()?;
+        if bookmark.source_feed_id != self.feed_id {
+            return Err(SpaceImageryError::InvalidFeedAssociation {
+                bookmark_feed_id: bookmark.source_feed_id,
+                host_feed_id: self.feed_id.clone(),
+            });
+        }
         if self.bookmarks.len() >= limits.max_bookmarks_per_feed {
             return Err(SpaceImageryError::BudgetExceeded {
                 resource: "feed_bookmarks",
@@ -884,7 +1060,7 @@ impl SpaceMissionFeed {
 pub struct ObservationFootprint {
     pub observation_id: String,
     pub bounding_box: GeoBoundingBoxWgs84,
-    pub ground_sample_distance_m: f64,
+    pub ground_sample_distance_m: Option<f64>,
     pub observation_time_utc_ms: i64,
 }
 
@@ -894,14 +1070,15 @@ pub enum MosaicCoverageAssessment {
     /// Verified complete coverage across the queried spatial envelope.
     CompleteVerifiedCoverage {
         observation_count: usize,
-        min_resolution_m: f64,
-        max_resolution_m: f64,
+        min_resolution_m: Option<f64>,
+        max_resolution_m: Option<f64>,
     },
     /// Partial coverage with identified gaps or missing scenes.
     PartialCoverageWithGaps {
         contributing_observation_count: usize,
-        gap_count: usize,
-        gap_warning: String,
+        uncovered_area_fraction: f64,
+        uncovered_bands_count: usize,
+        diagnostic: String,
     },
     /// No coverage available within the requested bounding envelope.
     NoCoverageAvailable,
@@ -960,13 +1137,14 @@ impl ImageryCaptureGeometry {
     }
 }
 
-/// Potential confounding geometric or seasonal limitations on detected changes (`INTEL-03`).
+/// Confounding geometric or seasonal limitations on detected changes (`INTEL-03`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GeometricLimitation {
     SignificantSunElevationDifference,
     OffNadirPerspectiveParallax,
     SeasonalFoliageOrSnowDiscrepancy,
     ResolutionDisparity,
+    IncompatibleOrUnknownResolution,
 }
 
 /// Review status for a detected change candidate (`INTEL-03`).
@@ -986,20 +1164,35 @@ pub struct ImageryChangeCandidate {
     pub location: GeoPointWgs84,
     pub raw_anomaly_score: f64,
     pub is_calibrated_probability: bool,
+    pub is_simulated: bool,
     pub trigger_rationale: String,
     pub limitations: Vec<GeometricLimitation>,
     pub review_status: ChangeReviewStatus,
 }
 
-/// Pairwise baseline change detection result (`INTEL-03`).
+/// Execution status for pairwise change analysis (`INTEL-03`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeAnalysisStatus {
+    /// Geometry and observational compatibility evaluated; raster pixel change detection not performed.
+    RasterDetectorNotPerformed,
+    /// Explicitly labeled synthetic candidate generation for testing or demonstration.
+    SimulatedDemonstration,
+    /// Detector executed with pinned evidence.
+    EvaluatedWithEvidence,
+}
+
+/// Pairwise baseline comparison report (`INTEL-03`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImageryChangeReport {
     pub baseline_observation_id: String,
     pub comparison_observation_id: String,
+    pub footprint_intersection: Option<GeoBoundingBoxWgs84>,
     pub sun_elevation_diff_deg: f64,
     pub off_nadir_diff_deg: f64,
     pub seasonal_day_gap: u32,
-    pub resolution_ratio: f64,
+    pub resolution_ratio: Option<f64>,
+    pub limitations: Vec<GeometricLimitation>,
+    pub analysis_status: ChangeAnalysisStatus,
     pub candidates: Vec<ImageryChangeCandidate>,
 }
 
@@ -1024,7 +1217,7 @@ impl SpaceImageryCatalog {
         entry: SpaceObservationEntry,
         limits: &SpaceCatalogLimits,
     ) -> Result<(), SpaceImageryError> {
-        entry.validate()?;
+        entry.validate(limits)?;
         if self.observations.len() >= limits.max_observations {
             return Err(SpaceImageryError::BudgetExceeded {
                 resource: "catalog_observations",
@@ -1050,11 +1243,15 @@ impl SpaceImageryCatalog {
         feed: SpaceMissionFeed,
         limits: &SpaceCatalogLimits,
     ) -> Result<(), SpaceImageryError> {
+        feed.validate(limits)?;
         if self.feeds.len() >= limits.max_observations {
             return Err(SpaceImageryError::BudgetExceeded {
                 resource: "mission_feeds",
                 limit: limits.max_observations,
             });
+        }
+        if self.feeds.iter().any(|f| f.feed_id == feed.feed_id) {
+            return Err(SpaceImageryError::DuplicateFeedId { id: feed.feed_id });
         }
         self.feeds.push(feed);
         Ok(())
@@ -1089,7 +1286,7 @@ impl SpaceImageryCatalog {
         Ok(results)
     }
 
-    /// Evaluates mosaic coverage for a terrestrial envelope (`GEO-04`).
+    /// Evaluates mosaic coverage for a terrestrial envelope using exact clipped rectangle union (`GEO-04`).
     pub fn evaluate_mosaic_coverage(
         &self,
         envelope: &GeoBoundingBoxWgs84,
@@ -1105,6 +1302,7 @@ impl SpaceImageryCatalog {
         let mut footprints = Vec::new();
         let mut min_res = f64::INFINITY;
         let mut max_res = f64::NEG_INFINITY;
+        let mut has_any_res = false;
 
         for entry in &self.observations {
             if let Some(win) = time_window
@@ -1122,15 +1320,18 @@ impl SpaceImageryCatalog {
                     });
                 }
                 let gsd = match entry.spatial_resolution {
-                    Some(SpatialResolution::GroundSampleDistanceMeters(g)) => g,
-                    _ => 30.0, // nominal fallback resolution in metres
+                    Some(SpatialResolution::GroundSampleDistanceMeters(g)) => {
+                        has_any_res = true;
+                        if g < min_res {
+                            min_res = g;
+                        }
+                        if g > max_res {
+                            max_res = g;
+                        }
+                        Some(g)
+                    }
+                    _ => None,
                 };
-                if gsd < min_res {
-                    min_res = gsd;
-                }
-                if gsd > max_res {
-                    max_res = gsd;
-                }
                 footprints.push(ObservationFootprint {
                     observation_id: entry.observation_id.clone(),
                     bounding_box: *footprint,
@@ -1143,41 +1344,24 @@ impl SpaceImageryCatalog {
         let assessment = if footprints.is_empty() {
             MosaicCoverageAssessment::NoCoverageAvailable
         } else {
-            // Verify if envelope is completely covered or partial.
-            // Check corner containment: all 4 corners of the envelope must be covered
-            // by at least one observation footprint.
-            let corners = [
-                (envelope.south_lat_deg(), envelope.west_lon_deg()),
-                (envelope.south_lat_deg(), envelope.east_lon_deg()),
-                (envelope.north_lat_deg(), envelope.west_lon_deg()),
-                (envelope.north_lat_deg(), envelope.east_lon_deg()),
-            ];
+            let (uncovered_fraction, uncovered_bands) =
+                evaluate_envelope_union_coverage(envelope, &footprints);
 
-            let mut corners_covered = 0;
-            for (lat, lon) in corners {
-                let pt = GeoPointWgs84::new(lat, lon).map_err(|_| {
-                    SpaceImageryError::InvalidCoordinates {
-                        reason: "corner point evaluation failed",
-                    }
-                })?;
-                if footprints.iter().any(|f| f.bounding_box.contains_point(pt)) {
-                    corners_covered += 1;
-                }
-            }
-
-            if corners_covered == 4 {
+            if uncovered_fraction <= 1e-6 && uncovered_bands == 0 {
                 MosaicCoverageAssessment::CompleteVerifiedCoverage {
                     observation_count: footprints.len(),
-                    min_resolution_m: min_res,
-                    max_resolution_m: max_res,
+                    min_resolution_m: if has_any_res { Some(min_res) } else { None },
+                    max_resolution_m: if has_any_res { Some(max_res) } else { None },
                 }
             } else {
-                let missing_corners = 4 - corners_covered;
                 MosaicCoverageAssessment::PartialCoverageWithGaps {
                     contributing_observation_count: footprints.len(),
-                    gap_count: missing_corners,
-                    gap_warning: format!(
-                        "Mosaic incomplete: {missing_corners} of 4 envelope boundaries lack observation coverage"
+                    uncovered_area_fraction: uncovered_fraction,
+                    uncovered_bands_count: uncovered_bands,
+                    diagnostic: format!(
+                        "Mosaic incomplete: {:.1}% of envelope uncovered across {} latitude slice gaps",
+                        uncovered_fraction * 100.0,
+                        uncovered_bands
                     ),
                 }
             }
@@ -1190,14 +1374,18 @@ impl SpaceImageryCatalog {
         })
     }
 
-    /// Performs pairwise geometry-aware change detection comparison (`INTEL-03`).
+    /// Performs pairwise geometry and observational compatibility comparison (`INTEL-03`).
+    ///
+    /// Evaluates viewing geometry, seasonal gap, and resolution ratio. Without attached pixel
+    /// detector outputs or pinned evidence, status is `RasterDetectorNotPerformed` and no change
+    /// candidates or synthetic anomaly scores are fabricated.
     pub fn compare_baselines(
         &self,
         baseline_id: &str,
         comparison_id: &str,
         baseline_geom: &ImageryCaptureGeometry,
         comparison_geom: &ImageryCaptureGeometry,
-        limits: &SpaceCatalogLimits,
+        _limits: &SpaceCatalogLimits,
     ) -> Result<ImageryChangeReport, SpaceImageryError> {
         let baseline = self
             .observations
@@ -1214,7 +1402,6 @@ impl SpaceImageryCatalog {
                 id: comparison_id.to_string(),
             })?;
 
-        // Geometry difference checks
         let sun_elevation_diff_deg =
             (baseline_geom.sun_elevation_deg - comparison_geom.sun_elevation_deg).abs();
         let off_nadir_diff_deg =
@@ -1223,18 +1410,16 @@ impl SpaceImageryCatalog {
             .day_of_year
             .abs_diff(comparison_geom.day_of_year);
 
-        let res_base = match baseline.spatial_resolution {
-            Some(SpatialResolution::GroundSampleDistanceMeters(g)) => g,
-            _ => 1.0,
-        };
-        let res_comp = match comparison.spatial_resolution {
-            Some(SpatialResolution::GroundSampleDistanceMeters(g)) => g,
-            _ => 1.0,
-        };
-        let resolution_ratio = if res_base > 0.0 {
-            res_comp / res_base
-        } else {
-            1.0
+        let resolution_ratio = match (baseline.spatial_resolution, comparison.spatial_resolution) {
+            (
+                Some(SpatialResolution::GroundSampleDistanceMeters(b)),
+                Some(SpatialResolution::GroundSampleDistanceMeters(c)),
+            ) if b > 0.0 => Some(c / b),
+            (
+                Some(SpatialResolution::AngularResolutionArcsec(b)),
+                Some(SpatialResolution::AngularResolutionArcsec(c)),
+            ) if b > 0.0 => Some(c / b),
+            _ => None,
         };
 
         let mut limitations = Vec::new();
@@ -1244,60 +1429,44 @@ impl SpaceImageryCatalog {
         if off_nadir_diff_deg > 10.0 {
             limitations.push(GeometricLimitation::OffNadirPerspectiveParallax);
         }
-        if seasonal_day_gap > 60 && seasonal_day_gap < 305 {
+        if (61..305).contains(&seasonal_day_gap) {
             limitations.push(GeometricLimitation::SeasonalFoliageOrSnowDiscrepancy);
         }
-        if (resolution_ratio - 1.0).abs() > 0.5 {
-            limitations.push(GeometricLimitation::ResolutionDisparity);
+        match resolution_ratio {
+            Some(ratio) if (ratio - 1.0).abs() > 0.5 => {
+                limitations.push(GeometricLimitation::ResolutionDisparity);
+            }
+            None => {
+                limitations.push(GeometricLimitation::IncompatibleOrUnknownResolution);
+            }
+            _ => {}
         }
 
-        // Generate synthetic candidates if observations overlap geographically
-        let mut candidates = Vec::new();
-        if let (
-            SpaceObservationTarget::EarthObservation { footprint: f1, .. },
-            SpaceObservationTarget::EarthObservation { footprint: f2, .. },
-        ) = (&baseline.target, &comparison.target)
-            && f1.overlaps_box(f2)
-            && candidates.len() < limits.max_change_candidates
-        {
-            let center_lat = (f1.south_lat_deg() + f1.north_lat_deg()) * 0.5;
-            let center_lon = (f1.west_lon_deg() + f1.east_lon_deg()) * 0.5;
-            let loc = GeoPointWgs84::new(center_lat, center_lon).map_err(|_| {
-                SpaceImageryError::InvalidCoordinates {
-                    reason: "change location center point invalid",
-                }
-            })?;
-
-            let initial_status = if limitations
-                .contains(&GeometricLimitation::SignificantSunElevationDifference)
-            {
-                ChangeReviewStatus::LikelyIlluminationArtifact
-            } else if limitations.contains(&GeometricLimitation::SeasonalFoliageOrSnowDiscrepancy) {
-                ChangeReviewStatus::SeasonalVegetationShift
-            } else {
-                ChangeReviewStatus::Unreviewed
-            };
-
-            candidates.push(ImageryChangeCandidate {
-                candidate_id: format!("chg:{baseline_id}:{comparison_id}:01"),
-                location: loc,
-                raw_anomaly_score: 0.72,
-                is_calibrated_probability: false, // strictly false per contract
-                trigger_rationale:
-                    "Radiometric delta across baseline pair in overlapping footprint".into(),
-                limitations: limitations.clone(),
-                review_status: initial_status,
-            });
-        }
+        let footprint_intersection = match (&baseline.target, &comparison.target) {
+            (
+                SpaceObservationTarget::EarthObservation { footprint: f1, .. },
+                SpaceObservationTarget::EarthObservation { footprint: f2, .. },
+            ) if f1.overlaps_box(f2) => {
+                let s = f1.south_lat_deg().max(f2.south_lat_deg());
+                let n = f1.north_lat_deg().min(f2.north_lat_deg());
+                let w = f1.west_lon_deg().max(f2.west_lon_deg());
+                let e = f1.east_lon_deg().min(f2.east_lon_deg());
+                GeoBoundingBoxWgs84::new(s, n, w, e).ok()
+            }
+            _ => None,
+        };
 
         Ok(ImageryChangeReport {
             baseline_observation_id: baseline_id.to_string(),
             comparison_observation_id: comparison_id.to_string(),
+            footprint_intersection,
             sun_elevation_diff_deg,
             off_nadir_diff_deg,
             seasonal_day_gap,
             resolution_ratio,
-            candidates,
+            limitations,
+            analysis_status: ChangeAnalysisStatus::RasterDetectorNotPerformed,
+            candidates: Vec::new(),
         })
     }
 
@@ -1312,6 +1481,99 @@ impl SpaceImageryCatalog {
     pub fn feeds(&self) -> &[SpaceMissionFeed] {
         &self.feeds
     }
+}
+
+/// Evaluates exact envelope rectangle union coverage using latitude band slicing.
+fn evaluate_envelope_union_coverage(
+    envelope: &GeoBoundingBoxWgs84,
+    footprints: &[ObservationFootprint],
+) -> (f64, usize) {
+    let env_south = envelope.south_lat_deg();
+    let env_north = envelope.north_lat_deg();
+    let env_west = envelope.west_lon_deg();
+    let env_east = envelope.east_lon_deg();
+
+    let total_lat_span = env_north - env_south;
+    let total_lon_span = if env_west <= env_east {
+        env_east - env_west
+    } else {
+        (180.0 - env_west) + (env_east - (-180.0))
+    };
+    let total_area = total_lat_span * total_lon_span;
+    if total_area <= 0.0 || footprints.is_empty() {
+        return (1.0, 1);
+    }
+
+    // Collect all latitude cut planes within [env_south, env_north]
+    let mut lat_cuts = vec![env_south, env_north];
+    for f in footprints {
+        let f_s = f.bounding_box.south_lat_deg().clamp(env_south, env_north);
+        let f_n = f.bounding_box.north_lat_deg().clamp(env_south, env_north);
+        lat_cuts.push(f_s);
+        lat_cuts.push(f_n);
+    }
+    lat_cuts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    lat_cuts.dedup_by(|a, b| (*a - *b).abs() < 1e-7);
+
+    let mut covered_area = 0.0;
+    let mut uncovered_bands = 0;
+
+    for i in 0..lat_cuts.len().saturating_sub(1) {
+        let y0 = lat_cuts[i];
+        let y1 = lat_cuts[i + 1];
+        let dy = y1 - y0;
+        if dy <= 1e-9 {
+            continue;
+        }
+
+        let mut intervals = Vec::new();
+        for f in footprints {
+            if f.bounding_box.south_lat_deg() <= y0 + 1e-9
+                && f.bounding_box.north_lat_deg() >= y1 - 1e-9
+            {
+                let fw = f.bounding_box.west_lon_deg();
+                let fe = f.bounding_box.east_lon_deg();
+                if fw <= fe {
+                    let w = fw.clamp(env_west, env_east);
+                    let e = fe.clamp(env_west, env_east);
+                    if e > w {
+                        intervals.push((w, e));
+                    }
+                }
+            }
+        }
+
+        if intervals.is_empty() {
+            uncovered_bands += 1;
+            continue;
+        }
+
+        intervals.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut merged: Vec<(f64, f64)> = Vec::new();
+        for (w, e) in intervals {
+            if let Some(last) = merged.last_mut() {
+                if w <= last.1 + 1e-9 {
+                    if e > last.1 {
+                        last.1 = e;
+                    }
+                } else {
+                    merged.push((w, e));
+                }
+            } else {
+                merged.push((w, e));
+            }
+        }
+
+        let slice_covered_lon: f64 = merged.iter().map(|(w, e)| e - w).sum();
+        covered_area += dy * slice_covered_lon;
+
+        if slice_covered_lon < total_lon_span - 1e-6 {
+            uncovered_bands += 1;
+        }
+    }
+
+    let uncovered_fraction = ((total_area - covered_area) / total_area).clamp(0.0, 1.0);
+    (uncovered_fraction, uncovered_bands)
 }
 
 fn validate_str(field: &'static str, s: &str) -> Result<(), SpaceImageryError> {

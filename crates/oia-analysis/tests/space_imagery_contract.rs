@@ -153,8 +153,13 @@ fn mosaic_coverage_and_absence_without_seamless_illusion() -> Result<(), Box<dyn
 
     // Critical contract check: Partial coverage MUST NOT claim complete or seamless coverage
     match report_partial.assessment {
-        MosaicCoverageAssessment::PartialCoverageWithGaps { gap_count, .. } => {
-            assert!(gap_count > 0);
+        MosaicCoverageAssessment::PartialCoverageWithGaps {
+            uncovered_area_fraction,
+            uncovered_bands_count,
+            ..
+        } => {
+            assert!(uncovered_area_fraction > 0.0);
+            assert!(uncovered_bands_count > 0);
         }
         _ => return Err("expected PartialCoverageWithGaps".into()),
     }
@@ -193,8 +198,121 @@ fn mosaic_coverage_and_absence_without_seamless_illusion() -> Result<(), Box<dyn
             max_resolution_m,
         } => {
             assert_eq!(observation_count, 2);
-            assert_eq!(min_resolution_m, 10.0);
-            assert_eq!(max_resolution_m, 30.0);
+            assert_eq!(min_resolution_m, Some(10.0));
+            assert_eq!(max_resolution_m, Some(30.0));
+        }
+        _ => return Err("expected CompleteVerifiedCoverage".into()),
+    }
+
+    // Case D (B2 regression test): Four corner tiles on envelope [0, 10] x [0, 10] MUST NOT
+    // report CompleteVerifiedCoverage when center is uncovered
+    let mut corner_catalog = SpaceImageryCatalog::new();
+    let corner_env = GeoBoundingBoxWgs84::new(0.0, 10.0, 0.0, 10.0)?;
+    let corner_boxes = [
+        GeoBoundingBoxWgs84::new(0.0, 1.0, 0.0, 1.0)?,
+        GeoBoundingBoxWgs84::new(0.0, 1.0, 9.0, 10.0)?,
+        GeoBoundingBoxWgs84::new(9.0, 10.0, 0.0, 1.0)?,
+        GeoBoundingBoxWgs84::new(9.0, 10.0, 9.0, 10.0)?,
+    ];
+    let corner_provider = SpaceDataProvider::new("CornerTest", "Archive", true)?;
+    for (idx, cb) in corner_boxes.iter().enumerate() {
+        let entry = SpaceObservationEntry {
+            observation_id: format!("obs:corner:{idx}"),
+            mission: "TestMission".into(),
+            instrument: "TestInst".into(),
+            target: SpaceObservationTarget::EarthObservation {
+                footprint: *cb,
+                region_label: None,
+            },
+            spectral_regime: SpectralRegime::OpticalVisible,
+            wavelength_range_nm: None,
+            time_window: TimeWindow::new(1_700_000_000_000, 1_700_000_010_000)?,
+            spatial_resolution: Some(SpatialResolution::GroundSampleDistanceMeters(15.0)),
+            provider: corner_provider.clone(),
+            scientific_product: ScientificProductRecord::new(
+                format!("prod:corner:{idx}"),
+                ScientificProductFormat::RawCcdArray,
+                CalibrationLevel::Level0RawTelemetry,
+                1.0,
+                "v1",
+            )?,
+            previews: Vec::new(),
+        };
+        corner_catalog.add_observation(entry, &limits)?;
+    }
+
+    let corner_report = corner_catalog.evaluate_mosaic_coverage(&corner_env, None, &limits)?;
+    match corner_report.assessment {
+        MosaicCoverageAssessment::PartialCoverageWithGaps {
+            uncovered_area_fraction,
+            uncovered_bands_count,
+            ..
+        } => {
+            // Envelope area is 100, four 1x1 corners cover 4 units; uncovered fraction is 96%
+            assert!((uncovered_area_fraction - 0.96).abs() < 1e-4);
+            assert!(uncovered_bands_count > 0);
+        }
+        MosaicCoverageAssessment::CompleteVerifiedCoverage { .. } => {
+            return Err(
+                "four disconnected corners must NEVER produce CompleteVerifiedCoverage".into(),
+            );
+        }
+        MosaicCoverageAssessment::NoCoverageAvailable => {
+            return Err("expected PartialCoverageWithGaps, got NoCoverageAvailable".into());
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn resolution_accounting_preserves_unavailable_data() -> Result<(), Box<dyn std::error::Error>> {
+    let limits = SpaceCatalogLimits::default();
+    let mut catalog = SpaceImageryCatalog::new();
+    let env = GeoBoundingBoxWgs84::new(20.0, 21.0, 30.0, 31.0)?;
+
+    // Observation with spatial_resolution = None
+    let entry_no_res = SpaceObservationEntry {
+        observation_id: "obs:no_res".into(),
+        mission: "NoResSat".into(),
+        instrument: "ExperimentalSensor".into(),
+        target: SpaceObservationTarget::EarthObservation {
+            footprint: env,
+            region_label: None,
+        },
+        spectral_regime: SpectralRegime::Radio,
+        wavelength_range_nm: None,
+        time_window: TimeWindow::new(1_700_000_000_000, 1_700_000_010_000)?,
+        spatial_resolution: None,
+        provider: SpaceDataProvider::new("ProviderA", "ServiceA", true)?,
+        scientific_product: ScientificProductRecord::new(
+            "p:no_res",
+            ScientificProductFormat::NetCdf4,
+            CalibrationLevel::Level1ARadiometric,
+            5.0,
+            "v1",
+        )?,
+        previews: Vec::new(),
+    };
+    catalog.add_observation(entry_no_res, &limits)?;
+
+    let report = catalog.evaluate_mosaic_coverage(&env, None, &limits)?;
+    // Footprint MUST have None for ground_sample_distance_m (not 30.0)
+    let fp = match report.footprints.first() {
+        Some(f) => f,
+        None => return Err("expected footprint".into()),
+    };
+    assert_eq!(fp.ground_sample_distance_m, None);
+
+    match report.assessment {
+        MosaicCoverageAssessment::CompleteVerifiedCoverage {
+            min_resolution_m,
+            max_resolution_m,
+            ..
+        } => {
+            // Must be None when no resolutions exist
+            assert_eq!(min_resolution_m, None);
+            assert_eq!(max_resolution_m, None);
         }
         _ => return Err("expected CompleteVerifiedCoverage".into()),
     }
@@ -203,13 +321,102 @@ fn mosaic_coverage_and_absence_without_seamless_illusion() -> Result<(), Box<dyn
 }
 
 #[test]
-fn mission_stream_classification_and_geometry_change_detection()
+fn nested_metadata_revalidation_and_collection_limits_at_admission()
+-> Result<(), Box<dyn std::error::Error>> {
+    let limits = SpaceCatalogLimits {
+        max_stack_inputs: 4,
+        max_previews_per_observation: 2,
+        max_bookmarks_per_feed: 2,
+        ..Default::default()
+    };
+    let mut catalog = SpaceImageryCatalog::new();
+
+    // 1. Direct construction bypass attempt with NaN/negative wavelength range
+    let mut invalid_entry = SpaceObservationEntry {
+        observation_id: "obs:invalid_wave".into(),
+        mission: "Test".into(),
+        instrument: "Test".into(),
+        target: SpaceObservationTarget::Celestial {
+            target_name: "Vega".into(),
+            ra_deg: 279.23,
+            dec_deg: 38.78,
+            fov_radius_deg: 1.0,
+        },
+        spectral_regime: SpectralRegime::OpticalVisible,
+        wavelength_range_nm: Some(WavelengthRangeNm {
+            min_nm: f64::NAN,
+            max_nm: -1.0,
+        }),
+        time_window: TimeWindow::new(1_700_000_000_000, 1_700_000_010_000)?,
+        spatial_resolution: None,
+        provider: SpaceDataProvider::new("Prov", "Archive", true)?,
+        scientific_product: ScientificProductRecord::new(
+            "p:invalid",
+            ScientificProductFormat::FitsPrimaryImage,
+            CalibrationLevel::Level0RawTelemetry,
+            1.0,
+            "v1",
+        )?,
+        previews: Vec::new(),
+    };
+
+    assert!(
+        catalog
+            .add_observation(invalid_entry.clone(), &limits)
+            .is_err()
+    );
+    assert_eq!(catalog.observations().len(), 0);
+
+    // 2. Direct construction bypass attempt with stack exceeding limit or NaN residual
+    invalid_entry.wavelength_range_nm = None;
+    invalid_entry.scientific_product.stacking_history = Some(StackingHistory {
+        input_frame_count: 100, // exceeds max_stack_inputs (4)
+        method: StackingMethod::MeanWithOutlierRejection,
+        alignment_residual_error: f64::NAN,
+    });
+    assert!(
+        catalog
+            .add_observation(invalid_entry.clone(), &limits)
+            .is_err()
+    );
+    assert_eq!(catalog.observations().len(), 0);
+
+    // 3. Excessive previews collection exceeding max_previews_per_observation (2)
+    invalid_entry.scientific_product.stacking_history = None;
+    invalid_entry.previews = vec![
+        ImagePreviewRecord::new("p1", ColorMapping::TrueColor, 100, 100, "image/png", "u1")?,
+        ImagePreviewRecord::new("p2", ColorMapping::TrueColor, 100, 100, "image/png", "u2")?,
+        ImagePreviewRecord::new("p3", ColorMapping::TrueColor, 100, 100, "image/png", "u3")?,
+    ];
+    assert!(catalog.add_observation(invalid_entry, &limits).is_err());
+    assert_eq!(catalog.observations().len(), 0);
+
+    // 4. Feed admission revalidation with prefilled bookmarks exceeding limits
+    let mut feed = SpaceMissionFeed::new(
+        "feed:flood",
+        "Mission",
+        "Title",
+        StreamClassification::LiveCamera,
+        MissionFeedStatus::NominalActive,
+        0,
+    )?;
+    let bm1 = feed.create_bookmark("bm1", 1_700_000_000_000, "d1", 10, "lim")?;
+    let bm2 = feed.create_bookmark("bm2", 1_700_000_001_000, "d2", 10, "lim")?;
+    let bm3 = feed.create_bookmark("bm3", 1_700_000_002_000, "d3", 10, "lim")?;
+    feed.bookmarks = vec![bm1, bm2, bm3]; // 3 bookmarks, max is 2
+    assert!(catalog.add_feed(feed, &limits).is_err());
+    assert_eq!(catalog.feeds().len(), 0);
+
+    Ok(())
+}
+
+#[test]
+fn mission_stream_classification_and_bookmark_timing_integrity()
 -> Result<(), Box<dyn std::error::Error>> {
     let limits = SpaceCatalogLimits::default();
     let mut catalog = SpaceImageryCatalog::new();
 
-    // 1. Mission feeds: verify stream classifications and bookmark latency tracking
-    let mut iss_feed = SpaceMissionFeed::new(
+    let iss_feed = SpaceMissionFeed::new(
         "feed:iss:ehdc_live",
         "International Space Station",
         "ISS External High Definition Live Views",
@@ -224,37 +431,70 @@ fn mission_stream_classification_and_geometry_change_detection()
         "LIVE_CAMERA"
     );
 
-    let sim_feed = SpaceMissionFeed::new(
-        "feed:artemis:trajectory_sim",
-        "Artemis II",
-        "Translunar Trajectory Orbital Simulation",
-        StreamClassification::SimulationOrRecreation {
-            engine: "NASA DOUG Flight Visualization Engine".into(),
+    let mut delayed_feed_10 = SpaceMissionFeed::new(
+        "feed:mars:relay_10s",
+        "Mars Reconnaissance Orbiter",
+        "Mars Relay 10s Delay",
+        StreamClassification::DelayedTransmission {
+            delay_seconds: 10.0,
+            delay_reason: "Near orbital pass buffer".into(),
         },
         MissionFeedStatus::NominalActive,
         0,
     )?;
 
-    assert!(!sim_feed.classification.is_live());
+    let delayed_feed_3600 = SpaceMissionFeed::new(
+        "feed:mars:relay_3600s",
+        "Mars Reconnaissance Orbiter",
+        "Mars Relay 3600s Delay",
+        StreamClassification::DelayedTransmission {
+            delay_seconds: 3600.0,
+            delay_reason: "Deep space speed-of-light propagation".into(),
+        },
+        MissionFeedStatus::NominalActive,
+        0,
+    )?;
+
+    // B5 regression: Bookmarks from 10s and 3600s delay streams must NOT be equal
+    let bm_10 = delayed_feed_10.create_bookmark(
+        "bm:mars:event",
+        1_700_000_000_000,
+        "Entry descent landing cue",
+        50,
+        "Buffered relay",
+    )?;
+    let bm_3600 = delayed_feed_3600.create_bookmark(
+        "bm:mars:event",
+        1_700_000_000_000,
+        "Entry descent landing cue",
+        50,
+        "Buffered relay",
+    )?;
+
+    assert_ne!(bm_10, bm_3600);
+    assert_eq!(bm_10.estimated_event_utc_ms, 1_700_000_000_000 - 10_000);
     assert_eq!(
-        sim_feed.classification.classification_token(),
-        "SIMULATION_OR_RECREATION"
+        bm_3600.estimated_event_utc_ms,
+        1_700_000_000_000 - 3_600_000
     );
 
-    let bookmark = MissionFeedBookmark::new(
-        "bm:iss:los_event_01",
-        1_700_100_000_000,
-        &iss_feed.classification,
-        "Tracking Ku-band handover with momentary signal fade",
-        250,
-        "Ku-band satellite relay transition; video held on buffer frame",
-    )?;
-    iss_feed.add_bookmark(bookmark, &limits)?;
+    // B5 association check: feed rejects bookmark constructed for another feed
+    assert!(delayed_feed_10.add_bookmark(bm_3600, &limits).is_err());
+    delayed_feed_10.add_bookmark(bm_10, &limits)?;
 
+    catalog.add_feed(delayed_feed_10, &limits)?;
     catalog.add_feed(iss_feed, &limits)?;
-    catalog.add_feed(sim_feed, &limits)?;
+    assert_eq!(catalog.feeds().len(), 2);
 
-    // 2. Geometry-aware baseline change detection
+    Ok(())
+}
+
+#[test]
+fn geometry_aware_baseline_comparison_never_fabricates_detections()
+-> Result<(), Box<dyn std::error::Error>> {
+    let limits = SpaceCatalogLimits::default();
+    let mut catalog = SpaceImageryCatalog::new();
+
     let shared_footprint = GeoBoundingBoxWgs84::new(35.0, 35.5, -115.5, -115.0)?;
     let provider = SpaceDataProvider::new("NASA CMR", "LP DAAC", true)?;
 
@@ -321,25 +561,43 @@ fn mission_stream_classification_and_geometry_change_detection()
     assert_eq!(change_report.seasonal_day_gap, 181);
     assert!((change_report.sun_elevation_diff_deg - 40.5).abs() < 1e-4);
 
-    // Critical contract check: significant sun angle discrepancy must flag illumination artifact
-    assert_eq!(change_report.candidates.len(), 1);
-    let cand = match change_report.candidates.first() {
-        Some(c) => c,
-        None => return Err("expected change candidate".into()),
-    };
-    assert!(!cand.is_calibrated_probability); // NEVER calibrated probability without held-out eval
+    // Critical B1 contract check: Without a raster detector, candidates MUST BE EMPTY
+    // and status MUST BE RasterDetectorNotPerformed (never fabricated 0.72 score!)
+    assert_eq!(
+        change_report.analysis_status,
+        ChangeAnalysisStatus::RasterDetectorNotPerformed
+    );
+    assert!(change_report.candidates.is_empty());
+
+    // Confounding limitations are correctly identified from geometry
     assert!(
-        cand.limitations
+        change_report
+            .limitations
             .contains(&GeometricLimitation::SignificantSunElevationDifference)
     );
     assert!(
-        cand.limitations
+        change_report
+            .limitations
             .contains(&GeometricLimitation::SeasonalFoliageOrSnowDiscrepancy)
     );
+
+    // Probe B1 self-comparison check: identical geometry yields 0 candidates and no limitations
+    let self_report = catalog.compare_baselines(
+        "obs:landsat:summer",
+        "obs:landsat:summer",
+        &geom_summer,
+        &geom_summer,
+        &limits,
+    )?;
     assert_eq!(
-        cand.review_status,
-        ChangeReviewStatus::LikelyIlluminationArtifact
+        self_report.analysis_status,
+        ChangeAnalysisStatus::RasterDetectorNotPerformed
     );
+    assert!(self_report.candidates.is_empty());
+    assert!(self_report.limitations.is_empty());
+    assert_eq!(self_report.sun_elevation_diff_deg, 0.0);
+    assert_eq!(self_report.off_nadir_diff_deg, 0.0);
+    assert_eq!(self_report.seasonal_day_gap, 0);
 
     Ok(())
 }

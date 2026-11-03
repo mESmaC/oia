@@ -4,45 +4,50 @@ Status: implemented in `oia-analysis::space_imagery` (`crates/oia-analysis/src/s
 This delivers the standalone domain and analysis catalog slice of [#26](https://github.com/mESmaC/oia/issues/26),
 supporting [SPACE-01, SPACE-02, and SPACE-03](../spec.md#43-space-imagery-and-solar-system), the space observation
 and preview provenance subset of [A05](../delivery.md#a05-space-observations-and-planetary-context), mosaic coverage
-accounting ([GEO-04](../spec.md#42-geographic-context-and-terrain)), and geometry-aware baseline change detection
+accounting ([GEO-04](../spec.md#42-geographic-events-and-uap-investigations)), and geometry-aware baseline comparison
 ([INTEL-03](../spec.md#45-reasoning-and-additional-intelligence-methods)).
 
 This package is a local, provider-independent Rust kernel with zero external network or database dependencies.
-Live provider ingestion, SQLite storage, and UI visualization remain open in [#13](https://github.com/mESmaC/oia/issues/13),
-[#11](https://github.com/mESmaC/oia/issues/11), and [#16](https://github.com/mESmaC/oia/issues/16). Decision D06
-remains open with its owner.
+Live provider ingestion, SQLite storage, raster pixel decoding, and UI visualization remain open in [#13](https://github.com/mESmaC/oia/issues/13),
+[#11](https://github.com/mESmaC/oia/issues/11), and [#16](https://github.com/mESmaC/oia/issues/16).
 
 ## Boundary and Evidence Semantics
 
 The `oia_analysis::space_imagery` module enforces four analytical and evidence integrity contracts:
 
-1. **Scientific vs. Preview Provenance (`SPACE-02`, `A05`):** Raw scientific products (`ScientificProductRecord`,
-   e.g. FITS image arrays, FITS binary tables, calibrated radiance GeoTIFFs) are preserved alongside derived previews
-   (`ImagePreviewRecord`). Calibration processing levels (`Level0RawTelemetry` through `Level4ModelAssimilated`), exposure
-   durations (in seconds), stacking history (input frame count, integration method, registration residual uncertainty),
-   and source versions are explicitly tracked.
+1. **Scientific vs. Preview Provenance (`SPACE-02`, `A05`):** Raw scientific observation metadata records
+   (`ScientificProductRecord`, e.g. FITS primary arrays, FITS binary tables, calibrated radiance GeoTIFFs) are preserved
+   alongside derived previews (`ImagePreviewRecord`). Calibration processing levels (`Level0RawTelemetry` through
+   `Level4ModelAssimilated`), exposure durations (in seconds), stacking history (input frame count, integration method,
+   registration residual uncertainty), and source versions are explicitly tracked and bounded.
 2. **Outreach and Simulation Labeling Invariant (`SPACE-02`, `AGENTS.md` §2):** Color mappings (`ColorMapping`) strictly
    differentiate natural RGB observations (`TrueColor`), explicit band assignments (`FalseColor`), single-band greyscale
    (`SingleBandGreyscale`), outreach aesthetic presentations (`OutreachRendering`), and computer-generated models
    (`IllustrativeSimulation`). An outreach rendering or simulation is identified by `is_outreach_or_simulated()` and
    can never masquerade as a natural observation or physical measurement. Queries with `exclude_outreach_renderings = true`
-   strictly exclude entries containing only outreach or simulated previews.
+   strictly exclude entries containing outreach or simulated previews.
 3. **Public Mission Stream Classification (`SPACE-03`, `A05`):** Space station and spacecraft mission feeds
    (`SpaceMissionFeed`) are classified into distinct, immutable streams:
    - `LiveCamera`: Unaltered real-time camera imagery direct from orbit or spacecraft.
-   - `DelayedTransmission`: Transmission delayed by buffer transit or speed-of-light propagation (recording delay seconds).
+   - `DelayedTransmission`: Transmission delayed by buffer transit or speed-of-light propagation (recording delay seconds and reason).
    - `ReplayArchive`: Playback of prior recorded pass or historical mission activity.
    - `CommentaryBroadcast`: Studio commentary, narrated coverage, or graphics overlays.
    - `SimulationOrRecreation`: Computer-generated trajectory visualization or CAD animation.
-   Bookmarks (`MissionFeedBookmark`) retain the stream classification token, capture timestamp, timing uncertainty,
-   and source limitations (e.g. loss-of-signal handover, nightside eclipse pass).
-4. **Mosaic Coverage Accounting and Change Detection (`GEO-04`, `INTEL-03`):** Terrestrial mosaic queries evaluate
-   all contributing observation footprints (`GeoBoundingBoxWgs84`). If coverage across the envelope boundaries is incomplete,
-   the report returns `MosaicCoverageAssessment::PartialCoverageWithGaps` with the exact count of uncovered boundary regions.
-   Seamless continuous reconstruction is never assumed or claimed. Pairwise baseline change detection (`compare_baselines`)
-   evaluates illumination and viewing geometry differences (sun elevation delta, off-nadir angle delta, seasonal day gap,
-   resolution ratio) and flags false change triggers (`LikelyIlluminationArtifact`, `SeasonalVegetationShift`).
-   Change candidates strictly enforce `is_calibrated_probability = false` in the absence of a pinned held-out evaluation.
+   Bookmarks (`MissionFeedBookmark`) are created through owning feeds (`feed.create_bookmark(...)`), pinning `source_feed_id`,
+   snapshotting `StreamClassification`, and computing `estimated_event_utc_ms` from display time, stream propagation delay,
+   and declared clock offsets. Feeds enforce host matching and reject bookmarks created for other feeds.
+4. **Exact Mosaic Coverage Accounting (`GEO-04`):** Terrestrial mosaic queries evaluate all contributing observation
+   footprints (`GeoBoundingBoxWgs84`). Rather than checking isolated sample points or corners, `evaluate_mosaic_coverage`
+   computes exact clipped envelope rectangle union coverage via latitude slice decomposition. If coverage across the envelope
+   is incomplete, the report returns `MosaicCoverageAssessment::PartialCoverageWithGaps` with exact uncovered area fraction
+   and uncovered slice gap counts. Seamless continuous coverage is never assumed or claimed when coverage is partial.
+5. **Geometry-Aware Baseline Comparison Without Fabricated Detections (`INTEL-03`):** Pairwise baseline comparison
+   (`compare_baselines`) evaluates viewing and illumination geometry differences (sun elevation delta, off-nadir angle delta,
+   seasonal day gap, resolution ratio) and flags confounding limitations (`SignificantSunElevationDifference`,
+   `OffNadirPerspectiveParallax`, `SeasonalFoliageOrSnowDiscrepancy`, `ResolutionDisparity`, `IncompatibleOrUnknownResolution`).
+   Without raster pixel detectors or pinned empirical evidence, status is reported as `RasterDetectorNotPerformed` and
+   the candidate collection remains strictly empty. No synthetic detections, placeholder candidates, or uncalibrated anomaly
+   scores are fabricated.
 
 ## Multi-Criteria Catalog Filtering (`SPACE-01`, `GEO-02`)
 
@@ -71,20 +76,25 @@ cargo +1.99.0 test -p oia-analysis --test space_imagery_contract --locked
 cargo +1.99.0 run -p oia-analysis --example inspect-space-observations --locked
 ```
 
-All commands exited with code 0. Three targeted contract tests in `space_imagery_contract.rs` verify:
+Six contract tests in `space_imagery_contract.rs` verify:
 1. `scientific_provenance_and_outreach_rendering_integrity`: FITS metadata preservation, Level-1B calibration, stacking
    residuals, outreach preview labeling, and strict outreach exclusion in queries.
-2. `mosaic_coverage_and_absence_without_seamless_illusion`: Evaluation of empty, partial, and complete multi-footprint
-   mosaics without assuming seamless coverage.
-3. `mission_stream_classification_and_geometry_change_detection`: Live vs. simulation stream discrimination, bookmark
-   limitations, sun elevation difference detection, and uncalibrated change candidate score invariants.
+2. `mosaic_coverage_and_absence_without_seamless_illusion`: Evaluation of empty, partial, four-corner disconnected, and complete
+   multi-footprint mosaics, verifying that disconnected corner tiles never report complete coverage.
+3. `resolution_accounting_preserves_unavailable_data`: Preserves `None` spatial resolution without inventing nominal values.
+4. `nested_metadata_revalidation_and_collection_limits_at_admission`: Revalidates directly constructed nested structs (wavelengths,
+   stack limits, preview limits, feed bookmark bounds) and rejects invalid/oversized data at catalog admission boundaries.
+5. `mission_stream_classification_and_bookmark_timing_integrity`: Live vs. simulation stream discrimination, bookmark feed
+   pinning, and event timestamp calculation from stream delays.
+6. `geometry_aware_baseline_comparison_never_fabricates_detections`: Baseline comparison returns `RasterDetectorNotPerformed`
+   with zero candidates, preventing fabricated detections while evaluating geometry limitations.
 
 ## Limitations and Remaining Scope
 
+- **Raster Pixel Processing:** This kernel evaluates metadata and geometry compatibility. Actual pixel decoding, raster
+  radiometric subtraction, and pinned detector evidence ingestion remain downstream tasks.
 - **Live Provider Adapters:** Direct network connections to NASA CMR/GIBS, ESA Copernicus SciHub, and STScI MAST APIs
   remain open in [#13](https://github.com/mESmaC/oia/issues/13).
 - **Persistent Storage:** SQLite table definitions and blob storage migration remain open in [#11](https://github.com/mESmaC/oia/issues/11).
 - **UI and Interactive Visualization:** Interactive 3D Cesium globe and sky canvas rendering remain open in [#16](https://github.com/mESmaC/oia/issues/16)
   and [#23](https://github.com/mESmaC/oia/issues/23).
-- **End-to-End Acceptance:** Full multi-provider live acceptance under scenario A05 across real decoded FITS imagery
-  remains open for future milestone delivery.

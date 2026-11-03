@@ -162,10 +162,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         MissionFeedStatus::NominalActive,
         -150,
     )?;
-    let bookmark = MissionFeedBookmark::new(
+    let bookmark = iss_feed.create_bookmark(
         "bm:iss:01",
         1_719_811_215_000,
-        &iss_feed.classification,
         "Pacific terminator crossing",
         100,
         "Normal orbital sunset; camera auto-exposure active",

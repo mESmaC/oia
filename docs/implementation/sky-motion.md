@@ -125,9 +125,10 @@ cargo +1.99.0 test --workspace --locked --offline
 python -B -I scripts/sky/verify_sky.py
 ```
 
-The exact review-fix code validation revision is recorded in the follow-up
-documentation commit and PR handoff; the documentation-only follow-up does not
-change the validated code or fixtures.
+Review-fix code validation revision: `9e58ce8f11d09c94e4a394bacff0faaa57d183dc`,
+on `main` at `28473f1`. This documentation-only follow-up records that exact ID
+without changing the validated code or fixtures; the final PR head is recorded
+in the PR handoff.
 
 `tests/horizons_motion.rs` contains five targeted tests for numerical
 correctness and concrete failure risks. The fixture reader asserts correction

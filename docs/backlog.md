@@ -106,7 +106,8 @@ Implementation mapping: #13 owns shared source registration and bounded collecti
 ## Maintenance
 
 - Update the corresponding issue when a requirement, decision, dependency, or acceptance criterion changes.
-- Move Project items to In Progress when work starts, and Done only when completion evidence is recorded.
+- Use [AGENTS.md's claim lifecycle](../AGENTS.md#claim-lifecycle-and-reclaiming-unfinished-work) to distinguish current work from historical claims. After each merged slice, record what remains and return unclaimed work to Todo.
+- Mark Done only after the [completion audit](../AGENTS.md#completion-audit-and-partial-deliveries) accounts for every criterion and required delivery; partial PRs keep the original issue open.
 - Close phase epics only after their integrated workflow and applicable acceptance checks pass.
 - Preserve dependency links and requirement identifiers when splitting a work package.
 - Follow AGENTS.md for focused changes, honest validation, and safe worktree cleanup after PR merge.

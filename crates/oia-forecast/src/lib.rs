@@ -2,6 +2,7 @@
 //! market-effects scenario forecasting, and evaluation kernels for Open Intelligence Agency.
 //!
 //! Binary scoring (`scoring`), reliability (`reliability`), scalar intervals (`interval`),
+//! point-event timing errors (`timing`),
 //! immutable issuance/revision/resolution lifecycle (`issuance`), historical analogue
 //! forecasting (`analogues`, `#45`), and market-effects forecasting (`market_effects`, `#44`)
 //! are implemented; durable storage, calibration fitting, `D12` dataset selection, and
@@ -13,6 +14,7 @@ pub mod issuance;
 pub mod market_effects;
 pub mod reliability;
 pub mod scoring;
+pub mod timing;
 
 /// Crate boundary marker for `oia-forecast` (`docs/architecture.md` §1.2, `#9`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,8 +1,9 @@
 //! Read-only local comparison. Supplied timestamps describe retrieval of the
 //! captured text; file modification times are never substituted for provenance.
 use oia_analysis::snapshot_change::{
-    Capture, ChangeExplanation, ChangeExplanationLimits, ChangeRule, MAX_TEXT_BYTES, METHOD_ID,
-    RuleDecision, Snapshot, SnapshotInput, SnapshotScope, StopReason, TextComparison, evaluate,
+    Capture, ChangeExplanation, ChangeExplanationLimits, ChangeRule, LineChangeCounts,
+    MAX_TEXT_BYTES, METHOD_ID, RuleDecision, Snapshot, SnapshotInput, SnapshotScope, StopReason,
+    TextComparison, evaluate,
 };
 use oia_domain::{OpaqueId, VersionId};
 use std::env;
@@ -209,17 +210,33 @@ fn run() -> Result<ExitCode, Box<dyn Error>> {
             method_id,
             before_line_count,
             after_line_count,
-            unchanged_line_count,
-            inserted_line_count,
-            removed_line_count,
-            coalesced_window_exceeded_lcs_budget,
+            line_counts,
             hunks,
         } => {
-            writeln!(
-                output,
-                "explanation_method={method_id}; before_lines={before_line_count}; after_lines={after_line_count}; unchanged_lines={unchanged_line_count}; inserted_lines={inserted_line_count}; removed_lines={removed_line_count}; coalesced_lcs_budget={coalesced_window_exceeded_lcs_budget}; hunk_count={}",
-                hunks.len()
-            )?;
+            match line_counts {
+                LineChangeCounts::Exact {
+                    unchanged_lines,
+                    inserted_lines,
+                    removed_lines,
+                } => {
+                    writeln!(
+                        output,
+                        "explanation_method={method_id}; before_lines={before_line_count}; after_lines={after_line_count}; line_counts=Exact; unchanged_lines={unchanged_lines}; inserted_lines={inserted_lines}; removed_lines={removed_lines}; hunk_count={}",
+                        hunks.len()
+                    )?;
+                }
+                LineChangeCounts::CoalescedWindowUpperBound {
+                    trimmed_unchanged_lines,
+                    coalesced_before_window_lines,
+                    coalesced_after_window_lines,
+                } => {
+                    writeln!(
+                        output,
+                        "explanation_method={method_id}; before_lines={before_line_count}; after_lines={after_line_count}; line_counts=CoalescedWindowUpperBound; trimmed_unchanged_lines={trimmed_unchanged_lines}; coalesced_before_window_upper_bound={coalesced_before_window_lines}; coalesced_after_window_upper_bound={coalesced_after_window_lines}; hunk_count={}; interior window exceeded MAX_LCS_CELLS and coalesced into one Modified hunk that may include unchanged lines",
+                        hunks.len()
+                    )?;
+                }
+            }
             for (idx, hunk) in hunks.iter().enumerate() {
                 writeln!(
                     output,

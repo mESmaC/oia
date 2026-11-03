@@ -74,11 +74,7 @@ pub struct ChangeRule {
     max_retrieval_age: Duration,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StopReason {
-    Cancelled,
-    DeadlineExceeded,
-}
+pub use crate::multilingual::StopReason;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChangeError {
@@ -397,7 +393,10 @@ pub const MAX_EXPLANATION_LINES: usize = 16_384;
 /// Hard ceiling on emitted line/segment change hunks.
 pub const MAX_EXPLANATION_HUNKS: usize = 1_024;
 /// Hard ceiling on exact quadratic LCS cells (`changed_before_lines * changed_after_lines`)
-/// before falling back to a single bounded replacement hunk for the middle window.
+/// before falling back to a single bounded `Modified` replacement hunk for the middle window.
+///
+/// Within this budget, interior LCS runs in `O(n * m)` time with one line-slice comparison
+/// per cell and allocates an `(n + 1) * (m + 1)` `u32` DP table (about 1 MiB at the ceiling).
 pub const MAX_LCS_CELLS: usize = 262_144;
 /// Pin this method alongside rule and capture versions when persisting line-level explanations.
 pub const EXPLANATION_METHOD_ID: &str = "exact-utf8-line-segments-v1";
@@ -494,6 +493,35 @@ impl ChangeHunk {
     }
 }
 
+/// Line-level change counts for `ChangeExplanation::Changed`.
+///
+/// Separates exact LCS-measured line counts from the quality-reducing `MAX_LCS_CELLS`
+/// fallback so a coalesced interior window is never presented as a measured count of
+/// edited lines (`AGENTS.md` §2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineChangeCounts {
+    /// Exact line counts measured via leading/trailing line trimming plus exact interior
+    /// line-level LCS alignment. Every hunk contains only inserted, removed, or modified
+    /// lines without unaligned unchanged lines between edits.
+    Exact {
+        unchanged_lines: usize,
+        inserted_lines: usize,
+        removed_lines: usize,
+    },
+    /// Quality-reducing fallback used when `changed_before_lines * changed_after_lines > MAX_LCS_CELLS`.
+    ///
+    /// Only identical leading and trailing lines (`trimmed_unchanged_lines`) were matched;
+    /// the entire interior window (`coalesced_before_window_lines` and
+    /// `coalesced_after_window_lines`) is emitted as a single `Modified` hunk that may
+    /// include unchanged interior lines. These window sizes are upper bounds on removed
+    /// and inserted lines, not measured change counts.
+    CoalescedWindowUpperBound {
+        trimmed_unchanged_lines: usize,
+        coalesced_before_window_lines: usize,
+        coalesced_after_window_lines: usize,
+    },
+}
+
 /// Structured line/segment-level explanation of snapshot differences (`PRIVACY-03`, `A18`).
 ///
 /// Keeps `Changed`, `Unchanged`, and `Inconclusive` strictly distinct so partial or
@@ -504,13 +532,11 @@ pub enum ChangeExplanation {
         method_id: &'static str,
         before_line_count: usize,
         after_line_count: usize,
-        unchanged_line_count: usize,
-        inserted_line_count: usize,
-        removed_line_count: usize,
-        /// `true` when `changed_before_lines * changed_after_lines > MAX_LCS_CELLS`
-        /// caused the interior line window to coalesce into one bounded `Modified` hunk
-        /// rather than allocating a quadratic alignment matrix.
-        coalesced_window_exceeded_lcs_budget: bool,
+        /// Exact LCS-measured line counts (`LineChangeCounts::Exact`), or explicit
+        /// interior-window upper bounds (`LineChangeCounts::CoalescedWindowUpperBound`)
+        /// when `changed_before_lines * changed_after_lines > MAX_LCS_CELLS` coalesces
+        /// the interior window into a single `Modified` hunk that may contain unchanged lines.
+        line_counts: LineChangeCounts,
         hunks: Vec<ChangeHunk>,
     },
     Unchanged {
@@ -740,6 +766,10 @@ impl<'a> ChangeEvaluation<'a> {
     /// - Keeps `Changed`, `Unchanged`, and `Inconclusive` distinct.
     /// - Enforces `limits.max_lines_per_capture()` and `limits.max_hunks()`, returning a
     ///   typed `ChangeError` rather than silently truncating hunks.
+    /// - When `changed_before_lines * changed_after_lines > MAX_LCS_CELLS`, coalesces the
+    ///   interior window into a single `Modified` hunk that may include unchanged lines and
+    ///   reports `LineChangeCounts::CoalescedWindowUpperBound` rather than presenting window
+    ///   sizes as measured line-change counts.
     pub fn explain_changes(
         &self,
         limits: ChangeExplanationLimits,
@@ -760,17 +790,24 @@ impl<'a> ChangeEvaluation<'a> {
             }
         };
 
-        let left_lines = split_lines(left_text, limits.max_lines_per_capture, &mut check_control)?;
-        let right_lines =
-            split_lines(right_text, limits.max_lines_per_capture, &mut check_control)?;
-
         if self.comparison == TextComparison::Unchanged {
+            let mut line_count = 0usize;
+            for (idx, _) in left_text.split_inclusive('\n').enumerate() {
+                if idx.is_multiple_of(CONTROL_INTERVAL) {
+                    check_control().map_err(ChangeError::Stopped)?;
+                }
+                line_count += 1;
+            }
             check_control().map_err(ChangeError::Stopped)?;
             return Ok(ChangeExplanation::Unchanged {
                 method_id: EXPLANATION_METHOD_ID,
-                line_count: left_lines.len(),
+                line_count,
             });
         }
+
+        let left_lines = split_lines(left_text, limits.max_lines_per_capture, &mut check_control)?;
+        let right_lines =
+            split_lines(right_text, limits.max_lines_per_capture, &mut check_control)?;
 
         // Trim identical leading lines.
         let mut prefix_lines = 0usize;
@@ -835,15 +872,7 @@ impl<'a> ChangeEvaluation<'a> {
         let cells = n.saturating_mul(m);
 
         let mut hunks = Vec::new();
-        let mut unchanged_mid_lines = 0usize;
-        let mut inserted_line_count = 0usize;
-        let mut removed_line_count = 0usize;
-        let mut coalesced = false;
-
-        if n == 0 || m == 0 || cells > MAX_LCS_CELLS {
-            if cells > MAX_LCS_CELLS {
-                coalesced = true;
-            }
+        let line_counts = if cells > MAX_LCS_CELLS {
             if let Some(hunk) =
                 build_hunk(left_mid, before_anchor_start, right_mid, after_anchor_start)
             {
@@ -851,10 +880,30 @@ impl<'a> ChangeEvaluation<'a> {
                     .try_reserve_exact(1)
                     .map_err(|_| ChangeError::AllocationFailed)?;
                 hunks.push(hunk);
-                removed_line_count = n;
-                inserted_line_count = m;
+            }
+            LineChangeCounts::CoalescedWindowUpperBound {
+                trimmed_unchanged_lines: prefix_lines + suffix_lines,
+                coalesced_before_window_lines: n,
+                coalesced_after_window_lines: m,
+            }
+        } else if n == 0 || m == 0 {
+            if let Some(hunk) =
+                build_hunk(left_mid, before_anchor_start, right_mid, after_anchor_start)
+            {
+                hunks
+                    .try_reserve_exact(1)
+                    .map_err(|_| ChangeError::AllocationFailed)?;
+                hunks.push(hunk);
+            }
+            LineChangeCounts::Exact {
+                unchanged_lines: prefix_lines + suffix_lines,
+                inserted_lines: m,
+                removed_lines: n,
             }
         } else {
+            let mut unchanged_mid_lines = 0usize;
+            let mut inserted_line_count = 0usize;
+            let mut removed_line_count = 0usize;
             let cols = m + 1;
             let total_dp = (n + 1)
                 .checked_mul(cols)
@@ -891,11 +940,13 @@ impl<'a> ChangeEvaluation<'a> {
             let mut j = 0usize;
             let mut run_start_i = 0usize;
             let mut run_start_j = 0usize;
+            let mut backtrack_steps = 0usize;
 
             while i < n || j < m {
-                if (i + j).is_multiple_of(CONTROL_INTERVAL) {
+                if backtrack_steps.is_multiple_of(CONTROL_INTERVAL) {
                     check_control().map_err(ChangeError::Stopped)?;
                 }
+                backtrack_steps += 1;
                 let matched = if i < n && j < m {
                     left_mid.get(i).map(|l| l.text) == right_mid.get(j).map(|r| r.text)
                 } else {
@@ -979,17 +1030,19 @@ impl<'a> ChangeEvaluation<'a> {
                     inserted_line_count += a_slice.len();
                 }
             }
-        }
+            LineChangeCounts::Exact {
+                unchanged_lines: prefix_lines + suffix_lines + unchanged_mid_lines,
+                inserted_lines: inserted_line_count,
+                removed_lines: removed_line_count,
+            }
+        };
 
         check_control().map_err(ChangeError::Stopped)?;
         Ok(ChangeExplanation::Changed {
             method_id: EXPLANATION_METHOD_ID,
             before_line_count: left_lines.len(),
             after_line_count: right_lines.len(),
-            unchanged_line_count: prefix_lines + suffix_lines + unchanged_mid_lines,
-            inserted_line_count,
-            removed_line_count,
-            coalesced_window_exceeded_lcs_budget: coalesced,
+            line_counts,
             hunks,
         })
     }

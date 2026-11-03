@@ -2,9 +2,9 @@
 //! measured provider integration or full A18 acceptance.
 use oia_analysis::snapshot_change::{
     Capture, CaptureCoverageSummary, ChangeError, ChangeExplanation, ChangeExplanationLimits,
-    ChangeHunkKind, ChangeRule, EXPLANATION_METHOD_ID, MAX_TEXT_BYTES, RULE_CRITERION_ID,
-    RetrievalFreshness, RuleDecision, Snapshot, SnapshotInput, SnapshotScope, StopReason,
-    TextComparison, UnavailableReason, evaluate,
+    ChangeHunkKind, ChangeRule, EXPLANATION_METHOD_ID, LineChangeCounts, MAX_TEXT_BYTES,
+    RULE_CRITERION_ID, RetrievalFreshness, RuleDecision, Snapshot, SnapshotInput, SnapshotScope,
+    StopReason, TextComparison, UnavailableReason, evaluate,
 };
 use oia_domain::{OpaqueId, VersionId};
 use std::error::Error;
@@ -44,6 +44,7 @@ fn exact_spans_preserve_unicode_and_versions_without_promoting_missing_coverage(
     // captures, multi-hunk edits, and prefix/suffix overlap in insertion/deletion/repeated text.
     for (left, right) in [
         ("Station café\r\nopen\n", "Station café\r\nclosed\n"),
+        ("a\r\nb\n", "a\nb\n"),
         (
             "Header\nAlpha\nKeep\nOmega\nFooter\n",
             "Header\nAlpha-v2\nKeep\nOmega\nAdded\nFooter\n",
@@ -108,23 +109,27 @@ fn exact_spans_preserve_unicode_and_versions_without_promoting_missing_coverage(
                         method_id,
                         before_line_count,
                         after_line_count,
-                        unchanged_line_count,
-                        inserted_line_count,
-                        removed_line_count,
-                        coalesced_window_exceeded_lcs_budget,
+                        line_counts,
                         hunks,
                     } => {
                         assert_eq!(*method_id, EXPLANATION_METHOD_ID);
-                        assert!(!coalesced_window_exceeded_lcs_budget);
                         assert!(!hunks.is_empty());
-                        assert_eq!(
-                            *before_line_count,
-                            unchanged_line_count + removed_line_count
-                        );
-                        assert_eq!(
-                            *after_line_count,
-                            unchanged_line_count + inserted_line_count
-                        );
+                        match *line_counts {
+                            LineChangeCounts::Exact {
+                                unchanged_lines,
+                                inserted_lines,
+                                removed_lines,
+                            } => {
+                                assert_eq!(*before_line_count, unchanged_lines + removed_lines);
+                                assert_eq!(*after_line_count, unchanged_lines + inserted_lines);
+                            }
+                            LineChangeCounts::CoalescedWindowUpperBound { .. } => {
+                                return Err(
+                                    "small synthetic pair unexpectedly used coalesced fallback"
+                                        .into(),
+                                );
+                            }
+                        }
                         let mut by_hunks = left.to_owned();
                         for hunk in hunks.iter().rev() {
                             let rep = right
@@ -155,6 +160,38 @@ fn exact_spans_preserve_unicode_and_versions_without_promoting_missing_coverage(
                 return Err("complete captures became inconclusive".into());
             }
         }
+    }
+
+    // Verify a line-ending-only change produces a Modified hunk on that line.
+    let crlf_before = snapshot(Capture::Complete("a\r\nb\n"), "crlf-v1", 10)?;
+    let lf_after = snapshot(Capture::Complete("a\nb\n"), "lf-v2", 20)?;
+    let eol_eval = evaluate(
+        &rule,
+        &crlf_before,
+        &lf_after,
+        UNIX_EPOCH + Duration::from_secs(25),
+        || Ok(()),
+    )?;
+    if let ChangeExplanation::Changed {
+        line_counts, hunks, ..
+    } = eol_eval.explain_changes(ChangeExplanationLimits::default_limits(), || Ok(()))?
+    {
+        assert_eq!(
+            line_counts,
+            LineChangeCounts::Exact {
+                unchanged_lines: 1,
+                inserted_lines: 1,
+                removed_lines: 1,
+            }
+        );
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].kind(), ChangeHunkKind::Modified);
+        assert_eq!(hunks[0].before_lines(), Some(1..=1));
+        assert_eq!(hunks[0].after_lines(), Some(1..=1));
+        assert_eq!(hunks[0].before_bytes(), 0..3);
+        assert_eq!(hunks[0].after_bytes(), 0..2);
+    } else {
+        return Err("expected Changed explanation for line-ending-only edit".into());
     }
 
     // Verify multi-hunk granularity explicitly: a modified line and a separate inserted line
@@ -188,6 +225,59 @@ fn exact_spans_preserve_unicode_and_versions_without_promoting_missing_coverage(
         assert_eq!(hunks[1].after_lines(), Some(5..=5));
     } else {
         return Err("expected multi-hunk Changed explanation".into());
+    }
+
+    // Verify the MAX_LCS_CELLS fallback reports CoalescedWindowUpperBound rather than
+    // presenting a coalesced interior window as measured line-change counts.
+    let mut fallback_left = String::new();
+    let mut fallback_right = String::new();
+    for line_no in 1..=600 {
+        fallback_left.push_str(&format!("line-{line_no}\n"));
+        if line_no == 2 || line_no == 599 {
+            fallback_right.push_str(&format!("line-{line_no}-edited\n"));
+        } else {
+            fallback_right.push_str(&format!("line-{line_no}\n"));
+        }
+    }
+    let fb_before = snapshot(Capture::Complete(&fallback_left), "fb-v1", 10)?;
+    let fb_after = snapshot(Capture::Complete(&fallback_right), "fb-v2", 20)?;
+    let fb_eval = evaluate(
+        &rule,
+        &fb_before,
+        &fb_after,
+        UNIX_EPOCH + Duration::from_secs(25),
+        || Ok(()),
+    )?;
+    if let ChangeExplanation::Changed {
+        before_line_count,
+        after_line_count,
+        line_counts,
+        hunks,
+        ..
+    } = fb_eval.explain_changes(ChangeExplanationLimits::default_limits(), || Ok(()))?
+    {
+        assert_eq!(before_line_count, 600);
+        assert_eq!(after_line_count, 600);
+        assert_eq!(
+            line_counts,
+            LineChangeCounts::CoalescedWindowUpperBound {
+                trimmed_unchanged_lines: 2,
+                coalesced_before_window_lines: 598,
+                coalesced_after_window_lines: 598,
+            }
+        );
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].kind(), ChangeHunkKind::Modified);
+        assert_eq!(hunks[0].before_lines(), Some(2..=599));
+        assert_eq!(hunks[0].after_lines(), Some(2..=599));
+        let mut reconstructed = fallback_left.clone();
+        let rep = fallback_right
+            .get(hunks[0].after_bytes())
+            .ok_or("invalid fallback after_bytes")?;
+        reconstructed.replace_range(hunks[0].before_bytes(), rep);
+        assert_eq!(reconstructed, fallback_right);
+    } else {
+        return Err("expected Changed explanation for coalesced fallback".into());
     }
 
     let before = snapshot(Capture::Complete("old"), "before", 10)?;
@@ -338,15 +428,29 @@ fn invalid_scope_time_budget_and_cancellation_cannot_publish_a_comparison()
             max_lines: 3,
         })
     );
+    // Unchanged captures over max_lines_per_capture still succeed without allocating a line table.
+    let same_after = snapshot(
+        Capture::Complete("L1\nChangeA\nKeep\nChangeB\nL5\n"),
+        "same-hunk",
+        20,
+    )?;
+    let same_eval = evaluate(&rule, &multi_before, &same_after, at, || Ok(()))?;
+    assert_eq!(
+        same_eval.explain_changes(ChangeExplanationLimits::new(3, 10)?, || Ok(())),
+        Ok(ChangeExplanation::Unchanged {
+            method_id: EXPLANATION_METHOD_ID,
+            line_count: 5,
+        })
+    );
     assert_eq!(
         multi_eval.explain_changes(ChangeExplanationLimits::new(10, 1)?, || Ok(())),
         Err(ChangeError::HunkLimitExceeded { max_hunks: 1 })
     );
     assert_eq!(
         multi_eval.explain_changes(ChangeExplanationLimits::default_limits(), || {
-            Err(StopReason::Cancelled)
+            Err(StopReason::Superseded)
         }),
-        Err(ChangeError::Stopped(StopReason::Cancelled))
+        Err(ChangeError::Stopped(StopReason::Superseded))
     );
     Ok(())
 }

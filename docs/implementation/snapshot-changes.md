@@ -57,7 +57,7 @@ These decisions are analytical results, not delivered notifications.
 
 ### Line/segment-level change explanation and notification provenance (`PRIVACY-03`, `A18`)
 
-`ChangeEvaluation::explain_changes` decomposes a evaluated snapshot pair into a
+`ChangeEvaluation::explain_changes` decomposes an evaluated snapshot pair into a
 structured `ChangeExplanation` under explicit `ChangeExplanationLimits`
 (`1..=16,384` lines per capture and `1..=1,024` emitted hunks; defaults `4,096`
 lines and `256` hunks):
@@ -66,18 +66,24 @@ lines and `256` hunks):
   splits both complete captures with `split_inclusive('\n')` so exact line endings
   (`\r\n` versus `\n`) and trailing newline differences are preserved without
   normalization. After trimming identical leading and trailing lines, it aligns the
-  interior window using exact line-level longest common subsequence (LCS) up to
-  `MAX_LCS_CELLS = 262,144` (`changed_before_lines * changed_after_lines`). It emits
-  ordered, non-overlapping `ChangeHunk` records (`Inserted`, `Removed`, `Modified`)
-  with exact half-open UTF-8 byte ranges (`before_bytes`, `after_bytes`) and
-  1-indexed inclusive line ranges (`before_lines`, `after_lines`). Applying the
+  interior window (`n` baseline lines by `m` current lines) using exact line-level
+  longest common subsequence (LCS) up to `MAX_LCS_CELLS = 262,144` (`n * m`). Within
+  this budget, LCS runs in $O(n \cdot m)$ time with one line-slice comparison per
+  cell, allocates an $(n + 1)(m + 1)$ `u32` DP table (about 1 MiB at the ceiling),
+  reports `LineChangeCounts::Exact { unchanged_lines, inserted_lines, removed_lines }`,
+  and emits ordered, non-overlapping `ChangeHunk` records (`Inserted`, `Removed`,
+  `Modified`) with exact half-open UTF-8 byte ranges (`before_bytes`, `after_bytes`)
+  and 1-indexed inclusive line ranges (`before_lines`, `after_lines`). Applying the
   emitted hunks in reverse byte order reconstructs the exact current UTF-8 text from
   the baseline text. When the interior window exceeds `MAX_LCS_CELLS`, the middle
-  window coalesces into a single bounded `Modified` hunk and sets
-  `coalesced_window_exceeded_lcs_budget = true` rather than allocating an unbounded
-  quadratic matrix or truncating text.
-- `ChangeExplanation::Unchanged`: reports the line count when both complete captures
-  are byte-identical.
+  window coalesces into a single bounded `Modified` hunk that may include unchanged
+  interior lines, and `line_counts` switches to
+  `LineChangeCounts::CoalescedWindowUpperBound { trimmed_unchanged_lines, coalesced_before_window_lines, coalesced_after_window_lines }`
+  so the coalesced window sizes (upper bounds on removed and inserted lines) are
+  never presented as measured line-edit counts.
+- `ChangeExplanation::Unchanged`: counts lines in a single linear pass with zero
+  heap allocation when both complete captures are byte-identical (without failing
+  `LineLimitExceeded` on large unchanged captures).
 - `ChangeExplanation::Inconclusive`: retains `CaptureCoverageSummary` (`Complete`,
   `Partial { captured_byte_len, reason }`, or `Unavailable(UnavailableReason)`) for
   both captures so partial or missing captures never masquerade as deletions or
@@ -126,13 +132,15 @@ enforces `max_lines_per_capture` (`<= 16,384`), `max_hunks` (`<= 1,024`), and
 `MAX_LCS_CELLS` (`262,144`), using fallible `try_reserve` allocations and returning
 typed `ChangeError` variants (`LineLimitExceeded`, `HunkLimitExceeded`,
 `InvalidExplanationLimits`, `AllocationFailed`) rather than silently truncating
-hunks. Source text is data, including embedded instructions and display controls.
+hunks. `StopReason` is re-exported from `oia_analysis::multilingual::StopReason`
+(`Cancelled`, `DeadlineExceeded`, `Superseded`). Source text is data, including
+embedded instructions and display controls.
 
 The cancellation/deadline callback runs before work, at intervals of at most 1,024
-scanned characters/lines/cells, and before returning a result. A stop yields no
-comparison or explanation. The application service must still fence cancelled or
-superseded job completions when saving/publishing a result; this pure function does
-not implement a job queue.
+scanned characters/lines/cells/backtrack steps, and before returning a result. A
+stop yields no comparison or explanation. The application service must still fence
+cancelled or superseded job completions when saving/publishing a result; this pure
+function does not implement a job queue.
 
 ## Local use
 
@@ -192,7 +200,8 @@ Rust-to-Lean correspondence claim applies to this new kernel.
 
 The [two focused contract tests](../../crates/oia-analysis/tests/snapshot_change_contract.rs)
 use synthetic captures. They address original/version preservation, UTF-8 byte
-anchors, multi-hunk line/segment reconstruction, notification rule/coverage/freshness
+anchors, line-ending-only changes, multi-hunk line/segment reconstruction,
+coalesced-window upper-bound line counts, notification rule/coverage/freshness
 provenance, empty versus missing coverage, stale decisions, scope/time rejection,
 byte/line/hunk bounds, and cancellation without publishing a result. They do not
 establish provider access, operational notification quality, persistence, or source
@@ -201,6 +210,7 @@ truth.
 On 2026-11-03, local Windows x86_64 MSVC verification with pinned Rust 1.99.0
 passed `cargo +1.99.0 fmt --all -- --check`,
 `cargo +1.99.0 clippy --workspace --all-targets --locked --offline -- -D warnings`,
-and `cargo +1.99.0 test --workspace --locked --offline`. The two focused tests and
-the `compare-snapshots` CLI example also passed independently. Other operating
-systems and live providers were not exercised.
+`cargo +1.99.0 test --workspace --locked --offline`, and
+`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 proofs`. The
+two focused tests and the `compare-snapshots` CLI example also passed
+independently. Other operating systems and live providers were not exercised.

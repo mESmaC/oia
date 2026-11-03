@@ -2,6 +2,97 @@
 use oia_devices::radio::*;
 use oia_domain::{OpaqueId, VersionId};
 
+#[test]
+fn deadline_bounds_connection_and_reception_without_erasing_history()
+-> Result<(), Box<dyn std::error::Error>> {
+    let audio = source(SourceKind::AudioStream, None, None)?;
+    for deadline in [0, 10] {
+        assert!(matches!(
+            RadioSession::with_deadline(audio.clone(), 10, 100, deadline),
+            Err(RadioError::InvalidDeadline)
+        ));
+    }
+    let mut session = RadioSession::with_deadline(audio.clone(), 10, 100, 50)?;
+    assert_eq!(session.deadline_ms(), Some(50));
+    assert_eq!(session.readout(49)?.state, PlaybackState::Connecting);
+    assert_eq!(session.readout(50)?.state, PlaybackState::Expired);
+    let late = Reception {
+        received_at_ms: 50,
+        latency_ms: None,
+        tuning: None,
+    };
+    assert_eq!(session.receive(late), Err(RadioError::DeadlineExpired));
+    assert_eq!(session.readout(50)?.last_reception, None);
+
+    let mut receiving = RadioSession::with_deadline(audio, 10, 100, 50)?;
+    let reception = Reception {
+        received_at_ms: 49,
+        ..late
+    };
+    receiving.receive(reception)?;
+    assert_eq!(receiving.readout(49)?.state, PlaybackState::Receiving);
+    let before = receiving.readout(50)?;
+    assert_eq!(before.state, PlaybackState::Expired);
+    assert_eq!(receiving.receive(late), Err(RadioError::DeadlineExpired));
+    assert_eq!(receiving.cancel(50), Err(RadioError::DeadlineExpired));
+    assert_eq!(receiving.stop(50, false), Err(RadioError::DeadlineExpired));
+    assert_eq!(receiving.readout(50)?, before);
+    assert_eq!(before.last_reception, Some(reception));
+    assert_eq!(before.source.version_id().as_str(), "radio:v1");
+    assert_eq!(receiving.readout(u64::MAX)?.state, PlaybackState::Expired);
+    Ok(())
+}
+
+#[test]
+fn cancellation_rejects_late_observations_and_tuning() -> Result<(), Box<dyn std::error::Error>> {
+    let receiver = source(
+        SourceKind::SimulatedReceiver,
+        Some(TuningCapabilities::new(1000, 2000, 100, &[Modulation::Am])?),
+        None,
+    )?;
+    let mut session = RadioSession::with_deadline(receiver, 0, 100, 1000)?;
+    let tuning = ReceiveTuning {
+        frequency_hz: 1500,
+        bandwidth_hz: 50,
+        modulation: Modulation::Am,
+    };
+    session.request_tuning(1, tuning)?;
+    let reception = Reception {
+        received_at_ms: 2,
+        latency_ms: None,
+        tuning: Some(tuning),
+    };
+    session.receive(reception)?;
+    let before = session.readout(2)?;
+    assert_eq!(session.cancel(1), Err(RadioError::ClockRegression));
+    assert_eq!(session.readout(2)?, before);
+    session.cancel(3)?;
+    assert_eq!(
+        session.request_tuning(4, tuning),
+        Err(RadioError::SessionEnded)
+    );
+    assert_eq!(
+        session.receive(Reception {
+            received_at_ms: 4,
+            ..reception
+        }),
+        Err(RadioError::SessionEnded)
+    );
+    assert_eq!(session.cancel(4), Err(RadioError::SessionEnded));
+    let cancelled = session.readout(1000)?;
+    assert_eq!(cancelled.state, PlaybackState::Cancelled);
+    assert_eq!(cancelled.last_reception, Some(reception));
+    assert_eq!(cancelled.requested_tuning, Some(tuning));
+    assert_eq!(cancelled.source.kind(), SourceKind::SimulatedReceiver);
+
+    let mut connecting = RadioSession::new(source(SourceKind::AudioStream, None, None)?, 0, 100)?;
+    assert_eq!(connecting.deadline_ms(), None);
+    connecting.cancel(0)?;
+    assert_eq!(connecting.readout(0)?.last_reception, None);
+    assert_eq!(connecting.readout(0)?.state, PlaybackState::Cancelled);
+    Ok(())
+}
+
 fn source(
     kind: SourceKind,
     tuning: Option<TuningCapabilities>,

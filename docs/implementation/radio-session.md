@@ -18,8 +18,25 @@ frequency and latency remain absent. Receipt times are milliseconds on one monot
 session clock, not capture times or UTC. Adapters must document the clock method for
 any supplied latency. A readout is Receiving only while the last observation's age is
 less than the configured positive stale threshold; at the threshold it is Stale.
-Connecting means no observation has arrived, even after a long wait; the application
-job/transport owns connection deadlines. Reading a status performs no mutation or retry.
+Connecting means no observation has arrived before termination or expiry. Reading a status
+performs no mutation or retry.
+
+`RadioSession::with_deadline` bounds the entire session (connection and reception) with
+an absolute deadline on the same monotonic millisecond clock. The deadline must exceed
+the start time. At the deadline, readouts become Expired and observations, tuning, stop
+and cancel commands return `DeadlineExpired` without changing history. New observations
+never extend the deadline. `cancel` ends a session as Cancelled and rejects later data
+and commands with `SessionEnded`. Earlier cancellation, restriction or disconnection
+retains its terminal reason even after the deadline. Source/version, requested tuning
+and last reception remain inspectable, with absent data and unknown latency preserved.
+
+The original `new` constructor remains externally budgeted (`deadline_ms() == None`);
+its caller owns duration and connection limits. These contracts use caller-supplied
+monotonic times; adapters must timestamp completions when delivered, rather than use
+capture time or an old queued receipt time to evade expiry. Queries do not advance the
+event clock. The kernel has no timer, worker or transport to stop: the adapter/job must
+cancel I/O and release resources independently. Reconnection or an extended duration
+requires a new session, with late completions routed to their original session.
 
 Disconnect and access restriction permanently end that session. Last observations remain
 historical; late observations and tuning requests are rejected. Reconnection requires a
@@ -35,8 +52,10 @@ cargo +1.99.0 run -p oia-devices --example radio-session --locked --offline
 cargo +1.99.0 test -p oia-devices --test radio_contract --locked --offline
 ```
 
-Three compact contract tests address false receiver capability claims, request/observation
-separation and atomic validation, and stale/late data publication. These are A11 fixture
+Five compact contract tests address false receiver capability claims, request/observation
+separation and atomic validation, stale/late data publication, deadline boundaries and
+cancellation. The two lifecycle tests cover the concrete risk of late results appearing
+after expiry/cancellation, retaining history and rejecting invalid bounds. These are A11 fixture
 evidence, not full A11 acceptance or a Lean proof.
 
 Remaining #32 scope: directory discovery and source registry/service integration, geographic
@@ -46,3 +65,8 @@ retention, clock alignment, uncertain transcription/translation, exports and UI.
 receiver/protocol selection remains open. Live stream and actual supported receiver checks
 are required before end-to-end or hardware claims. This slice adds no production dependencies
 and uses no unmerged prerequisites or prior-art code.
+
+Lifecycle follow-up validation (2026-11-03, Windows x86_64 MSVC, Rust 1.99.0):
+the five radio contract tests passed. Workspace checks and the simulated example are
+recorded in the delivery PR. No live stream, hardware, other-platform or full A11
+acceptance is claimed. This lifecycle change modifies no proof-covered algorithm.

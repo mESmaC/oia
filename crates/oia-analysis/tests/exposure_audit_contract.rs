@@ -33,7 +33,8 @@ fn utc_instant(unix_ms: i64) -> AuditTimestamp {
 /// (both primary and candidate anchor sides), explicit scope revision, nested collection bounds,
 /// and collaboration access-policy integration:
 /// - `DeclaredAuditScope` requires at least one valid domain or `(service_name, handle)` root,
-///   rejects IPv4/IPv6 literals and curated common multi-label public suffixes (`co.uk`), and normalizes case/trailing dots.
+///   rejects IPv4/IPv6 literals, leading-`@`/whitespace/non-ASCII handles (`InvalidHandleSyntax`),
+///   and curated common multi-label public suffixes (`co.uk`), and normalizes case/trailing dots.
 /// - Subdomain matching enforces a strict dot boundary (`telemetry.example.org` is covered by `example.org`,
 ///   whereas lookalike `myexample.org` is rejected with `DomainOutsideDeclaredScope`).
 /// - A profile is accepted with `claimed_in_declared_scope: true` **only** when its `(service_name, handle)`
@@ -43,14 +44,15 @@ fn utc_instant(unix_ms: i64) -> AuditTimestamp {
 /// - When `mallory_fict` is registered as an unclaimed candidate (`claimed_in_declared_scope: false`, tied
 ///   to an in-scope `anchor_primary_profile_id`), its link to `example.org` can be cited by a
 ///   `CrossLinkToDeclaredDomain` signal from the user's primary profile (and `CrossLinkToDeclaredDomain` is
-///   rejected if neither profile lists an in-scope domain), but `mallory_fict` cannot be used
-///   as `primary_profile_id` to pivot to another third party (`PrimaryProfileMustBeInDeclaredScope`).
+///   rejected if the candidate profile does not list an in-scope domain, even if the primary profile does),
+///   but `mallory_fict` cannot be used as `primary_profile_id` to pivot to another third party
+///   (`PrimaryProfileMustBeInDeclaredScope`).
 /// - Narrowing `DeclaredAuditScope` via `revise_declared_scope` re-evaluates existing records, marking
 ///   dropped profiles, matches, and infrastructure entries with `outside_current_scope() == true` and
 ///   `needs_reassessment() == true` while retaining their history; subsequent `propose_account_match`
 ///   or `review_account_match` calls using a narrowed-out primary profile OR a candidate profile whose
 ///   anchor primary was narrowed out are refused (`PrimaryProfileMustBeInDeclaredScope` /
-///   `CandidateProfileOutsideDeclaredScope`).
+///   `CandidateProfileOutsideDeclaredScope`). Re-widening and reviewing clears `needs_reassessment()`.
 #[test]
 fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_to_widen()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -73,7 +75,7 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
         Err(ExposureAuditError::EmptyDeclaredScope)
     );
 
-    // Reject IPv4 literals and curated common multi-label public suffixes as declared root domains.
+    // Reject IPv4 literals, invalid handle syntax (leading `@`), and curated common multi-label public suffixes.
     assert_eq!(
         DeclaredAuditScope::new(
             OpaqueId::new("scope:ipv4")?,
@@ -88,6 +90,24 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
             limits,
         ),
         Err(ExposureAuditError::InvalidDomainSyntax)
+    );
+    assert_eq!(
+        DeclaredAuditScope::new(
+            OpaqueId::new("scope:bad-handle")?,
+            VersionId::new("ver:s-bad-handle")?,
+            1_000,
+            OwnershipBasis::SelfOwnedPersonalScope {
+                owner_actor: owner.clone(),
+                verification_note: "Leading @ handle check.".to_owned(),
+            },
+            Vec::new(),
+            vec![DeclaredAccountHandle::new(
+                "SyntheticGit",
+                "@fictional_handle_1"
+            )],
+            limits,
+        ),
+        Err(ExposureAuditError::InvalidHandleSyntax)
     );
     assert_eq!(
         DeclaredAuditScope::new(
@@ -179,7 +199,8 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
         Ok(AccessDecision::AllowFull)
     );
 
-    // Register the in-scope primary profiles `(SyntheticGit, fictional_handle_1)` (A) and `(SyntheticLab, fictional_handle_2)` (B).
+    // Register the in-scope primary profiles `(SyntheticGit, fictional_handle_1)` (A, listing `example.org`)
+    // and `(SyntheticLab, fictional_handle_2)` (B).
     audit.register_public_profile(PublicProfileInput {
         profile_id: OpaqueId::new("prof:in-scope")?,
         version_id: VersionId::new("ver:prof-in-1")?,
@@ -188,7 +209,7 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
         handle: "fictional_handle_1".to_owned(),
         display_name: None,
         bio_excerpt: None,
-        listed_website_domain: None,
+        listed_website_domain: Some("example.org".to_owned()),
         exposed_contact_values: Vec::new(),
         claimed_in_declared_scope: true,
         anchor_primary_profile_id: None,
@@ -358,8 +379,8 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
         Err(ExposureAuditError::UnclaimedProfileRequiresInScopePrimaryAnchor)
     );
 
-    // Register `mallory_fict` (listing `example.org`) and `unrelated_third_party` (C) as unclaimed candidates
-    // anchored to `prof:in-scope` (A).
+    // Register `mallory_fict` (listing `example.org`) and `unrelated_third_party` (C, listing nothing)
+    // as unclaimed candidates anchored to `prof:in-scope` (A).
     audit.register_public_profile(PublicProfileInput {
         profile_id: OpaqueId::new("prof:mallory-candidate")?,
         version_id: VersionId::new("ver:prof-mallory-cand")?,
@@ -410,8 +431,8 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
         },
     })?;
 
-    // CrossLinkToDeclaredDomain validation: if neither profile lists an in-scope website domain,
-    // citing `CrossLinkToDeclaredDomain` is rejected (`CrossLinkSignalRequiresInScopeListedDomain`).
+    // NB1 check: Even though `prof:in-scope` lists `example.org`, `prof:third-party-b` lists no website domain,
+    // so citing `CrossLinkToDeclaredDomain` against `prof:third-party-b` is rejected (`CrossLinkSignalRequiresInScopeListedDomain`).
     assert_eq!(
         audit.propose_account_match(AccountMatchInput {
             match_id: OpaqueId::new("match:fake-crosslink")?,
@@ -421,7 +442,8 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
             uncalibrated_heuristic_score: 0.40,
             matching_signals: vec![AccountMatchSignal {
                 kind: MatchSignalKind::CrossLinkToDeclaredDomain,
-                description: "Neither profile actually lists example.org.".to_owned(),
+                description: "Candidate does not list example.org even though primary does."
+                    .to_owned(),
                 citation: SourceCitation {
                     source_id: OpaqueId::new("source:other")?,
                     source_version: VersionId::new("ver:other-1")?,
@@ -429,11 +451,33 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
                 },
             }],
             contradicting_signals: Vec::new(),
-            ambiguity_explanation: "Unbacked cross-link signal test.".to_owned(),
+            ambiguity_explanation: "Unbacked candidate cross-link signal test.".to_owned(),
             proposed_at: utc_instant(1_840),
         }),
         Err(ExposureAuditError::CrossLinkSignalRequiresInScopeListedDomain)
     );
+
+    // Conversely, `prof:mallory-candidate` DOES list `example.org`, so a `CrossLinkToDeclaredDomain`
+    // signal from primary `prof:in-scope` to candidate `prof:mallory-candidate` succeeds.
+    audit.propose_account_match(AccountMatchInput {
+        match_id: OpaqueId::new("match:mallory-crosslink")?,
+        version_id: VersionId::new("ver:match-mallory-1")?,
+        primary_profile_id: OpaqueId::new("prof:in-scope")?,
+        candidate_profile_id: OpaqueId::new("prof:mallory-candidate")?,
+        uncalibrated_heuristic_score: 0.45,
+        matching_signals: vec![AccountMatchSignal {
+            kind: MatchSignalKind::CrossLinkToDeclaredDomain,
+            description: "Candidate lists example.org in public bio.".to_owned(),
+            citation: SourceCitation {
+                source_id: OpaqueId::new("source:forum")?,
+                source_version: VersionId::new("ver:forum-1")?,
+                anchor: ExposureCitationAnchor::Utf8ByteRange(0..16),
+            },
+        }],
+        contradicting_signals: Vec::new(),
+        ambiguity_explanation: "Anyone can list example.org on SyntheticForum.".to_owned(),
+        proposed_at: utc_instant(1_845),
+    })?;
 
     // A profile admitted as an unclaimed candidate listing `example.org` (`prof:mallory-candidate`)
     // CANNOT be used as `primary_profile_id` to pivot to another profile.
@@ -445,7 +489,7 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
             candidate_profile_id: OpaqueId::new("prof:third-party-b")?,
             uncalibrated_heuristic_score: 0.75,
             matching_signals: vec![AccountMatchSignal {
-                kind: MatchSignalKind::CrossLinkToDeclaredDomain,
+                kind: MatchSignalKind::SimilarHandlePattern,
                 description: "Attempted pivot from profile that only listed example.org."
                     .to_owned(),
                 citation: SourceCitation {
@@ -582,7 +626,7 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
         new_scope_version: VersionId::new("ver:scope-3")?,
         revised_at_unix_ms: 2_700,
         ownership_basis: OwnershipBasis::SelfOwnedPersonalScope {
-            owner_actor: owner,
+            owner_actor: owner.clone(),
             verification_note: "Narrowed scope to example.org and SyntheticLab only.".to_owned(),
         },
         declared_root_domains: vec!["example.org".to_owned()],
@@ -607,6 +651,13 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
         .ok_or("missing prof:mallory-candidate")?;
     assert!(narrowed_candidate.outside_current_scope());
     assert!(narrowed_candidate.needs_reassessment());
+
+    let narrowed_match = audit
+        .account_matches()
+        .get(&OpaqueId::new("match:mallory-crosslink")?)
+        .ok_or("missing match:mallory-crosslink")?;
+    assert!(narrowed_match.outside_current_scope());
+    assert!(narrowed_match.needs_reassessment());
 
     let narrowed_infra = audit
         .infrastructure_entries()
@@ -668,6 +719,38 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
         })
     );
 
+    // NB2 check: Re-widen the scope to restore `(SyntheticGit, fictional_handle_1)` and review
+    // `match:mallory-crosslink`; `outside_current_scope` becomes `false` on re-widening and
+    // `needs_reassessment` is cleared once the match is reviewed.
+    audit.revise_declared_scope(ScopeRevisionInput {
+        expected_scope_version: VersionId::new("ver:scope-3")?,
+        new_scope_version: VersionId::new("ver:scope-4")?,
+        revised_at_unix_ms: 2_850,
+        ownership_basis: OwnershipBasis::SelfOwnedPersonalScope {
+            owner_actor: owner.clone(),
+            verification_note: "Re-included SyntheticGit handle.".to_owned(),
+        },
+        declared_root_domains: vec!["example.org".to_owned()],
+        declared_handles: vec![
+            DeclaredAccountHandle::new("SyntheticGit", "fictional_handle_1"),
+            DeclaredAccountHandle::new("SyntheticLab", "fictional_handle_2"),
+        ],
+        revision_rationale: "Restored syntheticgit handle to active scope.".to_owned(),
+    })?;
+
+    let rewound_match = audit.review_account_match(AccountMatchReviewInput {
+        match_id: OpaqueId::new("match:mallory-crosslink")?,
+        expected_version: VersionId::new("ver:match-mallory-1")?,
+        new_version: VersionId::new("ver:match-mallory-2")?,
+        reviewer: owner,
+        reviewed_at: utc_instant(2_860),
+        new_state: MatchAssessmentState::UserRejectedDifferentEntity,
+        private_rationale_note: "Re-reviewed after scope restoration; rejected third party."
+            .to_owned(),
+    })?;
+    assert!(!rewound_match.outside_current_scope());
+    assert!(!rewound_match.needs_reassessment());
+
     // Block outbound source queries that would leak private local analysis or full scope manifests.
     assert!(matches!(
         audit.prepare_read_only_source_query(OutboundSourceQueryCandidate {
@@ -688,8 +771,10 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
 /// actor-check, and provenance rules:
 /// - `AuthorizedAssessmentScope` records who authorized it, what they authorized, and `[valid_from_unix_ms, valid_until_unix_ms]`,
 ///   and rejects actions outside that window (`AuthorizationExpiredOrNotYetValid`), by an unauthorized actor
-///   (`UnauthorizedActor`), changing `OwnershipBasis` kind (`OwnershipBasisChangeDisallowed`), or extending
-///   `valid_until_unix_ms` without a new `authorization_reference` (`AuthorizationWindowExtensionRequiresNewReference`).
+///   (`UnauthorizedActor`), changing `OwnershipBasis` kind (`OwnershipBasisChangeDisallowed`), or widening
+///   the window (`next_from < prev_from` or `next_until > prev_until`), changing `authorizing_party`, or adding
+///   domains/handles under the same `authorization_reference` (compared ASCII case-insensitively)
+///   (`AuthorizationWindowExtensionRequiresNewReference`), while allowing target narrowing under the same reference.
 /// - Even a `1.0` `uncalibrated_heuristic_score` starts in `MatchAssessmentState::ProposedCandidate`
 ///   and `establishes_automated_identity()` is always `false`.
 /// - Ambiguous account matches can be reviewed as `AmbiguousRetained`, and later rejected as
@@ -714,13 +799,13 @@ fn authorized_window_ambiguous_match_retention_and_source_reassessment()
             authorizing_party: "Synthetic Research Institute".to_owned(),
             authorization_reference: "AUTH-2026-11-SYNTH".to_owned(),
             authorized_scope_summary:
-                "Authorized exposure review of example.com and handle synth_unit_ops on SyntheticCodeHost."
+                "Authorized exposure review of example.com, example.org, and handle synth_unit_ops on SyntheticCodeHost."
                     .to_owned(),
             valid_from_unix_ms: 10_000,
             valid_until_unix_ms: 20_000,
             verification_note: "Signed authorization fixture in local vault.".to_owned(),
         },
-        vec!["example.com".to_owned()],
+        vec!["example.com".to_owned(), "example.org".to_owned()],
         vec![DeclaredAccountHandle::new(
             "SyntheticCodeHost",
             "synth_unit_ops",
@@ -752,6 +837,34 @@ fn authorized_window_ambiguous_match_retention_and_source_reassessment()
         })
     );
 
+    // Post-expiry `revise_declared_scope` (at `revised_at_unix_ms: 25_000`) is rejected by the
+    // `current_scope` active-window check (`AuthorizationExpiredOrNotYetValid`).
+    assert_eq!(
+        audit.revise_declared_scope(ScopeRevisionInput {
+            expected_scope_version: VersionId::new("ver:scope-v1")?,
+            new_scope_version: VersionId::new("ver:scope-expired")?,
+            revised_at_unix_ms: 25_000,
+            ownership_basis: OwnershipBasis::AuthorizedAssessmentScope {
+                auditor_actor: auditor.clone(),
+                authorizing_party: "Synthetic Research Institute".to_owned(),
+                authorization_reference: "AUTH-2026-11-SYNTH-RENEWED".to_owned(),
+                authorized_scope_summary: "Attempted revision after prior window expired."
+                    .to_owned(),
+                valid_from_unix_ms: 10_000,
+                valid_until_unix_ms: 30_000,
+                verification_note: "Post-expiry revision test.".to_owned(),
+            },
+            declared_root_domains: vec!["example.com".to_owned()],
+            declared_handles: Vec::new(),
+            revision_rationale: "Attempted post-expiry scope revision.".to_owned(),
+        }),
+        Err(ExposureAuditError::AuthorizationExpiredOrNotYetValid {
+            action_unix_ms: 25_000,
+            valid_from_unix_ms: 10_000,
+            valid_until_unix_ms: 20_000,
+        })
+    );
+
     // B4 Repro 1: Attempting to revise an `AuthorizedAssessmentScope` *inside* its active window
     // (at t = 15_000) into a `SelfOwnedPersonalScope` to escape the time window is refused
     // (`OwnershipBasisChangeDisallowed`).
@@ -764,27 +877,56 @@ fn authorized_window_ambiguous_match_retention_and_source_reassessment()
                 owner_actor: auditor.clone(),
                 verification_note: "Attempted mid-window switch to self-owned.".to_owned(),
             },
-            declared_root_domains: vec!["example.com".to_owned(), "example.org".to_owned()],
+            declared_root_domains: vec!["example.com".to_owned()],
             declared_handles: Vec::new(),
             revision_rationale: "Attempted basis switch to escape time window.".to_owned(),
         }),
         Err(ExposureAuditError::OwnershipBasisChangeDisallowed)
     );
 
-    // B4 Repro 2: Attempting to extend `valid_until_unix_ms` (from 20_000 to 50_000) with the
-    // same `authorization_reference` is refused (`AuthorizationWindowExtensionRequiresNewReference`).
+    // B4 Repro 2a: Extending `valid_until_unix_ms` (20_000 -> 50_000) under the same reference
+    // (even with lowercase `"auth-2026-11-synth"`) is refused (`AuthorizationWindowExtensionRequiresNewReference`).
     assert_eq!(
         audit.revise_declared_scope(ScopeRevisionInput {
             expected_scope_version: VersionId::new("ver:scope-v1")?,
-            new_scope_version: VersionId::new("ver:scope-extend-same-ref")?,
+            new_scope_version: VersionId::new("ver:scope-extend-until")?,
+            revised_at_unix_ms: 15_000,
+            ownership_basis: OwnershipBasis::AuthorizedAssessmentScope {
+                auditor_actor: auditor.clone(),
+                authorizing_party: "Synthetic Research Institute".to_owned(),
+                authorization_reference: "auth-2026-11-synth".to_owned(),
+                authorized_scope_summary: "Unchanged reference forward extension attempt."
+                    .to_owned(),
+                valid_from_unix_ms: 10_000,
+                valid_until_unix_ms: 50_000,
+                verification_note: "Same reference (case-folded).".to_owned(),
+            },
+            declared_root_domains: vec!["example.com".to_owned()],
+            declared_handles: vec![DeclaredAccountHandle::new(
+                "SyntheticCodeHost",
+                "synth_unit_ops",
+            )],
+            revision_rationale: "Attempted forward window extension without new reference."
+                .to_owned(),
+        }),
+        Err(ExposureAuditError::AuthorizationWindowExtensionRequiresNewReference)
+    );
+
+    // B4 Repro 2b: Moving `valid_from_unix_ms` earlier (10_000 -> 5_000) under the same reference
+    // is also refused (`AuthorizationWindowExtensionRequiresNewReference`).
+    assert_eq!(
+        audit.revise_declared_scope(ScopeRevisionInput {
+            expected_scope_version: VersionId::new("ver:scope-v1")?,
+            new_scope_version: VersionId::new("ver:scope-widen-from")?,
             revised_at_unix_ms: 15_000,
             ownership_basis: OwnershipBasis::AuthorizedAssessmentScope {
                 auditor_actor: auditor.clone(),
                 authorizing_party: "Synthetic Research Institute".to_owned(),
                 authorization_reference: "AUTH-2026-11-SYNTH".to_owned(),
-                authorized_scope_summary: "Unchanged reference extension attempt.".to_owned(),
-                valid_from_unix_ms: 10_000,
-                valid_until_unix_ms: 50_000,
+                authorized_scope_summary: "Unchanged reference backward extension attempt."
+                    .to_owned(),
+                valid_from_unix_ms: 5_000,
+                valid_until_unix_ms: 20_000,
                 verification_note: "Same reference.".to_owned(),
             },
             declared_root_domains: vec!["example.com".to_owned()],
@@ -792,11 +934,84 @@ fn authorized_window_ambiguous_match_retention_and_source_reassessment()
                 "SyntheticCodeHost",
                 "synth_unit_ops",
             )],
-            revision_rationale: "Attempted self-extension without new authorization reference."
+            revision_rationale: "Attempted backward window extension without new reference."
                 .to_owned(),
         }),
         Err(ExposureAuditError::AuthorizationWindowExtensionRequiresNewReference)
     );
+
+    // B4 Repro 2c: Changing `authorizing_party` or adding an uncovered domain (`example.net`) or handle
+    // under the same `authorization_reference` is refused (`AuthorizationWindowExtensionRequiresNewReference`).
+    assert_eq!(
+        audit.revise_declared_scope(ScopeRevisionInput {
+            expected_scope_version: VersionId::new("ver:scope-v1")?,
+            new_scope_version: VersionId::new("ver:scope-change-party")?,
+            revised_at_unix_ms: 15_000,
+            ownership_basis: OwnershipBasis::AuthorizedAssessmentScope {
+                auditor_actor: auditor.clone(),
+                authorizing_party: "Different Synthetic Grantor".to_owned(),
+                authorization_reference: "AUTH-2026-11-SYNTH".to_owned(),
+                authorized_scope_summary: "Different authorizing party under same ref.".to_owned(),
+                valid_from_unix_ms: 10_000,
+                valid_until_unix_ms: 20_000,
+                verification_note: "Same reference.".to_owned(),
+            },
+            declared_root_domains: vec!["example.com".to_owned()],
+            declared_handles: vec![DeclaredAccountHandle::new(
+                "SyntheticCodeHost",
+                "synth_unit_ops",
+            )],
+            revision_rationale: "Attempted authorizing_party swap under same reference.".to_owned(),
+        }),
+        Err(ExposureAuditError::AuthorizationWindowExtensionRequiresNewReference)
+    );
+    assert_eq!(
+        audit.revise_declared_scope(ScopeRevisionInput {
+            expected_scope_version: VersionId::new("ver:scope-v1")?,
+            new_scope_version: VersionId::new("ver:scope-widen-domain-same-ref")?,
+            revised_at_unix_ms: 15_000,
+            ownership_basis: OwnershipBasis::AuthorizedAssessmentScope {
+                auditor_actor: auditor.clone(),
+                authorizing_party: "Synthetic Research Institute".to_owned(),
+                authorization_reference: "AUTH-2026-11-SYNTH".to_owned(),
+                authorized_scope_summary: "Attempted domain addition under same ref.".to_owned(),
+                valid_from_unix_ms: 10_000,
+                valid_until_unix_ms: 20_000,
+                verification_note: "Same reference.".to_owned(),
+            },
+            declared_root_domains: vec!["example.com".to_owned(), "example.net".to_owned()],
+            declared_handles: vec![DeclaredAccountHandle::new(
+                "SyntheticCodeHost",
+                "synth_unit_ops",
+            )],
+            revision_rationale: "Attempted to add example.net without new reference.".to_owned(),
+        }),
+        Err(ExposureAuditError::AuthorizationWindowExtensionRequiresNewReference)
+    );
+
+    // Narrowing targets (dropping `example.org` while keeping `example.com` and the declared handle)
+    // under the SAME `authorization_reference` and within `[10_000, 20_000]` is allowed.
+    audit.revise_declared_scope(ScopeRevisionInput {
+        expected_scope_version: VersionId::new("ver:scope-v1")?,
+        new_scope_version: VersionId::new("ver:scope-v1-narrowed")?,
+        revised_at_unix_ms: 10_500,
+        ownership_basis: OwnershipBasis::AuthorizedAssessmentScope {
+            auditor_actor: auditor.clone(),
+            authorizing_party: "Synthetic Research Institute".to_owned(),
+            authorization_reference: "AUTH-2026-11-SYNTH".to_owned(),
+            authorized_scope_summary:
+                "Narrowed authorized review to example.com and synth_unit_ops.".to_owned(),
+            valid_from_unix_ms: 10_000,
+            valid_until_unix_ms: 20_000,
+            verification_note: "Same authorization fixture; narrowed target list.".to_owned(),
+        },
+        declared_root_domains: vec!["example.com".to_owned()],
+        declared_handles: vec![DeclaredAccountHandle::new(
+            "SyntheticCodeHost",
+            "synth_unit_ops",
+        )],
+        revision_rationale: "Narrowed out example.org under existing authorization.".to_owned(),
+    })?;
 
     let src_dir_id = OpaqueId::new("source:directory")?;
     let src_v1 = VersionId::new("ver:src-directory-v1")?;

@@ -4,15 +4,18 @@
 //!
 //! This module is standard-library-only and enforces explicit finite budgets, cooperative
 //! cancellation/deadline checks, relative path and container safety, FIPS 180-4 SHA-256 staged
-//! integrity verification, local workspace namespace isolation, and explicit replay evaluation.
-//! Opening or validating a bundle never executes code, connects devices, fetches remote assets,
-//! or triggers analysis replay automatically.
+//! integrity verification, injective local workspace namespace isolation, and explicit replay
+//! evaluation. Opening or validating a bundle never executes code, connects devices, fetches
+//! remote assets, or triggers analysis replay automatically.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 
-use crate::{OmissionReason, OriginClass, ReviewStatus, StopReason, TimeDisplay, TimePrecision};
+use crate::{
+    OmissionReason, OriginClass, ReviewStatus, StopReason, TimeDisplay, TimePrecision,
+    is_bidi_or_zero_width,
+};
 
 /// Canonical bundle format identifier (`docs/contracts/report-export.md` §5).
 pub const SUPPORTED_BUNDLE_FORMAT: &str = "oia-investigation-bundle";
@@ -442,6 +445,36 @@ pub struct PackageIdentity<'input> {
     pub producer_version: &'input str,
 }
 
+/// Owned time precision preserved on validated bundle records and manifests.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OwnedTimePrecision {
+    ExactInstant,
+    Minute,
+    Hour,
+    DateOnly,
+    ApproximateInterval,
+    Unknown { reason: String },
+}
+
+/// Owned time display preserved on validated bundle records and manifests.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnedTimeDisplay {
+    pub text: String,
+    pub precision: OwnedTimePrecision,
+    pub time_reference: String,
+}
+
+/// Owned package identity metadata retained on `ValidatedBundle`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatedPackageIdentity {
+    pub format: String,
+    pub format_version: u32,
+    pub package_id: String,
+    pub created_time: OwnedTimeDisplay,
+    pub producer_id: String,
+    pub producer_version: String,
+}
+
 /// Capability category declared by a bundle (`docs/contracts/report-export.md` §5).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum CapabilityKind {
@@ -507,7 +540,8 @@ pub struct BundleManifestEntry<'input> {
     pub schema_version: Option<u32>,
 }
 
-/// Filesystem entry classification observed while staging (`docs/contracts/report-export.md` §6).
+/// Caller-asserted filesystem entry classification observed by the staging reader
+/// (`docs/contracts/report-export.md` §6).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StagedFilesystemEntryKind {
     RegularFile,
@@ -518,24 +552,32 @@ pub enum StagedFilesystemEntryKind {
     FifoOrSocket,
 }
 
-/// Staged file payload supplied to the validator after handle-relative/no-follow reading into a
-/// private staging area (`docs/contracts/report-export.md` §6).
+/// Staged file payload supplied to the in-memory validator (`docs/contracts/report-export.md` §6).
+///
+/// `entry_kind` and `rechecked_sha256_hex` are caller-supplied metadata from the staging layer;
+/// `rechecked_sha256_hex` detects mid-staging mutation only when the caller performs a second
+/// independent read of the staged file.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StagedPayloadFile<'input> {
     pub relative_path: &'input str,
     pub entry_kind: StagedFilesystemEntryKind,
     pub staged_bytes: &'input [u8],
-    /// Optional SHA-256 hex observed on a second verification pass over the staged bytes.
-    /// If present and different from the initial staged digest, import fails with
-    /// `BundleError::InputChangedDuringStaging`.
     pub rechecked_sha256_hex: Option<&'input str>,
 }
 
 /// Retention permission for a bundled asset (`docs/contracts/report-export.md` §5).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RetentionCondition {
+pub enum RetentionCondition<'input> {
     Permitted,
-    ReviewWindowOnly { window_note: &'static str },
+    ReviewWindowOnly { window_note: &'input str },
+    Prohibited,
+}
+
+/// Owned retention permission preserved on `ValidatedAssetUseConditions`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OwnedRetentionCondition {
+    Permitted,
+    ReviewWindowOnly { window_note: String },
     Prohibited,
 }
 
@@ -557,7 +599,19 @@ pub struct AssetUseConditions<'input> {
     pub ordinary_access_method: &'input str,
     pub attribution_notice: &'input str,
     pub automated_processing_permitted: bool,
-    pub retention: RetentionCondition,
+    pub retention: RetentionCondition<'input>,
+    pub redistribution: RedistributionCondition,
+}
+
+/// Owned per-asset use conditions retained on `ValidatedBundle`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatedAssetUseConditions {
+    pub asset_path: String,
+    pub source_id: String,
+    pub ordinary_access_method: String,
+    pub attribution_notice: String,
+    pub automated_processing_permitted: bool,
+    pub retention: OwnedRetentionCondition,
     pub redistribution: RedistributionCondition,
 }
 
@@ -589,7 +643,7 @@ pub struct BundleRecordEntry<'input> {
     pub recorded_time: TimeDisplay<'input>,
     pub uncertainty_note: Option<&'input str>,
     pub asset_relative_path: Option<&'input str>,
-    pub required_capability_id: Option<&'input str>,
+    pub required_capability: Option<(&'input str, u32)>,
 }
 
 /// Resolution target for a reference inside the bundle (`docs/contracts/report-export.md` §5).
@@ -624,8 +678,40 @@ pub struct BundleReference<'input> {
     pub target: BundleReferenceTarget<'input>,
 }
 
-/// Explicit record of an omitted, restricted, or missing asset and its impact on coverage and
-/// replay (`REPRO-01`, `docs/contracts/report-export.md` §§3, 5).
+/// Validated reference target retained on `ValidatedBundleReference`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ValidatedReferenceTarget {
+    IncludedRecord {
+        target_record_id: String,
+        target_version_id: String,
+    },
+    ExternalReferenceOnly {
+        target_record_id: String,
+        target_version_id: String,
+        source_id: String,
+        external_url: Option<String>,
+        reason: OmissionReason,
+    },
+    PermittedUnavailable {
+        target_record_id: String,
+        target_version_id: String,
+        reason: OmissionReason,
+        coverage_note: String,
+    },
+}
+
+/// Validated directed reference retained on `ValidatedBundle`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatedBundleReference {
+    pub reference_id: String,
+    pub from_record_id: String,
+    pub from_version_id: String,
+    pub relation: String,
+    pub target: ValidatedReferenceTarget,
+}
+
+/// Explicit record of an omitted, restricted, or missing asset or record and its impact on
+/// coverage and replay (`REPRO-01`, `docs/contracts/report-export.md` §§3, 5).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BundleOmissionEntry<'input> {
     pub omitted_id: &'input str,
@@ -634,6 +720,17 @@ pub struct BundleOmissionEntry<'input> {
     pub reason: OmissionReason,
     pub coverage_effect: &'input str,
     pub unreproducible_step_note: Option<&'input str>,
+}
+
+/// Validated omission record retained on `ValidatedBundle`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatedBundleOmission {
+    pub omitted_id: String,
+    pub source_id: String,
+    pub version_id: String,
+    pub reason: OmissionReason,
+    pub coverage_effect: String,
+    pub unreproducible_step_note: Option<String>,
 }
 
 /// Pinned query specification in `reproduction/` (`REPRO-01`).
@@ -646,6 +743,16 @@ pub struct PinnedQuerySpec<'input> {
     pub coverage_note: &'input str,
 }
 
+/// Validated query specification retained on `ValidatedBundle`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatedQuerySpec {
+    pub query_id: String,
+    pub version_id: String,
+    pub query_expression: String,
+    pub pinned_input_versions: Vec<(String, String)>,
+    pub coverage_note: String,
+}
+
 /// Pinned grouping/clustering decision in `reproduction/` (`REPRO-01`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PinnedGroupingDecision<'input> {
@@ -653,6 +760,16 @@ pub struct PinnedGroupingDecision<'input> {
     pub version_id: &'input str,
     pub rationale: &'input str,
     pub member_record_versions: &'input [(&'input str, &'input str)],
+    pub is_reversible: bool,
+}
+
+/// Validated grouping decision retained on `ValidatedBundle`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatedGroupingDecision {
+    pub grouping_id: String,
+    pub version_id: String,
+    pub rationale: String,
+    pub member_record_versions: Vec<(String, String)>,
     pub is_reversible: bool,
 }
 
@@ -675,6 +792,18 @@ pub struct PinnedCalibrationSpec<'input> {
     pub validity: CalibrationValidity<'input>,
 }
 
+/// Validated calibration specification retained on `ValidatedBundle`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValidatedCalibrationRecord {
+    pub calibration_id: String,
+    pub version_id: String,
+    pub sensor_or_view_id: String,
+    pub reference_description: String,
+    pub residual_rms: f64,
+    pub residual_unit: String,
+    pub invalidated_reason: Option<String>,
+}
+
 /// Pinned forecast specification in `reproduction/` (`REPRO-01`, `A17`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PinnedForecastSpec<'input> {
@@ -683,6 +812,16 @@ pub struct PinnedForecastSpec<'input> {
     pub cutoff_time: TimeDisplay<'input>,
     pub prediction_summary: &'input str,
     pub pinned_input_versions: &'input [(&'input str, &'input str)],
+}
+
+/// Validated forecast specification retained on `ValidatedBundle`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatedForecastSpec {
+    pub forecast_id: String,
+    pub version_id: String,
+    pub cutoff_time: OwnedTimeDisplay,
+    pub prediction_summary: String,
+    pub pinned_input_versions: Vec<(String, String)>,
 }
 
 /// License compatibility state for an analysis method or model (`REPRO-03`).
@@ -700,7 +839,9 @@ pub enum ReplayContract<'input> {
         expected_output_sha256_hex: &'input str,
         expected_byte_len: usize,
     },
-    /// Floating-point series must agree within justified absolute and relative tolerances.
+    /// Floating-point series must satisfy **both** `abs_diff <= max_abs_diff` and
+    /// `rel_diff <= max_rel_diff` on every element, with `max_abs_diff >= 0.0` and
+    /// `0.0 <= max_rel_diff < 1.0`.
     NumericalTolerance {
         expected_series: &'input [f64],
         max_abs_diff: f64,
@@ -771,8 +912,8 @@ pub struct AttributedOriginActor {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OptionalRecordHandling {
     Supported,
-    RetainedInertOpaqueBytes { capability_id: String },
-    OmittedWithNotice { capability_id: String },
+    RetainedInertOpaqueBytes { capability_id: String, version: u32 },
+    OmittedWithNotice { capability_id: String, version: u32 },
 }
 
 /// How bundled readable reports under `reports/` are treated on import (`REPRO-02`,
@@ -806,35 +947,38 @@ pub struct MappedBundleRecord {
     pub origin_class: OriginClass,
     pub review_status: ReviewStatus,
     pub attributed_actor: AttributedOriginActor,
+    pub recorded_time: OwnedTimeDisplay,
+    pub uncertainty_note: Option<String>,
     pub asset_sha256_hex: Option<String>,
     pub optional_handling: OptionalRecordHandling,
 }
 
-/// Validated, staged, and namespace-mapped bundle ready for atomic storage commit or explicit
-/// analysis replay (`REPRO-01`–`REPRO-03`, `A17`).
+/// Validated and namespace-mapped in-memory bundle representation (`REPRO-01`–`REPRO-03`, `A17`).
+///
+/// This type holds the verified staged entry inventory, injective local namespace record mappings,
+/// use conditions, references, omissions, and reproduction specifications. Filesystem no-follow
+/// staging and `oia-store` transactional case publication remain separate integration steps.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ValidatedBundle {
-    package_id: String,
+    identity: ValidatedPackageIdentity,
     destination_case_id: String,
     local_namespace_prefix: String,
     verified_entries: Vec<VerifiedStagedEntry>,
+    use_conditions: Vec<ValidatedAssetUseConditions>,
     mapped_records: Vec<MappedBundleRecord>,
-    omitted_optional_capabilities: Vec<String>,
-    omission_count: usize,
-    /// Guarantee that validation performed zero code execution, zero network fetches, zero device
-    /// connections, and zero automatic analysis replays.
-    inert_import_verified: bool,
-    calibrations: BTreeMap<(String, String), ValidatedCalibration>,
+    references: Vec<ValidatedBundleReference>,
+    omissions: Vec<ValidatedBundleOmission>,
+    queries: Vec<ValidatedQuerySpec>,
+    groupings: Vec<ValidatedGroupingDecision>,
+    calibrations: Vec<ValidatedCalibrationRecord>,
+    forecasts: Vec<ValidatedForecastSpec>,
+    omitted_optional_capabilities: Vec<(String, u32)>,
+    calibration_lookup: BTreeMap<(String, String), Option<String>>,
     available_record_versions: BTreeSet<(String, String)>,
     omitted_record_versions: BTreeMap<(String, String), OmissionReason>,
     verified_asset_digests: BTreeMap<String, String>,
     supported_capabilities: BTreeSet<(String, u32)>,
     analyses: BTreeMap<(String, String), ValidatedAnalysisSpec>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct ValidatedCalibration {
-    validity_error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -869,8 +1013,12 @@ struct ValidatedAnalysisSpec {
 }
 
 impl ValidatedBundle {
+    pub fn identity(&self) -> &ValidatedPackageIdentity {
+        &self.identity
+    }
+
     pub fn package_id(&self) -> &str {
-        &self.package_id
+        &self.identity.package_id
     }
 
     pub fn destination_case_id(&self) -> &str {
@@ -885,20 +1033,44 @@ impl ValidatedBundle {
         &self.verified_entries
     }
 
+    pub fn use_conditions(&self) -> &[ValidatedAssetUseConditions] {
+        &self.use_conditions
+    }
+
     pub fn mapped_records(&self) -> &[MappedBundleRecord] {
         &self.mapped_records
     }
 
-    pub fn omitted_optional_capabilities(&self) -> &[String] {
-        &self.omitted_optional_capabilities
+    pub fn references(&self) -> &[ValidatedBundleReference] {
+        &self.references
+    }
+
+    pub fn omissions(&self) -> &[ValidatedBundleOmission] {
+        &self.omissions
     }
 
     pub fn omission_count(&self) -> usize {
-        self.omission_count
+        self.omissions.len()
     }
 
-    pub fn inert_import_verified(&self) -> bool {
-        self.inert_import_verified
+    pub fn queries(&self) -> &[ValidatedQuerySpec] {
+        &self.queries
+    }
+
+    pub fn groupings(&self) -> &[ValidatedGroupingDecision] {
+        &self.groupings
+    }
+
+    pub fn calibrations(&self) -> &[ValidatedCalibrationRecord] {
+        &self.calibrations
+    }
+
+    pub fn forecasts(&self) -> &[ValidatedForecastSpec] {
+        &self.forecasts
+    }
+
+    pub fn omitted_optional_capabilities(&self) -> &[(String, u32)] {
+        &self.omitted_optional_capabilities
     }
 }
 
@@ -985,6 +1157,8 @@ pub enum AnalysisReplayOutcome {
     DivergedBeyondTolerance {
         analysis_id: String,
         version_id: String,
+        expected_sample_count: usize,
+        actual_sample_count: usize,
         first_failing_index: usize,
         expected_value: f64,
         actual_value: f64,
@@ -998,6 +1172,38 @@ pub enum AnalysisReplayOutcome {
         version_id: String,
         reason: NonReplayableReason,
     },
+}
+
+/// Formats an injective local record identifier from `(local_namespace_prefix, origin_namespace,
+/// record_id)` using decimal byte-length prefixes so distinct `(origin_namespace, record_id)`
+/// pairs never collide (`docs/contracts/report-export.md` §5, `REPRO-02`).
+pub fn format_local_record_id(
+    local_namespace_prefix: &str,
+    origin_namespace: &str,
+    record_id: &str,
+) -> String {
+    format!(
+        "{local_namespace_prefix}/rec/{}:{origin_namespace}/{}:{record_id}",
+        origin_namespace.len(),
+        record_id.len()
+    )
+}
+
+/// Formats an injective local version identifier from `(local_namespace_prefix, origin_namespace,
+/// record_id, version_id)` using decimal byte-length prefixes so distinct `(origin_namespace,
+/// record_id, version_id)` tuples never collide (`docs/contracts/report-export.md` §5, `REPRO-02`).
+pub fn format_local_version_id(
+    local_namespace_prefix: &str,
+    origin_namespace: &str,
+    record_id: &str,
+    version_id: &str,
+) -> String {
+    format!(
+        "{local_namespace_prefix}/ver/{}:{origin_namespace}/{}:{record_id}/{}:{version_id}",
+        origin_namespace.len(),
+        record_id.len(),
+        version_id.len()
+    )
 }
 
 /// Validates and stages a portable directory bundle in memory according to `REPRO-01`, `REPRO-02`,
@@ -1038,13 +1244,13 @@ where
         &mut text_bytes_used,
         limits,
     )?;
-    validate_text_field(
+    validate_identifier(
         input.identity.producer_version,
         "identity.producer_version",
         &mut text_bytes_used,
         limits,
     )?;
-    validate_time_display(
+    let created_time = validate_time_display(
         input.identity.created_time,
         "identity.created_time",
         &mut text_bytes_used,
@@ -1141,7 +1347,7 @@ where
         if declared_capabilities.insert(key.clone(), *cap).is_some() {
             return Err(BundleError::DuplicateIdentifier {
                 kind: "capability",
-                id: cap.capability_id.to_owned(),
+                id: format!("{}@v{}", cap.capability_id, cap.version),
             });
         }
         let is_supported = supported_set.contains(&key);
@@ -1156,7 +1362,7 @@ where
                 CapabilityRequirement::Optional => {
                     try_push(
                         &mut omitted_optional_capabilities,
-                        cap.capability_id.to_owned(),
+                        (cap.capability_id.to_owned(), cap.version),
                     )?;
                 }
             }
@@ -1173,7 +1379,7 @@ where
             &mut text_bytes_used,
             limits,
         )?;
-        validate_text_field(
+        validate_identifier(
             entry.media_type,
             "manifest_entry.media_type",
             &mut text_bytes_used,
@@ -1241,17 +1447,29 @@ where
                 entry_kind: staged.entry_kind,
             });
         }
-        if let Some(archive_kind) =
-            detect_archive_or_compressed_container(staged.relative_path, staged.staged_bytes)
+        let Some(manifest_entry) = manifest_by_path.get(staged.relative_path) else {
+            if let Some(archive_kind) =
+                detect_archive_or_compressed_container(staged.relative_path, staged.staged_bytes)
+            {
+                return Err(BundleError::ArchiveContainerRejected {
+                    path: staged.relative_path.to_owned(),
+                    container_kind: archive_kind,
+                });
+            }
+            return Err(BundleError::UnlistedStagedPayload {
+                path: staged.relative_path.to_owned(),
+            });
+        };
+        // ADR 0006 rejects archive/compressed bundle containers in structured manifest directories
+        // (`records/`, `reports/`, `reproduction/`), while `assets/` holds opaque hashed evidence
+        // bytes (which may legitimately be ZIP-based formats such as DOCX, XLSX, or KMZ).
+        if manifest_entry.role != BundleEntryRole::Assets
+            && let Some(archive_kind) =
+                detect_archive_or_compressed_container(staged.relative_path, staged.staged_bytes)
         {
             return Err(BundleError::ArchiveContainerRejected {
                 path: staged.relative_path.to_owned(),
                 container_kind: archive_kind,
-            });
-        }
-        if !manifest_by_path.contains_key(staged.relative_path) {
-            return Err(BundleError::UnlistedStagedPayload {
-                path: staged.relative_path.to_owned(),
             });
         }
         if staged.staged_bytes.len() > limits.max_file_bytes {
@@ -1339,7 +1557,11 @@ where
         )?;
     }
 
-    let mut use_conditions_by_asset = BTreeMap::new();
+    let mut use_conditions = Vec::new();
+    use_conditions
+        .try_reserve(input.use_conditions.len())
+        .map_err(|_| BundleError::AllocationFailed)?;
+    let mut seen_use_condition_assets = BTreeSet::new();
     for cond in input.use_conditions {
         check_stop(&mut stop_check)?;
         validate_bundle_relative_path(
@@ -1366,25 +1588,53 @@ where
             &mut text_bytes_used,
             limits,
         )?;
+        let owned_retention = match cond.retention {
+            RetentionCondition::Permitted => OwnedRetentionCondition::Permitted,
+            RetentionCondition::ReviewWindowOnly { window_note } => {
+                validate_text_field(
+                    window_note,
+                    "use_conditions.retention_window_note",
+                    &mut text_bytes_used,
+                    limits,
+                )?;
+                OwnedRetentionCondition::ReviewWindowOnly {
+                    window_note: window_note.to_owned(),
+                }
+            }
+            RetentionCondition::Prohibited => OwnedRetentionCondition::Prohibited,
+        };
         if !verified_asset_digests.contains_key(cond.asset_path) {
             return Err(BundleError::UnexplainedDanglingReference {
                 from_id: cond.source_id.to_owned(),
                 target_id: cond.asset_path.to_owned(),
             });
         }
-        if use_conditions_by_asset
-            .insert(cond.asset_path.to_owned(), *cond)
-            .is_some()
-        {
+        if !seen_use_condition_assets.insert(cond.asset_path.to_owned()) {
             return Err(BundleError::DuplicateIdentifier {
                 kind: "asset_use_conditions",
                 id: cond.asset_path.to_owned(),
             });
         }
+        try_push(
+            &mut use_conditions,
+            ValidatedAssetUseConditions {
+                asset_path: cond.asset_path.to_owned(),
+                source_id: cond.source_id.to_owned(),
+                ordinary_access_method: cond.ordinary_access_method.to_owned(),
+                attribution_notice: cond.attribution_notice.to_owned(),
+                automated_processing_permitted: cond.automated_processing_permitted,
+                retention: owned_retention,
+                redistribution: cond.redistribution,
+            },
+        )?;
     }
 
     let mut omitted_record_versions = BTreeMap::new();
     let mut seen_omission_ids = BTreeSet::new();
+    let mut omissions = Vec::new();
+    omissions
+        .try_reserve(input.omissions.len())
+        .map_err(|_| BundleError::AllocationFailed)?;
     for omission in input.omissions {
         check_stop(&mut stop_check)?;
         validate_identifier(
@@ -1419,19 +1669,28 @@ where
                 limits,
             )?;
         }
-        if !seen_omission_ids.insert(omission.omitted_id.to_owned()) {
+        let om_key = (
+            omission.omitted_id.to_owned(),
+            omission.version_id.to_owned(),
+        );
+        if !seen_omission_ids.insert(om_key.clone()) {
             return Err(BundleError::DuplicateIdentifier {
                 kind: "omission",
-                id: omission.omitted_id.to_owned(),
+                id: format!("{}@{}", omission.omitted_id, omission.version_id),
             });
         }
-        omitted_record_versions.insert(
-            (
-                omission.omitted_id.to_owned(),
-                omission.version_id.to_owned(),
-            ),
-            omission.reason,
-        );
+        omitted_record_versions.insert(om_key, omission.reason);
+        try_push(
+            &mut omissions,
+            ValidatedBundleOmission {
+                omitted_id: omission.omitted_id.to_owned(),
+                source_id: omission.source_id.to_owned(),
+                version_id: omission.version_id.to_owned(),
+                reason: omission.reason,
+                coverage_effect: omission.coverage_effect.to_owned(),
+                unreproducible_step_note: omission.unreproducible_step_note.map(str::to_owned),
+            },
+        )?;
     }
 
     let mut mapped_records = Vec::new();
@@ -1440,6 +1699,7 @@ where
         .map_err(|_| BundleError::AllocationFailed)?;
     let mut available_record_versions = BTreeSet::new();
     let mut seen_record_versions = BTreeSet::new();
+    let mut seen_origin_record_versions = BTreeSet::new();
 
     for rec in input.records {
         check_stop(&mut stop_check)?;
@@ -1467,7 +1727,7 @@ where
             &mut text_bytes_used,
             limits,
         )?;
-        validate_time_display(
+        let recorded_time = validate_time_display(
             rec.recorded_time,
             "record.recorded_time",
             &mut text_bytes_used,
@@ -1482,13 +1742,29 @@ where
             )?;
         }
 
-        let rec_key = (rec.record_id.to_owned(), rec.version_id.to_owned());
-        if !seen_record_versions.insert(rec_key.clone()) {
+        let origin_rec_key = (
+            rec.origin_namespace.to_owned(),
+            rec.record_id.to_owned(),
+            rec.version_id.to_owned(),
+        );
+        if !seen_origin_record_versions.insert(origin_rec_key) {
             return Err(BundleError::DuplicateIdentifier {
                 kind: "record_version",
+                id: format!(
+                    "{}:{}@{}",
+                    rec.origin_namespace, rec.record_id, rec.version_id
+                ),
+            });
+        }
+
+        let rec_key = (rec.record_id.to_owned(), rec.version_id.to_owned());
+        if omitted_record_versions.contains_key(&rec_key) {
+            return Err(BundleError::DuplicateIdentifier {
+                kind: "record_and_omission",
                 id: format!("{}@{}", rec.record_id, rec.version_id),
             });
         }
+        seen_record_versions.insert(rec_key.clone());
 
         let asset_sha256_hex = if let Some(asset_path) = rec.asset_relative_path {
             let Some(digest) = verified_asset_digests.get(asset_path) else {
@@ -1502,23 +1778,31 @@ where
             None
         };
 
-        let optional_handling = if let Some(cap_id) = rec.required_capability_id {
+        let optional_handling = if let Some((cap_id, cap_ver)) = rec.required_capability {
             validate_identifier(
                 cap_id,
                 "record.required_capability_id",
                 &mut text_bytes_used,
                 limits,
             )?;
-            let is_supported = supported_set.iter().any(|(id, _)| id == cap_id);
-            if is_supported {
+            let cap_key = (cap_id.to_owned(), cap_ver);
+            if !declared_capabilities.contains_key(&cap_key) {
+                return Err(BundleError::InvalidRecordSchema {
+                    record_id: rec.record_id.to_owned(),
+                    reason: "record references capability not declared in bundle manifest",
+                });
+            }
+            if supported_set.contains(&cap_key) {
                 OptionalRecordHandling::Supported
             } else if supported_capabilities.allow_inert_optional_records {
                 OptionalRecordHandling::RetainedInertOpaqueBytes {
                     capability_id: cap_id.to_owned(),
+                    version: cap_ver,
                 }
             } else {
                 OptionalRecordHandling::OmittedWithNotice {
                     capability_id: cap_id.to_owned(),
+                    version: cap_ver,
                 }
             }
         } else {
@@ -1531,8 +1815,17 @@ where
             omitted_record_versions.insert(rec_key, OmissionReason::Unsupported);
         }
 
-        let local_record_id = format!("{}/rec/{}", input.local_namespace_prefix, rec.record_id);
-        let local_version_id = format!("{}/ver/{}", input.local_namespace_prefix, rec.version_id);
+        let local_record_id = format_local_record_id(
+            input.local_namespace_prefix,
+            rec.origin_namespace,
+            rec.record_id,
+        );
+        let local_version_id = format_local_version_id(
+            input.local_namespace_prefix,
+            rec.origin_namespace,
+            rec.record_id,
+            rec.version_id,
+        );
 
         try_push(
             &mut mapped_records,
@@ -1550,6 +1843,8 @@ where
                     origin_actor_id: rec.origin_actor_id.to_owned(),
                     local_authority: LocalAuthorityGrant::None,
                 },
+                recorded_time,
+                uncertainty_note: rec.uncertainty_note.map(str::to_owned),
                 asset_sha256_hex,
                 optional_handling,
             },
@@ -1557,6 +1852,10 @@ where
     }
 
     let mut seen_ref_ids = BTreeSet::new();
+    let mut validated_references = Vec::new();
+    validated_references
+        .try_reserve(input.references.len())
+        .map_err(|_| BundleError::AllocationFailed)?;
     for reference in input.references {
         check_stop(&mut stop_check)?;
         validate_identifier(
@@ -1599,7 +1898,7 @@ where
                 target_id: format!("{}@{}", reference.from_record_id, reference.from_version_id),
             });
         }
-        match reference.target {
+        let validated_target = match reference.target {
             BundleReferenceTarget::IncludedRecord {
                 target_record_id,
                 target_version_id,
@@ -1623,13 +1922,27 @@ where
                         target_id: format!("{target_record_id}@{target_version_id}"),
                     });
                 }
+                if available_record_versions.contains(&target_key) {
+                    ValidatedReferenceTarget::IncludedRecord {
+                        target_record_id: target_record_id.to_owned(),
+                        target_version_id: target_version_id.to_owned(),
+                    }
+                } else {
+                    ValidatedReferenceTarget::PermittedUnavailable {
+                        target_record_id: target_record_id.to_owned(),
+                        target_version_id: target_version_id.to_owned(),
+                        reason: OmissionReason::Unsupported,
+                        coverage_note: "target record uses unsupported optional capability"
+                            .to_owned(),
+                    }
+                }
             }
             BundleReferenceTarget::ExternalReferenceOnly {
                 target_record_id,
                 target_version_id,
                 source_id,
                 external_url,
-                ..
+                reason,
             } => {
                 validate_identifier(
                     target_record_id,
@@ -1657,12 +1970,19 @@ where
                         limits,
                     )?;
                 }
+                ValidatedReferenceTarget::ExternalReferenceOnly {
+                    target_record_id: target_record_id.to_owned(),
+                    target_version_id: target_version_id.to_owned(),
+                    source_id: source_id.to_owned(),
+                    external_url: external_url.map(str::to_owned),
+                    reason,
+                }
             }
             BundleReferenceTarget::PermittedUnavailable {
                 target_record_id,
                 target_version_id,
+                reason,
                 coverage_note,
-                ..
             } => {
                 validate_identifier(
                     target_record_id,
@@ -1682,10 +2002,30 @@ where
                     &mut text_bytes_used,
                     limits,
                 )?;
+                ValidatedReferenceTarget::PermittedUnavailable {
+                    target_record_id: target_record_id.to_owned(),
+                    target_version_id: target_version_id.to_owned(),
+                    reason,
+                    coverage_note: coverage_note.to_owned(),
+                }
             }
-        }
+        };
+        try_push(
+            &mut validated_references,
+            ValidatedBundleReference {
+                reference_id: reference.reference_id.to_owned(),
+                from_record_id: reference.from_record_id.to_owned(),
+                from_version_id: reference.from_version_id.to_owned(),
+                relation: reference.relation.to_owned(),
+                target: validated_target,
+            },
+        )?;
     }
 
+    let mut validated_queries = Vec::new();
+    validated_queries
+        .try_reserve(input.queries.len())
+        .map_err(|_| BundleError::AllocationFailed)?;
     for query in input.queries {
         check_stop(&mut stop_check)?;
         validate_identifier(
@@ -1712,7 +2052,7 @@ where
             &mut text_bytes_used,
             limits,
         )?;
-        validate_pinned_version_refs(
+        let pinned_inputs = validate_pinned_version_refs(
             query.query_id,
             query.pinned_input_versions,
             &seen_record_versions,
@@ -1720,8 +2060,22 @@ where
             &mut text_bytes_used,
             limits,
         )?;
+        try_push(
+            &mut validated_queries,
+            ValidatedQuerySpec {
+                query_id: query.query_id.to_owned(),
+                version_id: query.version_id.to_owned(),
+                query_expression: query.query_expression.to_owned(),
+                pinned_input_versions: pinned_inputs,
+                coverage_note: query.coverage_note.to_owned(),
+            },
+        )?;
     }
 
+    let mut validated_groupings = Vec::new();
+    validated_groupings
+        .try_reserve(input.groupings.len())
+        .map_err(|_| BundleError::AllocationFailed)?;
     for grouping in input.groupings {
         check_stop(&mut stop_check)?;
         validate_identifier(
@@ -1742,7 +2096,7 @@ where
             &mut text_bytes_used,
             limits,
         )?;
-        validate_pinned_version_refs(
+        let members = validate_pinned_version_refs(
             grouping.grouping_id,
             grouping.member_record_versions,
             &seen_record_versions,
@@ -1750,9 +2104,23 @@ where
             &mut text_bytes_used,
             limits,
         )?;
+        try_push(
+            &mut validated_groupings,
+            ValidatedGroupingDecision {
+                grouping_id: grouping.grouping_id.to_owned(),
+                version_id: grouping.version_id.to_owned(),
+                rationale: grouping.rationale.to_owned(),
+                member_record_versions: members,
+                is_reversible: grouping.is_reversible,
+            },
+        )?;
     }
 
-    let mut calibrations = BTreeMap::new();
+    let mut calibration_lookup = BTreeMap::new();
+    let mut validated_calibrations = Vec::new();
+    validated_calibrations
+        .try_reserve(input.calibrations.len())
+        .map_err(|_| BundleError::AllocationFailed)?;
     for cal in input.calibrations {
         check_stop(&mut stop_check)?;
         validate_identifier(
@@ -1779,7 +2147,7 @@ where
             &mut text_bytes_used,
             limits,
         )?;
-        validate_text_field(
+        validate_identifier(
             cal.residual_unit,
             "calibration.residual_unit",
             &mut text_bytes_used,
@@ -1791,7 +2159,7 @@ where
                 reason: "calibration residual_rms must be finite and non-negative",
             });
         }
-        let validity_error = match cal.validity {
+        let invalidated_reason = match cal.validity {
             CalibrationValidity::Valid => None,
             CalibrationValidity::Invalidated { reason } => {
                 validate_text_field(
@@ -1804,8 +2172,8 @@ where
             }
         };
         let key = (cal.calibration_id.to_owned(), cal.version_id.to_owned());
-        if calibrations
-            .insert(key, ValidatedCalibration { validity_error })
+        if calibration_lookup
+            .insert(key, invalidated_reason.clone())
             .is_some()
         {
             return Err(BundleError::DuplicateIdentifier {
@@ -1813,8 +2181,24 @@ where
                 id: format!("{}@{}", cal.calibration_id, cal.version_id),
             });
         }
+        try_push(
+            &mut validated_calibrations,
+            ValidatedCalibrationRecord {
+                calibration_id: cal.calibration_id.to_owned(),
+                version_id: cal.version_id.to_owned(),
+                sensor_or_view_id: cal.sensor_or_view_id.to_owned(),
+                reference_description: cal.reference_description.to_owned(),
+                residual_rms: cal.residual_rms,
+                residual_unit: cal.residual_unit.to_owned(),
+                invalidated_reason,
+            },
+        )?;
     }
 
+    let mut validated_forecasts = Vec::new();
+    validated_forecasts
+        .try_reserve(input.forecasts.len())
+        .map_err(|_| BundleError::AllocationFailed)?;
     for forecast in input.forecasts {
         check_stop(&mut stop_check)?;
         validate_identifier(
@@ -1829,7 +2213,7 @@ where
             &mut text_bytes_used,
             limits,
         )?;
-        validate_time_display(
+        let cutoff_time = validate_time_display(
             forecast.cutoff_time,
             "forecast.cutoff_time",
             &mut text_bytes_used,
@@ -1841,13 +2225,23 @@ where
             &mut text_bytes_used,
             limits,
         )?;
-        validate_pinned_version_refs(
+        let pinned_inputs = validate_pinned_version_refs(
             forecast.forecast_id,
             forecast.pinned_input_versions,
             &seen_record_versions,
             &omitted_record_versions,
             &mut text_bytes_used,
             limits,
+        )?;
+        try_push(
+            &mut validated_forecasts,
+            ValidatedForecastSpec {
+                forecast_id: forecast.forecast_id.to_owned(),
+                version_id: forecast.version_id.to_owned(),
+                cutoff_time,
+                prediction_summary: forecast.prediction_summary.to_owned(),
+                pinned_input_versions: pinned_inputs,
+            },
         )?;
     }
 
@@ -1878,22 +2272,39 @@ where
             &mut text_bytes_used,
             limits,
         )?;
+        let req_cap_key = (
+            analysis.required_capability_id.to_owned(),
+            analysis.required_capability_version,
+        );
+        if !declared_capabilities.contains_key(&req_cap_key) {
+            return Err(BundleError::InvalidRecordSchema {
+                record_id: analysis.analysis_id.to_owned(),
+                reason: "analysis references capability not declared in bundle manifest",
+            });
+        }
         validate_no_side_effect_hooks(
             analysis.configuration_summary,
             analysis.analysis_id,
             &mut text_bytes_used,
             limits,
         )?;
-        if let Some(model_id) = analysis.model_id {
-            validate_identifier(model_id, "analysis.model_id", &mut text_bytes_used, limits)?;
-        }
-        if let Some(model_ver) = analysis.model_version {
-            validate_identifier(
-                model_ver,
-                "analysis.model_version",
-                &mut text_bytes_used,
-                limits,
-            )?;
+        match (analysis.model_id, analysis.model_version) {
+            (Some(model_id), Some(model_ver)) => {
+                validate_identifier(model_id, "analysis.model_id", &mut text_bytes_used, limits)?;
+                validate_identifier(
+                    model_ver,
+                    "analysis.model_version",
+                    &mut text_bytes_used,
+                    limits,
+                )?;
+            }
+            (None, None) => {}
+            _ => {
+                return Err(BundleError::InvalidRecordSchema {
+                    record_id: analysis.analysis_id.to_owned(),
+                    reason: "analysis model_id and model_version must be both present or both absent",
+                });
+            }
         }
         let license_incompatible_detail = match analysis.license_status {
             AnalysisLicenseStatus::Compatible { license_id } => {
@@ -1916,7 +2327,7 @@ where
             }
         };
 
-        validate_pinned_version_refs(
+        let pinned_inputs = validate_pinned_version_refs(
             analysis.analysis_id,
             analysis.pinned_input_versions,
             &seen_record_versions,
@@ -1933,6 +2344,14 @@ where
                 &mut text_bytes_used,
                 limits,
             )?;
+            let is_included = verified_asset_digests.contains_key(*asset_path);
+            let is_omitted = omissions.iter().any(|o| o.omitted_id == *asset_path);
+            if !is_included && !is_omitted {
+                return Err(BundleError::UnexplainedDanglingReference {
+                    from_id: analysis.analysis_id.to_owned(),
+                    target_id: (*asset_path).to_owned(),
+                });
+            }
             try_push(&mut pinned_asset_paths, (*asset_path).to_owned())?;
         }
 
@@ -1950,7 +2369,7 @@ where
                 limits,
             )?;
             let cal_key = (cal_id.to_owned(), cal_ver.to_owned());
-            if !calibrations.contains_key(&cal_key) {
+            if !calibration_lookup.contains_key(&cal_key) {
                 return Err(BundleError::UnexplainedDanglingReference {
                     from_id: analysis.analysis_id.to_owned(),
                     target_id: format!("{cal_id}@{cal_ver}"),
@@ -2002,10 +2421,11 @@ where
                     || !max_rel_diff.is_finite()
                     || max_abs_diff < 0.0
                     || max_rel_diff < 0.0
+                    || max_rel_diff >= 1.0
                 {
                     return Err(BundleError::InvalidToleranceConfiguration {
                         analysis_id: analysis.analysis_id.to_owned(),
-                        reason: "max_abs_diff and max_rel_diff must be finite and non-negative",
+                        reason: "max_abs_diff must be finite >= 0.0 and max_rel_diff must be finite in [0.0, 1.0)",
                     });
                 }
                 for val in expected_series {
@@ -2035,14 +2455,6 @@ where
                 }
             }
         };
-
-        let mut pinned_inputs = Vec::new();
-        for (rec_id, ver_id) in analysis.pinned_input_versions {
-            try_push(
-                &mut pinned_inputs,
-                ((*rec_id).to_owned(), (*ver_id).to_owned()),
-            )?;
-        }
 
         let key = (
             analysis.analysis_id.to_owned(),
@@ -2076,15 +2488,27 @@ where
     check_stop(&mut stop_check)?;
 
     Ok(ValidatedBundle {
-        package_id: input.identity.package_id.to_owned(),
+        identity: ValidatedPackageIdentity {
+            format: input.identity.format.to_owned(),
+            format_version: input.identity.format_version,
+            package_id: input.identity.package_id.to_owned(),
+            created_time,
+            producer_id: input.identity.producer_id.to_owned(),
+            producer_version: input.identity.producer_version.to_owned(),
+        },
         destination_case_id: input.destination_case_id.to_owned(),
         local_namespace_prefix: input.local_namespace_prefix.to_owned(),
         verified_entries,
+        use_conditions,
         mapped_records,
+        references: validated_references,
+        omissions,
+        queries: validated_queries,
+        groupings: validated_groupings,
+        calibrations: validated_calibrations,
+        forecasts: validated_forecasts,
         omitted_optional_capabilities,
-        omission_count: input.omissions.len(),
-        inert_import_verified: true,
-        calibrations,
+        calibration_lookup,
         available_record_versions,
         omitted_record_versions,
         verified_asset_digests,
@@ -2166,8 +2590,7 @@ where
     }
 
     if let Some(cal_key) = &spec.calibration_ref
-        && let Some(cal) = bundle.calibrations.get(cal_key)
-        && let Some(reason) = &cal.validity_error
+        && let Some(Some(reason)) = bundle.calibration_lookup.get(cal_key)
     {
         return Ok(AnalysisReplayOutcome::NonReplayable {
             analysis_id: request.analysis_id.to_owned(),
@@ -2283,10 +2706,27 @@ where
                 candidate_series.len(),
                 limits.max_replay_samples,
             )?;
+            for actual in candidate_series {
+                if !actual.is_finite() {
+                    return Err(BundleError::InvalidReplayInput {
+                        analysis_id: request.analysis_id.to_owned(),
+                        reason: "candidate_series contains non-finite value",
+                    });
+                }
+            }
             if candidate_series.len() != expected_series.len() {
-                return Err(BundleError::InvalidReplayInput {
+                return Ok(AnalysisReplayOutcome::DivergedBeyondTolerance {
                     analysis_id: request.analysis_id.to_owned(),
-                    reason: "candidate_series length does not match expected_series length",
+                    version_id: request.version_id.to_owned(),
+                    expected_sample_count: expected_series.len(),
+                    actual_sample_count: candidate_series.len(),
+                    first_failing_index: candidate_series.len().min(expected_series.len()),
+                    expected_value: f64::NAN,
+                    actual_value: f64::NAN,
+                    abs_diff: f64::INFINITY,
+                    rel_diff: f64::INFINITY,
+                    max_allowed_abs_diff: *max_abs_diff,
+                    max_allowed_rel_diff: *max_rel_diff,
                 });
             }
 
@@ -2299,20 +2739,17 @@ where
                 .enumerate()
             {
                 check_stop(&mut stop_check)?;
-                if !actual.is_finite() {
-                    return Err(BundleError::InvalidReplayInput {
-                        analysis_id: request.analysis_id.to_owned(),
-                        reason: "candidate_series contains non-finite value",
-                    });
-                }
                 let abs_diff = (*actual - *expected).abs();
                 let denom = expected.abs().max(actual.abs());
                 let rel_diff = if denom == 0.0 { 0.0 } else { abs_diff / denom };
 
-                if abs_diff > *max_abs_diff && rel_diff > *max_rel_diff {
+                // Both the absolute and relative tolerance bounds must hold on every sample.
+                if abs_diff > *max_abs_diff || rel_diff > *max_rel_diff {
                     return Ok(AnalysisReplayOutcome::DivergedBeyondTolerance {
                         analysis_id: request.analysis_id.to_owned(),
                         version_id: request.version_id.to_owned(),
+                        expected_sample_count: expected_series.len(),
+                        actual_sample_count: candidate_series.len(),
                         first_failing_index: idx,
                         expected_value: *expected,
                         actual_value: *actual,
@@ -2344,9 +2781,9 @@ where
     }
 }
 
-/// Computes the FIPS 180-4 SHA-256 digest of `bytes` as a 32-byte array without external crates
-/// or unchecked indexing.
-pub fn sha256_bytes(bytes: &[u8]) -> [u8; 32] {
+/// Crate-private FIPS 180-4 SHA-256 digest helper used for in-memory staged verification until
+/// consolidated with the workspace's `sha2` crate (`#91` / `#39`).
+pub(crate) fn sha256_bytes(bytes: &[u8]) -> [u8; 32] {
     const K: [u32; 64] = [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
         0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
@@ -2463,7 +2900,7 @@ fn compress_sha256_block(state: &mut [u32; 8], block: &[u8], k_table: &[u32; 64]
 }
 
 /// Computes the 64-character lowercase hexadecimal SHA-256 digest of `bytes`.
-pub fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     const HEX: [char; 16] = [
         '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
     ];
@@ -2521,27 +2958,6 @@ fn try_push<T>(vec: &mut Vec<T>, item: T) -> Result<(), BundleError> {
     Ok(())
 }
 
-fn contains_bidi_or_forbidden_invisible(text: &str) -> bool {
-    text.chars().any(|ch| {
-        ch.is_control()
-            || matches!(
-                ch,
-                '\u{0085}'
-                    | '\u{061C}'
-                    | '\u{180E}'
-                    | '\u{200B}'
-                    | '\u{200E}'
-                    | '\u{200F}'
-                    | '\u{2028}'..='\u{202E}'
-                    | '\u{2060}'..='\u{2069}'
-                    | '\u{3164}'
-                    | '\u{FEFF}'
-                    | '\u{FFF9}'..='\u{FFFB}'
-                    | '\u{E0000}'..='\u{E007F}'
-            )
-    })
-}
-
 fn validate_identifier(
     value: &str,
     field: &'static str,
@@ -2552,7 +2968,10 @@ fn validate_identifier(
         return Err(BundleError::EmptyField { field });
     }
     charge_text_bytes(text_bytes_used, value.len(), limits)?;
-    if contains_bidi_or_forbidden_invisible(value) {
+    if value
+        .chars()
+        .any(|ch| ch.is_control() || is_bidi_or_zero_width(ch))
+    {
         return Err(BundleError::InvalidTextEncoding {
             field,
             reason: "contains control, line-break, bidi, or invisible formatting character",
@@ -2577,10 +2996,12 @@ fn validate_text_field(
         return Err(BundleError::EmptyField { field });
     }
     charge_text_bytes(text_bytes_used, value.len(), limits)?;
-    if contains_bidi_or_forbidden_invisible(value) {
+    if value.chars().any(|ch| {
+        (ch.is_control() && !matches!(ch, '\n' | '\r' | '\t')) || is_bidi_or_zero_width(ch)
+    }) {
         return Err(BundleError::InvalidTextEncoding {
             field,
-            reason: "contains control, line-break, bidi, or invisible formatting character",
+            reason: "contains control, bidi, or invisible formatting character",
         });
     }
     if looks_like_local_filesystem_path(value) {
@@ -2597,10 +3018,10 @@ fn validate_time_display(
     field: &'static str,
     text_bytes_used: &mut usize,
     limits: BundleLimits,
-) -> Result<(), BundleError> {
-    validate_text_field(time.text, field, text_bytes_used, limits)?;
-    validate_text_field(time.time_reference, field, text_bytes_used, limits)?;
-    match time.precision {
+) -> Result<OwnedTimeDisplay, BundleError> {
+    validate_identifier(time.text, field, text_bytes_used, limits)?;
+    validate_identifier(time.time_reference, field, text_bytes_used, limits)?;
+    let precision = match time.precision {
         TimePrecision::DateOnly => {
             if time.text.contains('T') || time.text.contains(':') {
                 return Err(BundleError::InvalidTimeDisplay {
@@ -2608,16 +3029,24 @@ fn validate_time_display(
                     reason: "date-only timestamp must not include time-of-day components",
                 });
             }
+            OwnedTimePrecision::DateOnly
         }
         TimePrecision::Unknown { reason } => {
             validate_text_field(reason, field, text_bytes_used, limits)?;
+            OwnedTimePrecision::Unknown {
+                reason: reason.to_owned(),
+            }
         }
-        TimePrecision::ExactInstant
-        | TimePrecision::Minute
-        | TimePrecision::Hour
-        | TimePrecision::ApproximateInterval => {}
-    }
-    Ok(())
+        TimePrecision::ExactInstant => OwnedTimePrecision::ExactInstant,
+        TimePrecision::Minute => OwnedTimePrecision::Minute,
+        TimePrecision::Hour => OwnedTimePrecision::Hour,
+        TimePrecision::ApproximateInterval => OwnedTimePrecision::ApproximateInterval,
+    };
+    Ok(OwnedTimeDisplay {
+        text: time.text.to_owned(),
+        precision,
+        time_reference: time.time_reference.to_owned(),
+    })
 }
 
 fn validate_sha256_hex(value: &str, context: &'static str) -> Result<(), BundleError> {
@@ -2659,12 +3088,6 @@ fn validate_bundle_relative_path(
             reason: "path must not contain backslashes, drive letters, or colons",
         });
     }
-    if contains_bidi_or_forbidden_invisible(path) {
-        return Err(BundleError::InvalidRelativePath {
-            path: path.to_owned(),
-            reason: "path contains control, bidi, or invisible characters",
-        });
-    }
     if !path.starts_with(role.required_prefix()) {
         return Err(BundleError::InvalidRelativePath {
             path: path.to_owned(),
@@ -2681,6 +3104,12 @@ fn validate_bundle_relative_path(
                 reason: "path contains empty, dot, or parent (`..`) traversal component",
             });
         }
+        if comp.len() > 255 {
+            return Err(BundleError::InvalidRelativePath {
+                path: path.to_owned(),
+                reason: "path component exceeds 255 characters",
+            });
+        }
         if comp.ends_with('.') || comp.ends_with(' ') || comp.starts_with(' ') {
             return Err(BundleError::InvalidRelativePath {
                 path: path.to_owned(),
@@ -2691,6 +3120,15 @@ fn validate_bundle_relative_path(
             return Err(BundleError::InvalidRelativePath {
                 path: path.to_owned(),
                 reason: "path component uses a reserved Windows device name",
+            });
+        }
+        if !comp
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        {
+            return Err(BundleError::InvalidRelativePath {
+                path: path.to_owned(),
+                reason: "path component must contain only safe ASCII [A-Za-z0-9._-] characters",
             });
         }
     }
@@ -2712,6 +3150,8 @@ fn is_windows_reserved_device_name(component: &str) -> bool {
             | "PRN"
             | "AUX"
             | "NUL"
+            | "CONIN$"
+            | "CONOUT$"
             | "COM1"
             | "COM2"
             | "COM3"
@@ -2721,6 +3161,9 @@ fn is_windows_reserved_device_name(component: &str) -> bool {
             | "COM7"
             | "COM8"
             | "COM9"
+            | "COM\u{00B9}"
+            | "COM\u{00B2}"
+            | "COM\u{00B3}"
             | "LPT1"
             | "LPT2"
             | "LPT3"
@@ -2730,6 +3173,9 @@ fn is_windows_reserved_device_name(component: &str) -> bool {
             | "LPT7"
             | "LPT8"
             | "LPT9"
+            | "LPT\u{00B9}"
+            | "LPT\u{00B2}"
+            | "LPT\u{00B3}"
     )
 }
 
@@ -2796,12 +3242,33 @@ fn detect_archive_or_compressed_container(path: &str, bytes: &[u8]) -> Option<&'
 
 fn looks_like_local_filesystem_path(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
-    lower.contains("c:\\")
+    if lower.contains("c:\\")
         || lower.contains("d:\\")
         || lower.contains("\\\\")
-        || lower.contains("/users/")
-        || lower.contains("/home/")
         || lower.contains("file://")
+    {
+        return true;
+    }
+    for token in lower.split_whitespace() {
+        let trimmed = token.trim_matches(|c: char| matches!(c, '"' | '\'' | '(' | ')' | '[' | ']'));
+        if trimmed.starts_with("/users/") || trimmed.starts_with("/home/") {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_rfc1918_172_private(host: &str) -> bool {
+    let Some(rest) = host.strip_prefix("172.") else {
+        return false;
+    };
+    let Some(second_octet_str) = rest.split('.').next() else {
+        return false;
+    };
+    let Ok(second_octet) = second_octet_str.parse::<u8>() else {
+        return false;
+    };
+    (16..=31).contains(&second_octet)
 }
 
 fn validate_safe_external_url(
@@ -2810,7 +3277,7 @@ fn validate_safe_external_url(
     text_bytes_used: &mut usize,
     limits: BundleLimits,
 ) -> Result<(), BundleError> {
-    validate_text_field(url, "reference.external_url", text_bytes_used, limits)?;
+    validate_identifier(url, "reference.external_url", text_bytes_used, limits)?;
     let lower = url.to_ascii_lowercase();
     if !(lower.starts_with("https://") || lower.starts_with("http://")) {
         return Err(BundleError::ForbiddenBundleSideEffect {
@@ -2829,12 +3296,23 @@ fn validate_safe_external_url(
             reason: "external URL must have a host and must not embed userinfo/credentials",
         });
     }
-    let host = authority.split(':').next().unwrap_or("");
+    let host = if authority.starts_with('[') {
+        authority
+            .split(']')
+            .next()
+            .map(|h| h.trim_start_matches('['))
+            .unwrap_or(authority)
+    } else {
+        authority.split(':').next().unwrap_or("")
+    };
     if host == "localhost"
+        || host == "0.0.0.0"
+        || host == "::1"
         || host.starts_with("127.")
         || host.starts_with("10.")
         || host.starts_with("192.168.")
         || host.starts_with("169.254.")
+        || is_rfc1918_172_private(host)
         || host.ends_with(".local")
         || host.ends_with(".internal")
     {
@@ -2867,13 +3345,14 @@ fn validate_no_side_effect_hooks(
     let lower = value.to_ascii_lowercase();
     if lower.contains("exec:")
         || lower.contains("shell:")
-        || lower.contains("powershell")
         || lower.contains("/bin/sh")
         || lower.contains("cmd.exe")
+        || lower.contains("powershell.exe")
+        || lower.contains("powershell -command")
         || lower.contains("device://")
         || lower.contains("mavlink://")
         || lower.contains("rtsp://")
-        || lower.contains("auto_fetch")
+        || lower.contains("auto_fetch=")
         || lower.contains("api_key=")
         || lower.contains("secret=")
     {
@@ -2892,7 +3371,10 @@ fn validate_pinned_version_refs(
     omitted_record_versions: &BTreeMap<(String, String), OmissionReason>,
     text_bytes_used: &mut usize,
     limits: BundleLimits,
-) -> Result<(), BundleError> {
+) -> Result<Vec<(String, String)>, BundleError> {
+    let mut out = Vec::new();
+    out.try_reserve(refs.len())
+        .map_err(|_| BundleError::AllocationFailed)?;
     for (rec_id, ver_id) in refs {
         validate_identifier(rec_id, "pinned_input.record_id", text_bytes_used, limits)?;
         validate_identifier(ver_id, "pinned_input.version_id", text_bytes_used, limits)?;
@@ -2903,6 +3385,41 @@ fn validate_pinned_version_refs(
                 target_id: format!("{rec_id}@{ver_id}"),
             });
         }
+        try_push(&mut out, key)?;
     }
-    Ok(())
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sha256_hex;
+
+    /// Verifies standard NIST FIPS 180-4 SHA-256 test vectors, including the empty string, `"abc"`,
+    /// 448-bit, 896-bit, and one million `'a'` messages (`#39` review B6).
+    #[test]
+    fn sha256_matches_nist_fips_180_4_vectors() {
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            sha256_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
+        assert_eq!(
+            sha256_hex(
+                b"abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"
+            ),
+            "cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1"
+        );
+        let million_a = vec![b'a'; 1_000_000];
+        assert_eq!(
+            sha256_hex(&million_a),
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
+        );
+    }
 }

@@ -8,17 +8,35 @@ use oia_export::bundle::{
     BundleReferenceTarget, CalibrationValidity, CandidateReplayOutput, CapabilityDeclaration,
     CapabilityKind, CapabilityRequirement, ImportedReportHandling, LocalAuthorityGrant,
     NonReplayableReason, OptionalRecordHandling, PackageIdentity, PinnedAnalysisSpec,
-    PinnedCalibrationSpec, PinnedQuerySpec, RedistributionCondition, ReplayContract,
-    RetentionCondition, SUPPORTED_BUNDLE_FORMAT, SUPPORTED_BUNDLE_FORMAT_VERSION,
-    StagedFilesystemEntryKind, StagedPayloadFile, SupportedCapabilities, replay_analysis,
-    sha256_hex, validate_and_stage_bundle,
+    PinnedCalibrationSpec, PinnedForecastSpec, PinnedGroupingDecision, PinnedQuerySpec,
+    RedistributionCondition, ReplayContract, RetentionCondition, SUPPORTED_BUNDLE_FORMAT,
+    SUPPORTED_BUNDLE_FORMAT_VERSION, StagedFilesystemEntryKind, StagedPayloadFile,
+    SupportedCapabilities, ValidatedReferenceTarget, format_local_record_id,
+    format_local_version_id, replay_analysis, validate_and_stage_bundle,
 };
 use oia_export::{
     OmissionReason, OriginClass, ReviewStatus, StopReason, TimeDisplay, TimePrecision,
 };
 
 const REPORT_V1: &[u8] = include_bytes!("../../../fixtures/documents/a03/originals/report-v1.txt");
+const REPORT_V1_SHA256: &str = "fdc16e37d2fa6715d0b23141026e8d70f77de1f4e6630bcd2e1f47096c5b7ee5";
 const REPORT_V2: &[u8] = include_bytes!("../../../fixtures/documents/a03/originals/report-v2.txt");
+const REPORT_V2_SHA256: &str = "d9b9bb89b383c31fbb95d56691d2c2544fef72157a6e19107fb61b2b5dd6d55c";
+const RECORDS_3_BYTES: &[u8] = b"{\"records\":3}";
+const RECORDS_3_SHA256: &str = "e6e73c79bf472197bf17ed49bce0cd18c4075749ce442755d6f97adaa70f8fdc";
+const HTML_REPORT_BYTES: &[u8] =
+    b"<!doctype html><title>Bundled Report</title><script>evil()</script>";
+const HTML_REPORT_SHA256: &str = "db4fcdbb68935856506bef91126a7e4900aa26a0b6a9ada25e55a8f5bbfcbdaa";
+const OK_TRUE_BYTES: &[u8] = b"{\"ok\":true}";
+const OK_TRUE_SHA256: &str = "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93";
+const DIFF_BYTES_SHA256: &str = "25e4a8b4235b9eb87928e6bef70ea8d318e31ec5f0be0b8665c95c94cfefe8dd";
+const ZIP_BYTES: &[u8] = b"PK\x03\x04fake-zip-bomb-payload";
+const ZIP_BYTES_SHA256: &str = "c9b64a2d534e50934d87372027333d8d9f185fdef3abf506266b2fa802f64f50";
+const DOCX_BYTES: &[u8] = b"PK\x03\x04synthetic-docx-evidence-payload";
+const DOCX_BYTES_SHA256: &str = "0b59e6dc5c3520a47e6ba76c7057865f87a46a8efbab8ac888148af5563dadd1";
+const EXACT_DET_OUT: &[u8] = b"exact-deterministic-output-v1";
+const EXACT_DET_OUT_SHA256: &str =
+    "c9c6214f53d4d3bfd9cd678be14c27fbd38d3e11cf805c906178bc65222be6f6";
 
 fn utc_time(text: &'static str) -> TimeDisplay<'static> {
     TimeDisplay {
@@ -28,32 +46,19 @@ fn utc_time(text: &'static str) -> TimeDisplay<'static> {
     }
 }
 
-/// Verifies FIPS 180-4 SHA-256 vectors, staged bundle integrity, duplicate-byte record separation,
-/// local workspace namespace mapping, origin actor authority stripping, and inert report handling
-/// (`REPRO-01`, `REPRO-02`, `A17`, `docs/contracts/report-export.md` §§5–6).
+/// Verifies staged bundle integrity, duplicate-byte record separation, injective length-prefixed
+/// local workspace namespace mapping, origin actor authority stripping, retained domain fields,
+/// DOCX/ZIP evidence assets, and inert report handling (`REPRO-01`, `REPRO-02`, `A17`).
 #[test]
 fn validates_bundle_hashes_maps_local_namespace_and_keeps_duplicate_byte_records_distinct() {
-    assert_eq!(
-        sha256_hex(b""),
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    );
-    assert_eq!(
-        sha256_hex(b"abc"),
-        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-    );
-    assert_eq!(
-        sha256_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
-        "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
-    );
+    // B1: Injective length-prefixed local ID formatting prevents `/` delimiter collisions.
+    let id_a = format_local_version_id("ws:dest", "ns:1", "doc:a", "1/ver/2");
+    let id_b = format_local_version_id("ws:dest", "ns:1", "doc:a/ver/1", "2");
+    assert_ne!(id_a, id_b);
 
-    let v1_sha = sha256_hex(REPORT_V1);
-    let v2_sha = sha256_hex(REPORT_V2);
-    let v1_path = format!("assets/{v1_sha}.txt");
-    let v2_path = format!("assets/{v2_sha}.txt");
-    let records_bytes = b"{\"records\":3}";
-    let records_sha = sha256_hex(records_bytes);
-    let html_report_bytes = b"<!doctype html><title>Bundled Report</title><script>evil()</script>";
-    let html_report_sha = sha256_hex(html_report_bytes);
+    let v1_path = format!("assets/{REPORT_V1_SHA256}.txt");
+    let v2_path = format!("assets/{REPORT_V2_SHA256}.txt");
+    let docx_path = format!("assets/{DOCX_BYTES_SHA256}.docx");
 
     let capabilities = [
         CapabilityDeclaration {
@@ -63,7 +68,7 @@ fn validates_bundle_hashes_maps_local_namespace_and_keeps_duplicate_byte_records
             requirement: CapabilityRequirement::Required,
         },
         CapabilityDeclaration {
-            capability_id: "oia.optional.future- telemetry",
+            capability_id: "oia.optional.future-telemetry",
             kind: CapabilityKind::RecordSchema,
             version: 2,
             requirement: CapabilityRequirement::Optional,
@@ -75,8 +80,8 @@ fn validates_bundle_hashes_maps_local_namespace_and_keeps_duplicate_byte_records
             relative_path: "records/records.json",
             role: BundleEntryRole::Records,
             media_type: "application/json",
-            declared_byte_len: records_bytes.len(),
-            declared_sha256_hex: &records_sha,
+            declared_byte_len: RECORDS_3_BYTES.len(),
+            declared_sha256_hex: RECORDS_3_SHA256,
             schema_version: Some(1),
         },
         BundleManifestEntry {
@@ -84,7 +89,7 @@ fn validates_bundle_hashes_maps_local_namespace_and_keeps_duplicate_byte_records
             role: BundleEntryRole::Assets,
             media_type: "text/plain; charset=utf-8",
             declared_byte_len: REPORT_V1.len(),
-            declared_sha256_hex: &v1_sha,
+            declared_sha256_hex: REPORT_V1_SHA256,
             schema_version: None,
         },
         BundleManifestEntry {
@@ -92,15 +97,23 @@ fn validates_bundle_hashes_maps_local_namespace_and_keeps_duplicate_byte_records
             role: BundleEntryRole::Assets,
             media_type: "text/plain; charset=utf-8",
             declared_byte_len: REPORT_V2.len(),
-            declared_sha256_hex: &v2_sha,
+            declared_sha256_hex: REPORT_V2_SHA256,
+            schema_version: None,
+        },
+        BundleManifestEntry {
+            relative_path: &docx_path,
+            role: BundleEntryRole::Assets,
+            media_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            declared_byte_len: DOCX_BYTES.len(),
+            declared_sha256_hex: DOCX_BYTES_SHA256,
             schema_version: None,
         },
         BundleManifestEntry {
             relative_path: "reports/rendered.html",
             role: BundleEntryRole::Reports,
             media_type: "text/html; charset=utf-8",
-            declared_byte_len: html_report_bytes.len(),
-            declared_sha256_hex: &html_report_sha,
+            declared_byte_len: HTML_REPORT_BYTES.len(),
+            declared_sha256_hex: HTML_REPORT_SHA256,
             schema_version: Some(1),
         },
     ];
@@ -109,26 +122,32 @@ fn validates_bundle_hashes_maps_local_namespace_and_keeps_duplicate_byte_records
         StagedPayloadFile {
             relative_path: "records/records.json",
             entry_kind: StagedFilesystemEntryKind::RegularFile,
-            staged_bytes: records_bytes,
-            rechecked_sha256_hex: Some(&records_sha),
+            staged_bytes: RECORDS_3_BYTES,
+            rechecked_sha256_hex: Some(RECORDS_3_SHA256),
         },
         StagedPayloadFile {
             relative_path: &v1_path,
             entry_kind: StagedFilesystemEntryKind::RegularFile,
             staged_bytes: REPORT_V1,
-            rechecked_sha256_hex: Some(&v1_sha),
+            rechecked_sha256_hex: Some(REPORT_V1_SHA256),
         },
         StagedPayloadFile {
             relative_path: &v2_path,
             entry_kind: StagedFilesystemEntryKind::RegularFile,
             staged_bytes: REPORT_V2,
-            rechecked_sha256_hex: Some(&v2_sha),
+            rechecked_sha256_hex: Some(REPORT_V2_SHA256),
+        },
+        StagedPayloadFile {
+            relative_path: &docx_path,
+            entry_kind: StagedFilesystemEntryKind::RegularFile,
+            staged_bytes: DOCX_BYTES,
+            rechecked_sha256_hex: Some(DOCX_BYTES_SHA256),
         },
         StagedPayloadFile {
             relative_path: "reports/rendered.html",
             entry_kind: StagedFilesystemEntryKind::RegularFile,
-            staged_bytes: html_report_bytes,
-            rechecked_sha256_hex: Some(&html_report_sha),
+            staged_bytes: HTML_REPORT_BYTES,
+            rechecked_sha256_hex: Some(HTML_REPORT_SHA256),
         },
     ];
 
@@ -138,7 +157,9 @@ fn validates_bundle_hashes_maps_local_namespace_and_keeps_duplicate_byte_records
         ordinary_access_method: "Public archive HTTP download",
         attribution_notice: "Harbor log v1",
         automated_processing_permitted: true,
-        retention: RetentionCondition::Permitted,
+        retention: RetentionCondition::ReviewWindowOnly {
+            window_note: "Retain during active peer review window",
+        },
         redistribution: RedistributionCondition::PermittedWithAttribution,
     }];
 
@@ -152,9 +173,9 @@ fn validates_bundle_hashes_maps_local_namespace_and_keeps_duplicate_byte_records
             review_status: ReviewStatus::Reviewed,
             origin_actor_id: "owner:remote-admin",
             recorded_time: utc_time("2026-03-14T22:15:00Z"),
-            uncertainty_note: None,
+            uncertainty_note: Some("Multi-line note:\nclock drift within +/- 30s"),
             asset_relative_path: Some(&v1_path),
-            required_capability_id: Some("oia.record.evidence"),
+            required_capability: Some(("oia.record.evidence", 1)),
         },
         BundleRecordEntry {
             origin_namespace: "ws:origin-alpha",
@@ -171,7 +192,7 @@ fn validates_bundle_hashes_maps_local_namespace_and_keeps_duplicate_byte_records
             },
             uncertainty_note: Some("Identical bytes from secondary mirror"),
             asset_relative_path: Some(&v1_path),
-            required_capability_id: Some("oia.record.evidence"),
+            required_capability: Some(("oia.record.evidence", 1)),
         },
         BundleRecordEntry {
             origin_namespace: "ws:origin-alpha",
@@ -183,20 +204,79 @@ fn validates_bundle_hashes_maps_local_namespace_and_keeps_duplicate_byte_records
             origin_actor_id: "owner:remote-admin",
             recorded_time: utc_time("2026-03-15T01:00:00Z"),
             uncertainty_note: None,
-            asset_relative_path: Some(&v2_path),
-            required_capability_id: Some("oia.optional.future- telemetry"),
+            asset_relative_path: Some(&docx_path),
+            required_capability: Some(("oia.optional.future-telemetry", 2)),
         },
     ];
 
-    let references = [BundleReference {
-        reference_id: "ref:mirror-repeats-orig",
-        from_record_id: "doc:report-mirror-republication",
-        from_version_id: "ver:mirror-v1",
-        relation: "repeats-source",
-        target: BundleReferenceTarget::IncludedRecord {
-            target_record_id: "doc:report-original",
-            target_version_id: "ver:v1",
+    let references = [
+        BundleReference {
+            reference_id: "ref:mirror-repeats-orig",
+            from_record_id: "doc:report-mirror-republication",
+            from_version_id: "ver:mirror-v1",
+            relation: "repeats-source",
+            target: BundleReferenceTarget::IncludedRecord {
+                target_record_id: "doc:report-original",
+                target_version_id: "ver:v1",
+            },
         },
+        BundleReference {
+            reference_id: "ref:orig-links-optional",
+            from_record_id: "doc:report-original",
+            from_version_id: "ver:v1",
+            relation: "annotated-by",
+            target: BundleReferenceTarget::IncludedRecord {
+                target_record_id: "rec:optional-telemetry",
+                target_version_id: "ver:opt-01",
+            },
+        },
+        BundleReference {
+            reference_id: "ref:external-users-path",
+            from_record_id: "doc:report-original",
+            from_version_id: "ver:v1",
+            relation: "external-context",
+            target: BundleReferenceTarget::ExternalReferenceOnly {
+                target_record_id: "ext:doc-99",
+                target_version_id: "ver:ext-1",
+                source_id: "src:public-web",
+                external_url: Some("https://example.org/users/public-archive/item-99"),
+                reason: OmissionReason::NotSelected,
+            },
+        },
+    ];
+
+    let omissions = [BundleOmissionEntry {
+        omitted_id: "ext:doc-99",
+        source_id: "src:public-web",
+        version_id: "ver:ext-1",
+        reason: OmissionReason::NotSelected,
+        coverage_effect: "External context link only",
+        unreproducible_step_note: None,
+    }];
+
+    let query_inputs = [("doc:report-original", "ver:v1")];
+    let queries = [PinnedQuerySpec {
+        query_id: "query:powershell-mention",
+        version_id: "ver:q1",
+        query_expression: "term:\"powershell\" AND harbor",
+        pinned_input_versions: &query_inputs,
+        coverage_note: "Searching for literal word powershell in documents is allowed",
+    }];
+
+    let groupings = [PinnedGroupingDecision {
+        grouping_id: "group:g1",
+        version_id: "ver:g1",
+        rationale: "Grouped for comparison",
+        member_record_versions: &query_inputs,
+        is_reversible: true,
+    }];
+
+    let forecasts = [PinnedForecastSpec {
+        forecast_id: "fcst:f1",
+        version_id: "ver:f1",
+        cutoff_time: utc_time("2026-03-16T00:00:00Z"),
+        prediction_summary: "Annex release within 30d",
+        pinned_input_versions: &query_inputs,
     }];
 
     let input = BundleImportInput {
@@ -217,11 +297,11 @@ fn validates_bundle_hashes_maps_local_namespace_and_keeps_duplicate_byte_records
         use_conditions: &use_conditions,
         records: &records,
         references: &references,
-        omissions: &[],
-        queries: &[],
-        groupings: &[],
+        omissions: &omissions,
+        queries: &queries,
+        groupings: &groupings,
         calibrations: &[],
-        forecasts: &[],
+        forecasts: &forecasts,
         analyses: &[],
     };
 
@@ -242,12 +322,18 @@ fn validates_bundle_hashes_maps_local_namespace_and_keeps_duplicate_byte_records
         return;
     };
 
-    assert!(bundle.inert_import_verified());
     assert_eq!(
         bundle.omitted_optional_capabilities(),
-        &["oia.optional.future- telemetry".to_owned()]
+        &[("oia.optional.future-telemetry".to_owned(), 2)]
     );
     assert_eq!(bundle.mapped_records().len(), 3);
+    assert_eq!(bundle.identity().producer_id, "oia-test");
+    assert_eq!(bundle.use_conditions().len(), 1);
+    assert_eq!(bundle.references().len(), 3);
+    assert_eq!(bundle.omissions().len(), 1);
+    assert_eq!(bundle.queries().len(), 1);
+    assert_eq!(bundle.groupings().len(), 1);
+    assert_eq!(bundle.forecasts().len(), 1);
 
     let Some(first) = bundle.mapped_records().first() else {
         return;
@@ -264,11 +350,15 @@ fn validates_bundle_hashes_maps_local_namespace_and_keeps_duplicate_byte_records
     assert_ne!(first.origin_record_id, second.origin_record_id);
     assert_ne!(first.local_record_id, second.local_record_id);
     assert_ne!(first.local_version_id, second.local_version_id);
-    assert_eq!(first.local_record_id, "ws:dest-01/rec/doc:report-original");
     assert_eq!(
-        second.local_record_id,
-        "ws:dest-01/rec/doc:report-mirror-republication"
+        first.local_record_id,
+        format_local_record_id("ws:dest-01", "ws:origin-alpha", "doc:report-original")
     );
+    assert_eq!(
+        first.uncertainty_note.as_deref(),
+        Some("Multi-line note:\nclock drift within +/- 30s")
+    );
+    assert_eq!(first.recorded_time.text, "2026-03-14T22:15:00Z");
 
     // Imported actor names never confer local authority.
     assert_eq!(
@@ -281,9 +371,50 @@ fn validates_bundle_hashes_maps_local_namespace_and_keeps_duplicate_byte_records
     assert_eq!(
         third.optional_handling,
         OptionalRecordHandling::RetainedInertOpaqueBytes {
-            capability_id: "oia.optional.future- telemetry".to_owned(),
+            capability_id: "oia.optional.future-telemetry".to_owned(),
+            version: 2,
         }
     );
+
+    // When `allow_inert_optional_records` is false, the optional record is omitted cleanly and
+    // references to it are rewritten to `PermittedUnavailable` instead of failing validation (NB4).
+    let supported_omit = SupportedCapabilities {
+        supported: &[("oia.record.evidence", 1)],
+        allow_inert_optional_records: false,
+    };
+    let res_omit = validate_and_stage_bundle(
+        &input,
+        &supported_omit,
+        BundleLimits::default_limits(),
+        || Ok(()),
+    );
+    assert!(
+        res_omit.is_ok(),
+        "expected valid bundle when omitting optional records, got {res_omit:?}"
+    );
+    if let Ok(bundle_omit) = res_omit {
+        assert_eq!(bundle_omit.mapped_records().len(), 3);
+        if let Some(omitted_rec) = bundle_omit.mapped_records().get(2) {
+            assert_eq!(
+                omitted_rec.optional_handling,
+                OptionalRecordHandling::OmittedWithNotice {
+                    capability_id: "oia.optional.future-telemetry".to_owned(),
+                    version: 2,
+                }
+            );
+        }
+        let opt_ref = bundle_omit
+            .references()
+            .iter()
+            .find(|r| r.reference_id == "ref:orig-links-optional");
+        assert!(matches!(
+            opt_ref.map(|r| &r.target),
+            Some(ValidatedReferenceTarget::PermittedUnavailable {
+                reason: OmissionReason::Unsupported,
+                ..
+            })
+        ));
+    }
 
     // Bundled readable report under reports/ is flagged as untrusted requiring regeneration or inert viewer.
     let report_entry = bundle
@@ -299,28 +430,25 @@ fn validates_bundle_hashes_maps_local_namespace_and_keeps_duplicate_byte_records
     }
 }
 
-/// Verifies rejection of path traversal, Windows reserved device names, case-insensitive path
-/// collisions, non-regular filesystem entries (symlinks/reparse points), archive/compressed
-/// containers, corrupt asset hashes, mid-staging mutation, and forbidden side-effect hooks
-/// (`REPRO-02`, `A17`, `docs/contracts/report-export.md` §6).
+/// Verifies rejection of path traversal, non-ASCII path segments, Windows reserved device names,
+/// case-insensitive path collisions, non-regular filesystem entries, archive containers outside
+/// `assets/`, corrupt asset hashes, mid-staging mutation, conflicting omissions, and forbidden
+/// side-effect hooks (`REPRO-02`, `A17`, `docs/contracts/report-export.md` §6).
 #[test]
 fn rejects_traversal_windows_devices_symlinks_archives_corrupt_hashes_and_side_effects() {
-    let payload = b"{\"ok\":true}";
-    let payload_sha = sha256_hex(payload);
-
     let base_entry = BundleManifestEntry {
         relative_path: "records/ok.json",
         role: BundleEntryRole::Records,
         media_type: "application/json",
-        declared_byte_len: payload.len(),
-        declared_sha256_hex: &payload_sha,
+        declared_byte_len: OK_TRUE_BYTES.len(),
+        declared_sha256_hex: OK_TRUE_SHA256,
         schema_version: Some(1),
     };
     let base_staged = StagedPayloadFile {
         relative_path: "records/ok.json",
         entry_kind: StagedFilesystemEntryKind::RegularFile,
-        staged_bytes: payload,
-        rechecked_sha256_hex: Some(&payload_sha),
+        staged_bytes: OK_TRUE_BYTES,
+        rechecked_sha256_hex: Some(OK_TRUE_SHA256),
     };
 
     fn make_input<'a>(
@@ -374,20 +502,30 @@ fn rejects_traversal_windows_devices_symlinks_archives_corrupt_hashes_and_side_e
         Err(BundleError::InvalidRelativePath { .. })
     ));
 
-    // 2. Windows reserved device name `COM1.json`
-    let device_entries = [BundleManifestEntry {
-        relative_path: "records/COM1.json",
-        ..base_entry
-    }];
-    assert!(matches!(
-        validate_and_stage_bundle(
-            &make_input(&device_entries, &[]),
-            &supported,
-            limits,
-            || Ok(())
-        ),
-        Err(BundleError::InvalidRelativePath { .. })
-    ));
+    // 2. Windows reserved device names (`COM1.json`, `CONIN$.json`) and non-ASCII `Ä.json` (B3)
+    for bad_path in [
+        "records/COM1.json",
+        "records/CONIN$.json",
+        "records/Ä.json",
+        "records/bad?.json",
+    ] {
+        let bad_entries = [BundleManifestEntry {
+            relative_path: bad_path,
+            ..base_entry
+        }];
+        assert!(
+            matches!(
+                validate_and_stage_bundle(
+                    &make_input(&bad_entries, &[]),
+                    &supported,
+                    limits,
+                    || Ok(())
+                ),
+                Err(BundleError::InvalidRelativePath { .. })
+            ),
+            "expected {bad_path} to be rejected"
+        );
+    }
 
     // 3. Case-insensitive path collision
     let collision_entries = [
@@ -429,37 +567,19 @@ fn rejects_traversal_windows_devices_symlinks_archives_corrupt_hashes_and_side_e
         })
     ));
 
-    // 5. Compressed bomb / ZIP magic header rejection without unpacking
-    let zip_bytes = b"PK\x03\x04fake-zip-bomb-payload";
-    let zip_sha = sha256_hex(zip_bytes);
-    let zip_entries = [BundleManifestEntry {
-        relative_path: "records/ disguised.json",
-        declared_byte_len: zip_bytes.len(),
-        declared_sha256_hex: &zip_sha,
-        ..base_entry
-    }];
-    // Note: leading space in component also rejected; test clean path with ZIP magic bytes:
+    // 5. Compressed bomb / ZIP magic header rejection on non-asset roles without unpacking
     let clean_zip_entries = [BundleManifestEntry {
         relative_path: "records/payload.json",
-        declared_byte_len: zip_bytes.len(),
-        declared_sha256_hex: &zip_sha,
+        declared_byte_len: ZIP_BYTES.len(),
+        declared_sha256_hex: ZIP_BYTES_SHA256,
         ..base_entry
     }];
     let clean_zip_staged = [StagedPayloadFile {
         relative_path: "records/payload.json",
         entry_kind: StagedFilesystemEntryKind::RegularFile,
-        staged_bytes: zip_bytes,
+        staged_bytes: ZIP_BYTES,
         rechecked_sha256_hex: None,
     }];
-    assert!(matches!(
-        validate_and_stage_bundle(
-            &make_input(&zip_entries, &[]),
-            &supported,
-            limits,
-            || Ok(())
-        ),
-        Err(BundleError::InvalidRelativePath { .. })
-    ));
     assert!(matches!(
         validate_and_stage_bundle(
             &make_input(&clean_zip_entries, &clean_zip_staged),
@@ -488,9 +608,8 @@ fn rejects_traversal_windows_devices_symlinks_archives_corrupt_hashes_and_side_e
     ));
 
     // 7. Mid-staging input mutation (`InputChangedDuringStaging`)
-    let mutated_sha = sha256_hex(b"different-bytes");
     let mutated_staged = [StagedPayloadFile {
-        rechecked_sha256_hex: Some(&mutated_sha),
+        rechecked_sha256_hex: Some(DIFF_BYTES_SHA256),
         ..base_staged
     }];
     assert!(matches!(
@@ -503,7 +622,7 @@ fn rejects_traversal_windows_devices_symlinks_archives_corrupt_hashes_and_side_e
         Err(BundleError::InputChangedDuringStaging { .. })
     ));
 
-    // 8. Forbidden executable hook in reproduction query
+    // 8. Forbidden executable hook in reproduction query (`powershell -Command`)
     let ok_entries = [base_entry];
     let ok_staged = [base_staged];
     let mut hook_input = make_input(&ok_entries, &ok_staged);
@@ -519,17 +638,100 @@ fn rejects_traversal_windows_devices_symlinks_archives_corrupt_hashes_and_side_e
         validate_and_stage_bundle(&hook_input, &supported, limits, || Ok(())),
         Err(BundleError::ForbiddenBundleSideEffect { .. })
     ));
+
+    // 9. Conflicting record and omission (B2)
+    let mut conflict_input = make_input(&ok_entries, &ok_staged);
+    let conflict_records = [BundleRecordEntry {
+        origin_namespace: "ws:1",
+        record_id: "doc:conflict",
+        version_id: "ver:1",
+        kind: BundleRecordKind::SourceDocument,
+        origin_class: OriginClass::Observation,
+        review_status: ReviewStatus::Reviewed,
+        origin_actor_id: "actor:1",
+        recorded_time: utc_time("2026-11-02T18:00:00Z"),
+        uncertainty_note: None,
+        asset_relative_path: None,
+        required_capability: None,
+    }];
+    let conflict_omissions = [BundleOmissionEntry {
+        omitted_id: "doc:conflict",
+        source_id: "src:1",
+        version_id: "ver:1",
+        reason: OmissionReason::Restricted,
+        coverage_effect: "conflicting entry",
+        unreproducible_step_note: None,
+    }];
+    conflict_input.records = &conflict_records;
+    conflict_input.omissions = &conflict_omissions;
+    assert!(matches!(
+        validate_and_stage_bundle(&conflict_input, &supported, limits, || Ok(())),
+        Err(BundleError::DuplicateIdentifier {
+            kind: "record_and_omission",
+            ..
+        })
+    ));
+
+    // 10. Loopback / private-network external URLs (`0.0.0.0`, `[::1]`, `172.16.0.1`) rejected (NB5)
+    for bad_url in [
+        "http://0.0.0.0/internal",
+        "http://[::1]:8080/internal",
+        "http://172.16.5.4/internal",
+    ] {
+        let mut url_input = make_input(&ok_entries, &ok_staged);
+        let url_records = [BundleRecordEntry {
+            origin_namespace: "ws:1",
+            record_id: "doc:1",
+            version_id: "ver:1",
+            kind: BundleRecordKind::SourceDocument,
+            origin_class: OriginClass::Observation,
+            review_status: ReviewStatus::Reviewed,
+            origin_actor_id: "actor:1",
+            recorded_time: utc_time("2026-11-02T18:00:00Z"),
+            uncertainty_note: None,
+            asset_relative_path: None,
+            required_capability: None,
+        }];
+        let url_omissions = [BundleOmissionEntry {
+            omitted_id: "doc:ext",
+            source_id: "src:ext",
+            version_id: "ver:ext",
+            reason: OmissionReason::NotSelected,
+            coverage_effect: "external",
+            unreproducible_step_note: None,
+        }];
+        let url_refs = [BundleReference {
+            reference_id: "ref:bad-url",
+            from_record_id: "doc:1",
+            from_version_id: "ver:1",
+            relation: "cites",
+            target: BundleReferenceTarget::ExternalReferenceOnly {
+                target_record_id: "doc:ext",
+                target_version_id: "ver:ext",
+                source_id: "src:ext",
+                external_url: Some(bad_url),
+                reason: OmissionReason::NotSelected,
+            },
+        }];
+        url_input.records = &url_records;
+        url_input.omissions = &url_omissions;
+        url_input.references = &url_refs;
+        assert!(
+            matches!(
+                validate_and_stage_bundle(&url_input, &supported, limits, || Ok(())),
+                Err(BundleError::ForbiddenBundleSideEffect { .. })
+            ),
+            "expected {bad_url} to be rejected"
+        );
+    }
 }
 
-/// Verifies deterministic bitwise replay, numerical-tolerance replay, and honest non-replayable
-/// reporting for missing/mismatched models, omitted sources, invalidated calibrations, changed
-/// licenses, stochastic outputs, and unsupported capabilities (`REPRO-03`, `A17`).
+/// Verifies deterministic bitwise replay, numerical-tolerance replay (including both abs and rel
+/// bounds, `max_rel_diff >= 1.0` rejection, and length mismatch reporting), and honest
+/// non-replayable reporting (`REPRO-03`, `A17`).
 #[test]
 fn verifies_bitwise_and_tolerance_replay_and_reports_non_replayable_reasons_honestly() {
-    let v1_sha = sha256_hex(REPORT_V1);
-    let v1_path = format!("assets/{v1_sha}.txt");
-    let expected_out = b"exact-deterministic-output-v1";
-    let expected_out_sha = sha256_hex(expected_out);
+    let v1_path = format!("assets/{REPORT_V1_SHA256}.txt");
     let expected_series = [10.0, 20.0, 30.0];
 
     let capabilities = [
@@ -558,14 +760,14 @@ fn verifies_bitwise_and_tolerance_replay_and_reports_non_replayable_reasons_hone
         role: BundleEntryRole::Assets,
         media_type: "text/plain",
         declared_byte_len: REPORT_V1.len(),
-        declared_sha256_hex: &v1_sha,
+        declared_sha256_hex: REPORT_V1_SHA256,
         schema_version: None,
     }];
     let staged_files = [StagedPayloadFile {
         relative_path: &v1_path,
         entry_kind: StagedFilesystemEntryKind::RegularFile,
         staged_bytes: REPORT_V1,
-        rechecked_sha256_hex: Some(&v1_sha),
+        rechecked_sha256_hex: Some(REPORT_V1_SHA256),
     }];
 
     let records = [BundleRecordEntry {
@@ -579,7 +781,7 @@ fn verifies_bitwise_and_tolerance_replay_and_reports_non_replayable_reasons_hone
         recorded_time: utc_time("2026-03-14T22:15:00Z"),
         uncertainty_note: None,
         asset_relative_path: Some(&v1_path),
-        required_capability_id: Some("oia.record.evidence"),
+        required_capability: Some(("oia.record.evidence", 1)),
     }];
 
     let omissions = [BundleOmissionEntry {
@@ -635,8 +837,8 @@ fn verifies_bitwise_and_tolerance_replay_and_reports_non_replayable_reasons_hone
             pinned_asset_paths: &asset_paths,
             calibration_ref: None,
             replay_contract: ReplayContract::DeterministicBitwise {
-                expected_output_sha256_hex: &expected_out_sha,
-                expected_byte_len: expected_out.len(),
+                expected_output_sha256_hex: EXACT_DET_OUT_SHA256,
+                expected_byte_len: EXACT_DET_OUT.len(),
             },
         },
         PinnedAnalysisSpec {
@@ -656,7 +858,7 @@ fn verifies_bitwise_and_tolerance_replay_and_reports_non_replayable_reasons_hone
             calibration_ref: Some(("cal:valid", "ver:c1")),
             replay_contract: ReplayContract::NumericalTolerance {
                 expected_series: &expected_series,
-                max_abs_diff: 0.05,
+                max_abs_diff: 0.10,
                 max_rel_diff: 0.005,
                 tolerance_justification: "Floating-point reduction tolerance",
             },
@@ -675,8 +877,8 @@ fn verifies_bitwise_and_tolerance_replay_and_reports_non_replayable_reasons_hone
             pinned_asset_paths: &[],
             calibration_ref: None,
             replay_contract: ReplayContract::DeterministicBitwise {
-                expected_output_sha256_hex: &expected_out_sha,
-                expected_byte_len: expected_out.len(),
+                expected_output_sha256_hex: EXACT_DET_OUT_SHA256,
+                expected_byte_len: EXACT_DET_OUT.len(),
             },
         },
         PinnedAnalysisSpec {
@@ -715,8 +917,8 @@ fn verifies_bitwise_and_tolerance_replay_and_reports_non_replayable_reasons_hone
             pinned_asset_paths: &[],
             calibration_ref: None,
             replay_contract: ReplayContract::DeterministicBitwise {
-                expected_output_sha256_hex: &expected_out_sha,
-                expected_byte_len: expected_out.len(),
+                expected_output_sha256_hex: EXACT_DET_OUT_SHA256,
+                expected_byte_len: EXACT_DET_OUT.len(),
             },
         },
         PinnedAnalysisSpec {
@@ -752,8 +954,8 @@ fn verifies_bitwise_and_tolerance_replay_and_reports_non_replayable_reasons_hone
             pinned_asset_paths: &[],
             calibration_ref: None,
             replay_contract: ReplayContract::DeterministicBitwise {
-                expected_output_sha256_hex: &expected_out_sha,
-                expected_byte_len: expected_out.len(),
+                expected_output_sha256_hex: EXACT_DET_OUT_SHA256,
+                expected_byte_len: EXACT_DET_OUT.len(),
             },
         },
     ];
@@ -789,6 +991,24 @@ fn verifies_bitwise_and_tolerance_replay_and_reports_non_replayable_reasons_hone
         allow_inert_optional_records: true,
     };
     let limits = BundleLimits::default_limits();
+
+    // B4: `max_rel_diff >= 1.0` is rejected during bundle validation.
+    let bad_tol_analyses = [PinnedAnalysisSpec {
+        replay_contract: ReplayContract::NumericalTolerance {
+            expected_series: &expected_series,
+            max_abs_diff: 0.05,
+            max_rel_diff: 1.0,
+            tolerance_justification: "Unbounded relative tolerance must be rejected",
+        },
+        ..analyses[1]
+    }];
+    let mut bad_tol_input = input.clone();
+    bad_tol_input.analyses = &bad_tol_analyses;
+    assert!(matches!(
+        validate_and_stage_bundle(&bad_tol_input, &supported, limits, || Ok(())),
+        Err(BundleError::InvalidToleranceConfiguration { .. })
+    ));
+
     let Ok(bundle) = validate_and_stage_bundle(&input, &supported, limits, || Ok(())) else {
         return;
     };
@@ -800,7 +1020,7 @@ fn verifies_bitwise_and_tolerance_replay_and_reports_non_replayable_reasons_hone
             analysis_id: "ana:bitwise",
             version_id: "ver:a1",
             available_models: &[],
-            candidate_output: CandidateReplayOutput::Bytes(expected_out),
+            candidate_output: CandidateReplayOutput::Bytes(EXACT_DET_OUT),
         },
         limits,
         || Ok(()),
@@ -826,7 +1046,7 @@ fn verifies_bitwise_and_tolerance_replay_and_reports_non_replayable_reasons_hone
         Ok(AnalysisReplayOutcome::DivergedBitwise { .. })
     ));
 
-    // 2. Numerical tolerance match, divergence, and missing/mismatched model
+    // 2. Numerical tolerance match, divergence (including abs-passes-but-rel-fails and length mismatch), and missing/mismatched model
     let tol_ok = replay_analysis(
         &bundle,
         &AnalysisReplayRequest {
@@ -841,6 +1061,29 @@ fn verifies_bitwise_and_tolerance_replay_and_reports_non_replayable_reasons_hone
     assert!(matches!(
         tol_ok,
         Ok(AnalysisReplayOutcome::ReproducedWithinTolerance { .. })
+    ));
+
+    // B4: Sample 0 has expected=10.0, actual=10.08 -> abs_diff=0.08 <= max_abs_diff (0.10),
+    // but rel_diff=0.008 > max_rel_diff (0.005). Because both bounds must hold, it diverges.
+    let tol_rel_div = replay_analysis(
+        &bundle,
+        &AnalysisReplayRequest {
+            analysis_id: "ana:tolerance",
+            version_id: "ver:a2",
+            available_models: &[("model:regressor", "v1.2.0")],
+            candidate_output: CandidateReplayOutput::NumericalSeries(&[10.08, 20.0, 30.0]),
+        },
+        limits,
+        || Ok(()),
+    );
+    assert!(matches!(
+        tol_rel_div,
+        Ok(AnalysisReplayOutcome::DivergedBeyondTolerance {
+            first_failing_index: 0,
+            expected_sample_count: 3,
+            actual_sample_count: 3,
+            ..
+        })
     ));
 
     let tol_div = replay_analysis(
@@ -858,6 +1101,30 @@ fn verifies_bitwise_and_tolerance_replay_and_reports_non_replayable_reasons_hone
         tol_div,
         Ok(AnalysisReplayOutcome::DivergedBeyondTolerance {
             first_failing_index: 1,
+            expected_sample_count: 3,
+            actual_sample_count: 3,
+            ..
+        })
+    ));
+
+    // B4: Series length mismatch returns `DivergedBeyondTolerance` rather than `Err`.
+    let tol_len_div = replay_analysis(
+        &bundle,
+        &AnalysisReplayRequest {
+            analysis_id: "ana:tolerance",
+            version_id: "ver:a2",
+            available_models: &[("model:regressor", "v1.2.0")],
+            candidate_output: CandidateReplayOutput::NumericalSeries(&[10.0, 20.0]),
+        },
+        limits,
+        || Ok(()),
+    );
+    assert!(matches!(
+        tol_len_div,
+        Ok(AnalysisReplayOutcome::DivergedBeyondTolerance {
+            expected_sample_count: 3,
+            actual_sample_count: 2,
+            first_failing_index: 2,
             ..
         })
     ));
@@ -1001,14 +1268,13 @@ fn enforces_bundle_resource_budgets_case_overwrite_guard_and_cooperative_stops()
         Err(BundleError::ZeroLimit(BundleLimitKind::FileBytes))
     );
 
-    let v1_sha = sha256_hex(REPORT_V1);
-    let v1_path = format!("assets/{v1_sha}.txt");
+    let v1_path = format!("assets/{REPORT_V1_SHA256}.txt");
     let entries = [BundleManifestEntry {
         relative_path: &v1_path,
         role: BundleEntryRole::Assets,
         media_type: "text/plain",
         declared_byte_len: REPORT_V1.len(),
-        declared_sha256_hex: &v1_sha,
+        declared_sha256_hex: REPORT_V1_SHA256,
         schema_version: None,
     }];
     let staged = [StagedPayloadFile {

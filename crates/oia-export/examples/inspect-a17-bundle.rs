@@ -14,24 +14,35 @@ use oia_export::bundle::{
     CapabilityRequirement, PackageIdentity, PinnedAnalysisSpec, PinnedCalibrationSpec,
     PinnedForecastSpec, PinnedGroupingDecision, PinnedQuerySpec, RedistributionCondition,
     ReplayContract, RetentionCondition, StagedFilesystemEntryKind, StagedPayloadFile,
-    SupportedCapabilities, replay_analysis, sha256_hex, validate_and_stage_bundle,
+    SupportedCapabilities, replay_analysis, validate_and_stage_bundle,
 };
 use oia_export::{
     OmissionReason, OriginClass, ReviewStatus, StopReason, TimeDisplay, TimePrecision,
 };
 
 const REPORT_V1: &[u8] = include_bytes!("../../../fixtures/documents/a03/originals/report-v1.txt");
+const REPORT_V1_SHA256: &str = "fdc16e37d2fa6715d0b23141026e8d70f77de1f4e6630bcd2e1f47096c5b7ee5";
 const REPORT_V2: &[u8] = include_bytes!("../../../fixtures/documents/a03/originals/report-v2.txt");
+const REPORT_V2_SHA256: &str = "d9b9bb89b383c31fbb95d56691d2c2544fef72157a6e19107fb61b2b5dd6d55c";
 const REDACTED_A: &[u8] =
     include_bytes!("../../../fixtures/documents/a03/originals/redacted-a.txt");
+const REDACTED_A_SHA256: &str = "b0fa14e6423a0e11a3fd227ab6640b6f6490e9289a2813a9d818d4736825ba76";
 const RENDERED_SUMMARY: &[u8] =
     b"# Synthetic Bundle Report\n\n[ORIGIN: OBSERVATION] [REVIEW: REVIEWED] Cited summary.\n";
+const RENDERED_SUMMARY_SHA256: &str =
+    "d8044944049b6203f4e8689b9cba31ee6e362ef139f037e31bca490199f11219";
 const RECORDS_GRAPH_JSON: &[u8] =
     b"{\"schema\":\"oia-records-v1\",\"case\":\"case:a17-synthetic-harbor\"}";
+const RECORDS_GRAPH_JSON_SHA256: &str =
+    "794666151dde55f813edc7657bd305285e6e92d1c09976a36e11f6c249ad1457";
 const REPRO_MANIFEST_JSON: &[u8] =
     b"{\"schema\":\"oia-repro-v1\",\"analyses\":[\"analysis:passage-count\",\"analysis:sky-track\",\"analysis:llm-draft\"]}";
+const REPRO_MANIFEST_JSON_SHA256: &str =
+    "e7a53d50a05a4d03fba6135610cfebb9537a464699bc28f01587a64f3a9a98eb";
 const DETERMINISTIC_ANALYSIS_OUTPUT: &[u8] =
     b"passage_count=2;matched_query=\"two lights\";source_version=ver:report-v1";
+const DETERMINISTIC_ANALYSIS_OUTPUT_SHA256: &str =
+    "9c64084a44c1707cdb503063b0494a1c1cc0d4cd913dd3e50d4d21d8f60bf7ea";
 
 fn main() -> ExitCode {
     match run() {
@@ -85,17 +96,9 @@ fn run() -> Result<(), String> {
         }
     };
 
-    let v1_sha = sha256_hex(REPORT_V1);
-    let v2_sha = sha256_hex(REPORT_V2);
-    let red_sha = sha256_hex(REDACTED_A);
-    let report_sha = sha256_hex(RENDERED_SUMMARY);
-    let records_sha = sha256_hex(RECORDS_GRAPH_JSON);
-    let repro_sha = sha256_hex(REPRO_MANIFEST_JSON);
-    let det_out_sha = sha256_hex(DETERMINISTIC_ANALYSIS_OUTPUT);
-
-    let v1_asset_path = format!("assets/{v1_sha}.txt");
-    let v2_asset_path = format!("assets/{v2_sha}.txt");
-    let red_asset_path = format!("assets/{red_sha}.txt");
+    let v1_asset_path = format!("assets/{REPORT_V1_SHA256}.txt");
+    let v2_asset_path = format!("assets/{REPORT_V2_SHA256}.txt");
+    let red_asset_path = format!("assets/{REDACTED_A_SHA256}.txt");
 
     let capabilities = [
         CapabilityDeclaration {
@@ -117,7 +120,7 @@ fn run() -> Result<(), String> {
             requirement: CapabilityRequirement::Required,
         },
         CapabilityDeclaration {
-            capability_id: "oia.optional.experimental- telemetry-overlay",
+            capability_id: "oia.optional.experimental-telemetry-overlay",
             kind: CapabilityKind::RecordSchema,
             version: 1,
             requirement: CapabilityRequirement::Optional,
@@ -130,7 +133,7 @@ fn run() -> Result<(), String> {
             role: BundleEntryRole::Records,
             media_type: "application/json",
             declared_byte_len: RECORDS_GRAPH_JSON.len(),
-            declared_sha256_hex: &records_sha,
+            declared_sha256_hex: RECORDS_GRAPH_JSON_SHA256,
             schema_version: Some(1),
         },
         BundleManifestEntry {
@@ -138,7 +141,7 @@ fn run() -> Result<(), String> {
             role: BundleEntryRole::Assets,
             media_type: "text/plain; charset=utf-8",
             declared_byte_len: REPORT_V1.len(),
-            declared_sha256_hex: &v1_sha,
+            declared_sha256_hex: REPORT_V1_SHA256,
             schema_version: None,
         },
         BundleManifestEntry {
@@ -146,7 +149,7 @@ fn run() -> Result<(), String> {
             role: BundleEntryRole::Assets,
             media_type: "text/plain; charset=utf-8",
             declared_byte_len: REPORT_V2.len(),
-            declared_sha256_hex: &v2_sha,
+            declared_sha256_hex: REPORT_V2_SHA256,
             schema_version: None,
         },
         BundleManifestEntry {
@@ -154,7 +157,7 @@ fn run() -> Result<(), String> {
             role: BundleEntryRole::Assets,
             media_type: "text/plain; charset=utf-8",
             declared_byte_len: REDACTED_A.len(),
-            declared_sha256_hex: &red_sha,
+            declared_sha256_hex: REDACTED_A_SHA256,
             schema_version: None,
         },
         BundleManifestEntry {
@@ -162,7 +165,7 @@ fn run() -> Result<(), String> {
             role: BundleEntryRole::Reports,
             media_type: "text/markdown; charset=utf-8",
             declared_byte_len: RENDERED_SUMMARY.len(),
-            declared_sha256_hex: &report_sha,
+            declared_sha256_hex: RENDERED_SUMMARY_SHA256,
             schema_version: Some(1),
         },
         BundleManifestEntry {
@@ -170,7 +173,7 @@ fn run() -> Result<(), String> {
             role: BundleEntryRole::Reproduction,
             media_type: "application/json",
             declared_byte_len: REPRO_MANIFEST_JSON.len(),
-            declared_sha256_hex: &repro_sha,
+            declared_sha256_hex: REPRO_MANIFEST_JSON_SHA256,
             schema_version: Some(1),
         },
     ];
@@ -180,37 +183,37 @@ fn run() -> Result<(), String> {
             relative_path: "records/domain-records.json",
             entry_kind: StagedFilesystemEntryKind::RegularFile,
             staged_bytes: RECORDS_GRAPH_JSON,
-            rechecked_sha256_hex: Some(&records_sha),
+            rechecked_sha256_hex: Some(RECORDS_GRAPH_JSON_SHA256),
         },
         StagedPayloadFile {
             relative_path: &v1_asset_path,
             entry_kind: StagedFilesystemEntryKind::RegularFile,
             staged_bytes: REPORT_V1,
-            rechecked_sha256_hex: Some(&v1_sha),
+            rechecked_sha256_hex: Some(REPORT_V1_SHA256),
         },
         StagedPayloadFile {
             relative_path: &v2_asset_path,
             entry_kind: StagedFilesystemEntryKind::RegularFile,
             staged_bytes: REPORT_V2,
-            rechecked_sha256_hex: Some(&v2_sha),
+            rechecked_sha256_hex: Some(REPORT_V2_SHA256),
         },
         StagedPayloadFile {
             relative_path: &red_asset_path,
             entry_kind: StagedFilesystemEntryKind::RegularFile,
             staged_bytes: REDACTED_A,
-            rechecked_sha256_hex: Some(&red_sha),
+            rechecked_sha256_hex: Some(REDACTED_A_SHA256),
         },
         StagedPayloadFile {
             relative_path: "reports/case-summary.md",
             entry_kind: StagedFilesystemEntryKind::RegularFile,
             staged_bytes: RENDERED_SUMMARY,
-            rechecked_sha256_hex: Some(&report_sha),
+            rechecked_sha256_hex: Some(RENDERED_SUMMARY_SHA256),
         },
         StagedPayloadFile {
             relative_path: "reproduction/runs.json",
             entry_kind: StagedFilesystemEntryKind::RegularFile,
             staged_bytes: REPRO_MANIFEST_JSON,
-            rechecked_sha256_hex: Some(&repro_sha),
+            rechecked_sha256_hex: Some(REPRO_MANIFEST_JSON_SHA256),
         },
     ];
 
@@ -260,7 +263,7 @@ fn run() -> Result<(), String> {
             },
             uncertainty_note: Some("Clock synchronized within +/- 30s"),
             asset_relative_path: Some(&v1_asset_path),
-            required_capability_id: Some("oia.record.evidence"),
+            required_capability: Some(("oia.record.evidence", 1)),
         },
         BundleRecordEntry {
             origin_namespace: "ws:field-team-alpha",
@@ -279,7 +282,7 @@ fn run() -> Result<(), String> {
                 "Mirror copy repeats v1 bytes verbatim; not independent corroboration",
             ),
             asset_relative_path: Some(&v1_asset_path),
-            required_capability_id: Some("oia.record.evidence"),
+            required_capability: Some(("oia.record.evidence", 1)),
         },
         BundleRecordEntry {
             origin_namespace: "ws:field-team-alpha",
@@ -296,7 +299,7 @@ fn run() -> Result<(), String> {
             },
             uncertainty_note: None,
             asset_relative_path: Some(&v2_asset_path),
-            required_capability_id: Some("oia.record.evidence"),
+            required_capability: Some(("oia.record.evidence", 1)),
         },
         BundleRecordEntry {
             origin_namespace: "ws:field-team-alpha",
@@ -313,7 +316,7 @@ fn run() -> Result<(), String> {
             },
             uncertainty_note: Some("Redacted derivative release"),
             asset_relative_path: Some(&red_asset_path),
-            required_capability_id: Some("oia.record.evidence"),
+            required_capability: Some(("oia.record.evidence", 1)),
         },
     ];
 
@@ -429,7 +432,7 @@ fn run() -> Result<(), String> {
             pinned_asset_paths: &analysis_v1_assets,
             calibration_ref: None,
             replay_contract: ReplayContract::DeterministicBitwise {
-                expected_output_sha256_hex: &det_out_sha,
+                expected_output_sha256_hex: DETERMINISTIC_ANALYSIS_OUTPUT_SHA256,
                 expected_byte_len: DETERMINISTIC_ANALYSIS_OUTPUT.len(),
             },
         },
@@ -563,7 +566,7 @@ fn run() -> Result<(), String> {
     let mut out = io::stdout().lock();
     writeln!(
         out,
-        "Validated bundle `{}` -> destination case `{}` (namespace `{}`)",
+        "[SYNTHETIC FIXTURE] Validated bundle `{}` -> destination case `{}` (namespace `{}`)",
         bundle.package_id(),
         bundle.destination_case_id(),
         bundle.local_namespace_prefix()
@@ -571,17 +574,17 @@ fn run() -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     writeln!(
         out,
-        "Verified staged entries: {} | Mapped records: {} | Explicit omissions: {} | Inert import: {}",
+        "[SYNTHETIC FIXTURE] Verified staged entries: {} | Mapped records: {} | Explicit omissions: {} | Omitted optional capabilities: {}",
         bundle.verified_entries().len(),
         bundle.mapped_records().len(),
         bundle.omission_count(),
-        bundle.inert_import_verified()
+        bundle.omitted_optional_capabilities().len()
     )
     .map_err(|e| e.to_string())?;
     for rec in bundle.mapped_records() {
         writeln!(
             out,
-            "  record {}@{} -> {}@{} [origin={}] [authority={:?}]",
+            "  [SYNTHETIC FIXTURE] record {}@{} -> {}@{} [origin={}] [authority={:?}]",
             rec.origin_record_id,
             rec.origin_version_id,
             rec.local_record_id,
@@ -591,7 +594,7 @@ fn run() -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
     }
-    writeln!(out, "Replay outcomes:").map_err(|e| e.to_string())?;
+    writeln!(out, "[SYNTHETIC FIXTURE] Replay outcomes:").map_err(|e| e.to_string())?;
     for outcome in [&bitwise_outcome, &tolerance_outcome, &missing_model_outcome] {
         match outcome {
             AnalysisReplayOutcome::ReproducedBitwise {

@@ -1,8 +1,8 @@
-//! `oia-export` — Cited report export and reproducible bundle import/export (`#9`, `#22`).
+//! `oia-export` â€” Cited report export and reproducible bundle import/export (`#9`, `#22`).
 //!
 //! Implements the dependency-independent cited report projection, redaction/omission preview,
 //! and inert UTF-8 Markdown and self-contained HTML rendering kernel (`ADR 0006` / `D05`,
-//! `docs/contracts/report-export.md` §§1–4).
+//! `docs/contracts/report-export.md` Â§Â§1â€“4).
 
 #![forbid(unsafe_code)]
 #![deny(clippy::indexing_slicing, clippy::unwrap_used, clippy::expect_used)]
@@ -12,7 +12,7 @@ pub mod bundle;
 use std::error::Error;
 use std::fmt;
 
-/// Crate boundary marker for `oia-export` (`docs/architecture.md` §1.2, `#9`).
+/// Crate boundary marker for `oia-export` (`docs/architecture.md` Â§1.2, `#9`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExportBoundary;
 
@@ -1336,7 +1336,7 @@ pub fn render_markdown(
         } => {
             push_str_bounded(&mut out, "`[REASSESSMENT REQUIRED]` flagged by ", max_out)?;
             push_markdown_code_span(&mut out, flagging_record_version_id, max_out)?;
-            push_str_bounded(&mut out, " — ", max_out)?;
+            push_str_bounded(&mut out, " â€” ", max_out)?;
             push_markdown_escaped(&mut out, reason, max_out)?;
             push_str_bounded(&mut out, "\n", max_out)?;
         }
@@ -1467,7 +1467,7 @@ pub fn render_markdown(
                             push_str_bounded(&mut out, " (redacted derivative)", max_out)?;
                         }
                     }
-                    push_str_bounded(&mut out, " — ", max_out)?;
+                    push_str_bounded(&mut out, " â€” ", max_out)?;
                     push_anchor_validation_markdown(&mut out, &citation.validation, max_out)?;
                     push_str_bounded(&mut out, "\n", max_out)?;
                 }
@@ -1760,7 +1760,7 @@ pub fn render_html(
                             push_str_bounded(&mut out, " (redacted derivative)", max_out)?;
                         }
                     }
-                    push_str_bounded(&mut out, " — ", max_out)?;
+                    push_str_bounded(&mut out, " â€” ", max_out)?;
                     push_anchor_validation_html(&mut out, &citation.validation, max_out)?;
                     push_str_bounded(&mut out, "</div>\n", max_out)?;
                 }
@@ -2376,7 +2376,7 @@ fn push_anchor_validation_markdown(
                 push_str_bounded(out, reason.label(), max_out)?;
                 push_str_bounded(out, ")", max_out)?;
             }
-            push_str_bounded(out, " — ", max_out)?;
+            push_str_bounded(out, " â€” ", max_out)?;
             push_markdown_escaped(out, anchor_summary, max_out)?;
             push_str_bounded(out, "**]**", max_out)?;
         }
@@ -2472,7 +2472,7 @@ fn push_anchor_validation_html(
                 push_str_bounded(out, reason.label(), max_out)?;
                 push_str_bounded(out, ")", max_out)?;
             }
-            push_str_bounded(out, " — ", max_out)?;
+            push_str_bounded(out, " â€” ", max_out)?;
             push_html_escaped(out, anchor_summary, max_out)?;
             push_str_bounded(out, "]</span>", max_out)?;
         }

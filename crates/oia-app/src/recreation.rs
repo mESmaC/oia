@@ -162,20 +162,34 @@ struct Source {
 impl Source {
     /// One-line provenance label used in every source note and in the prompt header.
     fn label(&self) -> String {
-        let mut label = format!("{} · {}", self.version.as_str(), self.origin);
-        if self.after_explanations {
-            label.push_str(" · ");
-            label.push_str(AFTER_EXPLANATIONS);
-        }
-        if let Some(rationale) = &self.rationale {
-            label.push_str(" · revision rationale: ");
-            label.push_str(&single_line(rationale));
-        }
-        label
+        qualified_source_label(
+            &self.version,
+            self.origin,
+            self.after_explanations,
+            self.rationale.as_deref(),
+        )
     }
     fn note(&self, item: &str) -> Option<String> {
         Some(format!("{} · {item}", self.label()))
     }
+}
+
+pub(crate) fn qualified_source_label(
+    version: &VersionId,
+    origin: &str,
+    after_explanations: bool,
+    rationale: Option<&str>,
+) -> String {
+    let mut label = format!("{} · {}", version.as_str(), origin);
+    if after_explanations {
+        label.push_str(" · ");
+        label.push_str(AFTER_EXPLANATIONS);
+    }
+    if let Some(rationale) = rationale {
+        label.push_str(" · revision rationale: ");
+        label.push_str(&single_line(rationale));
+    }
+    label
 }
 
 /// Control characters shown as visible `\u{..}` escapes so a qualification string can sit in

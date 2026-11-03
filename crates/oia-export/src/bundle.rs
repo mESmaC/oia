@@ -3515,6 +3515,8 @@ mod tests {
     fn rejects_bidi_invisible_format_and_tag_characters_in_ids_and_text() {
         let limits = BundleLimits::default_limits();
         for ch in [
+            '\u{200C}',
+            '\u{200D}',
             '\u{061C}',
             '\u{180E}',
             '\u{2028}',

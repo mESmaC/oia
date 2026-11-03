@@ -2569,7 +2569,7 @@ fn push_code_span_raw_fragment(
     for ch in input.chars() {
         match ch {
             '\r' | '\n' => push_str_bounded(out, " ", max_out)?,
-            c if c.is_control() || is_bidi_or_zero_width(c) => {
+            c if oia_domain::text::requires_visible_unicode_escape(c) => {
                 push_control_hex_escape(out, c as u32, max_out)?;
             }
             c => {
@@ -2626,32 +2626,9 @@ fn push_markdown_code_pair(
     push_backticks_bounded(out, fence_len, max_out)
 }
 
+// Bundle validation keeps its structural-field policy, including joiners.
 pub(crate) fn is_bidi_or_zero_width(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{0085}'
-            | '\u{00AD}'
-            | '\u{0600}'..='\u{0605}'
-            | '\u{061C}'
-            | '\u{06DD}'
-            | '\u{070F}'
-            | '\u{0890}'..='\u{0891}'
-            | '\u{08E2}'
-            | '\u{180E}'
-            | '\u{200B}'..='\u{200F}'
-            | '\u{2028}'..='\u{202E}'
-            | '\u{2060}'..='\u{206F}'
-            | '\u{3164}'
-            | '\u{FEFF}'
-            | '\u{FFA0}'
-            | '\u{FFF9}'..='\u{FFFB}'
-            | '\u{110BD}'
-            | '\u{110CD}'
-            | '\u{13430}'..='\u{1343F}'
-            | '\u{1BCA0}'..='\u{1BCA3}'
-            | '\u{1D173}'..='\u{1D17A}'
-            | '\u{E0000}'..='\u{E007F}'
-    )
+    oia_domain::text::is_format_control(ch)
 }
 
 fn push_markdown_escaped(out: &mut String, input: &str, max_out: usize) -> Result<(), ReportError> {
@@ -2676,7 +2653,7 @@ fn push_markdown_escaped(out: &mut String, input: &str, max_out: usize) -> Resul
             '.' => push_str_bounded(out, "&#46;", max_out)?,
             '@' => push_str_bounded(out, "&#64;", max_out)?,
             '\r' | '\n' => push_str_bounded(out, " ", max_out)?,
-            c if c.is_control() || is_bidi_or_zero_width(c) => {
+            c if oia_domain::text::requires_visible_unicode_escape(c) => {
                 push_control_hex_escape(out, c as u32, max_out)?;
             }
             c => {
@@ -2698,7 +2675,7 @@ fn push_html_escaped(out: &mut String, input: &str, max_out: usize) -> Result<()
             '"' => push_str_bounded(out, "&quot;", max_out)?,
             '\'' => push_str_bounded(out, "&#39;", max_out)?,
             '\r' | '\n' => push_str_bounded(out, " ", max_out)?,
-            c if c.is_control() || is_bidi_or_zero_width(c) => {
+            c if oia_domain::text::requires_visible_unicode_escape(c) => {
                 push_control_hex_escape(out, c as u32, max_out)?;
             }
             c => {

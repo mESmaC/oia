@@ -118,6 +118,12 @@ endpoints are excluded. Untrusted URLs can remain plain text when safe to disclo
 Different Markdown viewers can implement link previews; OIA's renderer never
 fetches them, and OIA cannot guarantee behavior of an arbitrary external viewer.
 
+Report prose and code spans preserve ZWNJ/ZWJ for language and emoji shaping.
+Other classified Unicode formatting characters use visible Unicode escapes via
+`oia_domain::text`, shared with recreation exports; original retained bytes are
+unchanged. This display policy does not relax bundle identifier/metadata
+validation or claim to detect every Unicode confusable.
+
 Do not include local absolute paths in either output. HTML includes no network font
 dependency or decorative live instrumentation. Print and reduced-effects rendering
 retain the same evidence, labels, attribution, and readable citation text. Original

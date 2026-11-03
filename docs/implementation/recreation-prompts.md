@@ -52,8 +52,13 @@ to save the returned text. This is a metadata sidecar, not a watermark or an ima
 exporter, and it cannot guarantee that a label accompanies externally shared
 pixels. Distribute the pinned prompt separately to retain its source references,
 assumptions, unknowns, and competing accounts. Report/bundle integration remains
-open; downstream `oia-export` currently escapes ZWNJ/ZWJ in reports pending the
-shared helper work in #10.
+open. Recreation sidecars/prompts and Markdown/HTML report prose share
+`oia_domain::text::requires_visible_unicode_escape`: ZWNJ/ZWJ remain verbatim
+for language and emoji shaping; other classified formatting characters use
+visible Unicode escapes. Recreation single-line validation still rejects
+structural bidi and line-break controls. Bundle structural validation remains
+strict, including rejecting joiners in identifiers and validated metadata.
+Original evidence bytes are unchanged.
 
 ## Limitations and remaining `#31` scope
 

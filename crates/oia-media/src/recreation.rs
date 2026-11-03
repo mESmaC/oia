@@ -1012,17 +1012,6 @@ fn push_u32_bounded(out: &mut String, value: u32, max_out: usize) -> Result<(), 
     push_str_bounded(out, text, max_out)
 }
 
-fn requires_visible_unicode_escape(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{180E}'
-            | '\u{200E}'..='\u{200F}'
-            | '\u{3164}'
-            | '\u{FFF9}'..='\u{FFFB}'
-            | '\u{E0000}'..='\u{E007F}'
-    )
-}
-
 /// Appends `"..."` with `\` and `"` escaped as `\\` and `\"` so free text can never
 /// break out of its quoted value or forge structural section/manifest delimiters. Invisible
 /// formatting/tag characters are rendered as visible `\u{...}` ASCII escapes; ZWNJ/ZWJ and
@@ -1037,7 +1026,7 @@ fn push_quoted_escaped(
         match ch {
             '\\' => push_str_bounded(out, "\\\\", max_out)?,
             '"' => push_str_bounded(out, "\\\"", max_out)?,
-            c if requires_visible_unicode_escape(c) => {
+            c if oia_domain::text::requires_visible_unicode_escape(c) => {
                 for escaped in c.escape_unicode() {
                     let mut buf = [0u8; 4];
                     let encoded = escaped.encode_utf8(&mut buf);

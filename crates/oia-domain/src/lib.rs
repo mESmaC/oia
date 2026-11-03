@@ -6,6 +6,7 @@
 
 pub mod collaboration;
 pub mod ids;
+pub mod text;
 pub mod witness;
 
 pub use ids::{ActorId, IdError, MAX_ID_LEN, OpaqueId, SchemaVersion, VersionId};

@@ -238,7 +238,10 @@ async fn analyze_image(
 
 /// Serves the held image snapshot's original bytes to the page, read-only, keyed by its
 /// SHA-256. Anything else under the scheme is a 404. No path, file or other state is
-/// reachable through it, and nothing is cached.
+/// reachable through it, and nothing is cached. The response allows cross-origin reads
+/// because the page's own origin differs from the scheme's: without it the WebView ignores
+/// `image-orientation: none` and would display an EXIF-rotated image in a different
+/// orientation from the forensic report's encoded raster coordinates.
 fn snapshot_protocol(
     ctx: tauri::UriSchemeContext<'_, tauri::Wry>,
     request: tauri::http::Request<Vec<u8>>,
@@ -249,6 +252,7 @@ fn snapshot_protocol(
             .header("Content-Type", media_type)
             .header("Cache-Control", "no-store")
             .header("X-Content-Type-Options", "nosniff")
+            .header("Access-Control-Allow-Origin", "*")
             .body(body)
             .unwrap_or_else(|_| tauri::http::Response::new(Vec::new()))
     };

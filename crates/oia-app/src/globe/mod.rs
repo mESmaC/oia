@@ -573,12 +573,12 @@ impl GlobeState {
                 .as_ref()
                 .map(|f| f.records.iter().any(|r| &r.id == id))
                 .unwrap_or(false)
-                || self.layers.has_camera(id);
+                || self.layers.camera_selectable(id);
             if !known {
                 return Err(ToolError::new(
                     "unknown_record",
                     format!(
-                        "{id:?} is not a record of the open case or a feature of a registered layer."
+                        "{id:?} is not a record of the open case or a drawn feature of a visible layer."
                     ),
                 ));
             }
@@ -595,7 +595,7 @@ impl GlobeState {
             && self
                 .selection
                 .as_deref()
-                .is_some_and(|id| self.layers.has_camera(id))
+                .is_some_and(LayerState::is_camera_id)
         {
             self.selection = None;
         }
@@ -605,12 +605,9 @@ impl GlobeState {
     /// Applies the ALPR local filter. A selected camera that the filter omits is deselected.
     pub fn set_alpr_filter(&mut self, filter: AlprFilterId) -> Result<()> {
         self.layers.set_alpr_filter(filter);
-        let (_, cameras) = self.layers.views(None, 0);
         if let Some(id) = self.selection.as_deref()
-            && self.layers.has_camera(id)
-            && !cameras
-                .as_ref()
-                .is_some_and(|c| c.cameras.iter().any(|f| f.id == id))
+            && LayerState::is_camera_id(id)
+            && !self.layers.camera_selectable(id)
         {
             self.selection = None;
         }
@@ -818,7 +815,17 @@ mod tests {
     #[test]
     fn layer_visibility_and_filter_govern_camera_selection() -> Result<()> {
         let mut state = GlobeState::default();
+        // Hidden layer: its features are not drawn, so they cannot be selected.
+        assert_eq!(
+            state
+                .select(Some("alpr:900000000101".to_owned()))
+                .err()
+                .map(|e| e.code),
+            Some("unknown_record")
+        );
         state.set_layer_visible(layers::LAYER_ALPR, true)?;
+        // The fixture's non-ALPR node is excluded by the kernel and stays unselectable.
+        assert!(state.select(Some("alpr:900000000199".to_owned())).is_err());
         state.select(Some("alpr:900000000101".to_owned()))?;
         assert!(
             state

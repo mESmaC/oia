@@ -304,7 +304,7 @@ function renderMedia() {
   if (loaded) {
     const url = window.__TAURI__.core.convertFileSrc(imageView.file.sha256, SNAPSHOT_SCHEME);
     if (img.dataset.sha !== imageView.file.sha256) { img.dataset.sha = imageView.file.sha256; img.src = url; }
-    img.alt = `${imageView.file.name}, ${imageView.width} by ${imageView.height} pixels, displayed from the retained bytes`;
+    img.alt = `${imageView.file.name}, ${imageView.width} by ${imageView.height} pixels, displayed from the retained bytes in encoded orientation`;
   } else { img.removeAttribute('src'); delete img.dataset.sha; }
   for (const id of ['media-report-sec', 'media-cues-sec', 'media-blocks-sec']) $(id).hidden = !f;
   $('media-hist').hidden = !f;
@@ -357,7 +357,7 @@ function renderMediaState(f) {
   const el = $('media-state');
   el.replaceChildren();
   if (!imageView) return;
-  const cells = [['IMAGE', `${imageView.width} × ${imageView.height}`], ['CUES', f ? (f.partial ? 'partial' : 'complete') : 'not run'], ['BLOCKS', f ? String(f.report.repeated_blocks.result?.candidates.length ?? '—') : '—'], ['ASSESSMENT', f ? f.report.assessment : '—']];
+  const cells = [['IMAGE', `${imageView.width} × ${imageView.height} · encoded orientation`], ['CUES', f ? (f.partial ? 'partial' : 'complete') : 'not run'], ['BLOCKS', f ? String(f.report.repeated_blocks.result?.candidates.length ?? '—') : '—'], ['ASSESSMENT', f ? f.report.assessment : '—']];
   for (const [k, v] of cells) { const span = node('span'); span.append(node('b', `${k} `), document.createTextNode(v)); if (k === 'CUES' && f?.partial) span.className = 'warn'; el.append(span); }
 }
 function renderBlockList() {
@@ -384,9 +384,13 @@ function positionBlocks() {
   const frame = $('media-frame'), card = $('media-card'), img = $('media-image');
   frame.replaceChildren();
   const r = forensicView?.report, b = r?.repeated_blocks.result;
-  if (!b || !imageView || !img.naturalWidth || instrument !== 'media') { card.hidden = true; return; }
-  const stage = $('media-stage').getBoundingClientRect(), rect = img.getBoundingClientRect();
-  const scale = rect.width / img.naturalWidth, size = r.config.block_size;
+  const rect = img.getBoundingClientRect();
+  if (!b || !imageView || !img.complete || !rect.width || instrument !== 'media') { card.hidden = true; return; }
+  // The image is displayed in encoded raster orientation (CSS image-orientation: none), which
+  // is the report's coordinate space, so the scale is the displayed width over the encoded
+  // width the kernel reports. EXIF orientation is applied nowhere, and the panel says so.
+  const stage = $('media-stage').getBoundingClientRect();
+  const scale = rect.width / r.source.width, size = r.config.block_size;
   frame.style.transform = `translate(${Math.round(rect.left - stage.left)}px, ${Math.round(rect.top - stage.top)}px)`;
   frame.style.width = `${Math.round(rect.width)}px`; frame.style.height = `${Math.round(rect.height)}px`;
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -523,6 +527,8 @@ $('media-run').onclick = runForensics;
 $('run-forensics').onclick = runForensics;
 $('media-image').onload = positionBlocks;
 window.addEventListener('resize', () => { if (instrument === 'media') positionBlocks(); });
+// Any layout change of the stage (Focus, inspector, narrow layout) reprojects the overlays.
+new ResizeObserver(() => { if (instrument === 'media') positionBlocks(); }).observe($('media-stage'));
 $('search-form').onsubmit = event => {
   event.preventDefault();
   if (!documentView) return;
@@ -569,6 +575,7 @@ function setPresentation(className, on) {
   $('vs-overlays').textContent = document.body.classList.contains('reduced') ? 'reduced' : 'on';
   if (className === 'focused') $('exit-focus').hidden = !on;
   if (className === 'reduced') Globe.setReduced(on);
+  if (instrument === 'media') requestAnimationFrame(positionBlocks);
 }
 $('effects').onclick = () => setPresentation('reduced', !document.body.classList.contains('reduced'));
 $('focus').onclick = () => setPresentation('focused', !document.body.classList.contains('focused'));

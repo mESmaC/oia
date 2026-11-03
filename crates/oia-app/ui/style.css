@@ -188,7 +188,7 @@ tr.selected td { background: var(--accent-dim); }
 /* ---- Media: the image is the canvas; instruments float over it ---- */
 .media-wrap { position: absolute; inset: 0; border: 1px solid var(--line); border-radius: var(--r-panel); overflow: hidden; background: #000; }
 .media-stage { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
-.media-stage img { max-width: 100%; max-height: 100%; display: block; image-rendering: auto; user-select: none; }
+.media-stage img { max-width: 100%; max-height: 100%; display: block; image-rendering: auto; user-select: none; image-orientation: none; } /* encoded raster orientation, the report's coordinate space; EXIF orientation not applied. Honoured only because the snapshot scheme answers with CORS and the img is crossorigin. */
 .media-frame { position: absolute; left: 0; top: 0; pointer-events: none; }
 .media-frame .blk { position: absolute; border: 1px solid var(--amber); background: rgba(243, 182, 74, .10); }
 .media-frame .blk.first { border-style: dashed; }

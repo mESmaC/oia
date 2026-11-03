@@ -155,7 +155,7 @@
         <button type="button" id="media-empty-action" class="btn primary" data-operation>Inspect image</button>
       </div>
       <div class="media-wrap" id="media-loaded" hidden>
-        <div class="media-stage" id="media-stage"><img id="media-image" alt="" draggable="false"></div>
+        <div class="media-stage" id="media-stage"><img id="media-image" alt="" draggable="false" crossorigin="anonymous"></div>
         <div class="media-frame" id="media-frame"></div>
         <aside class="mcard glass" id="media-card" hidden aria-label="Selected candidate"></aside>
         <aside class="mhist glass" id="media-hist" hidden aria-label="RGB histograms of the decoded samples"></aside>
@@ -246,7 +246,7 @@
         <section class="sec" data-pane="media-report" id="media-blocks-sec" hidden><span class="k">Repeated-block candidates</span><div class="mlist" id="media-blocks"></div></section>
         <section class="sec" data-pane="media-methods" hidden><span class="k">Methods and coverage</span><div id="media-methods"></div></section>
         <section class="sec" data-pane="media-limits" hidden><span class="k">Kernel limitations</span><ul class="glog" id="media-limitations"></ul></section>
-        <section class="sec" data-pane="media-limits" hidden><span class="k">Limits</span><p class="note">Cues are investigative diagnostics from the retained bytes: no cue proves camera origin, and no absence of cues proves an image is unedited or not generated. The assessment is always inconclusive and unreviewed. Learned AI detection and credential or watermark verification are not implemented. Decoded samples are derivatives (encoded raster coordinates, 8-bit RGBA, no colour management). Every JPEG report is partial: entropy completeness is unverified and decoder recovery is possible. Block candidates are exact grid-aligned repeats, which ordinary flat regions also produce. The original is never modified; no residual map is written by this instrument.</p></section>
+        <section class="sec" data-pane="media-limits" hidden><span class="k">Limits</span><p class="note">Cues are investigative diagnostics from the retained bytes: no cue proves camera origin, and no absence of cues proves an image is unedited or not generated. The assessment is always inconclusive and unreviewed. Learned AI detection and credential or watermark verification are not implemented. Decoded samples are derivatives (encoded raster coordinates, 8-bit RGBA, no colour management). The image is displayed in its encoded orientation so that drawn regions share the report's coordinates; an EXIF orientation tag is applied neither here nor in the kernel. Every JPEG report is partial: entropy completeness is unverified and decoder recovery is possible. Block candidates are exact grid-aligned repeats, which ordinary flat regions also produce. The original is never modified; no residual map is written by this instrument.</p></section>
       </div>
     </div>
   </aside>

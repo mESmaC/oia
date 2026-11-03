@@ -382,16 +382,20 @@ impl LayerState {
         self.alpr_filter = filter;
     }
 
-    /// Whether `id` names a camera feature of the ALPR layer (for selection).
-    pub fn has_camera(&self, id: &str) -> bool {
-        self.alpr
-            .as_ref()
-            .map(|data| {
-                data.nodes
-                    .iter()
-                    .any(|n| n.osm_id > 0 && format!("alpr:{}", n.osm_id) == id)
-            })
-            .unwrap_or(false)
+    /// Whether `id` is shaped like a camera feature id of the ALPR layer.
+    pub fn is_camera_id(id: &str) -> bool {
+        id.starts_with("alpr:")
+    }
+
+    /// Whether `id` names a camera feature that is drawn right now: the layer is visible
+    /// and the kernel's current evaluation (local filter applied) returns the feature.
+    /// A hidden, filtered-out or excluded node is never selectable.
+    pub fn camera_selectable(&self, id: &str) -> bool {
+        self.alpr_visible
+            && self
+                .views(None, 0)
+                .1
+                .is_some_and(|c| c.cameras.iter().any(|f| f.id == id))
     }
 
     /// Evaluates the ALPR layer with the kernel. Errors are reported in the layer entry,
@@ -540,8 +544,12 @@ mod tests {
         );
         assert!(cameras.iter().any(|c| c.wedge.is_none()));
         assert!(cameras.iter().all(|c| c.id != "alpr:900000000199"));
-        assert!(state.has_camera("alpr:900000000101"));
-        assert!(!state.has_camera("alpr:1"));
+        assert!(!state.camera_selectable("alpr:900000000101")); // layer hidden by default
+        let mut shown = state.clone();
+        shown.alpr_visible = true;
+        assert!(shown.camera_selectable("alpr:900000000101"));
+        assert!(!shown.camera_selectable("alpr:900000000199")); // non-ALPR node, excluded by the kernel
+        assert!(!shown.camera_selectable("alpr:1"));
     }
 
     // A non-synthetic or oversized fixture is refused, not drawn.

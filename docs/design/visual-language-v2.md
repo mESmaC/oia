@@ -1,6 +1,6 @@
 # OIA visual language v2: the instrument shell
 
-Version: 0.1 draft. Date: 2026-11-03. Status: design proposal for [#16](https://github.com/mESmaC/oia/issues/16). Nothing here is implemented in the product; the companion mockup is a static study. On 2026-11-02 the project owner supplied a set of reference images and stated that this direction may take precedence over the earlier design work in [`workspace-ui-ux.md`](workspace-ui-ux.md) v0.4, which they were not satisfied with. The owner's clarification, relayed on [#16 (comment 6592351842)](https://github.com/mESmaC/oia/issues/16#issuecomment-6592351842): "Some of the previous designs looked like document management systems rather than military intelligence software. So the spec still captures this technically, but im counting on fable to actually deliver on it." Precedence was offered so that the design would deliver; it is not an advance approval. v2 replaces §7 and the v0.4 mockups only if the owner judges that it does.
+Version: 0.2. Date: 2026-11-03. Status: **accepted by the project owner** for [#16](https://github.com/mESmaC/oia/issues/16) on 2026-11-03 at about 01:27Z, relayed on [#16 (comment 6592993871)](https://github.com/mESmaC/oia/issues/16#issuecomment-6592993871): "Delivers, green (A)". This document supersedes §7 of the v0.4 draft and the appearance of its mockups (§7 below). Nothing here is implemented in the product by this document alone; the companion mockup is a static study, and the first implementation is the desktop workbench in [PR #105](https://github.com/mESmaC/oia/pull/105). On 2026-11-02 the project owner supplied a set of reference images and stated that this direction may take precedence over the earlier design work in [`workspace-ui-ux.md`](workspace-ui-ux.md) v0.4, which they were not satisfied with. The owner's clarification, relayed on [#16 (comment 6592351842)](https://github.com/mESmaC/oia/issues/16#issuecomment-6592351842): "Some of the previous designs looked like document management systems rather than military intelligence software. So the spec still captures this technically, but im counting on fable to actually deliver on it." Precedence was offered so that the design would deliver, and the owner judged on 2026-11-03 that it does (comment 6592993871 above).
 
 This document replaces the **visual system** (§7) and the **mockup direction** (§15) of the v0.4 draft. It keeps the v0.4 information architecture (§2), shell regions (§3), shared context (§4), interaction patterns (§5), state vocabulary (§6), accessibility rules (§8), honesty rules (§10), and print rules (§11) by reference, with the departures listed in §7 below. Requirement IDs are from the [product specification](../spec.md) §3.2 (`UX-01` to `UX-05`) and §3.1 (`CASE-02` to `CASE-04`).
 
@@ -94,12 +94,12 @@ These are the components every instrument is built from. Each one names what bin
 | `red` | `#ff7b7b` | Alert: failed, contradicted |
 | `violet` | `#b9a6ff` | Fixture, generated, predictive, simulated, recreated |
 
-**The accent change is the one decision in this document that needs the owner.** v0.4 used cyan for interaction and green for "supported, succeeded". The references the owner chose are green-led, and the mockup follows them: a pale phosphor green is the only interactive colour. The cost is that "supported" and "succeeded" can no longer be green without reading as "selected". Two ways to resolve it:
+**The accent: decided, option A.** v0.4 used cyan for interaction and green for "supported, succeeded". The references the owner chose are green-led, and the mockup follows them: a pale phosphor green is the only interactive colour. The cost is that "supported" and "succeeded" can no longer be green without reading as "selected". The two options were:
 
-- **A (used in the mockup):** keep green as the interactive accent. Supported and succeeded states use the neutral chip with their glyph (`✓`) and label, and no colour. Status colour is then only amber, red, and violet. This is consistent with the palette finding in v0.4 §7.1 that status cannot rely on colour anyway.
-- **B:** keep v0.4's cyan accent and green status, and apply only the structural changes in §4. Cyan and green are one token apart in the mockup.
+- **A (decided by the owner on 2026-11-03, [#16 comment 6592993871](https://github.com/mESmaC/oia/issues/16#issuecomment-6592993871)):** green is the interactive accent. Supported and succeeded states use the neutral chip with their glyph (`✓`) and label, and no colour. Status colour is then only amber, red, and violet. This is consistent with the palette finding in v0.4 §7.1 that status cannot rely on colour anyway, and it removes a colour that the earlier palette check showed to be weakly separable from amber under deutan simulation.
+- **B (not taken):** keep v0.4's cyan accent and green status, and apply only the structural changes in §4.
 
-Recommendation: A. It is simpler, it matches the owner's references, and it removes a colour that the earlier palette check showed to be weakly separable from amber under deutan simulation.
+`accent` remains a single token everywhere so that a future change stays one line.
 
 Contrast, computed 2026-11-03 with the WCAG 2 relative-luminance formula against `#000000`, alpha composited over black: `text` 17.8:1, `accent` 15.2:1, `amber` 11.6:1, `violet` 10.0:1, `red` 8.4:1, `text-2` 7.2:1, `text-3` 4.9:1. The first draft of this study set `text-3` at 40 percent alpha, which computes to 3.3:1 and fails the 4.5:1 body-text target; it was raised to 52 percent before the mockup was verified. Over a glass surface the effective background is slightly lighter than black, so these are upper bounds. On the opaque `solid` surface (`#0b0d10`) the same formula gives `accent` 14.1:1, `red` 7.8:1, `text-2` 7.1:1, and `text-3` 5.0:1, all above the 4.5:1 target. All essential text is 11 px or larger (§8).
 
@@ -189,7 +189,7 @@ Not verified: screen readers, keyboard walkthrough beyond focus-visible styling,
 
 | Item | Owner | Note |
 | --- | --- | --- |
-| Accent: green (A) or cyan (B) in §5.1 | Project owner | The mockup uses A. Switching to B is one token. |
+| Accent: green (A) or cyan (B) in §5.1 | Decided: A, project owner, 2026-11-03 (#16 comment 6592993871) | Closed. `accent` stays a single token. |
 | Typefaces | Implementing session for the workbench | §5.3 proposes IBM Plex Mono and Inter; bundle them, do not load from a network. |
 | Icon set | Implementing session | The mockup's rail icons are inline strokes drawn for the study; a consistent set is needed with a text fallback per v0.4 §6. |
 | Contour backdrop | Globe instrument (#23) | Only from an elevation source with a version; otherwise the grid. |
@@ -212,4 +212,4 @@ Not verified: screen readers, keyboard walkthrough beyond focus-visible styling,
 
 ## 11. Status of claims in this document
 
-Everything here is **proposed**. The verification in §8 is **tested** for the mockup page only. The contrast ratios in §5.1 are **measured** by formula, not by a display. No product behaviour, renderer behaviour, or accessibility conformance is claimed.
+The direction and the accent are **decided** by the project owner (header). The components, tokens, and layout are **proposed** values for implementations to confirm; the first implementation is PR #105. The verification in §8 is **tested** for the mockup page only. The contrast ratios in §5.1 are **measured** by formula, not by a display. No product behaviour, renderer behaviour, or accessibility conformance is claimed.

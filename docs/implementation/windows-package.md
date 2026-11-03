@@ -52,3 +52,25 @@ local Rust baseline and the proof gate separately, recording their actual outcom
 A complete transitive dependency license audit, signing, installer/update policy,
 fresh-machine usability checks, migrations/recovery and non-Windows support remain
 required work under `#49` before public distribution.
+
+## Local verification (2026-11-03)
+
+On Windows NT 10.0.26300.0, Rust 1.99.0 (`b940084d7`), using Windows PowerShell
+5.1 for the packaging script, packaging implementation revision `ca770c5`:
+
+- `cargo fmt --all -- --check` passed.
+- `cargo clippy --workspace --all-targets --locked --offline --target x86_64-pc-windows-msvc --target-dir target/package-windows/build -- -D warnings` passed.
+- `cargo test --workspace --locked --offline --target x86_64-pc-windows-msvc --target-dir target/package-windows/build` passed: 161 tests, zero failures.
+- Debug ZIP builds with and without the Globe renderer passed. Extracted payload
+  hashes/lengths matched the manifests, and both executables ran `--status`.
+  The renderer-inclusive package inventoried 279 vendor files, all checked against
+  their copied inputs, and included separate Cesium notices.
+- Existing-output, dirty-checkout, concurrent-packager, missing-vendor and
+  mismatched-vendor refusals passed. The existing archive stayed byte-identical;
+  a version mismatch produced no destination ZIP.
+- PowerShell parsing, documentation links and `git diff --check` passed.
+
+The release profile, GUI launch on a fresh machine and non-Windows platforms were
+not exercised. Lean was unavailable on PATH and was not run; this change modifies
+no Rust algorithm, theorem or correspondence fixture. These are local development
+checks, not integrated A02/A17 acceptance or public release approval.

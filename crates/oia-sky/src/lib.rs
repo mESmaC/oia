@@ -1,4 +1,4 @@
-//! Provider-independent observer sky geometry.
+//! Provider-independent observer and solar-system geometry.
 //!
 //! Given a geocentric apparent place from any ephemeris (true equator and
 //! equinox of date), an observer on the WGS84 ellipsoid, and caller-supplied
@@ -14,9 +14,16 @@
 //!    pressure and temperature. Below the formula's domain, no refracted value
 //!    is produced.
 //!
-//! It does not select or evaluate an ephemeris, convert UTC to UT1 or TT, or
-//! apply polar motion. See `docs/implementation/sky-observer-geometry.md` for
-//! the accuracy budget and the Horizons reference comparison.
+//! The `motion` module also propagates caller-supplied elliptical elements and
+//! applies one-way light-time correction with explicit TDB, AU/day, center, and
+//! J2000 ecliptic semantics. Neither module selects an ephemeris provider.
+//!
+//! The observer chain does not convert UTC to UT1 or TT or apply polar motion.
+//! See `docs/implementation/sky-observer-geometry.md` and
+//! `docs/implementation/sky-motion.md` for the separate accuracy budgets and
+//! Horizons reference comparisons.
+
+pub mod motion;
 
 use std::error::Error;
 use std::fmt;

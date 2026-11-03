@@ -1,4 +1,9 @@
-//! Tauri adapter. Rust owns file snapshots, operations, cancellation and publication.
+//! Tauri adapter. Rust owns file snapshots, operations, cancellation and publication,
+//! and the globe instrument's state.
+use crate::globe::{
+    CameraView, GlobeState, GlobeView,
+    imagery::{CivilDate, ImagerySelection},
+};
 use crate::local_tools::{
     self as tools, Control, DocumentView, FileKind, PreparedExport, PrivacyView, Result,
     SearchView, Selection, Snapshot, ToolError,
@@ -223,15 +228,62 @@ fn cancel_operation(state: State<'_, Services>) -> Result<()> {
     Ok(())
 }
 
+/// Globe instrument state. Independent of the file-operation gate: a camera move or a
+/// selection never waits on a running document or image operation, and never mutates one.
+#[derive(Clone, Debug, Default)]
+struct Globe(Arc<Mutex<GlobeState>>);
+impl Globe {
+    fn lock(&self) -> Result<MutexGuard<'_, GlobeState>> {
+        self.0
+            .lock()
+            .map_err(|_| ToolError::new("internal", "The globe lock failed. Restart OIA."))
+    }
+}
+
+#[tauri::command]
+fn globe_view(globe: State<'_, Globe>) -> Result<Envelope<GlobeView>> {
+    globe.lock()?.view().map(envelope)
+}
+
+#[tauri::command]
+fn globe_select(globe: State<'_, Globe>, record_id: Option<String>) -> Result<Envelope<GlobeView>> {
+    let mut state = globe.lock()?;
+    state.select(record_id)?;
+    state.view().map(envelope)
+}
+
+#[tauri::command]
+fn globe_camera(globe: State<'_, Globe>, camera: CameraView) -> Result<Envelope<GlobeView>> {
+    let mut state = globe.lock()?;
+    state.set_camera(camera)?;
+    state.view().map(envelope)
+}
+
+#[tauri::command]
+fn globe_imagery(
+    globe: State<'_, Globe>,
+    selection: ImagerySelection,
+) -> Result<Envelope<GlobeView>> {
+    let today = CivilDate::today_utc(); // the one place the clock is read for the globe
+    let mut state = globe.lock()?;
+    state.set_imagery(selection, today)?;
+    state.view().map(envelope)
+}
+
 pub fn run() -> std::result::Result<(), tauri::Error> {
     tauri::Builder::default()
         .manage(Services::default())
+        .manage(Globe::default())
         .invoke_handler(tauri::generate_handler![
             open_document,
             open_image,
             search_document,
             export_cleaned,
-            cancel_operation
+            cancel_operation,
+            globe_view,
+            globe_select,
+            globe_camera,
+            globe_imagery
         ])
         .run(tauri::generate_context!())
 }

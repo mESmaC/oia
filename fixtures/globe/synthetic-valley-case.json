@@ -1,0 +1,99 @@
+{
+  "schema": "oia.fixture.globe-case/1",
+  "origin_class": "synthetic",
+  "description": "Synthetic case for the Globe instrument. Every record, position, time and source here was written for the design studies and this fixture. Nothing is an observation, a real account, or a real place name. The coordinates fall on real terrain only so that the globe has something to draw under them.",
+  "case": {
+    "id": "valley-1994",
+    "label": "Valley accounts (synthetic)",
+    "anchor": { "lat_deg": 39.4120, "lon_deg": -106.9510 },
+    "interval": {
+      "start_local": "1994-03-14T20:00",
+      "end_local": "1994-03-14T23:00",
+      "zone": "America/Denver",
+      "note": "Case interval in reported local time. No UTC instant is recorded for any account."
+    },
+    "clock": { "local": "1994-03-14T21:40", "uncertainty_min": 15, "zone": "America/Denver" }
+  },
+  "sources": [
+    { "id": "src-interview-1994", "label": "Field interview transcript (synthetic)", "kind": "transcript" },
+    { "id": "src-weekly-1994", "label": "Regional weekly, 1994-03-17 edition (synthetic)", "kind": "article" }
+  ],
+  "records": [
+    {
+      "id": "acct-a",
+      "order": 1,
+      "label": "Account A",
+      "kind": "account",
+      "source_id": "src-interview-1994",
+      "geometry": {
+        "kind": "point",
+        "lat_deg": 39.4083,
+        "lon_deg": -106.9312,
+        "horizontal_uncertainty_m": 150.0,
+        "basis": "Observer position as described in the transcript: the eastern valley road near the bridge. The fixture author placed the point; the 150 m radius is the author's bound on that description."
+      },
+      "reported_time": {
+        "text": "≈ 21:40 ±15 min",
+        "precision": "approximate_window",
+        "window_start_local": "1994-03-14T21:25",
+        "window_end_local": "1994-03-14T21:55",
+        "zone": "America/Denver"
+      },
+      "notes": "Reported one light moving northwest to southeast over about eight minutes. Direction and duration are testimony; no track is recorded, so none is drawn."
+    },
+    {
+      "id": "acct-b",
+      "order": 2,
+      "label": "Account B",
+      "kind": "account",
+      "source_id": "src-interview-1994",
+      "geometry": null,
+      "geometry_absent_reason": "Position not recorded in the source.",
+      "reported_time": { "text": "not recorded", "precision": "not_recorded" },
+      "notes": "Heard about the sighting the next morning; could not say where they were that evening."
+    },
+    {
+      "id": "acct-c",
+      "order": 3,
+      "label": "Account C",
+      "kind": "account",
+      "source_id": "src-interview-1994",
+      "geometry": {
+        "kind": "region",
+        "label": "East of the ridge",
+        "ring": [
+          { "lat_deg": 39.4310, "lon_deg": -106.9180 },
+          { "lat_deg": 39.4335, "lon_deg": -106.8960 },
+          { "lat_deg": 39.4190, "lon_deg": -106.8840 },
+          { "lat_deg": 39.4030, "lon_deg": -106.8930 },
+          { "lat_deg": 39.4015, "lon_deg": -106.9140 },
+          { "lat_deg": 39.4150, "lon_deg": -106.9240 }
+        ],
+        "basis": "The account describes two lights 'east of the ridge'. The region is the fixture author's bound on that phrase. It is an area claim, not a position, and has no centre."
+      },
+      "reported_time": { "text": "not recorded", "precision": "not_recorded" },
+      "notes": "Two lights, low over the eastern slope, no duration given."
+    },
+    {
+      "id": "art-d",
+      "order": 4,
+      "label": "Weekly article",
+      "kind": "article",
+      "source_id": "src-weekly-1994",
+      "geometry": {
+        "kind": "approximate_centroid",
+        "lat_deg": 39.4120,
+        "lon_deg": -106.9510,
+        "radius_m": 3000.0,
+        "place_label": "the valley",
+        "basis": "The article names only 'the valley'. The point is a gazetteer-style centroid chosen by the fixture author with a 3 km radius; it must not be read as where anything happened."
+      },
+      "reported_time": {
+        "text": "1994-03-14 (date only)",
+        "precision": "calendar_date",
+        "zone": "America/Denver"
+      },
+      "notes": "Secondary account summarising the interviews. Not an independent source."
+    }
+  ]
+}

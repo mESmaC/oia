@@ -328,6 +328,7 @@ fn validates_bundle_hashes_maps_local_namespace_and_keeps_duplicate_byte_records
     );
     assert_eq!(bundle.mapped_records().len(), 3);
     assert_eq!(bundle.identity().producer_id, "oia-test");
+    assert_eq!(bundle.capabilities().len(), 2);
     assert_eq!(bundle.use_conditions().len(), 1);
     assert_eq!(bundle.references().len(), 3);
     assert_eq!(bundle.omissions().len(), 1);
@@ -347,6 +348,11 @@ fn validates_bundle_hashes_maps_local_namespace_and_keeps_duplicate_byte_records
 
     // Identical asset SHA-256 bytes, but distinct origin and mapped local identities.
     assert_eq!(first.asset_sha256_hex, second.asset_sha256_hex);
+    assert_eq!(
+        first.required_capability,
+        Some(("oia.record.evidence".to_owned(), 1))
+    );
+    assert!(first.asset_relative_path.is_some());
     assert_ne!(first.origin_record_id, second.origin_record_id);
     assert_ne!(first.local_record_id, second.local_record_id);
     assert_ne!(first.local_version_id, second.local_version_id);
@@ -423,6 +429,7 @@ fn validates_bundle_hashes_maps_local_namespace_and_keeps_duplicate_byte_records
         .find(|e| e.relative_path == "reports/rendered.html");
     assert!(report_entry.is_some());
     if let Some(rep) = report_entry {
+        assert_eq!(rep.schema_version, Some(1));
         assert_eq!(
             rep.report_handling,
             Some(ImportedReportHandling::UntrustedRequiresRegenerationOrInertViewer)
@@ -432,8 +439,9 @@ fn validates_bundle_hashes_maps_local_namespace_and_keeps_duplicate_byte_records
 
 /// Verifies rejection of path traversal, non-ASCII path segments, Windows reserved device names,
 /// case-insensitive path collisions, non-regular filesystem entries, archive containers outside
-/// `assets/`, corrupt asset hashes, mid-staging mutation, conflicting omissions, and forbidden
-/// side-effect hooks (`REPRO-02`, `A17`, `docs/contracts/report-export.md` §6).
+/// `assets/`, corrupt asset hashes, mid-staging mutation, conflicting omissions, cross-namespace
+/// duplicate `(record_id, version_id)`, and forbidden side-effect hooks (`REPRO-02`, `A17`,
+/// `docs/contracts/report-export.md` §6).
 #[test]
 fn rejects_traversal_windows_devices_symlinks_archives_corrupt_hashes_and_side_effects() {
     let base_entry = BundleManifestEntry {
@@ -672,11 +680,49 @@ fn rejects_traversal_windows_devices_symlinks_archives_corrupt_hashes_and_side_e
         })
     ));
 
-    // 10. Loopback / private-network external URLs (`0.0.0.0`, `[::1]`, `172.16.0.1`) rejected (NB5)
+    // 10. Order-independent rejection of duplicate `(record_id, version_id)` across different
+    // `origin_namespace` values (N1)
+    let rec_ns_a = BundleRecordEntry {
+        origin_namespace: "ws:ns-a",
+        record_id: "doc:shared",
+        version_id: "ver:1",
+        kind: BundleRecordKind::SourceDocument,
+        origin_class: OriginClass::Observation,
+        review_status: ReviewStatus::Reviewed,
+        origin_actor_id: "actor:1",
+        recorded_time: utc_time("2026-11-02T18:00:00Z"),
+        uncertainty_note: None,
+        asset_relative_path: None,
+        required_capability: None,
+    };
+    let rec_ns_b = BundleRecordEntry {
+        origin_namespace: "ws:ns-b",
+        ..rec_ns_a
+    };
+    for pair in [[rec_ns_a, rec_ns_b], [rec_ns_b, rec_ns_a]] {
+        let mut dup_ns_input = make_input(&ok_entries, &ok_staged);
+        dup_ns_input.records = &pair;
+        assert!(matches!(
+            validate_and_stage_bundle(&dup_ns_input, &supported, limits, || Ok(())),
+            Err(BundleError::DuplicateIdentifier {
+                kind: "record_version",
+                ..
+            })
+        ));
+    }
+
+    // 11. Loopback / private-network / integer-IP / IPv6-mapped external URLs rejected (NB5 + N-nonblocking 3)
     for bad_url in [
         "http://0.0.0.0/internal",
         "http://[::1]:8080/internal",
         "http://172.16.5.4/internal",
+        "http://2130706433/internal",
+        "http://0x7f000001/internal",
+        "http://[::ffff:127.0.0.1]/internal",
+        "http://[fd00::1]/internal",
+        "http://[fe80::1]/internal",
+        "http://100.64.1.1/internal",
+        "http://localhost./internal",
     ] {
         let mut url_input = make_input(&ok_entries, &ok_staged);
         let url_records = [BundleRecordEntry {
@@ -727,12 +773,12 @@ fn rejects_traversal_windows_devices_symlinks_archives_corrupt_hashes_and_side_e
 }
 
 /// Verifies deterministic bitwise replay, numerical-tolerance replay (including both abs and rel
-/// bounds, `max_rel_diff >= 1.0` rejection, and length mismatch reporting), and honest
-/// non-replayable reporting (`REPRO-03`, `A17`).
+/// bounds, `expected == 0.0`, `max_rel_diff >= 1.0` and `-0.0` rejection, and length mismatch
+/// reporting), and honest non-replayable reporting (`REPRO-03`, `A17`).
 #[test]
 fn verifies_bitwise_and_tolerance_replay_and_reports_non_replayable_reasons_honestly() {
     let v1_path = format!("assets/{REPORT_V1_SHA256}.txt");
-    let expected_series = [10.0, 20.0, 30.0];
+    let expected_series = [0.0, 10.0, 20.0, 30.0];
 
     let capabilities = [
         CapabilityDeclaration {
@@ -992,26 +1038,29 @@ fn verifies_bitwise_and_tolerance_replay_and_reports_non_replayable_reasons_hone
     };
     let limits = BundleLimits::default_limits();
 
-    // B4: `max_rel_diff >= 1.0` is rejected during bundle validation.
-    let bad_tol_analyses = [PinnedAnalysisSpec {
-        replay_contract: ReplayContract::NumericalTolerance {
-            expected_series: &expected_series,
-            max_abs_diff: 0.05,
-            max_rel_diff: 1.0,
-            tolerance_justification: "Unbounded relative tolerance must be rejected",
-        },
-        ..analyses[1]
-    }];
-    let mut bad_tol_input = input.clone();
-    bad_tol_input.analyses = &bad_tol_analyses;
-    assert!(matches!(
-        validate_and_stage_bundle(&bad_tol_input, &supported, limits, || Ok(())),
-        Err(BundleError::InvalidToleranceConfiguration { .. })
-    ));
+    // B4 + N-nonblocking 4: `max_rel_diff >= 1.0` and `-0.0` are rejected during bundle validation.
+    for (bad_abs, bad_rel) in [(0.05, 1.0), (-0.0, 0.005), (0.05, -0.0)] {
+        let bad_tol_analyses = [PinnedAnalysisSpec {
+            replay_contract: ReplayContract::NumericalTolerance {
+                expected_series: &expected_series,
+                max_abs_diff: bad_abs,
+                max_rel_diff: bad_rel,
+                tolerance_justification: "Invalid tolerance bound must be rejected",
+            },
+            ..analyses[1]
+        }];
+        let mut bad_tol_input = input.clone();
+        bad_tol_input.analyses = &bad_tol_analyses;
+        assert!(matches!(
+            validate_and_stage_bundle(&bad_tol_input, &supported, limits, || Ok(())),
+            Err(BundleError::InvalidToleranceConfiguration { .. })
+        ));
+    }
 
     let Ok(bundle) = validate_and_stage_bundle(&input, &supported, limits, || Ok(())) else {
         return;
     };
+    assert_eq!(bundle.analyses().len(), 7);
 
     // 1. Bitwise exact match and divergence
     let bw_ok = replay_analysis(
@@ -1046,24 +1095,28 @@ fn verifies_bitwise_and_tolerance_replay_and_reports_non_replayable_reasons_hone
         Ok(AnalysisReplayOutcome::DivergedBitwise { .. })
     ));
 
-    // 2. Numerical tolerance match, divergence (including abs-passes-but-rel-fails and length mismatch), and missing/mismatched model
+    // 2. Numerical tolerance match (including expected=0.0 with small non-zero actual within max_abs_diff),
+    // divergence (including abs-passes-but-rel-fails and length mismatch), and missing/mismatched model
     let tol_ok = replay_analysis(
         &bundle,
         &AnalysisReplayRequest {
             analysis_id: "ana:tolerance",
             version_id: "ver:a2",
             available_models: &[("model:regressor", "v1.2.0")],
-            candidate_output: CandidateReplayOutput::NumericalSeries(&[10.02, 19.98, 30.01]),
+            candidate_output: CandidateReplayOutput::NumericalSeries(&[0.02, 10.02, 19.98, 30.01]),
         },
         limits,
         || Ok(()),
     );
     assert!(matches!(
         tol_ok,
-        Ok(AnalysisReplayOutcome::ReproducedWithinTolerance { .. })
+        Ok(AnalysisReplayOutcome::ReproducedWithinTolerance {
+            sample_count: 4,
+            ..
+        })
     ));
 
-    // B4: Sample 0 has expected=10.0, actual=10.08 -> abs_diff=0.08 <= max_abs_diff (0.10),
+    // B4: Sample 1 has expected=10.0, actual=10.08 -> abs_diff=0.08 <= max_abs_diff (0.10),
     // but rel_diff=0.008 > max_rel_diff (0.005). Because both bounds must hold, it diverges.
     let tol_rel_div = replay_analysis(
         &bundle,
@@ -1071,7 +1124,7 @@ fn verifies_bitwise_and_tolerance_replay_and_reports_non_replayable_reasons_hone
             analysis_id: "ana:tolerance",
             version_id: "ver:a2",
             available_models: &[("model:regressor", "v1.2.0")],
-            candidate_output: CandidateReplayOutput::NumericalSeries(&[10.08, 20.0, 30.0]),
+            candidate_output: CandidateReplayOutput::NumericalSeries(&[0.0, 10.08, 20.0, 30.0]),
         },
         limits,
         || Ok(()),
@@ -1079,9 +1132,13 @@ fn verifies_bitwise_and_tolerance_replay_and_reports_non_replayable_reasons_hone
     assert!(matches!(
         tol_rel_div,
         Ok(AnalysisReplayOutcome::DivergedBeyondTolerance {
-            first_failing_index: 0,
-            expected_sample_count: 3,
-            actual_sample_count: 3,
+            first_failing_index: 1,
+            expected_sample_count: 4,
+            actual_sample_count: 4,
+            expected_value: Some(_),
+            actual_value: Some(_),
+            abs_diff: Some(_),
+            rel_diff: Some(_),
             ..
         })
     ));
@@ -1092,7 +1149,7 @@ fn verifies_bitwise_and_tolerance_replay_and_reports_non_replayable_reasons_hone
             analysis_id: "ana:tolerance",
             version_id: "ver:a2",
             available_models: &[("model:regressor", "v1.2.0")],
-            candidate_output: CandidateReplayOutput::NumericalSeries(&[10.0, 21.5, 30.0]),
+            candidate_output: CandidateReplayOutput::NumericalSeries(&[0.0, 10.0, 21.5, 30.0]),
         },
         limits,
         || Ok(()),
@@ -1100,21 +1157,22 @@ fn verifies_bitwise_and_tolerance_replay_and_reports_non_replayable_reasons_hone
     assert!(matches!(
         tol_div,
         Ok(AnalysisReplayOutcome::DivergedBeyondTolerance {
-            first_failing_index: 1,
-            expected_sample_count: 3,
-            actual_sample_count: 3,
+            first_failing_index: 2,
+            expected_sample_count: 4,
+            actual_sample_count: 4,
+            expected_value: Some(_),
             ..
         })
     ));
 
-    // B4: Series length mismatch returns `DivergedBeyondTolerance` rather than `Err`.
+    // B4 + N-nonblocking 2: Series length mismatch returns `DivergedBeyondTolerance` with `None` sample values.
     let tol_len_div = replay_analysis(
         &bundle,
         &AnalysisReplayRequest {
             analysis_id: "ana:tolerance",
             version_id: "ver:a2",
             available_models: &[("model:regressor", "v1.2.0")],
-            candidate_output: CandidateReplayOutput::NumericalSeries(&[10.0, 20.0]),
+            candidate_output: CandidateReplayOutput::NumericalSeries(&[0.0, 10.0]),
         },
         limits,
         || Ok(()),
@@ -1122,9 +1180,13 @@ fn verifies_bitwise_and_tolerance_replay_and_reports_non_replayable_reasons_hone
     assert!(matches!(
         tol_len_div,
         Ok(AnalysisReplayOutcome::DivergedBeyondTolerance {
-            expected_sample_count: 3,
+            expected_sample_count: 4,
             actual_sample_count: 2,
             first_failing_index: 2,
+            expected_value: None,
+            actual_value: None,
+            abs_diff: None,
+            rel_diff: None,
             ..
         })
     ));

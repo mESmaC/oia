@@ -1,8 +1,8 @@
-//! `oia-export` â€” Cited report export and reproducible bundle import/export (`#9`, `#22`).
+//! `oia-export` — Cited report export and reproducible bundle import/export (`#9`, `#22`).
 //!
 //! Implements the dependency-independent cited report projection, redaction/omission preview,
 //! and inert UTF-8 Markdown and self-contained HTML rendering kernel (`ADR 0006` / `D05`,
-//! `docs/contracts/report-export.md` Â§Â§1â€“4).
+//! `docs/contracts/report-export.md` §§1–4).
 
 #![forbid(unsafe_code)]
 #![deny(clippy::indexing_slicing, clippy::unwrap_used, clippy::expect_used)]
@@ -12,7 +12,7 @@ pub mod bundle;
 use std::error::Error;
 use std::fmt;
 
-/// Crate boundary marker for `oia-export` (`docs/architecture.md` Â§1.2, `#9`).
+/// Crate boundary marker for `oia-export` (`docs/architecture.md` §1.2, `#9`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExportBoundary;
 
@@ -1336,7 +1336,7 @@ pub fn render_markdown(
         } => {
             push_str_bounded(&mut out, "`[REASSESSMENT REQUIRED]` flagged by ", max_out)?;
             push_markdown_code_span(&mut out, flagging_record_version_id, max_out)?;
-            push_str_bounded(&mut out, " â€” ", max_out)?;
+            push_str_bounded(&mut out, " — ", max_out)?;
             push_markdown_escaped(&mut out, reason, max_out)?;
             push_str_bounded(&mut out, "\n", max_out)?;
         }
@@ -1467,7 +1467,7 @@ pub fn render_markdown(
                             push_str_bounded(&mut out, " (redacted derivative)", max_out)?;
                         }
                     }
-                    push_str_bounded(&mut out, " â€” ", max_out)?;
+                    push_str_bounded(&mut out, " — ", max_out)?;
                     push_anchor_validation_markdown(&mut out, &citation.validation, max_out)?;
                     push_str_bounded(&mut out, "\n", max_out)?;
                 }
@@ -1760,7 +1760,7 @@ pub fn render_html(
                             push_str_bounded(&mut out, " (redacted derivative)", max_out)?;
                         }
                     }
-                    push_str_bounded(&mut out, " â€” ", max_out)?;
+                    push_str_bounded(&mut out, " — ", max_out)?;
                     push_anchor_validation_html(&mut out, &citation.validation, max_out)?;
                     push_str_bounded(&mut out, "</div>\n", max_out)?;
                 }
@@ -2376,7 +2376,7 @@ fn push_anchor_validation_markdown(
                 push_str_bounded(out, reason.label(), max_out)?;
                 push_str_bounded(out, ")", max_out)?;
             }
-            push_str_bounded(out, " â€” ", max_out)?;
+            push_str_bounded(out, " — ", max_out)?;
             push_markdown_escaped(out, anchor_summary, max_out)?;
             push_str_bounded(out, "**]**", max_out)?;
         }
@@ -2472,7 +2472,7 @@ fn push_anchor_validation_html(
                 push_str_bounded(out, reason.label(), max_out)?;
                 push_str_bounded(out, ")", max_out)?;
             }
-            push_str_bounded(out, " â€” ", max_out)?;
+            push_str_bounded(out, " — ", max_out)?;
             push_html_escaped(out, anchor_summary, max_out)?;
             push_str_bounded(out, "]</span>", max_out)?;
         }
@@ -2626,14 +2626,31 @@ fn push_markdown_code_pair(
     push_backticks_bounded(out, fence_len, max_out)
 }
 
-fn is_bidi_or_zero_width(ch: char) -> bool {
+pub(crate) fn is_bidi_or_zero_width(ch: char) -> bool {
     matches!(
         ch,
-        '\u{200B}'..='\u{200F}'
-            | '\u{202A}'..='\u{202E}'
-            | '\u{2060}'..='\u{2064}'
-            | '\u{2066}'..='\u{2069}'
+        '\u{0085}'
+            | '\u{00AD}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061C}'
+            | '\u{06DD}'
+            | '\u{070F}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08E2}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{206F}'
+            | '\u{3164}'
             | '\u{FEFF}'
+            | '\u{FFA0}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0000}'..='\u{E007F}'
     )
 }
 
@@ -2700,18 +2717,35 @@ fn push_control_hex_escape(out: &mut String, code: u32, max_out: usize) -> Resul
     let b2 = ((code >> 8) & 0xF) as usize;
     let b1 = ((code >> 4) & 0xF) as usize;
     let b0 = (code & 0xF) as usize;
-    let seq = [
-        b'\\',
-        b'u',
-        b'{',
-        *HEX.get(b3).unwrap_or(&b'0'),
-        *HEX.get(b2).unwrap_or(&b'0'),
-        *HEX.get(b1).unwrap_or(&b'0'),
-        *HEX.get(b0).unwrap_or(&b'0'),
-        b'}',
-    ];
-    let text = std::str::from_utf8(&seq).unwrap_or("\\u{0000}");
-    push_str_bounded(out, text, max_out)
+    if code > 0xFFFF {
+        let b4 = ((code >> 16) & 0xF) as usize;
+        let seq = [
+            b'\\',
+            b'u',
+            b'{',
+            *HEX.get(b4).unwrap_or(&b'0'),
+            *HEX.get(b3).unwrap_or(&b'0'),
+            *HEX.get(b2).unwrap_or(&b'0'),
+            *HEX.get(b1).unwrap_or(&b'0'),
+            *HEX.get(b0).unwrap_or(&b'0'),
+            b'}',
+        ];
+        let text = std::str::from_utf8(&seq).unwrap_or("\\u{0000}");
+        push_str_bounded(out, text, max_out)
+    } else {
+        let seq = [
+            b'\\',
+            b'u',
+            b'{',
+            *HEX.get(b3).unwrap_or(&b'0'),
+            *HEX.get(b2).unwrap_or(&b'0'),
+            *HEX.get(b1).unwrap_or(&b'0'),
+            *HEX.get(b0).unwrap_or(&b'0'),
+            b'}',
+        ];
+        let text = std::str::from_utf8(&seq).unwrap_or("\\u{0000}");
+        push_str_bounded(out, text, max_out)
+    }
 }
 
 fn make_owned_str(input: &str) -> Result<String, ReportError> {

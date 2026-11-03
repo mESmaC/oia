@@ -923,6 +923,15 @@ pub enum ImportedReportHandling {
     UntrustedRequiresRegenerationOrInertViewer,
 }
 
+/// Validated capability declaration retained on `ValidatedBundle`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatedCapabilityDeclaration {
+    pub capability_id: String,
+    pub kind: CapabilityKind,
+    pub version: u32,
+    pub requirement: CapabilityRequirement,
+}
+
 /// Validated staged file entry with verified SHA-256 and byte length.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VerifiedStagedEntry {
@@ -931,6 +940,7 @@ pub struct VerifiedStagedEntry {
     pub media_type: String,
     pub verified_byte_len: usize,
     pub verified_sha256_hex: String,
+    pub schema_version: Option<u32>,
     pub report_handling: Option<ImportedReportHandling>,
 }
 
@@ -949,40 +959,22 @@ pub struct MappedBundleRecord {
     pub attributed_actor: AttributedOriginActor,
     pub recorded_time: OwnedTimeDisplay,
     pub uncertainty_note: Option<String>,
+    pub asset_relative_path: Option<String>,
     pub asset_sha256_hex: Option<String>,
+    pub required_capability: Option<(String, u32)>,
     pub optional_handling: OptionalRecordHandling,
 }
 
-/// Validated and namespace-mapped in-memory bundle representation (`REPRO-01`–`REPRO-03`, `A17`).
-///
-/// This type holds the verified staged entry inventory, injective local namespace record mappings,
-/// use conditions, references, omissions, and reproduction specifications. Filesystem no-follow
-/// staging and `oia-store` transactional case publication remain separate integration steps.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ValidatedBundle {
-    identity: ValidatedPackageIdentity,
-    destination_case_id: String,
-    local_namespace_prefix: String,
-    verified_entries: Vec<VerifiedStagedEntry>,
-    use_conditions: Vec<ValidatedAssetUseConditions>,
-    mapped_records: Vec<MappedBundleRecord>,
-    references: Vec<ValidatedBundleReference>,
-    omissions: Vec<ValidatedBundleOmission>,
-    queries: Vec<ValidatedQuerySpec>,
-    groupings: Vec<ValidatedGroupingDecision>,
-    calibrations: Vec<ValidatedCalibrationRecord>,
-    forecasts: Vec<ValidatedForecastSpec>,
-    omitted_optional_capabilities: Vec<(String, u32)>,
-    calibration_lookup: BTreeMap<(String, String), Option<String>>,
-    available_record_versions: BTreeSet<(String, String)>,
-    omitted_record_versions: BTreeMap<(String, String), OmissionReason>,
-    verified_asset_digests: BTreeMap<String, String>,
-    supported_capabilities: BTreeSet<(String, u32)>,
-    analyses: BTreeMap<(String, String), ValidatedAnalysisSpec>,
+/// Validated license compatibility state retained on `ValidatedAnalysisSpec`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ValidatedAnalysisLicenseStatus {
+    Compatible { license_id: String },
+    ChangedOrIncompatible { detail: String },
 }
 
+/// Validated replay contract retained on `ValidatedAnalysisSpec`.
 #[derive(Clone, Debug, PartialEq)]
-enum ValidatedReplayContract {
+pub enum ValidatedReplayContract {
     DeterministicBitwise {
         expected_output_sha256_hex: String,
         expected_byte_len: usize,
@@ -998,18 +990,53 @@ enum ValidatedReplayContract {
     },
 }
 
+/// Validated analysis specification retained on `ValidatedBundle`.
 #[derive(Clone, Debug, PartialEq)]
-struct ValidatedAnalysisSpec {
-    method_id: String,
-    required_capability_id: String,
-    required_capability_version: u32,
-    model_id: Option<String>,
-    model_version: Option<String>,
-    license_incompatible_detail: Option<String>,
-    pinned_input_versions: Vec<(String, String)>,
-    pinned_asset_paths: Vec<String>,
-    calibration_ref: Option<(String, String)>,
-    replay_contract: ValidatedReplayContract,
+pub struct ValidatedAnalysisSpec {
+    pub analysis_id: String,
+    pub version_id: String,
+    pub method_id: String,
+    pub required_capability_id: String,
+    pub required_capability_version: u32,
+    pub model_id: Option<String>,
+    pub model_version: Option<String>,
+    pub configuration_summary: String,
+    pub license_status: ValidatedAnalysisLicenseStatus,
+    pub pinned_input_versions: Vec<(String, String)>,
+    pub pinned_asset_paths: Vec<String>,
+    pub calibration_ref: Option<(String, String)>,
+    pub replay_contract: ValidatedReplayContract,
+}
+
+/// Validated and namespace-mapped in-memory bundle representation (`REPRO-01`–`REPRO-03`, `A17`).
+///
+/// This type holds the verified staged entry inventory, injective local namespace record mappings,
+/// capabilities, use conditions, references, omissions, and reproduction specifications. Filesystem
+/// no-follow staging and `oia-store` transactional case publication remain separate integration
+/// steps.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValidatedBundle {
+    identity: ValidatedPackageIdentity,
+    destination_case_id: String,
+    local_namespace_prefix: String,
+    capabilities: Vec<ValidatedCapabilityDeclaration>,
+    verified_entries: Vec<VerifiedStagedEntry>,
+    use_conditions: Vec<ValidatedAssetUseConditions>,
+    mapped_records: Vec<MappedBundleRecord>,
+    references: Vec<ValidatedBundleReference>,
+    omissions: Vec<ValidatedBundleOmission>,
+    queries: Vec<ValidatedQuerySpec>,
+    groupings: Vec<ValidatedGroupingDecision>,
+    calibrations: Vec<ValidatedCalibrationRecord>,
+    forecasts: Vec<ValidatedForecastSpec>,
+    analyses_list: Vec<ValidatedAnalysisSpec>,
+    omitted_optional_capabilities: Vec<(String, u32)>,
+    calibration_lookup: BTreeMap<(String, String), Option<String>>,
+    available_record_versions: BTreeSet<(String, String)>,
+    omitted_record_versions: BTreeMap<(String, String), OmissionReason>,
+    verified_asset_digests: BTreeMap<String, String>,
+    supported_capabilities: BTreeSet<(String, u32)>,
+    analyses: BTreeMap<(String, String), ValidatedAnalysisSpec>,
 }
 
 impl ValidatedBundle {
@@ -1027,6 +1054,10 @@ impl ValidatedBundle {
 
     pub fn local_namespace_prefix(&self) -> &str {
         &self.local_namespace_prefix
+    }
+
+    pub fn capabilities(&self) -> &[ValidatedCapabilityDeclaration] {
+        &self.capabilities
     }
 
     pub fn verified_entries(&self) -> &[VerifiedStagedEntry] {
@@ -1067,6 +1098,10 @@ impl ValidatedBundle {
 
     pub fn forecasts(&self) -> &[ValidatedForecastSpec] {
         &self.forecasts
+    }
+
+    pub fn analyses(&self) -> &[ValidatedAnalysisSpec] {
+        &self.analyses_list
     }
 
     pub fn omitted_optional_capabilities(&self) -> &[(String, u32)] {
@@ -1160,10 +1195,10 @@ pub enum AnalysisReplayOutcome {
         expected_sample_count: usize,
         actual_sample_count: usize,
         first_failing_index: usize,
-        expected_value: f64,
-        actual_value: f64,
-        abs_diff: f64,
-        rel_diff: f64,
+        expected_value: Option<f64>,
+        actual_value: Option<f64>,
+        abs_diff: Option<f64>,
+        rel_diff: Option<f64>,
         max_allowed_abs_diff: f64,
         max_allowed_rel_diff: f64,
     },
@@ -1328,6 +1363,10 @@ where
     }
 
     let mut declared_capabilities = BTreeMap::new();
+    let mut validated_capabilities = Vec::new();
+    validated_capabilities
+        .try_reserve(input.capabilities.len())
+        .map_err(|_| BundleError::AllocationFailed)?;
     let mut omitted_optional_capabilities = Vec::new();
     for cap in input.capabilities {
         check_stop(&mut stop_check)?;
@@ -1367,6 +1406,15 @@ where
                 }
             }
         }
+        try_push(
+            &mut validated_capabilities,
+            ValidatedCapabilityDeclaration {
+                capability_id: cap.capability_id.to_owned(),
+                kind: cap.kind,
+                version: cap.version,
+                requirement: cap.requirement,
+            },
+        )?;
     }
 
     let mut manifest_by_path = BTreeMap::new();
@@ -1552,6 +1600,7 @@ where
                 media_type: entry.media_type.to_owned(),
                 verified_byte_len: staged.staged_bytes.len(),
                 verified_sha256_hex: actual_sha256,
+                schema_version: entry.schema_version,
                 report_handling,
             },
         )?;
@@ -1699,7 +1748,6 @@ where
         .map_err(|_| BundleError::AllocationFailed)?;
     let mut available_record_versions = BTreeSet::new();
     let mut seen_record_versions = BTreeSet::new();
-    let mut seen_origin_record_versions = BTreeSet::new();
 
     for rec in input.records {
         check_stop(&mut stop_check)?;
@@ -1742,29 +1790,22 @@ where
             )?;
         }
 
-        let origin_rec_key = (
-            rec.origin_namespace.to_owned(),
-            rec.record_id.to_owned(),
-            rec.version_id.to_owned(),
-        );
-        if !seen_origin_record_versions.insert(origin_rec_key) {
+        let rec_key = (rec.record_id.to_owned(), rec.version_id.to_owned());
+        // Within a bundle, `(record_id, version_id)` must be globally unique across all records
+        // (including across origin namespaces) so references, pins, and omissions resolve
+        // unambiguously and order-independently.
+        if !seen_record_versions.insert(rec_key.clone()) {
             return Err(BundleError::DuplicateIdentifier {
                 kind: "record_version",
-                id: format!(
-                    "{}:{}@{}",
-                    rec.origin_namespace, rec.record_id, rec.version_id
-                ),
+                id: format!("{}@{}", rec.record_id, rec.version_id),
             });
         }
-
-        let rec_key = (rec.record_id.to_owned(), rec.version_id.to_owned());
-        if omitted_record_versions.contains_key(&rec_key) {
+        if seen_omission_ids.contains(&rec_key) {
             return Err(BundleError::DuplicateIdentifier {
                 kind: "record_and_omission",
                 id: format!("{}@{}", rec.record_id, rec.version_id),
             });
         }
-        seen_record_versions.insert(rec_key.clone());
 
         let asset_sha256_hex = if let Some(asset_path) = rec.asset_relative_path {
             let Some(digest) = verified_asset_digests.get(asset_path) else {
@@ -1845,7 +1886,11 @@ where
                 },
                 recorded_time,
                 uncertainty_note: rec.uncertainty_note.map(str::to_owned),
+                asset_relative_path: rec.asset_relative_path.map(str::to_owned),
                 asset_sha256_hex,
+                required_capability: rec
+                    .required_capability
+                    .map(|(cap_id, cap_ver)| (cap_id.to_owned(), cap_ver)),
                 optional_handling,
             },
         )?;
@@ -2246,6 +2291,10 @@ where
     }
 
     let mut analyses = BTreeMap::new();
+    let mut analyses_list = Vec::new();
+    analyses_list
+        .try_reserve(input.analyses.len())
+        .map_err(|_| BundleError::AllocationFailed)?;
     for analysis in input.analyses {
         check_stop(&mut stop_check)?;
         validate_identifier(
@@ -2306,7 +2355,7 @@ where
                 });
             }
         }
-        let license_incompatible_detail = match analysis.license_status {
+        let license_status = match analysis.license_status {
             AnalysisLicenseStatus::Compatible { license_id } => {
                 validate_text_field(
                     license_id,
@@ -2314,7 +2363,9 @@ where
                     &mut text_bytes_used,
                     limits,
                 )?;
-                None
+                ValidatedAnalysisLicenseStatus::Compatible {
+                    license_id: license_id.to_owned(),
+                }
             }
             AnalysisLicenseStatus::ChangedOrIncompatible { detail } => {
                 validate_text_field(
@@ -2323,7 +2374,9 @@ where
                     &mut text_bytes_used,
                     limits,
                 )?;
-                Some(detail.to_owned())
+                ValidatedAnalysisLicenseStatus::ChangedOrIncompatible {
+                    detail: detail.to_owned(),
+                }
             }
         };
 
@@ -2421,6 +2474,8 @@ where
                     || !max_rel_diff.is_finite()
                     || max_abs_diff < 0.0
                     || max_rel_diff < 0.0
+                    || max_abs_diff.is_sign_negative()
+                    || max_rel_diff.is_sign_negative()
                     || max_rel_diff >= 1.0
                 {
                     return Err(BundleError::InvalidToleranceConfiguration {
@@ -2456,33 +2511,32 @@ where
             }
         };
 
+        let validated_spec = ValidatedAnalysisSpec {
+            analysis_id: analysis.analysis_id.to_owned(),
+            version_id: analysis.version_id.to_owned(),
+            method_id: analysis.method_id.to_owned(),
+            required_capability_id: analysis.required_capability_id.to_owned(),
+            required_capability_version: analysis.required_capability_version,
+            model_id: analysis.model_id.map(str::to_owned),
+            model_version: analysis.model_version.map(str::to_owned),
+            configuration_summary: analysis.configuration_summary.to_owned(),
+            license_status,
+            pinned_input_versions: pinned_inputs,
+            pinned_asset_paths,
+            calibration_ref,
+            replay_contract,
+        };
         let key = (
             analysis.analysis_id.to_owned(),
             analysis.version_id.to_owned(),
         );
-        if analyses
-            .insert(
-                key,
-                ValidatedAnalysisSpec {
-                    method_id: analysis.method_id.to_owned(),
-                    required_capability_id: analysis.required_capability_id.to_owned(),
-                    required_capability_version: analysis.required_capability_version,
-                    model_id: analysis.model_id.map(str::to_owned),
-                    model_version: analysis.model_version.map(str::to_owned),
-                    license_incompatible_detail,
-                    pinned_input_versions: pinned_inputs,
-                    pinned_asset_paths,
-                    calibration_ref,
-                    replay_contract,
-                },
-            )
-            .is_some()
-        {
+        if analyses.insert(key, validated_spec.clone()).is_some() {
             return Err(BundleError::DuplicateIdentifier {
                 kind: "analysis",
                 id: format!("{}@{}", analysis.analysis_id, analysis.version_id),
             });
         }
+        try_push(&mut analyses_list, validated_spec)?;
     }
 
     check_stop(&mut stop_check)?;
@@ -2498,6 +2552,7 @@ where
         },
         destination_case_id: input.destination_case_id.to_owned(),
         local_namespace_prefix: input.local_namespace_prefix.to_owned(),
+        capabilities: validated_capabilities,
         verified_entries,
         use_conditions,
         mapped_records,
@@ -2507,6 +2562,7 @@ where
         groupings: validated_groupings,
         calibrations: validated_calibrations,
         forecasts: validated_forecasts,
+        analyses_list,
         omitted_optional_capabilities,
         calibration_lookup,
         available_record_versions,
@@ -2603,7 +2659,7 @@ where
         });
     }
 
-    if let Some(detail) = &spec.license_incompatible_detail {
+    if let ValidatedAnalysisLicenseStatus::ChangedOrIncompatible { detail } = &spec.license_status {
         return Ok(AnalysisReplayOutcome::NonReplayable {
             analysis_id: request.analysis_id.to_owned(),
             version_id: request.version_id.to_owned(),
@@ -2721,10 +2777,10 @@ where
                     expected_sample_count: expected_series.len(),
                     actual_sample_count: candidate_series.len(),
                     first_failing_index: candidate_series.len().min(expected_series.len()),
-                    expected_value: f64::NAN,
-                    actual_value: f64::NAN,
-                    abs_diff: f64::INFINITY,
-                    rel_diff: f64::INFINITY,
+                    expected_value: None,
+                    actual_value: None,
+                    abs_diff: None,
+                    rel_diff: None,
                     max_allowed_abs_diff: *max_abs_diff,
                     max_allowed_rel_diff: *max_rel_diff,
                 });
@@ -2740,21 +2796,25 @@ where
             {
                 check_stop(&mut stop_check)?;
                 let abs_diff = (*actual - *expected).abs();
-                let denom = expected.abs().max(actual.abs());
-                let rel_diff = if denom == 0.0 { 0.0 } else { abs_diff / denom };
+                let (rel_diff, within_bounds) = if *expected == 0.0 {
+                    (0.0, abs_diff <= *max_abs_diff)
+                } else {
+                    let denom = expected.abs().max(actual.abs());
+                    let r = if denom == 0.0 { 0.0 } else { abs_diff / denom };
+                    (r, abs_diff <= *max_abs_diff && r <= *max_rel_diff)
+                };
 
-                // Both the absolute and relative tolerance bounds must hold on every sample.
-                if abs_diff > *max_abs_diff || rel_diff > *max_rel_diff {
+                if !within_bounds {
                     return Ok(AnalysisReplayOutcome::DivergedBeyondTolerance {
                         analysis_id: request.analysis_id.to_owned(),
                         version_id: request.version_id.to_owned(),
                         expected_sample_count: expected_series.len(),
                         actual_sample_count: candidate_series.len(),
                         first_failing_index: idx,
-                        expected_value: *expected,
-                        actual_value: *actual,
-                        abs_diff,
-                        rel_diff,
+                        expected_value: Some(*expected),
+                        actual_value: Some(*actual),
+                        abs_diff: Some(abs_diff),
+                        rel_diff: Some(rel_diff),
                         max_allowed_abs_diff: *max_abs_diff,
                         max_allowed_rel_diff: *max_rel_diff,
                     });
@@ -3258,17 +3318,52 @@ fn looks_like_local_filesystem_path(value: &str) -> bool {
     false
 }
 
-fn is_rfc1918_172_private(host: &str) -> bool {
-    let Some(rest) = host.strip_prefix("172.") else {
-        return false;
-    };
-    let Some(second_octet_str) = rest.split('.').next() else {
-        return false;
-    };
-    let Ok(second_octet) = second_octet_str.parse::<u8>() else {
-        return false;
-    };
-    (16..=31).contains(&second_octet)
+fn is_forbidden_ipv4(v4: std::net::Ipv4Addr) -> bool {
+    let octets = v4.octets();
+    v4.is_loopback()
+        || v4.is_private()
+        || v4.is_link_local()
+        || v4.is_broadcast()
+        || v4.is_unspecified()
+        || v4.is_documentation()
+        || v4.is_multicast()
+        || octets[0] == 0
+        || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+}
+
+fn is_forbidden_external_host(raw_host: &str) -> bool {
+    let host = raw_host.trim_end_matches('.');
+    if host.is_empty()
+        || host == "localhost"
+        || host == "0"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host.ends_with(".internal")
+    {
+        return true;
+    }
+    if host.bytes().all(|b| b.is_ascii_digit()) || host.starts_with("0x") {
+        return true;
+    }
+    if host.split('.').any(|part| {
+        part.starts_with("0x")
+            || (part.len() > 1 && part.starts_with('0') && part.bytes().all(|b| b.is_ascii_digit()))
+    }) {
+        return true;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => is_forbidden_ipv4(v4),
+        Ok(std::net::IpAddr::V6(v6)) => {
+            let seg0 = v6.segments()[0];
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (seg0 & 0xfe00) == 0xfc00
+                || (seg0 & 0xffc0) == 0xfe80
+                || v6.to_ipv4().is_some_and(is_forbidden_ipv4)
+        }
+        Err(_) => host.contains(':'),
+    }
 }
 
 fn validate_safe_external_url(
@@ -3305,17 +3400,7 @@ fn validate_safe_external_url(
     } else {
         authority.split(':').next().unwrap_or("")
     };
-    if host == "localhost"
-        || host == "0.0.0.0"
-        || host == "::1"
-        || host.starts_with("127.")
-        || host.starts_with("10.")
-        || host.starts_with("192.168.")
-        || host.starts_with("169.254.")
-        || is_rfc1918_172_private(host)
-        || host.ends_with(".local")
-        || host.ends_with(".internal")
-    {
+    if is_forbidden_external_host(host) {
         return Err(BundleError::ForbiddenBundleSideEffect {
             context: context_id.to_owned(),
             reason: "external URL must not target loopback, link-local, or private network hosts",
@@ -3392,7 +3477,7 @@ fn validate_pinned_version_refs(
 
 #[cfg(test)]
 mod tests {
-    use super::sha256_hex;
+    use super::{BundleLimits, sha256_hex, validate_identifier, validate_text_field};
 
     /// Verifies standard NIST FIPS 180-4 SHA-256 test vectors, including the empty string, `"abc"`,
     /// 448-bit, 896-bit, and one million `'a'` messages (`#39` review B6).
@@ -3421,5 +3506,38 @@ mod tests {
             sha256_hex(&million_a),
             "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
         );
+    }
+
+    /// Verifies that the unified `is_bidi_or_zero_width` check rejects Arabic letter mark (U+061C),
+    /// plane-14 tag characters (U+E0000..=U+E007F), U+2028, U+180E, U+3164, U+FFF9, and U+2065
+    /// in both identifiers and text fields (`#39` review N3).
+    #[test]
+    fn rejects_bidi_invisible_format_and_tag_characters_in_ids_and_text() {
+        let limits = BundleLimits::default_limits();
+        for ch in [
+            '\u{061C}',
+            '\u{180E}',
+            '\u{2028}',
+            '\u{2065}',
+            '\u{3164}',
+            '\u{FFF9}',
+            '\u{E0000}',
+            '\u{E0001}',
+            '\u{E007F}',
+        ] {
+            let s = format!("prefix{ch}suffix");
+            let mut used = 0usize;
+            assert!(
+                validate_identifier(&s, "test.id", &mut used, limits).is_err(),
+                "expected identifier with U+{:04X} to be rejected",
+                ch as u32
+            );
+            let mut used_text = 0usize;
+            assert!(
+                validate_text_field(&s, "test.text", &mut used_text, limits).is_err(),
+                "expected text field with U+{:04X} to be rejected",
+                ch as u32
+            );
+        }
     }
 }

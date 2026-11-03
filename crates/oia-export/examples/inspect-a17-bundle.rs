@@ -604,7 +604,7 @@ fn run() -> Result<(), String> {
                 ..
             } => writeln!(
                 out,
-                "  {analysis_id}: REPRODUCED BITWISE ({byte_len} bytes, sha256={output_sha256_hex})"
+                "  [SYNTHETIC FIXTURE] {analysis_id}: REPRODUCED BITWISE ({byte_len} bytes, sha256={output_sha256_hex})"
             )
             .map_err(|e| e.to_string())?,
             AnalysisReplayOutcome::ReproducedWithinTolerance {
@@ -615,16 +615,20 @@ fn run() -> Result<(), String> {
                 ..
             } => writeln!(
                 out,
-                "  {analysis_id}: REPRODUCED WITHIN TOLERANCE ({sample_count} samples, max_abs_diff={max_observed_abs_diff:.6} <= {max_allowed_abs_diff:.6})"
+                "  [SYNTHETIC FIXTURE] {analysis_id}: REPRODUCED WITHIN TOLERANCE ({sample_count} samples, max_abs_diff={max_observed_abs_diff:.6} <= {max_allowed_abs_diff:.6})"
             )
             .map_err(|e| e.to_string())?,
             AnalysisReplayOutcome::NonReplayable {
                 analysis_id,
                 reason,
                 ..
-            } => writeln!(out, "  {analysis_id}: NON-REPLAYABLE ({reason:?})")
+            } => writeln!(
+                out,
+                "  [SYNTHETIC FIXTURE] {analysis_id}: NON-REPLAYABLE ({reason:?})"
+            )
+            .map_err(|e| e.to_string())?,
+            other => writeln!(out, "  [SYNTHETIC FIXTURE] unexpected outcome: {other:?}")
                 .map_err(|e| e.to_string())?,
-            other => writeln!(out, "  unexpected outcome: {other:?}").map_err(|e| e.to_string())?,
         }
     }
 

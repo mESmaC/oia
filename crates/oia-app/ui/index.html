@@ -26,9 +26,9 @@
   <header class="top">
     <div class="wordmark glass"><b>OIA</b><small>Local · session only</small></div>
     <form class="cmd glass" id="search-form" role="search">
-      <span class="scope" id="scope">NO DOCUMENT</span>
-      <label class="sr-only" for="query">Search the open document for exact text</label>
-      <input id="query" name="query" type="search" placeholder="Open a document to search exact text" maxlength="512" autocomplete="off" data-operation disabled>
+      <button type="button" class="scope" id="scope" title="Search scope · switches between the open document and the held corpus when both are loaded" disabled>NO DOCUMENT</button>
+      <label class="sr-only" for="query">Search the open document or the held corpus for exact text</label>
+      <input id="query" name="query" type="search" placeholder="Open a document or corpus to search exact text" maxlength="512" autocomplete="off" data-operation disabled>
       <button type="submit" id="search-submit" class="cmd-btn" data-operation disabled>Find</button>
       <button type="button" id="clear-search" class="cmd-btn" data-operation disabled>Clear</button>
       <kbd>Ctrl F</kbd>
@@ -67,6 +67,7 @@
       </div>
       <div class="tools glass">
         <button type="button" id="open-document" data-operation title="Ctrl+O">Open document</button>
+        <button type="button" id="open-corpus" data-operation title="Ctrl+Shift+O · select several UTF-8 files to search together">Open corpus</button>
         <button type="button" id="open-image" data-operation title="Ctrl+I">Inspect image</button>
         <button type="button" id="globe-home" class="globe-tool" title="Home key, with the globe focused" hidden>Case anchor</button>
         <button type="button" id="globe-world" class="globe-tool" title="0 key, with the globe focused" hidden>Whole globe</button>
@@ -91,8 +92,9 @@
     <section class="view" id="view-documents" hidden>
       <div class="empty" id="document-empty">
         <span class="k">Document reader</span>
-        <h2>No document open</h2>
-        <p>Open a UTF-8 file to read its passages and search exact text. 2 MiB maximum. PDF and OCR are not in this build.</p>
+        <h2 id="document-empty-title">No document open</h2>
+        <p id="document-empty-text">Open a UTF-8 file to read its passages and search exact text, or open a corpus of up to 20 files to search them together. 2 MiB per file, 8 MiB per corpus. PDF and OCR are not in this build.</p>
+        <div class="tray" id="corpus-tray"></div>
       </div>
       <div class="reader-wrap" id="document-loaded" hidden>
         <section class="matches glass" id="search-panel" hidden aria-label="Search matches">
@@ -255,17 +257,39 @@
     </div>
     <!-- Document inspector -->
     <div class="ipanel" id="insp-documents" hidden>
-      <div class="head"><span class="k">Inspect · document</span><h2 id="insp-doc-name">No document</h2><div class="chips"><span class="chip">▣ Source</span><span class="chip">▮ Read-only snapshot</span></div></div>
-      <div class="tabs" role="tablist"><button type="button" role="tab" aria-selected="true" data-tab="doc-source">Source</button><button type="button" role="tab" aria-selected="false" data-tab="doc-coverage">Coverage</button><button type="button" role="tab" aria-selected="false" data-tab="doc-limits">Limits</button></div>
+      <div class="head"><span class="k">Inspect · document</span><h2 id="insp-doc-name">No document</h2><div class="chips"><span class="chip">▣ Source</span><span class="chip">▮ Read-only snapshot</span><span class="chip" id="insp-doc-corpus" hidden></span></div></div>
+      <div class="tabs" role="tablist"><button type="button" role="tab" aria-selected="true" data-tab="doc-source">Source</button><button type="button" role="tab" aria-selected="false" data-tab="doc-coverage">Coverage</button><button type="button" role="tab" aria-selected="false" data-tab="doc-corpus">Corpus</button><button type="button" role="tab" aria-selected="false" data-tab="doc-cite">Citations</button><button type="button" role="tab" aria-selected="false" data-tab="doc-limits">Limits</button></div>
       <div class="body" tabindex="0">
         <section class="sec" data-pane="doc-source"><span class="k">Source record</span><dl class="kv" id="document-details"></dl></section>
+        <section class="sec" data-pane="doc-corpus" hidden><span class="k">Held corpus</span><dl class="kv" id="corpus-details"></dl><p class="note" id="corpus-note"></p></section>
+        <section class="sec" data-pane="doc-corpus" hidden><span class="k">Files · selection order</span><div class="source-list" id="corpus-list"></div></section>
+        <section class="sec" data-pane="doc-corpus" hidden><span class="k">Last corpus search</span><div id="corpus-coverage" class="corpus-coverage"></div></section>
+        <section class="sec" data-pane="doc-cite" hidden><span class="k">Cite the selected match</span>
+          <p class="note" id="cite-note">Select a search match to cite its exact bytes. The quote is copied from the retained bytes and checked structurally by the citation kernel.</p>
+          <button type="button" id="cite-selection" class="btn primary" data-operation disabled>Add citation from selection</button>
+        </section>
+        <section class="sec" data-pane="doc-cite" hidden><span class="k">Session citations</span>
+          <div class="mlist" id="citation-list"></div>
+          <label class="sr-only" for="citation-text">Selected citation as text</label>
+          <textarea id="citation-text" rows="5" readonly hidden spellcheck="false"></textarea>
+          <div class="cite-actions"><button type="button" id="copy-citation" class="btn" hidden>Copy text</button></div>
+        </section>
+        <section class="sec" data-pane="doc-cite" hidden><span class="k">Verify a citation against the open document</span>
+          <p class="note">Paste a draft's byte range and quote. The kernel reports an exact structural match or the reason it fails; nothing is repaired or searched.</p>
+          <form class="cite-form" id="citation-form">
+            <label>Start byte<input id="cite-start" type="number" min="0" step="1" inputmode="numeric" required></label>
+            <label>End byte · exclusive<input id="cite-end" type="number" min="1" step="1" inputmode="numeric" required></label>
+            <label class="wide">Quote · exact text<textarea id="cite-quote" rows="3" maxlength="4096" required spellcheck="false"></textarea></label>
+            <button type="submit" id="check-citation" class="btn wide" data-operation disabled>Check against the open document</button>
+          </form>
+        </section>
         <section class="sec" data-pane="doc-coverage" hidden><span class="k">Coverage</span>
           <div class="meter"><span class="label">Bytes extracted</span><span class="n" id="m-extract-n"></span><div class="bar" id="m-extract"></div></div>
           <div class="meter"><span class="label">Passages</span><span class="n" id="m-passages-n"></span><div class="bar" id="m-passages"></div></div>
           <div class="meter" id="m-search-wrap" hidden><span class="label">Bytes searched</span><span class="n" id="m-search-n"></span><div class="bar" id="m-search"></div></div>
           <p class="coverage" id="document-coverage"></p>
         </section>
-        <section class="sec" data-pane="doc-limits" hidden><span class="k">Limits</span><p class="note">Exact, case-sensitive search within single lines, up to 200 matches. Zero matches cover only the searched bytes. Byte ranges are zero-based and end-exclusive. Hidden controls are escaped for display only. A hash shows byte identity, not authenticity. Publication, author, and event time are not recorded. Changes on disk do not change this snapshot.</p></section>
+        <section class="sec" data-pane="doc-limits" hidden><span class="k">Limits</span><p class="note">Exact, case-sensitive search within single lines, up to 200 matches shared across a corpus search; a file the limit leaves unsearched is reported as such, never as empty. Zero matches cover only the searched bytes. Byte ranges are zero-based and end-exclusive. Hidden controls are escaped for display and in copied citation text. A hash shows byte identity, not authenticity; a corpus slot is the selection order, not a source or version identity, and identical files in two slots are one set of bytes, not corroboration. A valid citation is a structural anchor in this session's retained bytes, not a source-version citation, entailment or review. Publication, author, and event time are not recorded. Changes on disk do not change a snapshot.</p></section>
       </div>
     </div>
     <!-- Witness inspector -->

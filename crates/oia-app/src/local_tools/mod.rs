@@ -17,8 +17,14 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod documents;
 mod forensics;
 mod privacy;
+pub use documents::{
+    CITATIONS, CORPUS_BYTES, CORPUS_FILES, CitationView, CorpusDocumentView, CorpusSearchView,
+    CorpusView, QUOTE_BYTES, check_citation, cite_selection, corpus_view, open_corpus,
+    search_corpus,
+};
 pub use forensics::{ForensicView, SNAPSHOT_SCHEME, analyze_image, media_type, residual_map};
 pub use privacy::{PrivacyView, Selection, clean_image, inspect_image};
 

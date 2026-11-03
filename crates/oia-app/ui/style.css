@@ -337,3 +337,29 @@ tr.selected td { background: var(--accent-dim); }
   .view { position: static; }
   .glass { box-shadow: none; }
 }
+
+/* Documents: corpus scope, grouped corpus matches, session citations */
+.cmd button.scope:not(:disabled):hover { background: var(--fill-2); color: var(--text); }
+.cmd button.scope:disabled { cursor: default; }
+.reader-wrap.search-only .matches { max-height: none; flex: 1; min-height: 0; }
+.match-file { display: flex; align-items: center; gap: 8px; padding: 8px 4px 4px; border-top: 1px solid var(--line); margin-top: 4px; }
+.match-file:first-child { border-top: 0; margin-top: 0; padding-top: 2px; }
+.match-file .cov { margin-left: auto; font: 11px var(--mono); color: var(--text-2); white-space: nowrap; }
+.match-file .cov.warn { color: var(--amber); }
+.corpus-coverage { display: flex; flex-direction: column; gap: 6px; font: 11px/1.4 var(--mono); color: var(--text-2); }
+.corpus-coverage .warn { color: var(--amber); }
+.cite { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 4px; font: 11px/1.4 var(--mono); background: var(--fill); text-align: left; width: 100%; color: var(--text); transition: border-color var(--dur); }
+.cite:hover { border-color: var(--line-2); }
+.cite[aria-pressed="true"] { border-color: var(--accent); }
+.cite b { color: var(--accent); font-weight: 500; }
+.cite.invalid b { color: var(--amber); }
+.cite i { font-style: normal; color: var(--text-3); text-align: right; white-space: nowrap; }
+.cite span { grid-column: 1 / -1; color: var(--text-2); overflow-wrap: anywhere; white-space: pre-wrap; }
+.cite-form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+.cite-form label { display: flex; flex-direction: column; gap: 4px; min-width: 0; font: 11px var(--mono); letter-spacing: .04em; color: var(--text-2); }
+.cite-form .wide { grid-column: 1 / -1; }
+.cite-form input, .cite-form textarea, #citation-text { width: 100%; min-width: 0; background: rgba(0,0,0,.32); border: 1px solid var(--line-2); border-radius: var(--r-ctl); padding: 6px 8px; color: var(--text); font: 12px/1.5 var(--mono); letter-spacing: normal; resize: vertical; }
+#citation-text { margin-top: 8px; white-space: pre-wrap; }
+#cite-selection { width: 100%; margin-top: 8px; }
+.cite-actions { display: flex; gap: 8px; margin-top: 8px; }
+.cite-actions:empty { display: none; }

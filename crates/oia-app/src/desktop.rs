@@ -6,8 +6,9 @@ use crate::globe::{
     layers::AlprFilterId,
 };
 use crate::local_tools::{
-    self as tools, Control, DocumentView, FileKind, ForensicView, PreparedExport, PrivacyView,
-    Result, SNAPSHOT_SCHEME, SearchView, Selection, Snapshot, ToolError,
+    self as tools, CitationView, Control, CorpusSearchView, CorpusView, DocumentView, FileKind,
+    ForensicView, PreparedExport, PrivacyView, Result, SNAPSHOT_SCHEME, SearchView, Selection,
+    Snapshot, ToolError,
 };
 use crate::witness::{WitnessFormData, WitnessOrigin, WitnessState, WitnessView};
 use serde::Serialize;
@@ -19,6 +20,10 @@ struct Inner {
     active: Option<Control>,
     document: Option<Snapshot>,
     image: Option<Snapshot>,
+    /// The explicitly selected corpus, in selection order. Slots are not source identities.
+    corpus: Vec<Snapshot>,
+    /// Session-only citation records in creation order, valid and invalid alike.
+    citations: Vec<CitationView>,
 }
 #[derive(Clone, Debug, Default)]
 struct Services(Arc<Mutex<Inner>>);
@@ -65,6 +70,30 @@ impl Operation {
                 )
             })
     }
+    /// A held text snapshot by hash: the reader's document or a corpus slot. Identical
+    /// bytes in both are the same snapshot for citation purposes.
+    fn text_snapshot(&self, sha256: &str) -> Result<Snapshot> {
+        let state = self.services.lock()?;
+        state
+            .document
+            .iter()
+            .chain(state.corpus.iter())
+            .find(|s| s.info.sha256 == sha256)
+            .cloned()
+            .ok_or_else(|| {
+                ToolError::new(
+                    "stale_input",
+                    "That file is no longer held. Open it and try again.",
+                )
+            })
+    }
+    fn corpus(&self) -> Result<Vec<Snapshot>> {
+        let corpus = self.services.lock()?.corpus.clone();
+        if corpus.is_empty() {
+            return Err(ToolError::new("no_corpus", "Open a corpus first."));
+        }
+        Ok(corpus)
+    }
     fn publish<T>(&self, f: impl FnOnce(&mut Inner) -> Result<T>) -> Result<T> {
         // Cancellation and the final mutation share this gate; a cancelled attempt cannot publish.
         let mut state = self.services.lock()?;
@@ -106,6 +135,18 @@ fn choose_file(kind: FileKind, window: &tauri::WebviewWindow) -> Option<std::pat
             .add_filter("PNG or JPEG", &["png", "jpg", "jpeg"])
             .pick_file(),
     }
+}
+
+fn choose_corpus(window: &tauri::WebviewWindow) -> Option<Vec<std::path::PathBuf>> {
+    rfd::FileDialog::new()
+        .set_parent(window)
+        .set_title(format!(
+            "Open a corpus of UTF-8 documents (up to {} files)",
+            tools::CORPUS_FILES
+        ))
+        .add_filter("Text documents", &["txt", "md", "csv", "json", "log"])
+        .add_filter("All files", &["*"])
+        .pick_files()
 }
 
 async fn worker<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T> {
@@ -167,6 +208,140 @@ async fn search_document(
         let snapshot = operation.snapshot(FileKind::Text, &sha256)?;
         let result = tools::search(&snapshot, &query, &operation.control)?;
         operation.publish(|_| Ok(envelope(result)))
+    })
+    .await
+}
+
+/// Opens an explicitly selected corpus. A refused or cancelled selection keeps the previous
+/// corpus; a loaded one replaces it. The reader's document and the citations are unchanged.
+#[tauri::command]
+async fn open_corpus(
+    state: State<'_, Services>,
+    window: tauri::WebviewWindow,
+) -> Result<Envelope<Option<CorpusView>>> {
+    let mut operation = state.begin()?;
+    worker(move || {
+        let Some(paths) = choose_corpus(&window) else {
+            return Ok(envelope(None));
+        };
+        operation.control = operation.control.processing();
+        let snapshots = tools::open_corpus(&paths, &operation.control)?;
+        let view = tools::corpus_view(&snapshots);
+        operation.publish(|s| {
+            s.corpus = snapshots;
+            Ok(envelope(Some(view)))
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn search_corpus(
+    state: State<'_, Services>,
+    query: String,
+) -> Result<Envelope<CorpusSearchView>> {
+    let mut operation = state.begin()?;
+    worker(move || {
+        let corpus = operation.corpus()?;
+        operation.control = operation.control.processing();
+        let result = tools::search_corpus(&corpus, &query, &operation.control)?;
+        operation.publish(|_| Ok(envelope(result)))
+    })
+    .await
+}
+
+/// Opens a held corpus slot in the reader without a dialog. The snapshot is the same bytes
+/// the corpus search anchored, so a match's offsets stay valid in the reader.
+#[tauri::command]
+async fn open_corpus_document(
+    state: State<'_, Services>,
+    sha256: String,
+) -> Result<Envelope<DocumentView>> {
+    let mut operation = state.begin()?;
+    worker(move || {
+        let snapshot = {
+            let state = operation.services.lock()?;
+            state
+                .corpus
+                .iter()
+                .find(|s| s.info.sha256 == sha256)
+                .cloned()
+                .ok_or_else(|| {
+                    ToolError::new("stale_input", "That file is not in the held corpus.")
+                })?
+        };
+        operation.control = operation.control.processing();
+        let view = tools::document(&snapshot, &operation.control)?;
+        operation.publish(|s| {
+            s.document = Some(snapshot);
+            Ok(envelope(view))
+        })
+    })
+    .await
+}
+
+#[derive(Debug, Serialize)]
+struct CitationsView {
+    records: Vec<CitationView>,
+    limit: usize,
+}
+fn citations_view(state: &Inner) -> CitationsView {
+    CitationsView {
+        records: state.citations.clone(),
+        limit: tools::CITATIONS,
+    }
+}
+fn append_citation(state: &mut Inner, record: CitationView) -> Result<Envelope<CitationsView>> {
+    if state.citations.len() >= tools::CITATIONS {
+        return Err(ToolError::new(
+            "citation_limit",
+            format!(
+                "This session holds {} citation records, the limit. The new record was not added.",
+                tools::CITATIONS
+            ),
+        ));
+    }
+    state.citations.push(record);
+    Ok(envelope(citations_view(state)))
+}
+
+#[tauri::command]
+fn citations(state: State<'_, Services>) -> Result<Envelope<CitationsView>> {
+    let state = state.lock()?;
+    Ok(envelope(citations_view(&state)))
+}
+
+#[tauri::command]
+async fn cite_selection(
+    state: State<'_, Services>,
+    sha256: String,
+    start: usize,
+    end: usize,
+) -> Result<Envelope<CitationsView>> {
+    let mut operation = state.begin()?;
+    worker(move || {
+        let snapshot = operation.text_snapshot(&sha256)?;
+        operation.control = operation.control.processing();
+        let record = tools::cite_selection(&snapshot, start, end, &operation.control)?;
+        operation.publish(|s| append_citation(s, record))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn check_citation(
+    state: State<'_, Services>,
+    sha256: String,
+    start: usize,
+    end: usize,
+    quote: String,
+) -> Result<Envelope<CitationsView>> {
+    let mut operation = state.begin()?;
+    worker(move || {
+        let snapshot = operation.text_snapshot(&sha256)?;
+        operation.control = operation.control.processing();
+        let record = tools::check_citation(&snapshot, start, end, &quote, &operation.control)?;
+        operation.publish(|s| append_citation(s, record))
     })
     .await
 }
@@ -456,6 +631,12 @@ pub fn run() -> std::result::Result<(), tauri::Error> {
             open_document,
             open_image,
             search_document,
+            open_corpus,
+            search_corpus,
+            open_corpus_document,
+            citations,
+            cite_selection,
+            check_citation,
             export_cleaned,
             analyze_image,
             export_residual,

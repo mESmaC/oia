@@ -20,6 +20,9 @@ const HANDLING = { retained: 'Retained', removable: 'Removable', required_for_re
 
 let busy = false, documentView = null, imageView = null, searchView = null, forensicView = null;
 let instrument = 'session', page = 0, selectedLine = null, selectedRow = null, selectedBlock = null;
+// Corpus and citations: Rust holds the corpus snapshots and the citation records; the page
+// holds the search scope, the drawn results, the selected match and the selected record.
+let corpusView = null, corpusSearchView = null, citationsView = null, scope = 'document', selectedMatch = null, selectedCitation = null;
 
 const fmt = n => Number(n).toLocaleString('en-US');
 const pad2 = n => String(n).padStart(2, '0');
@@ -75,23 +78,40 @@ function showInstrument(name, focus = false) {
 function currentView() {
   return instrument === 'documents' ? documentView : instrument === 'privacy' || instrument === 'media' ? imageView : null;
 }
+// The search scope follows what is held: a corpus alone or a document alone fixes it; with both
+// loaded the scope control toggles between them. Results are drawn for the active scope only.
+function effectiveScope() {
+  if (corpusView && !documentView) return 'corpus';
+  if (documentView && !corpusView) return 'document';
+  return scope;
+}
+function activeResults() {
+  return effectiveScope() === 'corpus' ? corpusSearchView : searchView;
+}
 function renderShell() {
   const names = { session: '', documents: 'Documents', witness: 'Witness', privacy: 'Privacy', globe: 'Globe', media: 'Media' };
   const view = currentView();
   $('crumb-sep').hidden = $('crumb-instrument').hidden = instrument === 'session';
   $('crumb-instrument').textContent = names[instrument];
-  const loaded = Number(!!documentView) + Number(!!imageView);
+  const loaded = Number(!!documentView) + Number(!!imageView) + Number(!!corpusView);
   const witnessLoaded = Witness.summary().loaded;
   const sessionRecords = loaded + Number(witnessLoaded);
   $('crumb-chip').textContent = sessionRecords ? `${sessionRecords} session ${sessionRecords === 1 ? 'record' : 'records'} · no case` : 'No case · memory only';
 
   setText('ro-source', view ? view.file.name : '—', view ? 'v' : 'v none');
   setText('ro-hash', view ? view.file.sha256.slice(0, 8) + '…' : '—', view ? 'v' : 'v none');
-  if (instrument === 'documents' && documentView) {
+  const results = activeResults();
+  if (instrument === 'documents' && effectiveScope() === 'corpus' && corpusView) {
+    if (!documentView) setText('ro-source', `corpus · ${corpusView.files.length} ${corpusView.files.length === 1 ? 'file' : 'files'}`, 'v');
+    const complete = results ? results.complete : corpusView.files.length > 0;
+    setText('ro-coverage', results ? `corpus search ${complete ? 'complete' : 'partial'}` : 'corpus held · not searched', results ? (complete ? 'v' : 'v est') : 'v none');
+    const elsewhere = selectedMatch && !(documentView && documentView.file.sha256 === selectedMatch.file.sha256);
+    setText('ro-selection', selectedMatch ? `${elsewhere ? `${selectedMatch.file.name} · ` : ''}line ${selectedMatch.line} · b${selectedMatch.start}–${selectedMatch.end}` : 'none', selectedMatch ? 'v' : 'v none');
+  } else if (instrument === 'documents' && documentView) {
     const complete = searchView ? searchView.complete : documentView.complete;
     const what = searchView ? 'search' : 'extraction';
     setText('ro-coverage', `${what} ${complete ? 'complete' : 'partial'}`, complete ? 'v' : 'v est');
-    setText('ro-selection', selectedLine === null ? 'none' : `line ${selectedLine}`, selectedLine === null ? 'v none' : 'v');
+    setText('ro-selection', selectedMatch ? `line ${selectedMatch.line} · b${selectedMatch.start}–${selectedMatch.end}` : selectedLine === null ? 'none' : `line ${selectedLine}`, selectedLine === null ? 'v none' : 'v');
   } else if (instrument === 'privacy' && imageView) {
     setText('ro-coverage', imageView.complete ? 'profile supported' : 'partial', imageView.complete ? 'v' : 'v est');
     const row = selectedRow === null ? null : imageView.rows[selectedRow];
@@ -118,11 +138,15 @@ function renderShell() {
     setText('ro-selection', loaded ? `${loaded} loaded` : '—', 'v none');
   }
 
-  const scope = $('scope');
-  scope.textContent = documentView ? 'THIS DOCUMENT' : 'NO DOCUMENT';
-  scope.classList.toggle('off', !documentView);
-  $('query').placeholder = documentView ? `Exact text in ${documentView.file.name}` : 'Open a document to search exact text';
-  for (const id of ['query', 'search-submit', 'clear-search']) $(id).disabled = busy || !documentView;
+  const scopeControl = $('scope'), searchable = !!documentView || !!corpusView, inCorpus = effectiveScope() === 'corpus' && corpusView;
+  scopeControl.textContent = inCorpus ? `CORPUS · ${corpusView.files.length}` : documentView ? 'THIS DOCUMENT' : 'NO DOCUMENT';
+  scopeControl.classList.toggle('off', !searchable);
+  scopeControl.disabled = busy || !(documentView && corpusView);
+  $('query').placeholder = inCorpus ? `Exact text across ${corpusView.files.length} held ${corpusView.files.length === 1 ? 'file' : 'files'}` : documentView ? `Exact text in ${documentView.file.name}` : 'Open a document or corpus to search exact text';
+  for (const id of ['query', 'search-submit', 'clear-search']) $(id).disabled = busy || !searchable;
+  $('cite-selection').disabled = busy || !selectedMatch;
+  $('check-citation').disabled = busy || !documentView;
+  $('cite-note').textContent = selectedMatch ? `Selected: ${selectedMatch.file.name}, line ${selectedMatch.line}, bytes ${selectedMatch.start}–${selectedMatch.end}. The quote is copied from the retained bytes and checked structurally by the citation kernel.` : 'Select a search match to cite its exact bytes. The quote is copied from the retained bytes and checked structurally by the citation kernel.';
   $('media-run').disabled = $('run-forensics').disabled = busy || !imageView;
   $('media-empty-action').disabled = busy;
   $('export-residual').disabled = busy || !imageView || !imageView.profile.startsWith('oia-jpeg');
@@ -139,6 +163,14 @@ function renderShell() {
     for (const host of [tray, list]) {
       const t = tag(n, `${v.file.name} · ${fmt(v.file.bytes)} B`);
       t.onclick = () => showInstrument(name, true);
+      host.append(t);
+    }
+  }
+  if (corpusView) {
+    n += 1;
+    for (const host of [tray, list]) {
+      const t = tag(n, `corpus · ${corpusView.files.length} ${corpusView.files.length === 1 ? 'file' : 'files'} · ${fmt(corpusView.total_bytes)} B`);
+      t.onclick = () => { scope = 'corpus'; showInstrument('documents', true); renderDocuments(); };
       host.append(t);
     }
   }
@@ -192,17 +224,95 @@ function details(element, info, extra = []) {
 // ---- Documents ----
 function openDocument() {
   operation('open_document', {}, 'Choose a UTF-8 file · reading begins after selection', data => {
-    documentView = data; searchView = null; page = 0; selectedLine = null;
-    $('query').value = ''; $('search-panel').hidden = true;
-    $('document-empty').hidden = true; $('document-loaded').hidden = false;
-    $('document-name').textContent = data.file.name;
-    $('insp-doc-name').textContent = data.file.name;
-    details($('document-details'), data.file);
-    renderDocumentCoverage();
-    renderPassages();
+    applyDocument(data);
+    scope = 'document';
+    renderDocuments();
     showInstrument('documents');
     return `Loaded ${data.file.name} · ${data.complete ? 'complete' : 'partial'} extraction · session only`;
   });
+}
+// A new reader snapshot: the single-document search and line selection belong to the old bytes.
+// A selected corpus match is kept only when it is in these bytes.
+function applyDocument(data) {
+  documentView = data; searchView = null; page = 0; selectedLine = null;
+  if (selectedMatch && selectedMatch.file.sha256 !== data.file.sha256) selectedMatch = null;
+  $('query').value = '';
+  $('document-name').textContent = data.file.name;
+  details($('document-details'), data.file);
+  renderDocumentCoverage();
+  renderPassages();
+}
+// Draws the Documents instrument from what is held: reader, corpus tray, results for the scope.
+function renderDocuments() {
+  const results = activeResults();
+  const anything = !!documentView || !!results;
+  $('document-empty').hidden = anything;
+  $('document-loaded').hidden = !anything;
+  $('reader').hidden = !documentView;
+  $('document-loaded').classList.toggle('search-only', !documentView);
+  $('document-empty-title').textContent = corpusView ? 'Corpus held · no document open' : 'No document open';
+  $('document-empty-text').textContent = corpusView
+    ? `Search the ${corpusView.files.length} held ${corpusView.files.length === 1 ? 'file' : 'files'} for exact text, or select one to read it. Files stay in memory for this session.`
+    : 'Open a UTF-8 file to read its passages and search exact text, or open a corpus of up to 20 files to search them together. 2 MiB per file, 8 MiB per corpus. PDF and OCR are not in this build.';
+  const tray = $('corpus-tray');
+  tray.replaceChildren();
+  if (corpusView) corpusView.files.forEach((f, i) => { const t = tag(i + 1, `${f.name} · ${fmt(f.bytes)} B`); t.onclick = () => openCorpusDocument(f.sha256); tray.append(t); });
+  $('insp-doc-name').textContent = documentView ? documentView.file.name : corpusView ? `Corpus · ${corpusView.files.length} ${corpusView.files.length === 1 ? 'file' : 'files'}` : 'No document';
+  const chip = $('insp-doc-corpus');
+  chip.hidden = !corpusView;
+  if (corpusView) chip.textContent = `▣ Corpus · ${corpusView.files.length}`;
+  if (results) renderSearch(); else $('search-panel').hidden = true;
+  renderCorpus();
+  renderCitations();
+  renderShell();
+}
+
+// ---- Corpus: an explicit selection of files, searched together with one shared hit limit ----
+function openCorpus() {
+  operation('open_corpus', {}, `Choose up to 20 UTF-8 files · reading begins after selection`, data => {
+    corpusView = data; corpusSearchView = null; selectedMatch = null; scope = 'corpus';
+    $('query').value = '';
+    renderDocuments();
+    showInstrument('documents');
+    return `Held ${data.files.length} ${data.files.length === 1 ? 'file' : 'files'} · ${fmt(data.total_bytes)} B · session only`;
+  });
+}
+function openCorpusDocument(sha256) {
+  if (documentView && documentView.file.sha256 === sha256) { scope = 'document'; renderDocuments(); return null; }
+  return operation('open_corpus_document', { sha256 }, 'Opening the held file in the reader', data => {
+    applyDocument(data);
+    renderDocuments();
+    showInstrument('documents');
+    return `Reader: ${data.file.name} from the held corpus · ${data.complete ? 'complete' : 'partial'} extraction`;
+  });
+}
+function renderCorpus() {
+  const details_ = $('corpus-details'), list = $('corpus-list'), cov = $('corpus-coverage');
+  details_.replaceChildren(); list.replaceChildren(); cov.replaceChildren();
+  if (!corpusView) {
+    $('corpus-note').textContent = 'No corpus held. Open corpus selects several local UTF-8 files to search together; the selection order is the slot order and is not a source identity.';
+    list.append(node('p', 'No files held.'));
+    cov.append(node('span', 'No corpus search run.'));
+    return;
+  }
+  const c = corpusView;
+  for (const [k, v] of [['Files', `${c.files.length} / ${c.file_limit} limit`], ['Bytes', `${fmt(c.total_bytes)} / ${fmt(c.byte_limit)} limit`], ['Order', 'selection order · slot, not source identity'], ['Storage', 'Memory · discarded on exit']]) details_.append(node('dt', k), node('dd', v));
+  $('corpus-note').textContent = 'Each file is an immutable byte snapshot with its own hash. Identical files in two slots are the same bytes, not independent corroboration. Reopening replaces the whole corpus.';
+  c.files.forEach((f, i) => {
+    const t = tag(i + 1, `${f.name} · ${fmt(f.bytes)} B · ${f.sha256.slice(0, 8)}…`);
+    t.title = f.path;
+    t.onclick = () => openCorpusDocument(f.sha256);
+    list.append(t);
+  });
+  const s = corpusSearchView;
+  if (!s) { cov.append(node('span', 'No corpus search run.')); return; }
+  cov.append(node('span', `“${s.query}” · ${s.match_count} ${s.match_count === 1 ? 'match' : 'matches'} of ${s.match_limit} shared limit · ${s.complete ? 'complete for this selection' : 'partial'}`, s.complete ? '' : 'warn'));
+  for (const d of s.documents) cov.append(node('span', `${pad2(d.index + 1)} ${d.file.name}: ${describeOutcome(d)}`, d.search_complete ? '' : 'warn'));
+}
+function describeOutcome(d) {
+  if (d.outcome === 'match_limit_reached') return `not searched · the shared ${corpusSearchView.match_limit}-match limit was reached earlier · ${fmt(d.extracted_bytes)} of ${fmt(d.input_bytes)} B extracted`;
+  if (d.outcome === 'unavailable') return 'unavailable as text';
+  return `${d.matches.length} ${d.matches.length === 1 ? 'match' : 'matches'} · searched ${fmt(d.searched_bytes)} of ${fmt(d.input_bytes)} B${d.search_complete ? '' : d.extraction_complete ? ' · stopped at the match limit' : ' · extraction partial'}`;
 }
 function renderDocumentCoverage() {
   if (!documentView) return;
@@ -238,33 +348,118 @@ function renderPassages() {
   $('next-page').disabled = page + 1 === total;
   $('passages').scrollTop = 0;
 }
+function matchButton(m, i, file) {
+  const b = node('button', undefined, 'match');
+  b.type = 'button';
+  b.append(node('span', pad2(i + 1), 'n'), node('span', `L${m.line} · b${m.start}–${m.end}`, 'at'), node('span', m.text, 't'));
+  const current = selectedMatch && selectedMatch.file.sha256 === file.sha256 && selectedMatch.start === m.start && selectedMatch.end === m.end;
+  if (current) b.setAttribute('aria-current', 'true');
+  b.onclick = () => selectMatch(m, file);
+  return b;
+}
+// Selecting a match focuses its line in the reader. A corpus match in another held file opens
+// that file's snapshot first; the offsets are anchored to the same bytes the search read.
+function selectMatch(m, file) {
+  selectedMatch = { file, line: m.line, start: m.start, end: m.end };
+  const focusLine = () => {
+    selectedLine = m.line; page = Math.floor((m.line - 1) / PAGE_SIZE);
+    renderPassages(); renderSearch(); renderShell();
+    const line = $(`line-${m.line}`);
+    line?.scrollIntoView({ block: 'center' }); line?.focus({ preventScroll: true });
+  };
+  if (documentView && documentView.file.sha256 === file.sha256) { focusLine(); return; }
+  if (!corpusView || !corpusView.files.some(f => f.sha256 === file.sha256)) { renderSearch(); renderShell(); return; }
+  operation('open_corpus_document', { sha256: file.sha256 }, `Opening ${file.name} in the reader`, data => {
+    applyDocument(data);
+    selectedMatch = { file, line: m.line, start: m.start, end: m.end };
+    renderDocuments();
+    focusLine();
+    return `Reader: ${data.file.name} from the held corpus · match at line ${m.line}`;
+  });
+}
 function renderSearch() {
+  const list = $('matches');
+  list.replaceChildren();
+  if (effectiveScope() === 'corpus' && corpusSearchView) {
+    const s = corpusSearchView;
+    $('search-panel').hidden = false;
+    setText('search-count', `${s.match_count} ${s.match_count === 1 ? 'match' : 'matches'} across ${s.documents.length} ${s.documents.length === 1 ? 'file' : 'files'} · “${s.query}”`);
+    setText('search-chip', s.complete ? 'Complete search' : 'Partial search', s.complete ? 'chip' : 'chip warn');
+    const unsearched = s.documents.filter(d => d.outcome !== 'searched').length;
+    setText('search-coverage', `Exact, case-sensitive, within lines; one ${s.match_limit}-match limit shared across the selection, in selection order then byte order.${unsearched ? ` ${unsearched} ${unsearched === 1 ? 'file was' : 'files were'} not searched after the limit; see the Corpus tab.` : ''}${s.match_count ? '' : ' No matches in the searched bytes; this says nothing about other files.'}`, s.complete ? 'coverage' : 'coverage partial');
+    let n = 0;
+    for (const d of s.documents) {
+      const head = node('div', undefined, 'match-file');
+      const t = tag(d.index + 1, d.file.name);
+      t.title = `Open ${d.file.name} in the reader`;
+      t.onclick = () => openCorpusDocument(d.file.sha256);
+      head.append(t, node('span', describeOutcome(d), `cov${d.search_complete ? '' : ' warn'}`));
+      list.append(head);
+      for (const m of d.matches) { list.append(matchButton(m, n, d.file)); n += 1; }
+    }
+    return;
+  }
   const s = searchView;
+  if (!s || !documentView) { $('search-panel').hidden = true; return; }
   $('search-panel').hidden = false;
   setText('search-count', `${s.matches.length} ${s.matches.length === 1 ? 'match' : 'matches'} · “${s.query}”`);
   setText('search-chip', s.complete ? 'Complete search' : 'Partial search', s.complete ? 'chip' : 'chip warn');
   setText('search-coverage', `Searched ${fmt(s.searched_bytes)} of ${fmt(s.input_bytes)} bytes${s.complete ? '' : ' before a limit was reached'}. Exact, case-sensitive, within lines, up to ${s.match_limit} matches.${s.matches.length ? '' : ' No matches in the searched bytes; this says nothing about other files.'}`, s.complete ? 'coverage' : 'coverage partial');
-  const list = $('matches');
-  list.replaceChildren();
-  s.matches.forEach((m, i) => {
-    const b = node('button', undefined, 'match');
-    b.type = 'button';
-    b.append(node('span', pad2(i + 1), 'n'), node('span', `L${m.line} · b${m.start}–${m.end}`, 'at'), node('span', m.text, 't'));
-    if (selectedLine === m.line) b.setAttribute('aria-current', 'true');
-    b.onclick = () => {
-      selectedLine = m.line; page = Math.floor((m.line - 1) / PAGE_SIZE);
-      renderPassages(); renderSearch(); renderShell();
-      const line = $(`line-${m.line}`);
-      line?.scrollIntoView({ block: 'center' }); line?.focus({ preventScroll: true });
-    };
-    list.append(b);
-  });
+  s.matches.forEach((m, i) => list.append(matchButton(m, i, documentView.file)));
 }
 function clearSearch(focusQuery) {
-  searchView = null; selectedLine = null;
+  if (effectiveScope() === 'corpus') corpusSearchView = null; else searchView = null;
+  selectedLine = null; selectedMatch = null;
   $('search-panel').hidden = true;
-  renderPassages(); renderDocumentCoverage(); renderShell();
+  renderPassages(); renderDocumentCoverage(); renderDocuments();
   if (focusQuery) $('query').focus();
+}
+
+// ---- Citations: session-only structural anchors into held bytes, checked by the kernel ----
+function citationText(c) {
+  return `${c.file.name} · SHA-256 ${c.file.sha256} · bytes ${c.start}–${c.end} (zero-based, end exclusive)${c.line ? ` · line ${c.line}` : ''}\n“${c.quote}”\nStructural anchor check: ${c.status}${c.problem ? ` · ${c.problem}` : ''} · ${c.origin === 'selection' ? 'quote copied from the retained bytes' : 'quote supplied and compared'} · this session only · not a source-version citation, entailment or review`;
+}
+function renderCitations() {
+  const host = $('citation-list');
+  host.replaceChildren();
+  const records = citationsView ? citationsView.records : [];
+  if (!records.length) host.append(node('p', 'No citations in this session. Records are kept in memory, valid and rejected alike, and discarded on exit.', 'note'));
+  if (selectedCitation !== null && selectedCitation >= records.length) selectedCitation = null;
+  records.forEach((c, i) => {
+    const b = node('button', undefined, `cite${c.status === 'valid' ? '' : ' invalid'}`);
+    b.type = 'button';
+    b.setAttribute('aria-pressed', String(selectedCitation === i));
+    b.append(node('b', `${pad2(i + 1)} ${c.status === 'valid' ? '✓ valid' : '✗ rejected'} · ${c.origin}`), node('i', `${c.file.name} · b${c.start}–${c.end}${c.line ? ` · L${c.line}` : ''}`), node('span', c.problem ? `${c.problem}` : `“${c.quote}”`));
+    b.onclick = () => { selectedCitation = selectedCitation === i ? null : i; renderCitations(); };
+    host.append(b);
+  });
+  const c = selectedCitation === null ? null : records[selectedCitation];
+  $('citation-text').hidden = !c;
+  $('copy-citation').hidden = !c;
+  $('citation-text').value = c ? citationText(c) : '';
+  if (citationsView && records.length >= citationsView.limit) host.append(node('p', `The ${citationsView.limit}-record session limit is reached; further records are refused.`, 'coverage partial'));
+}
+function citeSelection() {
+  if (!selectedMatch) return;
+  const { file, start, end } = selectedMatch;
+  operation('cite_selection', { sha256: file.sha256, start, end }, 'Copying the selected bytes and checking the anchor', data => {
+    citationsView = data; selectedCitation = data.records.length - 1;
+    renderCitations();
+    const c = data.records[selectedCitation];
+    return c ? `Citation ${c.status} · ${c.file.name} bytes ${c.start}–${c.end} · structural check only` : 'Citation recorded';
+  });
+}
+function checkCitation(event) {
+  event.preventDefault();
+  if (!documentView) return;
+  const start = Number($('cite-start').value), end = Number($('cite-end').value), quote = $('cite-quote').value;
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < 0) { setText('status', 'Byte offsets must be non-negative integers', 'count bad'); return; }
+  operation('check_citation', { sha256: documentView.file.sha256, start, end, quote }, 'Checking the supplied quote against the open document', data => {
+    citationsView = data; selectedCitation = data.records.length - 1;
+    renderCitations();
+    const c = data.records[selectedCitation];
+    return c ? (c.status === 'valid' ? `Citation valid · exact bytes ${c.start}–${c.end} of ${c.file.name} · structural check only` : `Citation rejected · ${c.problem}`) : 'Citation checked';
+  });
 }
 
 // ---- Privacy ----
@@ -541,6 +736,15 @@ document.querySelectorAll('[role="tablist"]').forEach(list => {
   });
 });
 $('open-document').onclick = openDocument;
+$('open-corpus').onclick = openCorpus;
+$('scope').onclick = () => { if (documentView && corpusView) { scope = effectiveScope() === 'corpus' ? 'document' : 'corpus'; selectedMatch = null; renderDocuments(); } };
+$('cite-selection').onclick = citeSelection;
+$('citation-form').onsubmit = checkCitation;
+$('copy-citation').onclick = async () => {
+  const text = $('citation-text').value;
+  try { await navigator.clipboard.writeText(text); setText('status', 'Citation text copied to the clipboard', 'count'); }
+  catch { $('citation-text').focus(); $('citation-text').select(); setText('status', 'Clipboard unavailable · the citation text is selected for manual copy', 'count bad'); }
+};
 $('open-image').onclick = () => openImage(instrument === 'media' ? 'media' : 'privacy');
 $('media-empty-action').onclick = () => openImage('media');
 $('media-run').onclick = runForensics;
@@ -559,20 +763,29 @@ window.addEventListener('resize', () => { if (instrument === 'media') positionBl
 new ResizeObserver(() => { if (instrument === 'media') positionBlocks(); }).observe($('media-stage'));
 $('search-form').onsubmit = event => {
   event.preventDefault();
+  if (effectiveScope() === 'corpus' && corpusView) {
+    operation('search_corpus', { query: $('query').value }, `Searching ${corpusView.files.length} held ${corpusView.files.length === 1 ? 'file' : 'files'}`, data => {
+      corpusSearchView = data; selectedLine = null; selectedMatch = null;
+      renderPassages(); renderDocuments();
+      showInstrument('documents');
+      return `${data.match_count} ${data.match_count === 1 ? 'match' : 'matches'} across ${data.documents.length} ${data.documents.length === 1 ? 'file' : 'files'} · ${data.complete ? 'complete search' : 'partial search, see coverage'}`;
+    });
+    return;
+  }
   if (!documentView) return;
   operation('search_document', { query: $('query').value, sha256: documentView.file.sha256 }, 'Searching the loaded snapshot', data => {
-    searchView = data; selectedLine = null;
-    renderSearch(); renderPassages(); renderDocumentCoverage();
+    searchView = data; selectedLine = null; selectedMatch = null;
+    renderSearch(); renderPassages(); renderDocumentCoverage(); renderShell();
     showInstrument('documents');
     return `${data.matches.length} ${data.matches.length === 1 ? 'match' : 'matches'} · ${data.complete ? 'complete search' : 'partial search, see coverage'}`;
   });
 };
 const QUERY_BYTE_LIMIT = 512; // the Rust side caps the query in UTF-8 bytes, not characters
 $('query').oninput = () => {
-  if (searchView) clearSearch(false);
+  if (activeResults()) clearSearch(false);
   const bytes = new TextEncoder().encode($('query').value).length;
   const over = bytes > QUERY_BYTE_LIMIT;
-  $('search-submit').disabled = busy || !documentView || over;
+  $('search-submit').disabled = busy || !(documentView || corpusView) || over;
   if (over) setText('status', `Query is ${fmt(bytes)} bytes; the limit is ${QUERY_BYTE_LIMIT} UTF-8 bytes`, 'count bad');
 };
 $('clear-search').onclick = () => { $('query').value = ''; clearSearch(true); };
@@ -617,8 +830,9 @@ document.addEventListener('keydown', event => {
     regions[index].tabIndex = -1; regions[index].focus();
   }
   const key = event.key.toLowerCase();
-  if ((event.ctrlKey || event.metaKey) && key === 'f' && documentView) { event.preventDefault(); showInstrument('documents'); $('query').focus(); }
-  if ((event.ctrlKey || event.metaKey) && key === 'o') { event.preventDefault(); if (!busy) openDocument(); }
+  if ((event.ctrlKey || event.metaKey) && key === 'f' && (documentView || corpusView)) { event.preventDefault(); showInstrument('documents'); $('query').focus(); }
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && key === 'o') { event.preventDefault(); if (!busy) openCorpus(); }
+  else if ((event.ctrlKey || event.metaKey) && key === 'o') { event.preventDefault(); if (!busy) openDocument(); }
   if ((event.ctrlKey || event.metaKey) && key === 'i') { event.preventDefault(); if (!busy) openImage(instrument === 'media' ? 'media' : 'privacy'); }
   if ((event.ctrlKey || event.metaKey) && key === 'g') { event.preventDefault(); showInstrument('globe', true); }
   if ((event.ctrlKey || event.metaKey) && key === 'm') { event.preventDefault(); showInstrument('media', true); }
@@ -633,4 +847,5 @@ Globe.onView(() => { if (instrument === 'globe') renderShell(); });
 Witness.onView(() => renderShell());
 if (window.matchMedia('(prefers-reduced-transparency: reduce)').matches) setPresentation('reduced', true);
 renderMedia();
+renderDocuments();
 showInstrument('session');

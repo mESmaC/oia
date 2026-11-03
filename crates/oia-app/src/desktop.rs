@@ -10,6 +10,7 @@ use crate::local_tools::{
     ForensicView, PreparedExport, PrivacyView, Result, SNAPSHOT_SCHEME, SearchView, Selection,
     Snapshot, ToolError,
 };
+use crate::recreation::{RecreationRequest, RecreationState, RecreationView};
 use crate::witness::{WitnessFormData, WitnessOrigin, WitnessState, WitnessView};
 use serde::Serialize;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -630,12 +631,89 @@ fn witness_expose_explanations(
     Ok(envelope(view))
 }
 
+/// Recreation-prompt export reads the held witness account and holds the last validated
+/// prompt. Building is synchronous and bounded by the kernel; saving the text goes through
+/// the single file-operation gate like every other export.
+#[derive(Clone, Debug, Default)]
+struct Recreation(Arc<Mutex<RecreationState>>);
+impl Recreation {
+    fn lock(&self) -> Result<MutexGuard<'_, RecreationState>> {
+        self.0
+            .lock()
+            .map_err(|_| ToolError::new("internal", "The recreation lock failed. Restart OIA."))
+    }
+}
+
+#[tauri::command]
+fn recreation_view(recreation: State<'_, Recreation>) -> Result<Envelope<RecreationView>> {
+    Ok(envelope(recreation.lock()?.view()))
+}
+
+#[tauri::command]
+fn recreation_export(
+    witness: State<'_, Witness>,
+    recreation: State<'_, Recreation>,
+    request: RecreationRequest,
+) -> Result<Envelope<RecreationView>> {
+    let account = witness.lock()?.view();
+    let view = recreation.lock()?.export(&account, &request)?;
+    Ok(envelope(view))
+}
+
+#[derive(Debug, Serialize)]
+struct PromptExportView {
+    path: String,
+    bytes: usize,
+    sha256: String,
+    prompt_version: String,
+}
+
+#[tauri::command]
+async fn recreation_save(
+    state: State<'_, Services>,
+    recreation: State<'_, Recreation>,
+    window: tauri::WebviewWindow,
+    prompt_version: String,
+) -> Result<Envelope<Option<PromptExportView>>> {
+    let mut operation = state.begin()?;
+    let (text, stem) = {
+        let held = recreation.lock()?;
+        (held.text(&prompt_version)?, held.file_stem())
+    };
+    worker(move || {
+        let Some(destination) = rfd::FileDialog::new()
+            .set_parent(&window)
+            .set_title("Save the recreation prompt — choose a new filename")
+            .set_file_name(format!("{stem}.txt"))
+            .add_filter("Text", &["txt"])
+            .save_file()
+        else {
+            return Ok(envelope(None));
+        };
+        operation.control = operation.control.processing();
+        use sha2::{Digest, Sha256};
+        let sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
+        let staged = PreparedExport::prepare(&destination, text.as_bytes(), &operation.control)?;
+        operation.publish(|_| {
+            let path = staged.commit(&operation.control)?;
+            Ok(envelope(Some(PromptExportView {
+                path: path.to_string_lossy().into_owned(),
+                bytes: text.len(),
+                sha256,
+                prompt_version,
+            })))
+        })
+    })
+    .await
+}
+
 pub fn run() -> std::result::Result<(), tauri::Error> {
     tauri::Builder::default()
         .manage(Services::default())
         .manage(Globe::default())
         .register_uri_scheme_protocol(SNAPSHOT_SCHEME, snapshot_protocol)
         .manage(Witness::default())
+        .manage(Recreation::default())
         .invoke_handler(tauri::generate_handler![
             open_document,
             open_image,
@@ -659,7 +737,10 @@ pub fn run() -> std::result::Result<(), tauri::Error> {
             witness_view,
             witness_capture,
             witness_revise,
-            witness_expose_explanations
+            witness_expose_explanations,
+            recreation_view,
+            recreation_export,
+            recreation_save
         ])
         .run(tauri::generate_context!())
 }

@@ -10,6 +10,7 @@ use oia_domain::SchemaVersion;
 pub mod desktop;
 pub(crate) mod globe;
 pub mod local_tools;
+pub(crate) mod recreation;
 pub(crate) mod witness;
 
 /// Canonical application binary name.

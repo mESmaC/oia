@@ -55,6 +55,43 @@ freshness and both coverage states remain inspectable, including when several
 limitations apply. Stale complete captures still expose their exact comparison.
 These decisions are analytical results, not delivered notifications.
 
+### Line/segment-level change explanation and notification provenance (`PRIVACY-03`, `A18`)
+
+`ChangeEvaluation::explain_changes` decomposes a evaluated snapshot pair into a
+structured `ChangeExplanation` under explicit `ChangeExplanationLimits`
+(`1..=16,384` lines per capture and `1..=1,024` emitted hunks; defaults `4,096`
+lines and `256` hunks):
+
+- `ChangeExplanation::Changed` (`EXPLANATION_METHOD_ID = "exact-utf8-line-segments-v1"`):
+  splits both complete captures with `split_inclusive('\n')` so exact line endings
+  (`\r\n` versus `\n`) and trailing newline differences are preserved without
+  normalization. After trimming identical leading and trailing lines, it aligns the
+  interior window using exact line-level longest common subsequence (LCS) up to
+  `MAX_LCS_CELLS = 262,144` (`changed_before_lines * changed_after_lines`). It emits
+  ordered, non-overlapping `ChangeHunk` records (`Inserted`, `Removed`, `Modified`)
+  with exact half-open UTF-8 byte ranges (`before_bytes`, `after_bytes`) and
+  1-indexed inclusive line ranges (`before_lines`, `after_lines`). Applying the
+  emitted hunks in reverse byte order reconstructs the exact current UTF-8 text from
+  the baseline text. When the interior window exceeds `MAX_LCS_CELLS`, the middle
+  window coalesces into a single bounded `Modified` hunk and sets
+  `coalesced_window_exceeded_lcs_budget = true` rather than allocating an unbounded
+  quadratic matrix or truncating text.
+- `ChangeExplanation::Unchanged`: reports the line count when both complete captures
+  are byte-identical.
+- `ChangeExplanation::Inconclusive`: retains `CaptureCoverageSummary` (`Complete`,
+  `Partial { captured_byte_len, reason }`, or `Unavailable(UnavailableReason)`) for
+  both captures so partial or missing captures never masquerade as deletions or
+  unchanged segments.
+
+`ChangeEvaluation::explain_notification` projects an `ExplainedNotification`
+envelope binding the saved `ChangeRule` version and criterion
+(`RULE_CRITERION_ID = "any-exact-utf8-text-change-v1"`), `SnapshotScope`
+(`workspace`/`source`/`resource`), `max_retrieval_age`, baseline and current capture
+versions, source attributions, retrieval instants/ages, `RetrievalFreshness`, both
+`CaptureCoverageSummary` states, `RuleDecision`, the top-level replacement span, and
+the `ChangeExplanation` so notifications expose source coverage, freshness, and the
+saved rule that triggered them (`PRIVACY-03`, `A18`).
+
 ## Time, coverage and evidence limits
 
 Retrieval instants and the evaluation instant use `std::time::SystemTime`. Retrieval
@@ -84,13 +121,18 @@ the actual supplied text bytes.
 Each capture is limited to 1,048,576 UTF-8 bytes. Attribution and partial-capture
 explanations are each limited to 4,096 bytes and must contain non-whitespace text.
 Oversized inputs produce typed errors without truncation. There is no quadratic
-diff matrix, output-text copy, or allocation in evaluation. Source text is data,
-including embedded instructions and display controls.
+diff matrix, output-text copy, or allocation in `evaluate`. `explain_changes`
+enforces `max_lines_per_capture` (`<= 16,384`), `max_hunks` (`<= 1,024`), and
+`MAX_LCS_CELLS` (`262,144`), using fallible `try_reserve` allocations and returning
+typed `ChangeError` variants (`LineLimitExceeded`, `HunkLimitExceeded`,
+`InvalidExplanationLimits`, `AllocationFailed`) rather than silently truncating
+hunks. Source text is data, including embedded instructions and display controls.
 
 The cancellation/deadline callback runs before work, at intervals of at most 1,024
-scanned characters, and before returning a result. A stop yields no comparison.
-The application service must still fence cancelled or superseded job completions
-when saving/publishing a result; this pure function does not implement a job queue.
+scanned characters/lines/cells, and before returning a result. A stop yields no
+comparison or explanation. The application service must still fence cancelled or
+superseded job completions when saving/publishing a result; this pure function does
+not implement a job queue.
 
 ## Local use
 
@@ -111,11 +153,12 @@ either file. A five-second deadline bounds comparison after file reads; local
 filesystem open/read latency itself has no wall-clock deadline.
 
 Output includes source attribution, method, rule/version, retrieval/evaluation
-times, coverage, freshness, decision, and byte ranges. Text previews are ASCII
-escaped and capped at 240 characters with an explicit truncation flag; comparison
-still uses the entire bounded input. This display limit never changes evidence or
-calculations. Exit `0` means a fresh complete evaluation (changed or unchanged),
-`2` means a stale/incomplete decision, and `1` means invalid input or failure.
+times, coverage, freshness, decision, byte ranges, and per-hunk line/byte
+explanations. Text previews are ASCII escaped and capped at 240 characters with an
+explicit truncation flag; comparison still uses the entire bounded input. This
+display limit never changes evidence or calculations. Exit `0` means a fresh
+complete evaluation (changed or unchanged), `2` means a stale/incomplete decision,
+and `1` means invalid input or failure.
 
 ## Integration and remaining scope
 
@@ -149,16 +192,15 @@ Rust-to-Lean correspondence claim applies to this new kernel.
 
 The [two focused contract tests](../../crates/oia-analysis/tests/snapshot_change_contract.rs)
 use synthetic captures. They address original/version preservation, UTF-8 byte
-anchors, empty versus missing coverage, stale decisions, scope/time rejection,
-input bounds, and cancellation without publishing a result. They do not establish
-provider access, operational notification quality, persistence, or source truth.
+anchors, multi-hunk line/segment reconstruction, notification rule/coverage/freshness
+provenance, empty versus missing coverage, stale decisions, scope/time rejection,
+byte/line/hunk bounds, and cancellation without publishing a result. They do not
+establish provider access, operational notification quality, persistence, or source
+truth.
 
-On 2026-11-02, local Windows x86_64 MSVC verification with pinned Rust 1.99.0
-passed `cargo fmt --all -- --check`,
-`cargo clippy --workspace --all-targets --locked --offline -- -D warnings`, and
-`cargo test --workspace --locked --offline`. The two focused tests also passed
-independently. The local example returned `0` for changed and identical synthetic
-captures, `2` for stale captures, and `1` for malformed UTF-8 and oversized files.
-SHA-256 checks before/after those runs confirmed both originals were unchanged.
-The delivery PR records the checked revision. Other operating systems and live
-providers were not exercised; no Lean package exists at the task base.
+On 2026-11-03, local Windows x86_64 MSVC verification with pinned Rust 1.99.0
+passed `cargo +1.99.0 fmt --all -- --check`,
+`cargo +1.99.0 clippy --workspace --all-targets --locked --offline -- -D warnings`,
+and `cargo +1.99.0 test --workspace --locked --offline`. The two focused tests and
+the `compare-snapshots` CLI example also passed independently. Other operating
+systems and live providers were not exercised.

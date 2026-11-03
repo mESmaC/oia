@@ -157,7 +157,7 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .meter .n { font: 12px var(--mono); color: var(--text); }
 .meter .bar { grid-column: 1 / -1; display: flex; gap: 2px; height: 10px; }
 .meter .bar i { flex: 1; background: rgba(255,255,255,.12); border-radius: 1px; }
-.meter .bar i.on { background: var(--accent); }
+.meter .bar i.on { background: var(--text-2); } /* neutral: a filled count must not read as a selection */
 .claim { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; padding: 8px 0; border-top: 1px solid var(--line); }
 .claim:first-of-type { border-top: 0; }
 .claim .id { font: 11px var(--mono); color: var(--text-3); letter-spacing: .04em; white-space: nowrap; padding-top: 2px; }
@@ -256,7 +256,7 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
   <!-- C. Evidence canvas -->
   <main class="canvas" aria-label="Evidence canvas">
     <svg id="geometry" viewBox="0 0 1000 620" preserveAspectRatio="xMidYMid slice" role="img"
-         aria-label="Schematic case geometry. Account A observer on the eastern road with a reported northwest to southeast track. Account C region east of the ridge. Account B not plotted.">
+         aria-label="Schematic case geometry. Account A observer on the eastern road with a reported northwest to southeast direction; the ray's length is schematic. Account C region east of the ridge. Account B not plotted.">
       <defs>
         <pattern id="dots" width="7" height="7" patternUnits="userSpaceOnUse"><circle cx="1.5" cy="1.5" r="1" fill="rgba(233,237,240,.45)"/></pattern>
       </defs>
@@ -292,6 +292,13 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
       <path class="track" d="M372 212 L584 436"/>
       <path class="track-head" d="M584 436 L571 429 L577 418 Z"/>
       <text x="352" y="200">NW</text><text x="592" y="458">SE</text>
+      <!-- The ray's length and end point are schematic; the caveat stays on the canvas. -->
+      <polyline class="leader" points="300,172 300,190 400,241"/>
+      <circle class="leader-dot" cx="400" cy="241" r="2"/>
+      <g class="stag region" transform="translate(236 150)" aria-hidden="true">
+        <rect class="box" width="290" height="22" rx="3"/>
+        <text x="8" y="15">REPORTED DIRECTION · LENGTH SCHEMATIC</text>
+      </g>
       <circle class="observer-ring" cx="478" cy="372" r="16"/>
       <circle class="observer" cx="478" cy="372" r="4"/>
       <!-- Selection brackets: drawn only around the selected object's actual geometry -->

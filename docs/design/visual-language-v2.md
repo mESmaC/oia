@@ -1,6 +1,6 @@
 # OIA visual language v2: the instrument shell
 
-Version: 0.1 draft. Date: 2026-11-03. Status: design proposal for [#16](https://github.com/mESmaC/oia/issues/16). Nothing here is implemented in the product; the companion mockup is a static study. On 2026-11-02 the project owner supplied a set of reference images and stated that this direction may take precedence over the earlier design work in [`workspace-ui-ux.md`](workspace-ui-ux.md) v0.4, which they were not satisfied with.
+Version: 0.1 draft. Date: 2026-11-03. Status: design proposal for [#16](https://github.com/mESmaC/oia/issues/16). Nothing here is implemented in the product; the companion mockup is a static study. On 2026-11-02 the project owner supplied a set of reference images and stated that this direction may take precedence over the earlier design work in [`workspace-ui-ux.md`](workspace-ui-ux.md) v0.4, which they were not satisfied with. The owner's clarification, relayed on [#16 (comment 6592351842)](https://github.com/mESmaC/oia/issues/16#issuecomment-6592351842): "Some of the previous designs looked like document management systems rather than military intelligence software. So the spec still captures this technically, but im counting on fable to actually deliver on it." Precedence was offered so that the design would deliver; it is not an advance approval. v2 replaces §7 and the v0.4 mockups only if the owner judges that it does.
 
 This document replaces the **visual system** (§7) and the **mockup direction** (§15) of the v0.4 draft. It keeps the v0.4 information architecture (§2), shell regions (§3), shared context (§4), interaction patterns (§5), state vocabulary (§6), accessibility rules (§8), honesty rules (§10), and print rules (§11) by reference, with the departures listed in §7 below. Requirement IDs are from the [product specification](../spec.md) §3.2 (`UX-01` to `UX-05`) and §3.1 (`CASE-02` to `CASE-04`).
 
@@ -68,7 +68,7 @@ These are the components every instrument is built from. Each one names what bin
 6. **Region fill.** A dotted pattern with a dashed outline for an area claim. Its tag says `region`.
 7. **Not plotted tray.** A glass strip at the canvas's lower edge listing records that have no drawable geometry, with their tags and no leaders. The tray exists so that absence is visible without inventing a point (v0.4 §7.6).
 8. **View-state strip.** A low-contrast monospace row at the canvas's lower right: case id, anchor, pinned version, overlay state, scale. `—` for unknown. This replaces the ambient instrumentation of the references.
-9. **Meter.** Label, `n / d`, and a bar of `d` equal segments with `n` lit. Only for bounded counts and reported progress.
+9. **Meter.** Label, `n / d`, and a bar of `d` equal segments with `n` lit in a neutral fill (`text-2`), never the accent, so that a filled count cannot read as a selection. Only for bounded counts and reported progress; a partial or stopped quantity may use amber.
 10. **Chip.** Glyph plus label in 11 px monospace with a hairline border. Dashed border and violet text for fixture, generated, simulated, and recreated material. Chips are the only carriers of status colour, and never colour alone.
 11. **Ruler timeline.** Hour ticks (major) and ten-minute ticks (minor) on a hairline baseline; reported windows as translucent bands with their glyph and label inside; the investigation clock as an accent line with its time above; a legend that names each time kind and says "none recorded" where that is the case.
 12. **Rail.** 72 px, icon above an 11 px monospace label, the active instrument on an accent-tinted background with a 2 px inset accent edge. Disabled instruments dimmed with a trailing dot and a reason in the tooltip and accessible name.
@@ -167,7 +167,7 @@ Narrow widths (under 1100 px): the readout strip wraps under the command field, 
 | §12 open questions | Typeface and icon rows answered provisionally in §5.3 and §9 below |
 | §15 prototype walkthroughs and the three earlier mockups | Retained as **interaction** references (route stack, filters, claims, notes, report). Their **appearance** is superseded; they are not to be extended. |
 
-For the running workbench in `oia-app` (the `codex/running-app` slice of #16): take the tokens in §5.1, the materials in §5.2, and the components in §4 as the presentation layer's style source. The presentation layer still draws state and sends intents only (ADR 0008 §4 rule 1).
+For the running workbench in `oia-app` (the `codex/running-app` slice of #16): take the tokens in §5.1, the materials in §5.2, and the components in §4 as the presentation layer's style source. The workbench must consume `accent` as a single token and never hard-code the colour, so the owner's choice between A and B in §5.1 is a one-line change there as well. The presentation layer still draws state and sends intents only (ADR 0008 §4 rule 1).
 
 ## 8. The mockup and what was verified
 

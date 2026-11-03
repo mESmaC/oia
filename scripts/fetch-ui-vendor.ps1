@@ -28,12 +28,21 @@ try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     Invoke-WebRequest -Uri $CesiumUrl -OutFile $Tgz -UseBasicParsing
 
-    $Actual = (Get-FileHash -Algorithm SHA512 $Tgz).Hash.ToLowerInvariant()
+    # .NET directly rather than Get-FileHash: a PSModulePath inherited from PowerShell 7
+    # (a terminal started from pwsh) stops Windows PowerShell 5.1 from autoloading it.
+    $Stream = [System.IO.File]::OpenRead($Tgz)
+    $Hasher = [System.Security.Cryptography.SHA512]::Create()
+    try { $Digest = $Hasher.ComputeHash($Stream) } finally { $Hasher.Dispose(); $Stream.Dispose() }
+    $Actual = -join ($Digest | ForEach-Object { $_.ToString('x2') })
     if ($Actual -ne $CesiumSha512) {
         throw "fetch-ui-vendor: SHA-512 mismatch for cesium-$CesiumVersion.tgz; nothing installed"
     }
 
-    & tar -xzf $Tgz -C $Tmp `
+    # The Windows tar (bsdtar) by path: Git's GNU tar, when it is first on PATH, reads a
+    # drive-letter path such as C:\... as a remote host:path and fails.
+    $Tar = Join-Path $env:SystemRoot 'System32\tar.exe'
+    if (-not (Test-Path $Tar)) { $Tar = 'tar' }
+    & $Tar -xzf $Tgz -C $Tmp `
         package/LICENSE.md package/ThirdParty.json `
         package/Build/Cesium/Cesium.js package/Build/Cesium/Assets `
         package/Build/Cesium/Workers package/Build/Cesium/ThirdParty

@@ -140,6 +140,9 @@ switch ($Command) {
     }
     'run' {
         if ($Arguments.Count -eq 0) {
+            if (-not (Test-Path (Join-Path $Root 'crates\oia-app\ui\vendor\cesium\VERSION'))) {
+                [Console]::Error.WriteLine('run.ps1: the CesiumJS build is not fetched; the Globe will report it as not present. Run: .\scripts\run.ps1 fetch')
+            }
             Invoke-Workspace 'run' @('-p', 'oia-app', '--bin', 'oia')
         } else {
             Invoke-Workspace 'run' (@('--quiet', '-p', 'oia-documents', '--example', 'inspect-text', '--') + $Arguments)

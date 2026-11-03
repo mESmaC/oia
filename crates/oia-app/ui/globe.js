@@ -82,8 +82,20 @@ const Globe = (() => {
     $('globe-unavail-text').textContent = text;
     renderState(); renderAttribution(); notify();
   }
+  const FETCH_HINT = 'Run scripts/run.sh fetch (or .\\scripts\\run.ps1 fetch), then rebuild and relaunch; the build embeds crates/oia-app/ui/vendor/cesium. Nothing else in the workbench depends on it.';
   function loadCesium() {
     if (rendererState !== 'idle') return;
+    // Rust reports the build embedded in this binary. A missing asset is answered with the
+    // page's own index.html, so injecting the script anyway would fail as a syntax error.
+    const renderer = view?.renderer;
+    if (renderer?.bundle === 'absent') {
+      unavailable('CesiumJS build not present', `The pinned CesiumJS ${renderer.pinned_version} build was not in crates/oia-app/ui/vendor/cesium when this binary was built. ${FETCH_HINT}`);
+      return;
+    }
+    if (renderer?.bundle === 'version_mismatch') {
+      unavailable('CesiumJS build is a different version', `This binary embeds CesiumJS ${renderer.bundled_version}, but the instrument is pinned to ${renderer.pinned_version} and has not been checked against another version. ${FETCH_HINT}`);
+      return;
+    }
     rendererState = 'loading';
     $('globe-unavailable').hidden = false;
     $('globe-unavail-title').textContent = 'Loading the globe renderer';
@@ -99,11 +111,18 @@ const Globe = (() => {
     const script = document.createElement('script');
     script.src = `${CESIUM_BASE}Cesium.js`;
     script.onload = () => {
+      // Loaded but defined nothing: the bundle did not run (a fallback page, a CSP refusal or
+      // a damaged file). That is not a WebGL failure, so it is reported on its own.
+      if (!window.Cesium) {
+        detach();
+        unavailable('CesiumJS build did not load', `${problems.join(' · ') || 'Cesium.js ran without defining Cesium'}. The file served as vendor/cesium/Cesium.js is not a working CesiumJS build. ${FETCH_HINT}`);
+        return;
+      }
       try { createViewer(); }
       catch (error) { problems.push(String(error?.stack || error?.message || error).split('\n').slice(0, 3).join(' ').slice(0, 400)); unavailable('The globe renderer failed to start', `${problems.join(' · ')}. WebGL may be unavailable in this WebView.`); }
       finally { detach(); }
     };
-    script.onerror = () => { detach(); unavailable('CesiumJS build not present', 'The pinned CesiumJS build is not in crates/oia-app/ui/vendor/cesium. Run scripts/run fetch (or scripts/fetch-ui-vendor), rebuild, and relaunch. Nothing else in the workbench depends on it.'); };
+    script.onerror = () => { detach(); unavailable('CesiumJS build not present', `vendor/cesium/Cesium.js could not be read from this build. ${FETCH_HINT}`); };
     document.head.append(script);
   }
   function notify() { if (onViewListener) onViewListener(summary()); }
@@ -732,7 +751,7 @@ const Globe = (() => {
     kv($('globe-imagery-active'), [['Layer', a.source.layer], ['Provider', a.source.provider], ['Origin', a.source.origin], ['Date', a.date ? `${a.date} (UTC day)` : 'composite · none'], ['Capture', a.source.capture_statement], ['Tiles', `${countsText(a.source.id)} · ${fmt(tiles.pending)} pending (all layers)`, sourceTiles.get(a.source.id)?.failed ? 'est' : ''], ['Drawn now', drawnNow.includes(a.source.id) ? (drawnSources().some(e => e.tier) ? 'yes, beneath the detail tiers or at the edges' : 'yes') : 'no: every drawn surface tile uses a detail tier'], ['Overlay', view.imagery.coastlines ? `${view.imagery.coastlines.source.layer} · ${view.imagery.coastlines.source.license} · ${view.imagery.coastlines.source.attribution}` : 'none'], ['Coverage note', a.coverage_note || null], ['Licence', a.source.license], ['Attribution', a.source.attribution], ['Checked', `capabilities ${a.source.capabilities_checked_on}`]]);
     $('globe-ack').textContent = view.imagery.acknowledgement;
     renderDetail();
-    kv($('globe-renderer'), [['Renderer', `${view.renderer.name} ${view.renderer.pinned_version} · ${rendererState}`], ['Ion', view.renderer.ion], ['Terrain', view.renderer.terrain], ['Effects', reduced ? 'reduced: no atmosphere or fog' : 'atmosphere and fog (display only)']]);
+    kv($('globe-renderer'), [['Renderer', `${view.renderer.name} ${view.renderer.pinned_version} · ${rendererState}`], ['Embedded build', view.renderer.bundled_version ? `${view.renderer.bundled_version}${view.renderer.bundle === 'present' ? '' : ' (not the pinned version)'}` : 'none: not fetched before this build', view.renderer.bundle === 'present' ? '' : 'est'], ['Ion', view.renderer.ion], ['Terrain', view.renderer.terrain], ['Effects', reduced ? 'reduced: no atmosphere or fog' : 'atmosphere and fog (display only)']]);
   }
   const lonText = v => `${Math.abs(v)}° ${v < 0 ? 'W' : 'E'}`, latText = v => `${Math.abs(v)}° ${v < 0 ? 'S' : 'N'}`;
   function renderDetail() {

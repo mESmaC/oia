@@ -11,7 +11,9 @@ scripts/run.sh fetch      # once: locked crates + the pinned CesiumJS build (ver
 cargo run -p oia-app --locked --offline
 ```
 
-Then press Ctrl+G or choose Globe in the rail. `fetch` must precede the build: the vendor directory is embedded into the binary at build time. Without it the instrument shows "CesiumJS build not present" with the command to run; nothing else in the workbench depends on it.
+Then press Ctrl+G or choose Globe in the rail. The vendor directory is embedded into the binary at build time. `crates/oia-app/build.rs` watches `ui/`, so a fetch after an earlier build makes the next build recompile `oia-app` and embed it; `tauri::generate_context!` alone re-embeds only when the crate recompiles. The build script records the version in `ui/vendor/cesium/VERSION` (written last by the fetch scripts) as `OIA_CESIUM_BUNDLED_VERSION` and emits a Cargo warning when it is absent; `scripts/run.{sh,ps1} run` also says so before launching.
+
+Rust reports the embedded build in `GlobeView.renderer` (`bundled_version`, and `bundle`: `present`, `absent` or `version_mismatch` against the pinned version), and the inspector's renderer panel shows it. The page injects `Cesium.js` only when the bundle is `present`. Otherwise it shows "CesiumJS build not present" or "CesiumJS build is a different version" with the command to run. This check is required because Tauri answers a missing asset with the page's own `index.html` (HTTP 200, `text/html`), so `script.onerror` never fires. Without the check the instrument showed `SyntaxError: Unexpected token '<' (Cesium.js:1)` and blamed WebGL. A script that loads but defines no `Cesium` global is reported as "CesiumJS build did not load", separately from a viewer that fails to start. Nothing else in the workbench depends on the renderer.
 
 ## What it does
 
@@ -101,6 +103,16 @@ The CSP gained `'wasm-unsafe-eval'` for Cesium's bundled WebAssembly modules (co
   - Detail off: only the VIIRS day, magnified, with `DETAIL off`. (An earlier build left the detail layers on screen because `ImageryLayerCollection.add` returns nothing; the page now keeps the layer it created.)
   - A strip that wraps moves the not-plotted tray up instead of covering it.
 - Not run: Linux and macOS WebViews, Alaska, Hawaii and territories (outside the registered rectangle), a network-down session, sustained-use rate behaviour of the two detail origins, and a check of pixel geolocation against an independent reference.
+
+## Validation: renderer bundle presence (2026-11-03, Windows 11, Rust 1.99.0)
+
+- Owner report: "The globe renderer failed to start — Uncaught SyntaxError: Unexpected token '<' (Cesium.js:1) · window.Cesium is undefined … WebGL may be unavailable". None of the local checkouts had `ui/vendor/cesium/`.
+- Real application (`target/debug/oia.exe`, driven through the WebView2 DevTools protocol on a local debug port; captures inspected, not committed):
+  - Built without the vendor directory: Cargo printed the build-script warning. In the running app, `fetch('vendor/cesium/Cesium.js')` returned HTTP 200 `text/html` beginning `<!DOCTYPE html>`, which confirms the cause. Ctrl+G showed "CesiumJS build not present" with the fetch command, the renderer panel read `Embedded build none: not fetched before this build`, and no script was injected (renderer log empty).
+  - A second build with no changes finished in 0.6 s without recompiling, so watching `ui/` does not force rebuilds.
+  - `fetch-ui-vendor.ps1`, then `cargo build` with no source change: `oia-app` recompiled in 12 s and the warning did not appear. Ctrl+G drew the case over Sentinel-2 and GIBS imagery, with 62 tiles loaded, renderer `ready` and `Embedded build 1.147.0`.
+- `fetch-ui-vendor.ps1` was run from a Git Bash shell whose environment came from PowerShell 7. It failed twice before installing anything: `Get-FileHash` was not found (Windows PowerShell 5.1 cannot autoload its module from a PowerShell 7 `PSModulePath`), and Git's GNU `tar`, first on that PATH, read `C:\…` as `host:path`. The script now hashes with .NET `SHA512` and calls `%SystemRoot%\System32\tar.exe`. It then installed 1.147.0 with the SHA-512 verified. From an ordinary PowerShell 7 terminal, both commands already resolved to the Windows versions.
+- Not exercised in the real app: `version_mismatch`, and a present bundle whose script defines no `Cesium`. Both are page branches on values Rust reports.
 
 ## Follow-ups
 

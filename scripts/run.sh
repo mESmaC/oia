@@ -104,6 +104,9 @@ case $action in
         ;;
     run)
         if [ $# -eq 0 ]; then
+            if [ ! -f "$ROOT/crates/oia-app/ui/vendor/cesium/VERSION" ]; then
+                echo "run.sh: the CesiumJS build is not fetched; the Globe will report it as not present. Run: scripts/run.sh fetch" >&2
+            fi
             ws run -p oia-app --bin oia
         else
             ws run --quiet -p oia-documents --example inspect-text -- "$@"

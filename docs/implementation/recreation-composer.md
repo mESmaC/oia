@@ -30,14 +30,21 @@ its mandatory recreation label and fidelity caveat. A composition appendix recor
 generated/unreviewed status, source classes/versions, attribution, coverage and
 capture limitations, representative selection, method/parameters/coding record,
 declared derivations, both group definitions/counts/caveats, copy candidates and
-reviewer dismissals, and regeneration changes. Consumers must save
+reviewer dismissals, non-representative revisions' coded values and cited wording,
+and regeneration changes. Non-representative coding is disclosed without promoting
+it into the selected aspect details or context. Consumers must save
 `portable_text()`, not just the lower-level kernel export, to keep this appendix.
 
 ## Evidence contract
 
 - Every reported detail preserves all supporting representative source versions,
-  source class, exact wording (quoted/escaped for one-line export), and UTF-8 byte
-  ranges. The original wording remains directly inspectable in `comparison()`.
+  source class, exact wording, and UTF-8 byte ranges. Ordinary Unicode, including
+  combining marks, is passed verbatim to the media kernel, which applies the single
+  quoting/escaping layer. Cited wording, aspect/code labels and attribution containing
+  controls or invisible formatting characters are refused with a source version,
+  zero-based assertion index (when applicable), and field; ZWNJ/ZWJ remain permitted.
+  Retained text is never normalized or rewritten. The original representative wording
+  remains directly inspectable in `comparison()`.
   Analyst codes group assertions; they are labeled coding, not verified facts.
 - One coded value becomes one detail, including unique and dependent reports.
   Shared-list placement is not a corroboration claim. The detail separately names
@@ -51,6 +58,9 @@ reviewer dismissals, and regeneration changes. Consumers must save
 - Simulated accounts and accounts whose declared in-set lineage is only simulated
   do not contribute reported details or context. Their wording remains explicitly
   excluded in unknown notices and their origin remains in the source appendix.
+  A conflict caused only by such excluded material is explicitly qualified rather
+  than presented as reported dissent. Detail support counts come from the comparison
+  kernel's variant records, not a second grouping implementation.
   A wholly unsupported composition fails the existing empty-content rule.
 - Stated unknowns retain the citing source and wording. Uncoded aspects retain
   coverage-aware omissions, not observed absence. Explicit required aspects absent
@@ -97,7 +107,8 @@ and at most 4,096 UTF-8 bytes. A 262,144-byte aggregate budget conservatively
 charges option text, cited wording, escaped-text expansion and repeated provenance
 before building detail strings. The caller's `RecreationLimits` still govern
 kernel validation/export; the final portable text is capped at 1,048,576 bytes.
-No output is silently shortened. Typed errors distinguish comparison, media,
+Budget arithmetic uses checked addition/multiplication; non-representative coding
+also counts against the aggregate budget. No output is silently shortened. Typed errors distinguish comparison, media,
 identity/coding, option, resource and stop failures.
 
 Cancellation/deadline/supersession checks run on entry, throughout comparison,
@@ -124,6 +135,11 @@ contract tests in `crates/oia-app/tests/recreation_composer_contract.rs` target
 the critical evidence-preservation, non-promotion, permission and immutable-version
 contracts, rather than adding a speculative test matrix. Executed commands and
 outcomes are recorded in the PR.
+The same assertions cover Unicode/quote preservation, source-specific control
+refusal, simulated-only conflict qualification, and later-revision disclosure.
+The appendix is human-readable provenance, not a stable machine-readable schema;
+some metadata records still use Rust debug formatting. Consumers must use typed
+accessors rather than parse those metadata lines as an interchange format.
 
 ## Remaining #139 scope
 
@@ -134,3 +150,5 @@ outcomes are recorded in the PR.
 - Persisted generated/reviewed status and cross-session identity/permission checks.
 - Automatic assertion extraction, if separately evaluated as inference.
 - Negative-keyword integration with #140 and explicitly linked cases under #141.
+  The composer supplies an empty negative-keyword list to the expanded media input;
+  it does not derive exclusions or claim that integration is complete.

@@ -121,6 +121,145 @@ fn composition_preserves_evidence_and_regeneration() -> Result<(), Box<dyn Error
     }
     assert_eq!(first.exported().permitted_assets().len(), 1);
     assert_eq!(first.exported().omitted_assets().len(), 1);
+    assert!(first.input().negative_keywords.is_empty());
+
+    const UNICODE: &str = "मैंने एक नारंगी रोशनी देखी e\u{301} \"quoted\" \\ trail";
+    const ASPECT: &str = "रंग e\u{301} \"aspect\" \\";
+    const CODE: &str = "नारंगी e\u{301} \"code\" \\";
+    let unicode_coding = [
+        assertion(UNICODE, ASPECT, CodedValue::Reported(CODE), UNICODE)?,
+        assertion(UNICODE, "unknown", CodedValue::StatedUnknown, UNICODE)?,
+        assertion(
+            UNICODE,
+            "single-reported",
+            CodedValue::Reported("reported"),
+            UNICODE,
+        )?,
+    ];
+    let other_coding = [assertion(
+        UNICODE,
+        ASPECT,
+        CodedValue::Reported("other"),
+        UNICODE,
+    )?];
+    let simulated_coding = [assertion(
+        UNICODE,
+        "single-reported",
+        CodedValue::Reported("simulated"),
+        UNICODE,
+    )?];
+    let mut unicode_source = sources.first().ok_or("missing police")?.clone();
+    unicode_source.text = oia_analysis::statement_comparison::TextCapture::Complete(UNICODE);
+    unicode_source.assertions = &unicode_coding;
+    let mut other_source = sources.get(2).ok_or("missing witness")?.clone();
+    other_source.text = oia_analysis::statement_comparison::TextCapture::Complete(UNICODE);
+    other_source.assertions = &other_coding;
+    let mut simulated_source = sources.get(3).ok_or("missing simulation")?.clone();
+    simulated_source.text = oia_analysis::statement_comparison::TextCapture::Complete(UNICODE);
+    simulated_source.assertions = &simulated_coding;
+    let unicode_sources = [unicode_source, other_source, simulated_source];
+    let unicode_prompt = compose_recreation_prompt(
+        fixture.request(&unicode_sources, "prompt-version:unicode")?,
+        None,
+        limits()?,
+        AssetExportPolicy::OmitWithNotice,
+        || Ok(()),
+    )?;
+    let unicode_variant = unicode_prompt
+        .input()
+        .conflicting_variants
+        .iter()
+        .find(|variant| variant.summary.contains(CODE))
+        .ok_or("missing Unicode variant")?;
+    let unicode_detail = unicode_variant
+        .reported_details
+        .first()
+        .ok_or("missing Unicode detail")?;
+    assert!(unicode_detail.statement.contains(UNICODE));
+    assert!(unicode_detail.statement.contains(ASPECT));
+    assert!(unicode_detail.statement.contains(CODE));
+    assert!(
+        unicode_prompt
+            .comparison()
+            .aspects
+            .iter()
+            .flat_map(|aspect| &aspect.reports)
+            .all(|report| report.wording_text == UNICODE)
+    );
+    assert!(
+        unicode_prompt
+            .input()
+            .unknowns
+            .iter()
+            .filter(|unknown| matches!(unknown.aspect.as_str(), "unknown" | "single-reported"))
+            .all(|unknown| unknown.impact_on_recreation.contains(UNICODE))
+    );
+    assert!(
+        unicode_prompt
+            .exported()
+            .portable_prompt_text()
+            .contains("मैंने एक नारंगी रोशनी देखी e\u{301} \\\"quoted\\\" \\\\ trail")
+    );
+    assert!(
+        unicode_prompt
+            .exported()
+            .portable_prompt_text()
+            .contains("रंग e\u{301} \\\"aspect\\\" \\\\")
+    );
+    assert!(
+        !unicode_prompt
+            .exported()
+            .portable_prompt_text()
+            .contains("\\u{301}")
+    );
+    assert!(
+        unicode_prompt
+            .input()
+            .shared_reported_details
+            .iter()
+            .any(|detail| detail
+                .source_note
+                .as_deref()
+                .is_some_and(|note| note
+                    .contains("conflict only with excluded non-reported/simulated material")))
+    );
+
+    const GREEN: &str = "The later account described a green light.";
+    let revised_coding = [assertion(
+        GREEN,
+        "colour",
+        CodedValue::Reported("green"),
+        "green light",
+    )?];
+    let mut revised_source = sources.get(2).ok_or("missing witness")?.clone();
+    revised_source.revision = 1;
+    revised_source.version = VersionId::new("version:witness-2")?;
+    revised_source.text = oia_analysis::statement_comparison::TextCapture::Complete(GREEN);
+    revised_source.assertions = &revised_coding;
+    let mut revised_sources = sources.clone();
+    revised_sources.push(revised_source);
+    let with_revision = compose_recreation_prompt(
+        fixture.request(&revised_sources, "prompt-version:revision")?,
+        Some(&first),
+        limits()?,
+        AssetExportPolicy::OmitWithNotice,
+        || Ok(()),
+    )?;
+    assert!(
+        with_revision
+            .portable_text()
+            .contains("Non-representative revision version:witness-2")
+    );
+    assert!(with_revision.portable_text().contains(
+        "analyst code \"green\"; source version:witness-2 bytes 30..41: \"green light\""
+    ));
+    assert!(
+        !with_revision
+            .exported()
+            .portable_prompt_text()
+            .contains("green light")
+    );
+    assert_eq!(first, original);
 
     let mut undeclared = sources.clone();
     undeclared.get_mut(1).ok_or("missing news")?.derived_from = &[];
@@ -244,6 +383,35 @@ fn composition_preserves_evidence_and_regeneration() -> Result<(), Box<dyn Error
 fn composition_refuses_identity_permission_and_control_failures() -> Result<(), Box<dyn Error>> {
     let fixture = Fixture::new()?;
     let sources = fixture.sources()?;
+    for wording in ["cited\ttext", "cited\u{202e}text"] {
+        let coding = [assertion(
+            wording,
+            "colour",
+            CodedValue::Reported("orange"),
+            wording,
+        )?];
+        let mut source = sources.first().ok_or("missing police")?.clone();
+        source.text = oia_analysis::statement_comparison::TextCapture::Complete(wording);
+        source.assertions = &coding;
+        let expected = CompositionError::SourceTextControl {
+            source: source.version.clone(),
+            assertion: Some(0),
+            field: "wording",
+        };
+        assert_eq!(
+            Err(expected),
+            compose_recreation_prompt(
+                fixture.request(
+                    &[source, sources.get(2).ok_or("missing witness")?.clone()],
+                    "prompt-version:control"
+                )?,
+                None,
+                limits()?,
+                AssetExportPolicy::OmitWithNotice,
+                || Ok(()),
+            )
+        );
+    }
     let request = fixture.request(&sources, "prompt-version:1")?;
     assert!(matches!(
         compose_recreation_prompt(

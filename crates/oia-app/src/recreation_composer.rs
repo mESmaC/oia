@@ -2,9 +2,9 @@
 //! Application orchestration only: no extraction, generation, persistence or I/O.
 
 use oia_analysis::statement_comparison::{
-    AspectComparison, CodedValue, ComparisonError, ComparisonRequest, ExplanationExposure,
-    SourceClass, SourceSummary, StatementComparison, StatementSource, StopReason, TextCapture,
-    compare_statements,
+    AspectComparison, AspectStatus, CodedValue, ComparisonError, ComparisonRequest,
+    ExplanationExposure, SourceClass, SourceSummary, StatementComparison, StatementSource,
+    StopReason, TextCapture, Variant, compare_statements,
 };
 use oia_domain::witness::AccountOrigin;
 use oia_domain::{IdError, OpaqueId, VersionId};
@@ -129,6 +129,11 @@ pub enum CompositionError {
     ReusedPromptVersion,
     ChangedPinnedSource(VersionId),
     ChangedCodingVersion,
+    SourceTextControl {
+        source: VersionId,
+        assertion: Option<usize>,
+        field: &'static str,
+    },
     Stopped(StopReason),
 }
 
@@ -152,6 +157,14 @@ impl fmt::Display for CompositionError {
             Self::ChangedCodingVersion => {
                 formatter.write_str("changed coding requires a new coding version")
             }
+            Self::SourceTextControl {
+                source,
+                assertion,
+                field,
+            } => write!(
+                formatter,
+                "source {source}, assertion {assertion:?}: {field} contains a control or invisible formatting character; retained wording is unchanged"
+            ),
             Self::Stopped(reason) => write!(formatter, "composition stopped: {reason:?}"),
         }
     }
@@ -179,6 +192,41 @@ fn option_text(text: &str, total: &mut usize) -> Result<(), CompositionError> {
     charge(total, text.len())?;
     if text.trim().is_empty() || text.len() > 4_096 {
         return Err(CompositionError::InvalidOption("empty or oversized text"));
+    }
+    Ok(())
+}
+
+fn charge_expanded(total: &mut usize, bytes: usize, factor: usize) -> Result<(), CompositionError> {
+    charge(
+        total,
+        bytes
+            .checked_mul(factor)
+            .ok_or(CompositionError::Limit("input text"))?,
+    )
+}
+
+fn source_text<'a>(source: &StatementSource<'a>) -> &'a str {
+    match source.text {
+        TextCapture::Complete(text) | TextCapture::Partial { text, .. } => text,
+        TextCapture::Unavailable { .. } => "",
+    }
+}
+
+fn checked_source_text(
+    text: &str,
+    source: &StatementSource<'_>,
+    assertion: Option<usize>,
+    field: &'static str,
+) -> Result<(), CompositionError> {
+    if text
+        .chars()
+        .any(oia_domain::text::requires_visible_unicode_escape)
+    {
+        return Err(CompositionError::SourceTextControl {
+            source: source.version.clone(),
+            assertion,
+            field,
+        });
     }
     Ok(())
 }
@@ -247,7 +295,7 @@ fn source_label(source: &SourceSummary<'_>) -> String {
         None,
     );
     format!(
-        "{} @ {} ({:?}, {:?}, revision={}, coverage={:?}, exposure={:?}, attribution={:?}; revision rationale not supplied)",
+        "{} @ {} ({:?}, {:?}, revision={}, coverage={:?}, exposure={:?}, attribution=\"{}\"; revision rationale not supplied)",
         source.account,
         qualification,
         source.class,
@@ -262,26 +310,22 @@ fn source_label(source: &SourceSummary<'_>) -> String {
 fn detail(
     comparison: &StatementComparison<'_>,
     aspect: &AspectComparison<'_>,
-    value: &str,
+    variant: &Variant<'_>,
 ) -> Result<ReportedDetail, CompositionError> {
     let mut statements = Vec::new();
     let mut versions = BTreeSet::new();
-    let mut declared = BTreeSet::new();
-    let mut adjusted = BTreeSet::new();
     let mut qualifications = Vec::new();
     for report in &aspect.reports {
-        if report.value != CodedValue::Reported(value) {
+        if report.value != CodedValue::Reported(variant.value) {
             continue;
         }
         if let Some(source) = comparison.sources.get(report.source)
             && source.counts_as_reported
         {
             versions.insert(source.version.clone());
-            declared.insert(source.declared_group);
-            adjusted.insert(source.candidate_adjusted_group);
             qualifications.push(source_label(source));
             statements.push(format!(
-                "{} bytes {}..{}: {:?}",
+                "{} bytes {}..{}: \"{}\"",
                 source_label(source),
                 report.wording.start,
                 report.wording.end,
@@ -289,20 +333,32 @@ fn detail(
             ));
         }
     }
+    let status = if aspect.status == AspectStatus::Conflicting
+        && aspect
+            .variants
+            .iter()
+            .filter(|entry| entry.reported_accounts > 0)
+            .count()
+            == 1
+    {
+        "conflict only with excluded non-reported/simulated material; see unknowns".to_owned()
+    } else {
+        format!("{:?}", aspect.status)
+    };
     Ok(ReportedDetail {
-        detail_id: stable_id("detail", aspect.aspect, value)?,
+        detail_id: stable_id("detail", aspect.aspect, variant.value)?,
         statement: format!(
-            "Aspect {:?}; analyst code {:?}; cited reports: {}",
+            "Aspect \"{}\"; analyst code \"{}\"; cited reports: {}",
             aspect.aspect,
-            value,
+            variant.value,
             statements.join("; ")
         ),
         source_versions: versions.into_iter().collect(),
         source_note: Some(format!(
-            "Comparison status={:?}; declared reported groups={}; candidate-adjusted reported groups={} (copy candidates are not established dependence). Counts describe support groups, not truth or probability. Source qualifications: {}",
-            aspect.status,
-            declared.len(),
-            adjusted.len(),
+            "Comparison status={}; declared reported groups={}; candidate-adjusted reported groups={} (copy candidates are not established dependence). Counts describe support groups, not truth or probability. Source qualifications: {}",
+            status,
+            variant.declared_groups,
+            variant.candidate_adjusted_groups,
             qualifications.join("; ")
         )),
     })
@@ -332,8 +388,8 @@ fn compose_aspects(
         for variant in &supported {
             alternatives.push(AccountVariant {
                 variant_id: stable_id("variant", aspect.aspect, variant.value)?,
-                summary: format!("Alternative for aspect {:?}; analyst code {:?}. Alternatives for different aspects are not reconstructed whole accounts.", aspect.aspect, variant.value),
-                reported_details: vec![detail(comparison, aspect, variant.value)?],
+                summary: format!("Alternative for aspect \"{}\"; analyst code \"{}\". Alternatives for different aspects are not reconstructed whole accounts.", aspect.aspect, variant.value),
+                reported_details: vec![detail(comparison, aspect, variant)?],
                 conflicts_with: Vec::new(),
             });
         }
@@ -358,14 +414,14 @@ fn compose_aspects(
             if let Some(source) = comparison.sources.get(report.source) {
                 if report.value == CodedValue::StatedUnknown {
                     gaps.push(format!(
-                        "Stated unknown by {} bytes {}..{}: {:?}",
+                        "Stated unknown by {} bytes {}..{}: \"{}\"",
                         source_label(source),
                         report.wording.start,
                         report.wording.end,
                         report.wording_text
                     ));
                 } else if !source.counts_as_reported {
-                    gaps.push(format!("Not included as reported evidence: {} bytes {}..{}: {:?}; simulated or declared lineage only simulated", source_label(source), report.wording.start, report.wording.end, report.wording_text));
+                    gaps.push(format!("Not included as reported evidence: {} bytes {}..{}: \"{}\"; simulated or declared lineage only simulated", source_label(source), report.wording.start, report.wording.end, report.wording_text));
                 }
             }
         }
@@ -422,7 +478,7 @@ fn context_field(
                 if supported.len() == 1
                     && let Some(variant) = supported.first()
                 {
-                    let reported = detail(comparison, aspect, variant.value)?;
+                    let reported = detail(comparison, aspect, variant)?;
                     return Ok(ContextField::Reported {
                         description: reported.statement,
                         source_versions: reported.source_versions,
@@ -431,7 +487,7 @@ fn context_field(
             }
             Ok(ContextField::Unknown {
                 reason: format!(
-                    "Aspect {key:?} is uncoded, unsupported by reported sources, or conflicting; no context variant selected."
+                    "Aspect \"{key}\" is uncoded, unsupported by reported sources, or conflicting; no context variant selected."
                 ),
             })
         }
@@ -613,6 +669,22 @@ fn append(output: &mut String, text: &str) -> Result<(), CompositionError> {
     Ok(())
 }
 
+fn appendix_value(text: &str) -> String {
+    let mut output = String::from("\"");
+    for character in text.chars() {
+        match character {
+            '\\' => output.push_str("\\\\"),
+            '"' => output.push_str("\\\""),
+            character if oia_domain::text::requires_visible_unicode_escape(character) => {
+                output.extend(character.escape_unicode());
+            }
+            character => output.push(character),
+        }
+    }
+    output.push('"');
+    output
+}
+
 fn portable(result: &ComposedRecreationPrompt<'_>) -> Result<String, CompositionError> {
     let mut output = String::new();
     append(&mut output, result.exported.portable_prompt_text())?;
@@ -652,7 +724,7 @@ fn portable(result: &ComposedRecreationPrompt<'_>) -> Result<String, Composition
             &format!(
                 "- Source {}: {}; representative={}; counts_as_reported={}; declared_group={}; candidate_adjusted_group={}\n",
                 source.index,
-                source_label(source),
+                appendix_value(&source_label(source)),
                 source.representative,
                 source.counts_as_reported,
                 source.declared_group,
@@ -660,11 +732,15 @@ fn portable(result: &ComposedRecreationPrompt<'_>) -> Result<String, Composition
             ),
         )?;
     }
-    for source in result.request.comparison.sources {
+    for (index, source) in result.request.comparison.sources.iter().enumerate() {
         match source.text {
             TextCapture::Partial { reason, .. } | TextCapture::Unavailable { reason } => append(
                 &mut output,
-                &format!("- Capture limitation for {}: {reason:?}\n", source.version),
+                &format!(
+                    "- Capture limitation for {}: {}\n",
+                    source.version,
+                    appendix_value(reason)
+                ),
             )?,
             TextCapture::Complete(_) => {}
         }
@@ -675,6 +751,42 @@ fn portable(result: &ComposedRecreationPrompt<'_>) -> Result<String, Composition
                 source.version, source.derived_from
             ),
         )?;
+        if result
+            .comparison
+            .sources
+            .get(index)
+            .is_some_and(|summary| !summary.representative)
+        {
+            append(
+                &mut output,
+                &format!(
+                    "- Non-representative revision {}: not selected for current aspect details or context; retained coding follows (not verified observations).\n",
+                    source.version
+                ),
+            )?;
+            for assertion in source.assertions {
+                let wording = source_text(source)
+                    .get(assertion.wording.clone())
+                    .ok_or(CompositionError::InvalidOption("validated assertion range"))?;
+                let value = match assertion.value {
+                    CodedValue::Reported(value) => {
+                        format!("analyst code {}", appendix_value(value))
+                    }
+                    CodedValue::StatedUnknown => "stated unknown".to_owned(),
+                };
+                append(
+                    &mut output,
+                    &format!(
+                        "  - Aspect {}; {value}; source {} bytes {}..{}: {}\n",
+                        appendix_value(assertion.aspect),
+                        source.version,
+                        assertion.wording.start,
+                        assertion.wording.end,
+                        appendix_value(wording)
+                    ),
+                )?;
+            }
+        }
     }
     for candidate in &result.comparison.copy_candidates {
         append(
@@ -757,23 +869,35 @@ pub fn compose_recreation_prompt<'a>(
     if comparison.aspects.len() > MAX_ASPECTS {
         return Err(CompositionError::Limit("aspects"));
     }
+    for source in request.comparison.sources {
+        check_control().map_err(CompositionError::Stopped)?;
+        checked_source_text(source.attribution, source, None, "attribution")?;
+        for (index, assertion) in source.assertions.iter().enumerate() {
+            let wording = source_text(source)
+                .get(assertion.wording.clone())
+                .ok_or(CompositionError::InvalidOption("validated assertion range"))?;
+            for (field, text) in [("aspect", assertion.aspect), ("wording", wording)] {
+                checked_source_text(text, source, Some(index), field)?;
+                charge_expanded(&mut bytes, text.len(), 6)?;
+            }
+            charge(&mut bytes, 512)?;
+            if let CodedValue::Reported(value) = assertion.value {
+                checked_source_text(value, source, Some(index), "analyst code")?;
+                charge_expanded(&mut bytes, value.len(), 6)?;
+            }
+        }
+    }
     for aspect in &comparison.aspects {
         charge(&mut bytes, aspect.aspect.len())?;
         for report in &aspect.reports {
-            charge(
-                &mut bytes,
-                report.wording_text.len() * 6 + aspect.aspect.len() * 6 + 512,
-            )?;
-            if let CodedValue::Reported(value) = report.value {
-                charge(&mut bytes, value.len() * 6)?;
-            }
             if let Some(source) = comparison.sources.get(report.source) {
-                charge(&mut bytes, source_label(source).len() * 2)?;
+                charge_expanded(&mut bytes, source_label(source).len(), 2)?;
             }
         }
         for omission in &aspect.not_coded_in {
             if let Some(source) = comparison.sources.get(omission.source) {
-                charge(&mut bytes, source_label(source).len() + 128)?;
+                charge(&mut bytes, source_label(source).len())?;
+                charge(&mut bytes, 128)?;
             }
         }
     }
@@ -785,6 +909,7 @@ pub fn compose_recreation_prompt<'a>(
         context: context(&request, &comparison)?,
         shared_reported_details: Vec::new(),
         conflicting_variants: Vec::new(),
+        negative_keywords: Vec::new(),
         assumptions: request.assumptions.to_vec(),
         unknowns: Vec::new(),
         reference_assets: request.reference_assets.to_vec(),

@@ -1,8 +1,8 @@
 //! Deterministic synthetic demonstration of camera directory registration,
 //! viewing-cone geometry projection, periodic still freshness vs. stale-hold
-//! downgrade, restricted-source cutoff and explicit re-registration, bounded
-//! retention ring-buffer eviction, and retained clip manifest handoff into
-//! [`CameraAnomalyMonitor`] (`#28`, `CAM-01`, `CAM-02`, `CAM-04`, `A09`).
+//! downgrade, restricted-source cutoff and explicit re-registration on the same
+//! listing, bounded retention ring-buffer eviction, and retained clip manifest
+//! handoff into [`CameraAnomalyMonitor`] (`#28`, `CAM-01`, `CAM-02`, `CAM-04`, `A09`).
 
 use oia_domain::{ActorId, OpaqueId, SchemaVersion, VersionId};
 use oia_media::camera_anomaly::{
@@ -139,6 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let north_cone = registry.compute_viewing_cone(&north_id, 2_500.0, 5)?;
     let traffic_cone = registry.compute_viewing_cone(&traffic_id, 1_000.0, 5)?;
     assert!(north_cone.is_calibrated());
+    assert!(north_cone.uncertainty_widened_horizontal_fov_deg() > north_cone.horizontal_fov_deg());
     assert!(matches!(
         traffic_cone.cone_class(),
         ViewingConeClass::IllustrativeReportedBearing { .. }
@@ -190,7 +191,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(!stale_still.eligible_as_event_evidence());
 
     // 5. Transition `traffic_id` to `SourceRestricted`, verify cutoff, then explicitly
-    // re-register with a new `source_version` (`CAM-01`, `A09`).
+    // re-register on the SAME listing reference with a new `source_version` after the
+    // upstream operator restores ordinary public access (`CAM-01`, `AGENTS.md` §6, `A09`).
     registry.record_health_transition(
         &traffic_id,
         OpaqueId::new("trans:harbor:restricted-01")?,
@@ -223,9 +225,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &traffic_id,
         OpaqueId::new("trans:harbor:reregister-02")?,
         VersionId::new("srcver:harbor-still:v2")?,
-        "https://example.invalid/dot/public-v2/harbor-02".to_owned(),
         20_000,
-        "Operator registered new public DOT v2 feed endpoint".to_owned(),
+        "Original Harbor DOT listing restored ordinary public access after maintenance".to_owned(),
     )?;
 
     // 6. Ingest live stream frames on `north_id` across a retention window to trigger
@@ -274,8 +275,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(!placeholder.retained_in_ring_buffer());
 
     // 7. Extract a retained clip manifest for `[12_100, 12_600)` with a 2_500 ms pre-window
-    // (`pre_start_ms = 9_600`) so the expired frame at 10_000 ms surfaces as `PartialBufferExpired`
-    // and the sequence discontinuity (seq 11 -> 14, 2 dropped frames) is preserved.
+    // (`pre_start_ms = 9_600`) so the expired frame at 10_000 ms and the 2 dropped frames
+    // (seq 11 -> 14) surface in `PartialBufferExpired`.
     let manifest = registry
         .extract_retained_clip_manifest(
             &north_id,
@@ -287,7 +288,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 event_end_ms: 12_600,
                 requested_pre_context_ms: 2_500,
                 requested_post_context_ms: 500,
-                extracted_at_ms: 13_000,
+                extracted_at_ms: 13_200,
                 trigger_explanation:
                     "Fast horizon streak across western sky sector (simulated fixture)".to_owned(),
             },
@@ -318,7 +319,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         privacy_mask_applied: false,
     };
     let mut monitor = CameraAnomalyMonitor::new(
-        north_entry.to_anomaly_source_profile(),
+        north_entry.to_anomaly_source_profile()?,
         detector,
         vec![region.clone()],
         anomaly_limits,

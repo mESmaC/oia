@@ -89,7 +89,7 @@ fn sample_registration(
 }
 
 #[test]
-fn cam01_cam02_directory_registration_intentional_publication_and_privacy_exclusions()
+fn cam01_cam02_directory_registration_permissions_and_privacy_exclusions()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut registry = CameraDirectoryRegistry::new(default_limits()?);
 
@@ -110,7 +110,9 @@ fn cam01_cam02_directory_registration_intentional_publication_and_privacy_exclus
         DIRECTORY_LISTING_PROVENANCE_NOTICE
     );
 
-    // 2. Catalog-only camera without live stream, still refresh, archive, or processing permission is accepted (`CAM-02`).
+    // 2. Catalog-only camera without live stream or still refresh is accepted (`CAM-02`),
+    // and `to_anomaly_source_profile()` refuses it as `CatalogOnlyCameraHasNoLiveFeed` (`N7`)
+    // rather than mislabeling it as `StillFallback`.
     let mut catalog_only = sample_registration("cam:catalog-only", "srcver:2")?;
     catalog_only.stream_capability = StreamCapability::None;
     catalog_only.still_capability = StillRefreshCapability::None;
@@ -127,15 +129,69 @@ fn cam01_cam02_directory_registration_intentional_publication_and_privacy_exclus
     catalog_only.orientation = CameraViewingOrientation::Unknown {
         reason: "listing omits compass bearing".to_owned(),
     };
+    let catalog_id = catalog_only.camera_id.clone();
     let catalog_entry = registry.register_camera(catalog_only)?;
     assert_eq!(
-        catalog_entry.to_anomaly_source_profile().calibration,
+        catalog_entry.orientation().to_calibration_state(),
         CameraCalibrationState::Uncalibrated
+    );
+    assert_eq!(
+        catalog_entry.to_anomaly_source_profile(),
+        Err(CameraDirectoryError::CatalogOnlyCameraHasNoLiveFeed {
+            camera_id: catalog_id.clone(),
+        })
     );
     assert!(matches!(
         catalog_entry.omitted_retention_context_status(),
         ContextWindowStatus::OmittedByRetentionPolicy { .. }
     ));
+
+    // `automated_processing != Permitted` refuses `ingest_frame` (`B6`), and `clip_retention != Permitted`
+    // refuses `extract_retained_clip_manifest`.
+    let auto_err = registry.ingest_frame(
+        &catalog_id,
+        CameraFrameSubmission {
+            frame_version: VersionId::new("ver:cat:f1")?,
+            sha256_hex: hex64('1'),
+            byte_len: 512,
+            sequence_number: 1,
+            declared_kind: FeedObservationKind::StillFallback,
+            origin: FrameArtifactOrigin::OriginalRetainedFrame,
+            source_capture_time_ms: None,
+            clock_uncertainty_ms: 10,
+            ingestion_time_ms: 1_100,
+            archive_version: None,
+        },
+    );
+    assert_eq!(
+        auto_err,
+        Err(CameraDirectoryError::AutomatedProcessingNotPermitted {
+            camera_id: catalog_id.clone(),
+            status: SourceUsePermission::Unknown,
+        })
+    );
+
+    let clip_perm_err = registry.extract_retained_clip_manifest(
+        &catalog_id,
+        ClipExtractionRequest {
+            clip_id: OpaqueId::new("clip:cat:1")?,
+            clip_version: VersionId::new("clipver:cat:1")?,
+            source_session_id: OpaqueId::new("sess:cat:1")?,
+            event_start_ms: 1_000,
+            event_end_ms: 1_500,
+            requested_pre_context_ms: 0,
+            requested_post_context_ms: 0,
+            extracted_at_ms: 1_600,
+            trigger_explanation: "Disallowed clip retention".to_owned(),
+        },
+    );
+    assert_eq!(
+        clip_perm_err,
+        Err(CameraDirectoryError::ClipRetentionNotPermitted {
+            camera_id: catalog_id,
+            status: SourceUsePermission::Prohibited,
+        })
+    );
 
     // 3. Home interiors (`HomeInterior`, `ViewIntoHomeInterior`) are unconditionally refused (`CAM-01`).
     for forbidden_view in [
@@ -151,7 +207,8 @@ fn cam01_cam02_directory_registration_intentional_publication_and_privacy_exclus
         ));
     }
 
-    // 4. `ResidentialExteriorStreetView` requires declared privacy mask zones, and unmasked zones block frame ingestion (`CAM-02`).
+    // 4. `ResidentialExteriorStreetView` requires declared privacy mask zones; unmasked zones block
+    // both `ingest_frame` AND `to_anomaly_source_profile` (`B3`, `CAM-02`).
     let mut res_no_masks = sample_registration("cam:res-unmasked", "srcver:3")?;
     res_no_masks.view_kind = CameraViewKind::ResidentialExteriorStreetView;
     assert!(matches!(
@@ -172,6 +229,13 @@ fn cam01_cam02_directory_registration_intentional_publication_and_privacy_exclus
     let res_id = res_no_masks.camera_id.clone();
     let res_entry = registry.register_camera(res_no_masks)?;
     assert!(!res_entry.privacy_ready_for_acquisition());
+    assert_eq!(
+        res_entry.to_anomaly_source_profile(),
+        Err(CameraDirectoryError::UnmaskedPrivacyZone {
+            camera_id: res_id.clone(),
+            zone_id: zone_id.clone(),
+        })
+    );
 
     let unmasked_ingest = registry.ingest_frame(
         &res_id,
@@ -193,7 +257,8 @@ fn cam01_cam02_directory_registration_intentional_publication_and_privacy_exclus
         Err(CameraDirectoryError::UnmaskedPrivacyZone { zone_id: ref z, .. }) if z == &zone_id
     ));
 
-    // 5. `ExcludedPrivateActivity` can be cataloged to record the exclusion, but refuses frame acquisition (`CAM-02`).
+    // 5. `ExcludedPrivateActivity` and `DisabledByPolicy` block both `ingest_frame` and
+    // `to_anomaly_source_profile()` (`B3`, `B6`, `CAM-02`).
     let mut excluded = sample_registration("cam:private-yard", "srcver:4")?;
     excluded.privacy_assessment = PrivacyViewAssessment::ExcludedPrivateActivity {
         assessed_by: ActorId::new("actor:test-operator")?,
@@ -201,7 +266,11 @@ fn cam01_cam02_directory_registration_intentional_publication_and_privacy_exclus
         reason: "Camera pans across enclosed private courtyard".to_owned(),
     };
     let excluded_id = excluded.camera_id.clone();
-    registry.register_camera(excluded)?;
+    let excluded_entry = registry.register_camera(excluded)?;
+    assert!(matches!(
+        excluded_entry.to_anomaly_source_profile(),
+        Err(CameraDirectoryError::PrivateActivityViewExcluded { .. })
+    ));
     let excluded_ingest = registry.ingest_frame(
         &excluded_id,
         CameraFrameSubmission {
@@ -222,11 +291,42 @@ fn cam01_cam02_directory_registration_intentional_publication_and_privacy_exclus
         Err(CameraDirectoryError::PrivateActivityViewExcluded { .. })
     ));
 
+    let mut disabled = sample_registration("cam:disabled-policy", "srcver:5")?;
+    disabled.initial_health = SourceLifecycleHealth::DisabledByPolicy;
+    let disabled_id = disabled.camera_id.clone();
+    let disabled_entry = registry.register_camera(disabled)?;
+    assert_eq!(
+        disabled_entry.to_anomaly_source_profile(),
+        Err(CameraDirectoryError::CameraDisabledByPolicy {
+            camera_id: disabled_id.clone(),
+        })
+    );
+    assert_eq!(
+        registry.ingest_frame(
+            &disabled_id,
+            CameraFrameSubmission {
+                frame_version: VersionId::new("ver:disabled:f1")?,
+                sha256_hex: hex64('3'),
+                byte_len: 512,
+                sequence_number: 1,
+                declared_kind: FeedObservationKind::UpstreamCameraFeed,
+                origin: FrameArtifactOrigin::OriginalRetainedFrame,
+                source_capture_time_ms: Some(1_100),
+                clock_uncertainty_ms: 10,
+                ingestion_time_ms: 1_120,
+                archive_version: None,
+            },
+        ),
+        Err(CameraDirectoryError::CameraDisabledByPolicy {
+            camera_id: disabled_id,
+        })
+    );
+
     Ok(())
 }
 
 #[test]
-fn cam02_cam05_viewing_cone_geometry_and_movement_invalidation()
+fn cam02_cam05_viewing_cone_geometry_movement_invalidation_and_recalibration()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut registry = CameraDirectoryRegistry::new(default_limits()?);
     let cal_reg = sample_registration("cam:cone-cal", "srcver:cone:1")?;
@@ -234,10 +334,12 @@ fn cam02_cam05_viewing_cone_geometry_and_movement_invalidation()
     registry.register_camera(cal_reg)?;
 
     // Calibrated due-north camera (`azimuth_deg = 0.0`, `horizontal_fov_deg = 60.0`):
-    // midpoint vertex (`idx = 1` of 3) lies due north of the apex with higher latitude and matching longitude.
+    // midpoint vertex (`idx = 1` of 3) lies due north of the apex with higher latitude and matching longitude,
+    // and `uncertainty_widened_horizontal_fov_deg` reflects `2 * max_angular_error_mdeg` (`60.2` deg).
     let cone = registry.compute_viewing_cone(&cal_id, 1_000.0, 3)?;
     assert!(cone.is_calibrated());
     assert_eq!(cone.arc_vertices_lat_lon_deg().len(), 3);
+    assert!((cone.uncertainty_widened_horizontal_fov_deg() - 60.2).abs() < 1e-9);
     let (north_lat, north_lon) = cone.arc_vertices_lat_lon_deg()[1];
     assert!(north_lat > cone.apex_latitude_deg());
     assert!((north_lon - cone.apex_longitude_deg()).abs() < 1e-9);
@@ -253,6 +355,7 @@ fn cam02_cam05_viewing_cone_geometry_and_movement_invalidation()
     registry.register_camera(approx_reg)?;
     let approx_cone = registry.compute_viewing_cone(&approx_id, 1_000.0, 3)?;
     assert!(!approx_cone.is_calibrated());
+    assert!((approx_cone.uncertainty_widened_horizontal_fov_deg() - 64.0).abs() < 1e-9);
     assert!(matches!(
         approx_cone.cone_class(),
         ViewingConeClass::IllustrativeReportedBearing {
@@ -261,7 +364,7 @@ fn cam02_cam05_viewing_cone_geometry_and_movement_invalidation()
     ));
 
     // Recording `CameraRepositioned` invalidates the calibrated orientation and causes viewing-cone
-    // projection to fail until re-calibrated (`CAM-05`, `A09`).
+    // projection to fail until `update_camera_orientation` supplies a new calibration version (`CAM-05`, `N9`).
     registry.record_health_transition(
         &cal_id,
         OpaqueId::new("trans:cone:repositioned")?,
@@ -272,7 +375,7 @@ fn cam02_cam05_viewing_cone_geometry_and_movement_invalidation()
     )?;
     let cal_entry = registry.camera(&cal_id).ok_or("missing camera")?;
     assert!(matches!(
-        cal_entry.to_anomaly_source_profile().calibration,
+        cal_entry.to_anomaly_source_profile()?.calibration,
         CameraCalibrationState::InvalidatedByMovement {
             detected_at_ms: 2_000,
             ..
@@ -281,6 +384,39 @@ fn cam02_cam05_viewing_cone_geometry_and_movement_invalidation()
     assert!(matches!(
         registry.compute_viewing_cone(&cal_id, 1_000.0, 3),
         Err(CameraDirectoryError::OrientationUnavailableForViewingCone { .. })
+    ));
+
+    // Re-calibrating with a new `calibration_version` restores viewing-cone projection (`N9`).
+    registry.update_camera_orientation(
+        &cal_id,
+        CameraViewingOrientation::Calibrated {
+            calibration_version: VersionId::new("cal:srcver:cone:1:v2")?,
+            azimuth_deg: 35.0,
+            pitch_deg: Some(15.0),
+            roll_deg: Some(0.0),
+            horizontal_fov_deg: 60.0,
+            vertical_fov_deg: Some(40.0),
+            max_angular_error_mdeg: 150,
+        },
+    )?;
+    assert!(
+        registry
+            .compute_viewing_cone(&cal_id, 1_000.0, 3)?
+            .is_calibrated()
+    );
+
+    // Polar apex (`latitude_deg = 90.0`) is refused as degenerate (`PolarApexUnsupportedForViewingCone`, `N9`).
+    let mut pole_reg = sample_registration("cam:cone-pole", "srcver:cone:3")?;
+    pole_reg.position = CameraHorizontalPosition::KnownWgs84 {
+        latitude_deg: 90.0,
+        longitude_deg: 0.0,
+        horizontal_uncertainty_m: 5.0,
+    };
+    let pole_id = pole_reg.camera_id.clone();
+    registry.register_camera(pole_reg)?;
+    assert!(matches!(
+        registry.compute_viewing_cone(&pole_id, 1_000.0, 3),
+        Err(CameraDirectoryError::PolarApexUnsupportedForViewingCone { .. })
     ));
 
     // Invalid viewing-cone parameters are rejected before allocation.
@@ -305,14 +441,15 @@ fn cam02_cam05_viewing_cone_geometry_and_movement_invalidation()
 }
 
 #[test]
-fn cam02_frame_classification_still_freshness_substitutes_and_archive_bounds()
+fn cam02_frame_classification_capture_time_honesty_still_freshness_and_archive_bounds()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut registry = CameraDirectoryRegistry::new(default_limits()?);
     let reg = sample_registration("cam:classify-01", "srcver:classify:1")?;
     let cam_id = reg.camera_id.clone();
     registry.register_camera(reg)?;
 
-    // 1. Fresh periodic still (`stale_after_ms = 10_000`) is eligible as event evidence.
+    // 1. Fresh periodic still with explicit `source_capture_time_ms` (`stale_after_ms = 10_000`)
+    // is eligible as event evidence and preserves the exact `source_capture_time_ms` (`B2`).
     let still_1 = registry.ingest_frame(
         &cam_id,
         CameraFrameSubmission {
@@ -334,43 +471,80 @@ fn cam02_frame_classification_still_freshness_substitutes_and_archive_bounds()
     );
     assert!(still_1.eligible_as_event_evidence());
     assert!(still_1.retained_in_ring_buffer());
+    assert_eq!(still_1.to_retained_frame_ref()?.capture_time_ms, 1_000);
     assert!(matches!(
         still_1.freshness(),
         FrameFreshnessEvaluation::FreshPeriodicStill {
             stale_after_ms: 10_000,
-            source_capture_time_ms: Some(1_000),
+            source_capture_time_ms: 1_000,
             ingestion_time_ms: 2_000,
-            observed_capture_age_ms: Some(1_000),
+            observed_capture_age_ms: 1_000,
             unchanged_hold_duration_ms: 0,
         }
     ));
 
-    // 2. Unchanged digest held past `stale_after_ms` (at `ingestion_time_ms = 12_500`, hold = `10_500 > 10_000`)
-    // is downgraded to `StaleStillHold`, cannot become evidence, is omitted from the ring buffer,
-    // and marks camera health `Stale`.
-    let still_2 = registry.ingest_frame(
+    // 2. Periodic still WITHOUT `source_capture_time_ms` and a new digest is classified as
+    // `PeriodicStillCaptureTimeUnknown` (`N2`) rather than unconditionally fresh, is NOT eligible as
+    // event evidence, and `to_retained_frame_ref()` refuses to fabricate `capture_time_ms` from
+    // `ingestion_time_ms` (`B2`: `MissingSourceCaptureTimeForEvidence`).
+    let still_unknown_cap = registry.ingest_frame(
         &cam_id,
         CameraFrameSubmission {
-            frame_version: VersionId::new("ver:still:2")?,
-            sha256_hex: hex64('a'),
+            frame_version: VersionId::new("ver:still:unknown-cap")?,
+            sha256_hex: hex64('9'),
             byte_len: 1_024,
             sequence_number: 2,
             declared_kind: FeedObservationKind::PeriodicUpstreamStill,
             origin: FrameArtifactOrigin::OriginalRetainedFrame,
             source_capture_time_ms: None,
             clock_uncertainty_ms: 50,
-            ingestion_time_ms: 12_500,
+            ingestion_time_ms: 3_000,
+            archive_version: None,
+        },
+    )?;
+    assert!(matches!(
+        still_unknown_cap.freshness(),
+        FrameFreshnessEvaluation::PeriodicStillCaptureTimeUnknown {
+            stale_after_ms: 10_000,
+            ingestion_time_ms: 3_000,
+            unchanged_hold_duration_ms: 0,
+        }
+    ));
+    assert!(!still_unknown_cap.eligible_as_event_evidence());
+    assert!(!still_unknown_cap.retained_in_ring_buffer());
+    assert_eq!(
+        still_unknown_cap.to_retained_frame_ref(),
+        Err(CameraDirectoryError::MissingSourceCaptureTimeForEvidence {
+            frame_version: VersionId::new("ver:still:unknown-cap")?,
+        })
+    );
+
+    // 3. Unchanged digest held past `stale_after_ms` (at `ingestion_time_ms = 13_500`, hold = `10_500 > 10_000`)
+    // is downgraded to `StaleStillHold`, cannot become evidence, is omitted from the ring buffer,
+    // and marks camera health `Stale`.
+    let still_stale = registry.ingest_frame(
+        &cam_id,
+        CameraFrameSubmission {
+            frame_version: VersionId::new("ver:still:stale")?,
+            sha256_hex: hex64('9'),
+            byte_len: 1_024,
+            sequence_number: 3,
+            declared_kind: FeedObservationKind::PeriodicUpstreamStill,
+            origin: FrameArtifactOrigin::OriginalRetainedFrame,
+            source_capture_time_ms: None,
+            clock_uncertainty_ms: 50,
+            ingestion_time_ms: 13_500,
             archive_version: None,
         },
     )?;
     assert_eq!(
-        still_2.effective_kind(),
+        still_stale.effective_kind(),
         FeedObservationKind::StaleStillHold
     );
-    assert!(!still_2.eligible_as_event_evidence());
-    assert!(!still_2.retained_in_ring_buffer());
+    assert!(!still_stale.eligible_as_event_evidence());
+    assert!(!still_stale.retained_in_ring_buffer());
     assert!(matches!(
-        still_2.to_retained_frame_ref(),
+        still_stale.to_retained_frame_ref(),
         Err(
             CameraDirectoryError::NonEvidentiaryFrameCannotBecomeEvidence {
                 effective_kind: FeedObservationKind::StaleStillHold,
@@ -383,8 +557,8 @@ fn cam02_frame_classification_still_freshness_substitutes_and_archive_bounds()
         SourceLifecycleHealth::Stale
     );
 
-    // 3. Non-evidentiary substitutes (`StillFallback`, `StreetViewFallback`, `SyntheticPlaceholder`)
-    // are never buffered and never eligible as event evidence (`CAM-02`, `AGENTS.md` §2).
+    // 4. Non-evidentiary substitutes (`StillFallback`, `StreetViewFallback`, `SyntheticPlaceholder`)
+    // are never buffered, never eligible as event evidence, and never advance `last_live_capture_time_ms` (`N4`).
     for (idx, sub_kind) in [
         FeedObservationKind::StillFallback,
         FeedObservationKind::StreetViewFallback,
@@ -393,7 +567,7 @@ fn cam02_frame_classification_still_freshness_substitutes_and_archive_bounds()
     .into_iter()
     .enumerate()
     {
-        let seq = 3 + idx as u64;
+        let seq = 4 + idx as u64;
         let frame = registry.ingest_frame(
             &cam_id,
             CameraFrameSubmission {
@@ -403,9 +577,9 @@ fn cam02_frame_classification_still_freshness_substitutes_and_archive_bounds()
                 sequence_number: seq,
                 declared_kind: sub_kind,
                 origin: FrameArtifactOrigin::OriginalRetainedFrame,
-                source_capture_time_ms: None,
+                source_capture_time_ms: Some(13_550),
                 clock_uncertainty_ms: 50,
-                ingestion_time_ms: 12_600 + (idx as i64) * 10,
+                ingestion_time_ms: 13_600 + (idx as i64) * 10,
                 archive_version: None,
             },
         )?;
@@ -413,21 +587,21 @@ fn cam02_frame_classification_still_freshness_substitutes_and_archive_bounds()
         assert!(!frame.retained_in_ring_buffer());
     }
 
-    // 4. Historical archive frame inside the verified window `[500, 900]` with matching `archive_version`
-    // is eligible as retrospective evidence (`to_retained_frame_ref()` succeeds) without entering the live ring buffer,
-    // and `CameraAnomalyMonitor::new` rejects `HistoricalArchiveFrame` as a live monitoring feed kind.
+    // 5. Historical archive frame inside the verified window `[500, 900]` with matching `archive_version`
+    // uses its own sequence space (`N12`: `sequence_number = 1` does not conflict with live `seq = 6`)
+    // and is eligible as retrospective evidence (`to_retained_frame_ref()` succeeds) without entering the live ring buffer.
     let archive_ok = registry.ingest_frame(
         &cam_id,
         CameraFrameSubmission {
             frame_version: VersionId::new("ver:arch:700")?,
             sha256_hex: hex64('c'),
             byte_len: 1_024,
-            sequence_number: 10,
+            sequence_number: 1,
             declared_kind: FeedObservationKind::HistoricalArchiveFrame,
             origin: FrameArtifactOrigin::OriginalRetainedFrame,
             source_capture_time_ms: Some(700),
             clock_uncertainty_ms: 50,
-            ingestion_time_ms: 13_000,
+            ingestion_time_ms: 14_000,
             archive_version: Some(VersionId::new("arch:srcver:classify:1")?),
         },
     )?;
@@ -442,18 +616,39 @@ fn cam02_frame_classification_still_freshness_substitutes_and_archive_bounds()
             frame_version: VersionId::new("ver:arch:950")?,
             sha256_hex: hex64('d'),
             byte_len: 1_024,
-            sequence_number: 11,
+            sequence_number: 2,
             declared_kind: FeedObservationKind::HistoricalArchiveFrame,
             origin: FrameArtifactOrigin::OriginalRetainedFrame,
             source_capture_time_ms: Some(950),
             clock_uncertainty_ms: 50,
-            ingestion_time_ms: 13_100,
+            ingestion_time_ms: 14_100,
             archive_version: Some(VersionId::new("arch:srcver:classify:1")?),
         },
     );
     assert!(matches!(
         archive_oob,
         Err(CameraDirectoryError::ArchiveFrameOutsideVerifiedWindow { .. })
+    ));
+
+    // Live frame exceeding staleness bound (`capture_age_ms = 5_000 > max_retention_window_ms = 2_000`) is rejected (`N3`).
+    let stale_live_err = registry.ingest_frame(
+        &cam_id,
+        CameraFrameSubmission {
+            frame_version: VersionId::new("ver:live:stale")?,
+            sha256_hex: hex64('e'),
+            byte_len: 1_024,
+            sequence_number: 7,
+            declared_kind: FeedObservationKind::UpstreamCameraFeed,
+            origin: FrameArtifactOrigin::OriginalRetainedFrame,
+            source_capture_time_ms: Some(9_000),
+            clock_uncertainty_ms: 10,
+            ingestion_time_ms: 14_200,
+            archive_version: None,
+        },
+    );
+    assert!(matches!(
+        stale_live_err,
+        Err(CameraDirectoryError::LiveFrameExceedsStalenessBound { .. })
     ));
 
     // Generated/predictive frames and clock uncertainty > 24h are rejected (`AGENTS.md` §2).
@@ -463,12 +658,12 @@ fn cam02_frame_classification_still_freshness_substitutes_and_archive_bounds()
             frame_version: VersionId::new("ver:gen:1")?,
             sha256_hex: hex64('e'),
             byte_len: 1_024,
-            sequence_number: 12,
+            sequence_number: 7,
             declared_kind: FeedObservationKind::UpstreamCameraFeed,
             origin: FrameArtifactOrigin::PredictiveOrGeneratedDerivative,
-            source_capture_time_ms: Some(13_200),
+            source_capture_time_ms: Some(14_200),
             clock_uncertainty_ms: 10,
-            ingestion_time_ms: 13_210,
+            ingestion_time_ms: 14_210,
             archive_version: None,
         },
     );
@@ -483,12 +678,12 @@ fn cam02_frame_classification_still_freshness_substitutes_and_archive_bounds()
             frame_version: VersionId::new("ver:clock:1")?,
             sha256_hex: hex64('e'),
             byte_len: 1_024,
-            sequence_number: 12,
+            sequence_number: 7,
             declared_kind: FeedObservationKind::UpstreamCameraFeed,
             origin: FrameArtifactOrigin::OriginalRetainedFrame,
-            source_capture_time_ms: Some(13_200),
+            source_capture_time_ms: Some(14_200),
             clock_uncertainty_ms: MAX_CLOCK_UNCERTAINTY_MS + 1,
-            ingestion_time_ms: 13_210,
+            ingestion_time_ms: 14_210,
             archive_version: None,
         },
     );
@@ -501,12 +696,30 @@ fn cam02_frame_classification_still_freshness_substitutes_and_archive_bounds()
 }
 
 #[test]
-fn cam01_a09_restricted_cutoff_blocks_acquisition_and_retries_until_explicit_reregistration()
+fn cam01_a09_restricted_cutoff_same_listing_reregistration_and_source_version_provenance()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut registry = CameraDirectoryRegistry::new(default_limits()?);
     let reg = sample_registration("cam:restricted-flow", "srcver:rest:1")?;
     let cam_id = reg.camera_id.clone();
+    let original_listing = reg.listing_reference.clone();
     registry.register_camera(reg)?;
+
+    // Ingest a frame under `srcver:rest:1` before restriction (`B5`).
+    registry.ingest_frame(
+        &cam_id,
+        CameraFrameSubmission {
+            frame_version: VersionId::new("ver:rest:pre-1")?,
+            sha256_hex: hex64('0'),
+            byte_len: 512,
+            sequence_number: 10,
+            declared_kind: FeedObservationKind::UpstreamCameraFeed,
+            origin: FrameArtifactOrigin::OriginalRetainedFrame,
+            source_capture_time_ms: Some(4_500),
+            clock_uncertainty_ms: 20,
+            ingestion_time_ms: 4_520,
+            archive_version: None,
+        },
+    )?;
 
     // Transition to `UnavailableRestricted` / `SourceRestricted`.
     registry.record_health_transition(
@@ -525,7 +738,7 @@ fn cam01_a09_restricted_cutoff_blocks_acquisition_and_retries_until_explicit_rer
             frame_version: VersionId::new("ver:rest:f1")?,
             sha256_hex: hex64('1'),
             byte_len: 512,
-            sequence_number: 1,
+            sequence_number: 11,
             declared_kind: FeedObservationKind::UpstreamCameraFeed,
             origin: FrameArtifactOrigin::OriginalRetainedFrame,
             source_capture_time_ms: Some(5_100),
@@ -566,7 +779,6 @@ fn cam01_a09_restricted_cutoff_blocks_acquisition_and_retries_until_explicit_rer
         &cam_id,
         OpaqueId::new("trans:rest:rereg-bad")?,
         VersionId::new("srcver:rest:1")?,
-        "https://example.invalid/cameras/new-public-endpoint".to_owned(),
         6_000,
         "Re-registering with reused version".to_owned(),
     );
@@ -575,39 +787,79 @@ fn cam01_a09_restricted_cutoff_blocks_acquisition_and_retries_until_explicit_rer
         Err(CameraDirectoryError::ReusedVersionId(_))
     ));
 
-    // Explicit re-registration with a new `source_version` succeeds and preserves `prior_source_versions`.
+    // Explicit re-registration on the SAME `listing_reference` (`B4`) with a new `source_version`
+    // succeeds, preserves `prior_source_versions`, and resets live session sequence state (`N12`).
     let updated = registry.reregister_ordinarily_accessible_version(
         &cam_id,
         OpaqueId::new("trans:rest:rereg-ok")?,
         VersionId::new("srcver:rest:2")?,
-        "https://example.invalid/cameras/new-public-endpoint".to_owned(),
         6_000,
-        "Operator configured new public directory feed URL".to_owned(),
+        "Original directory listing restored ordinary public access after maintenance".to_owned(),
     )?;
     assert_eq!(
         updated.access_status(),
         CameraAccessStatus::OrdinarilyAccessible
     );
+    assert_eq!(updated.listing_reference(), original_listing);
     assert_eq!(updated.source_version(), &VersionId::new("srcver:rest:2")?);
     assert_eq!(
         updated.prior_source_versions(),
         &[VersionId::new("srcver:rest:1")?]
     );
 
+    // Ingest a frame in the new session (`srcver:rest:2`) starting at `sequence_number = 1` without
+    // triggering a false discontinuity against the pre-restriction session (`seq = 10`).
+    registry.ingest_frame(
+        &cam_id,
+        CameraFrameSubmission {
+            frame_version: VersionId::new("ver:rest:post-1")?,
+            sha256_hex: hex64('2'),
+            byte_len: 512,
+            sequence_number: 1,
+            declared_kind: FeedObservationKind::UpstreamCameraFeed,
+            origin: FrameArtifactOrigin::OriginalRetainedFrame,
+            source_capture_time_ms: Some(6_100),
+            clock_uncertainty_ms: 20,
+            ingestion_time_ms: 6_120,
+            archive_version: None,
+        },
+    )?;
+
+    // Extracting a clip over the pre-restriction frame (`4_500` ms) stamps the manifest with its
+    // exact acquisition `source_version = srcver:rest:1` rather than the camera's newer `srcver:rest:2` (`B5`).
+    let pre_manifest = registry.extract_retained_clip_manifest(
+        &cam_id,
+        ClipExtractionRequest {
+            clip_id: OpaqueId::new("clip:rest:pre")?,
+            clip_version: VersionId::new("clipver:rest:pre:1")?,
+            source_session_id: OpaqueId::new("sess:rest:1")?,
+            event_start_ms: 4_400,
+            event_end_ms: 4_600,
+            requested_pre_context_ms: 0,
+            requested_post_context_ms: 0,
+            extracted_at_ms: 6_200,
+            trigger_explanation: "Pre-restriction event clip".to_owned(),
+        },
+    )?;
+    assert_eq!(
+        pre_manifest.source_version(),
+        &VersionId::new("srcver:rest:1")?
+    );
+
     Ok(())
 }
 
 #[test]
-fn cam04_a09_fifo_eviction_order_clip_manifest_and_anomaly_monitor_bridge()
+fn cam04_a09_fifo_eviction_context_completeness_and_anomaly_monitor_bridge()
 -> Result<(), Box<dyn std::error::Error>> {
     // Buffer limit: max 3 buffered frames, max 3_072 bytes, `max_retention_window_ms = 2_000`.
-    let limits = CameraDirectoryLimits::new(4, 4, 8, 3, 3_072, 8, 4, 8, 16_384)?;
+    let limits = CameraDirectoryLimits::new(4, 4, 8, 3, 3_072, 8, 8, 8, 16_384)?;
     let mut registry = CameraDirectoryRegistry::new(limits);
     let reg = sample_registration("cam:ring-fifo", "srcver:ring:1")?;
     let cam_id = reg.camera_id.clone();
     registry.register_camera(reg)?;
 
-    // Ingest 3 frames at the exact same `ingestion_time_ms = 10_000` with increasing `sequence_number` (1, 2, 3),
+    // Ingest 3 frames at `ingestion_time_ms = 10_000` with increasing `sequence_number` (1, 2, 3),
     // then a 4th frame at `ingestion_time_ms = 10_000, sequence_number = 4` to verify deterministic FIFO
     // eviction of `(10_000, seq 1, ver:f1)` by capacity, followed by a 5th frame at `12_500` (seq 7, dropping 5 & 6)
     // that expires all `10_000` frames by retention window (`age = 2_500 > 2_000`).
@@ -680,6 +932,10 @@ fn cam04_a09_fifo_eviction_order_clip_manifest_and_anomaly_monitor_bridge()
         },
     )?;
 
+    // 1. Window `[12_400, 12_600)` with `requested_pre_context_ms = 3_000` (`pre_start_ms = 9_400`)
+    // and `requested_post_context_ms = 500` (`post_end_ms = 13_100`), extracted at `13_200`:
+    // - 3 expired by window (`f2, f3, f4`) + 1 evicted by capacity (`f1`) + 2 dropped frames (`seq 5, 6`)
+    //   + 1 missing pre-context window = 7 in `PartialBufferExpired.expired_frame_count` (`B1`, `N5`).
     let manifest = registry
         .extract_retained_clip_manifest(
             &cam_id,
@@ -691,26 +947,99 @@ fn cam04_a09_fifo_eviction_order_clip_manifest_and_anomaly_monitor_bridge()
                 event_end_ms: 12_600,
                 requested_pre_context_ms: 3_000,
                 requested_post_context_ms: 500,
-                extracted_at_ms: 13_000,
+                extracted_at_ms: 13_200,
                 trigger_explanation: "Simulated transient in ring buffer".to_owned(),
             },
         )?
         .clone();
 
+    assert_eq!(manifest.expired_by_window_in_span(), 3);
+    assert_eq!(manifest.evicted_by_capacity_in_span(), 1);
     assert_eq!(manifest.dropped_frame_count_in_span(), 2);
+    assert!(manifest.missing_pre_context());
+    assert!(!manifest.missing_post_context());
+    assert_eq!(manifest.post_context_frames().len(), 1);
+    assert_eq!(manifest.post_context_frames()[0].byte_len(), 1_024);
+    assert_eq!(manifest.post_context_frames()[0].sequence_number(), 8);
     assert!(matches!(
         manifest.context_window(),
         ContextWindowStatus::PartialBufferExpired {
-            expired_frame_count: 4,
+            expired_frame_count: 7,
             pre_frames,
             post_frames,
         } if pre_frames.is_empty() && post_frames.len() == 1
     ));
 
+    // 2. Ingest Frame 7 at `13_100` ms (seq 9, contiguous), then test `[12_700, 12_900)` with
+    // `pre = 300` (`f5` at `12_500`) and `post = 300` (`f7` at `13_100`, `post_end_ms = 13_200`):
+    // - When `extracted_at_ms = 13_150 < post_end_ms`, `missing_post_context` is true -> `PartialBufferExpired` (`B1`).
+    // - When `extracted_at_ms = 13_300 >= post_end_ms` (and no drops/evictions in `[12_400, 13_200]`),
+    //   `ContextWindowStatus::Complete` is returned (`B1`).
+    registry.ingest_frame(
+        &cam_id,
+        CameraFrameSubmission {
+            frame_version: VersionId::new("ver:f7")?,
+            sha256_hex: hex64('7'),
+            byte_len: 1_024,
+            sequence_number: 9,
+            declared_kind: FeedObservationKind::UpstreamCameraFeed,
+            origin: FrameArtifactOrigin::OriginalRetainedFrame,
+            source_capture_time_ms: Some(13_100),
+            clock_uncertainty_ms: 20,
+            ingestion_time_ms: 13_120,
+            archive_version: None,
+        },
+    )?;
+
+    let early_manifest = registry.extract_retained_clip_manifest(
+        &cam_id,
+        ClipExtractionRequest {
+            clip_id: OpaqueId::new("clip:ring:early")?,
+            clip_version: VersionId::new("clipver:ring:early")?,
+            source_session_id: OpaqueId::new("sess:ring:01")?,
+            event_start_ms: 12_700,
+            event_end_ms: 12_900,
+            requested_pre_context_ms: 200,
+            requested_post_context_ms: 300,
+            extracted_at_ms: 13_150,
+            trigger_explanation: "Extracted before post window elapsed".to_owned(),
+        },
+    )?;
+    assert!(early_manifest.missing_post_context());
+    assert!(matches!(
+        early_manifest.context_window(),
+        ContextWindowStatus::PartialBufferExpired {
+            expired_frame_count: 1,
+            ..
+        }
+    ));
+
+    let complete_manifest = registry.extract_retained_clip_manifest(
+        &cam_id,
+        ClipExtractionRequest {
+            clip_id: OpaqueId::new("clip:ring:complete")?,
+            clip_version: VersionId::new("clipver:ring:complete")?,
+            source_session_id: OpaqueId::new("sess:ring:01")?,
+            event_start_ms: 12_700,
+            event_end_ms: 12_900,
+            requested_pre_context_ms: 200,
+            requested_post_context_ms: 300,
+            extracted_at_ms: 13_300,
+            trigger_explanation: "Complete pre and post context with zero drops".to_owned(),
+        },
+    )?;
+    assert!(matches!(
+        complete_manifest.context_window(),
+        ContextWindowStatus::Complete {
+            pre_frames,
+            post_frames,
+        } if pre_frames.len() == 1 && post_frames.len() == 1
+    ));
+
     // Bridge directly into `CameraAnomalyMonitor` (`AGENTS.md` §4).
     let entry = registry.camera(&cam_id).ok_or("missing")?;
     let mut monitor = CameraAnomalyMonitor::new(
-        entry.to_anomaly_source_profile(),
+        entry.to_anomaly_source_profile()?,
         DetectorRunMetadata {
             detector_id: OpaqueId::new("det:bridge")?,
             detector_version: VersionId::new("detver:bridge:v1")?,
@@ -753,7 +1082,7 @@ fn cam04_a09_fifo_eviction_order_clip_manifest_and_anomaly_monitor_bridge()
     assert_eq!(monitor.candidates().len(), 1);
 
     // Also verify `CameraAnomalyMonitor::new` accepts `PeriodicUpstreamStill` and rejects `HistoricalArchiveFrame` and `StaleStillHold`.
-    let mut still_profile = entry.to_anomaly_source_profile();
+    let mut still_profile = entry.to_anomaly_source_profile()?;
     still_profile.feed_kind = FeedObservationKind::PeriodicUpstreamStill;
     assert!(
         CameraAnomalyMonitor::new(

@@ -298,9 +298,12 @@ pub enum FeedObservationKind {
 }
 
 impl FeedObservationKind {
-    /// True when a frame of this kind is an authentic camera observation (`UpstreamCameraFeed`,
-    /// fresh `PeriodicUpstreamStill`, or `HistoricalArchiveFrame`) rather than a stale hold or
-    /// non-observation substitute (`CAM-02`, `AGENTS.md` §2).
+    /// True when this observation kind is an eligible observation class (`UpstreamCameraFeed`,
+    /// `PeriodicUpstreamStill`, or `HistoricalArchiveFrame`), subject to per-frame freshness and
+    /// archive-window verification in [`crate::camera_directory::ClassifiedCameraFrame`].
+    ///
+    /// Stale holds (`StaleStillHold`) and non-observation substitutes (`StillFallback`,
+    /// `StreetViewFallback`, `SyntheticPlaceholder`) are unconditionally ineligible (`CAM-02`, `AGENTS.md` §2).
     #[must_use]
     pub const fn eligible_as_event_evidence(self) -> bool {
         matches!(

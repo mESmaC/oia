@@ -64,6 +64,7 @@ The repository was empty on GitHub when this backlog was created, so issue bodie
   - [Still-image diagnostic slice and remaining integration](implementation/image-forensics.md)
 - [#31: Add predictive restoration and recreation-prompt export](https://github.com/mESmaC/oia/issues/31)
 - [#32: Build radio listening with shared and local receivers](https://github.com/mESmaC/oia/issues/32)
+  - [Receive-only session kernel and remaining integration](implementation/radio-session.md)
 - [#33: Connect personal drones with live telemetry and a UAV HUD](https://github.com/mESmaC/oia/issues/33)
 - [#34: Create a personal observatory with synchronized sensor capture](https://github.com/mESmaC/oia/issues/34)
 

@@ -23,7 +23,9 @@ const Globe = (() => {
   let suppressCameraReport = false;
   let layerVisibility = {};   // layer id -> visible, as last drawn; a layer turning on flies to its extent
   let layersPanel = true;     // presentation only: the floating layers panel
-  const tiles = { loaded: 0, failed: 0, cancelled: 0, pending: 0 };
+  const tiles = { loaded: 0, failed: 0, absent: 0, cancelled: 0, pending: 0 }; // totals this renderer observed
+  const sourceTiles = new Map(); // source id -> { loaded, failed, absent, cancelled, deepest } for the current layers
+  let drawnNow = [];             // source ids whose pixels Cesium drew in the last rendered frame (per-tile credits)
   const FLIGHT_MS = 320; // visual language v2 §5.5 coordinated selection; immediate under reduced motion
   const prefersReducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const LOG_LIMIT = 24;
@@ -113,8 +115,6 @@ const Globe = (() => {
     // is present, starts workers from blob: URLs with importScripts, which the CSP refuses.
     // Without it Cesium loads the same-origin module workers from vendor/cesium/Workers/.
     delete globalThis.CESIUM_WORKERS;
-    // GIBS asks for no bulk use: at most six tile requests in flight to it (Cesium's default is 18).
-    Cesium.RequestScheduler.requestsByServer['gibs.earthdata.nasa.gov:443'] = 6;
     viewer = new Cesium.Viewer($('globe-canvas'), {
       animation: false, baseLayerPicker: false, fullscreenButton: false, geocoder: false, homeButton: false,
       infoBox: false, sceneModePicker: false, selectionIndicator: false, timeline: false,
@@ -138,6 +138,7 @@ const Globe = (() => {
     controller.maximumZoomDistance = 60000000;
     scene.globe.tileLoadProgressEvent.addEventListener(pending => { tiles.pending = pending; renderAttribution(); });
     scene.postRender.addEventListener(positionOverlays);
+    watchDrawnSources(viewer.creditDisplay);
     viewer.camera.moveEnd.addEventListener(onCameraMoveEnd);
     const handler = new Cesium.ScreenSpaceEventHandler(scene.canvas);
     handler.setInputAction(onClick, Cesium.ScreenSpaceEventType.LEFT_CLICK);
@@ -225,51 +226,118 @@ const Globe = (() => {
   }
 
   // ---- Imagery ----
-  let baseKey = '', overlayKey = '', baseLayer = null, overlayLayer = null;
+  // The basemap is drawn at every zoom; each detail tier from the globe level Rust sent, above
+  // it, so closer views draw finer real imagery. Every layer credits its source per tile, not
+  // per layer, so the credits Cesium adds in a frame name exactly the sources it drew.
+  let baseKey = '', overlayKey = '', detailKey = '', baseLayer = null, overlayLayer = null, detailLayers = [];
+  const creditSource = new Map(); // Cesium.Credit -> source id, one credit per registered source
+  const creditById = new Map();
   function setImagery(imagery) {
     if (!viewer) return;
+    const Cesium = window.Cesium;
+    // Requests in flight per registered origin (GIBS asks for no bulk use; Cesium's default is 18).
+    for (const source of imagery.sources) Cesium.RequestScheduler.requestsByServer[`${new URL(source.origin).host}:443`] = source.max_requests_in_flight;
     const nextBase = imagery.active.url;
     const nextOverlay = imagery.coastlines ? imagery.coastlines.url : '';
-    if (nextBase === baseKey && nextOverlay === overlayKey) return;
-    // Only the layer that changed is replaced, so toggling the overlay keeps the loaded basemap.
+    const nextDetail = JSON.stringify(imagery.detail.map(t => [t.url, t.from_globe_level]));
+    if (nextBase === baseKey && nextOverlay === overlayKey && nextDetail === detailKey) return;
+    // Only the layer that changed is replaced, so toggling the overlay or detail keeps the loaded basemap.
     if (nextBase !== baseKey) {
       if (baseLayer) viewer.imageryLayers.remove(baseLayer, true);
-      tiles.loaded = 0; tiles.failed = 0; tiles.cancelled = 0;
       baseLayer = addLayer(imagery.active, 0);
       baseKey = nextBase;
+    }
+    if (nextDetail !== detailKey) {
+      for (const layer of detailLayers) viewer.imageryLayers.remove(layer, true);
+      detailLayers = imagery.detail.map(tier => addLayer(tier, undefined, tier.from_globe_level)); // coarse to fine, finest on top
+      detailKey = nextDetail;
     }
     if (nextOverlay !== overlayKey) {
       if (overlayLayer) viewer.imageryLayers.remove(overlayLayer, true);
       overlayLayer = nextOverlay ? addLayer(imagery.coastlines) : null;
       overlayKey = nextOverlay;
     }
+    const current = new Set([imagery.active.source.id, ...imagery.detail.map(t => t.source.id)]);
+    for (const id of [...sourceTiles.keys()]) if (!current.has(id)) sourceTiles.delete(id);
+    recount();
     viewer.scene.requestRender();
   }
-  function addLayer(layer, index) {
+  function recount() {
+    for (const k of ['loaded', 'failed', 'absent', 'cancelled']) tiles[k] = [...sourceTiles.values()].reduce((sum, c) => sum + c[k], 0);
+  }
+  function addLayer(layer, index, fromGlobeLevel) {
     const Cesium = window.Cesium;
     const source = layer.source;
-    const provider = new Cesium.WebMapTileServiceImageryProvider({
-      url: layer.url, layer: source.layer, style: 'default', format: source.format,
-      tileMatrixSetID: source.tile_matrix_set, maximumLevel: source.maximum_level,
-      credit: new Cesium.Credit(source.attribution)
-    });
+    const r = source.coverage_rectangle;
+    const rectangle = r ? Cesium.Rectangle.fromDegrees(r.west_deg, r.south_deg, r.east_deg, r.north_deg) : undefined;
+    const provider = source.addressing === 'xyz'
+      ? new Cesium.UrlTemplateImageryProvider({ url: layer.url, tilingScheme: new Cesium.WebMercatorTilingScheme(), maximumLevel: source.maximum_level, rectangle })
+      : new Cesium.WebMapTileServiceImageryProvider({
+        url: layer.url, layer: source.layer, style: 'default', format: source.format,
+        tileMatrixSetID: source.tile_matrix_set, maximumLevel: source.maximum_level, rectangle
+      });
+    let credit = creditById.get(source.id);
+    if (!credit) { credit = new Cesium.Credit(source.attribution); creditById.set(source.id, credit); creditSource.set(credit, source.id); }
+    provider.getTileCredits = () => [credit];
+    const counts = { loaded: 0, failed: 0, absent: 0, cancelled: 0, deepest: null };
+    sourceTiles.set(source.id, counts);
+    const notPublished = error => error?.statusCode === 404 || error?.error?.statusCode === 404;
+    const belowTier = error => !!(error?.oiaBelowTier || error?.error?.oiaBelowTier);
     const request = provider.requestImage.bind(provider);
     provider.requestImage = (x, y, level, req) => {
+      // Where a detail tile is not published, Cesium falls back to ancestor tiles. Ancestors
+      // coarser than the tier's start are refused without a request, so the finer layer below
+      // shows instead of a coarse tile magnified on top under the detail tier's name.
+      if (fromGlobeLevel !== undefined && level < fromGlobeLevel) return Promise.reject(Object.assign(new Error('coarser than the detail tier'), { oiaBelowTier: true }));
       const promise = request(x, y, level, req);
       if (!promise) return promise;
-      return promise.then(image => { tiles.loaded += 1; renderAttribution(); return image; },
-        error => {
-          // A request Cesium cancelled because the tile left the view is navigation, not a gap.
-          const cancelled = req?.state === Cesium.RequestState.CANCELLED || /cancelled/i.test(String(error?.message || ''));
-          if (cancelled) tiles.cancelled += 1;
-          else { tiles.failed += 1; note('tile', `${source.layer} ${level}/${x}/${y}: ${error?.message || error}`); }
-          renderAttribution();
-          throw error;
-        });
+      return promise.then(image => {
+        counts.loaded += 1;
+        if (counts.deepest === null || level > counts.deepest) counts.deepest = level;
+        recount(); renderAttribution(); return image;
+      }, error => {
+        // A request Cesium cancelled because the tile left the view is navigation, not a gap.
+        const cancelled = req?.state === Cesium.RequestState.CANCELLED || /cancelled/i.test(String(error?.message || ''));
+        // HTTP 404 from a tile cache: the source publishes no tile there (a coverage gap, not a failure).
+        if (cancelled) counts.cancelled += 1;
+        else if (notPublished(error)) counts.absent += 1;
+        else { counts.failed += 1; note('tile', `${source.layer} ${level}/${x}/${y}: ${error?.message || error?.statusCode || error}`); }
+        recount(); renderAttribution();
+        throw error;
+      });
     };
-    provider.errorEvent.addEventListener(error => note('provider', error?.message || error)); // counted above; keep the console quiet
-    return viewer.imageryLayers.addImageryProvider(provider, index);
+    provider.errorEvent.addEventListener(error => { if (!notPublished(error) && !belowTier(error)) note('provider', error?.message || error); }); // counted above; keep the console quiet
+    const options = fromGlobeLevel === undefined ? {} : { minimumTerrainLevel: fromGlobeLevel };
+    const imageryLayer = new Cesium.ImageryLayer(provider, options);
+    viewer.imageryLayers.add(imageryLayer, index); // returns nothing; keep the layer to remove it later
+    return imageryLayer;
   }
+  function watchDrawnSources(display) {
+    // CreditDisplay's public frame methods: credits added between beginFrame and endFrame are
+    // the ones drawn in that frame. Only presentation state is derived from them.
+    const frame = new Set();
+    const begin = display.beginFrame.bind(display), add = display.addCreditToNextFrame.bind(display), end = display.endFrame.bind(display);
+    display.beginFrame = () => { frame.clear(); return begin(); };
+    display.addCreditToNextFrame = credit => { const id = creditSource.get(credit); if (id) frame.add(id); return add(credit); };
+    display.endFrame = () => {
+      const result = end();
+      const next = [...frame].sort();
+      if (next.join() !== drawnNow.join()) { drawnNow = next; renderAttribution(); renderState(); }
+      return result;
+    };
+  }
+  // Sources drawn in the last frame, finest first, as records from the view.
+  function drawnSources() {
+    if (!view) return [];
+    const tiers = [...view.imagery.detail].reverse();
+    const all = [...tiers.map(t => ({ source: t.source, tier: t })), { source: view.imagery.active.source, tier: null }];
+    return all.filter(entry => drawnNow.includes(entry.source.id));
+  }
+  const countsText = id => {
+    const c = sourceTiles.get(id);
+    if (!c) return 'none requested';
+    return `${fmt(c.loaded)} loaded · ${fmt(c.absent)} not published (404) · ${fmt(c.failed)} failed · ${fmt(c.cancelled)} cancelled by navigation${c.deepest === null ? '' : ` · deepest level ${c.deepest}`}`;
+  };
 
   // ---- Geometry ----
   function circle(center, radiusM, segments = 72) {
@@ -590,14 +658,22 @@ const Globe = (() => {
     if (!view) { el.textContent = ''; return; }
     const a = view.imagery.active;
     el.replaceChildren();
-    el.append(node('b', 'Imagery '), node('span', `${a.source.provider} · ${a.source.layer}${a.date ? ` · ${a.date} UTC` : ' · composite, no date'}`));
+    const drawnDetail = drawnSources().filter(entry => entry.tier);
+    el.append(node('b', 'Imagery '));
+    // The finest tier drawn is on top wherever it has tiles; coarser ones drawn in the same frame
+    // sit beneath it or show where it has none (edges, gaps, tiles still loading).
+    drawnDetail.forEach(({ source }, i) => el.append(node('span', `${i ? 'beneath or at edges: ' : 'on top: '}${source.attribution} · `)));
+    el.append(node('span', `${drawnDetail.length ? 'basemap ' : ''}${a.source.provider} · ${a.source.layer}${a.date ? ` · ${a.date} UTC` : ' · composite, no date'}`));
+    if (drawnDetail.length && a.date) el.append(node('span', ` · zoomed detail is not ${a.date}`, 'warn'));
     if (view.imagery.coastlines) el.append(node('span', ` · + ${view.imagery.coastlines.source.layer} (${view.imagery.coastlines.source.attribution})`));
     el.append(node('span', ` · tiles ${fmt(tiles.loaded)} loaded`));
     if (tiles.failed) el.append(node('span', `, ${fmt(tiles.failed)} failed (gap, not empty scene)`, 'warn'));
+    if (tiles.absent) el.append(node('span', `, ${fmt(tiles.absent)} not published by the source`));
     if (tiles.pending) el.append(node('span', `, ${fmt(tiles.pending)} pending`));
     if (tiles.cancelled) el.append(node('span', `, ${fmt(tiles.cancelled)} cancelled by navigation`));
     if (a.coverage_note) el.append(node('span', ' · beyond recorded coverage', 'warn'));
     if (rendererState !== 'ready') el.append(node('span', ` · renderer ${rendererState}`, 'warn'));
+    $('globe-tray').style.bottom = `${42 + el.offsetHeight + 8}px`; // keep the tray clear of a strip that wraps
     notify();
     // The inspector's tile row follows the strip, throttled so a burst of tiles is one rebuild.
     clearTimeout(inspectorTimer);
@@ -613,6 +689,7 @@ const Globe = (() => {
       ['CLOCK', view.case ? `${view.case.clock.local.slice(11)} ±${view.case.clock.uncertainty_min} min · reported local` : '—'],
       ['IMAGERY', view.imagery.active.source.id],
       ['LAYERS', `${view.layers.filter(l => l.visible && !l.error).length} / ${view.layers.length}`],
+      ['DETAIL', !view.imagery.detail_enabled ? 'off' : (drawnSources().find(e => e.tier)?.source.id || 'none drawn at this zoom')],
       ['OVERLAYS', overlays ? 'on' : 'hidden'],
       ['ALT', `${fmt(Math.round(view.camera.height_m / 1000))} km`]
     ];
@@ -652,14 +729,27 @@ const Globe = (() => {
     renderLayerInspector();
     renderImageryForm();
     const a = view.imagery.active;
-    kv($('globe-imagery-active'), [['Layer', a.source.layer], ['Provider', a.source.provider], ['Origin', a.source.origin], ['Date', a.date ? `${a.date} (UTC day)` : 'composite · none'], ['Capture', a.source.capture_statement], ['Tiles', `${fmt(tiles.loaded)} loaded · ${fmt(tiles.failed)} failed · ${fmt(tiles.pending)} pending · ${fmt(tiles.cancelled)} cancelled by navigation`, tiles.failed ? 'est' : ''], ['Overlay', view.imagery.coastlines ? `${view.imagery.coastlines.source.layer} · ${view.imagery.coastlines.source.license} · ${view.imagery.coastlines.source.attribution}` : 'none'], ['Coverage note', a.coverage_note || null], ['Licence', a.source.license], ['Attribution', a.source.attribution], ['Checked', `capabilities ${a.source.capabilities_checked_on}`]]);
+    kv($('globe-imagery-active'), [['Layer', a.source.layer], ['Provider', a.source.provider], ['Origin', a.source.origin], ['Date', a.date ? `${a.date} (UTC day)` : 'composite · none'], ['Capture', a.source.capture_statement], ['Tiles', `${countsText(a.source.id)} · ${fmt(tiles.pending)} pending (all layers)`, sourceTiles.get(a.source.id)?.failed ? 'est' : ''], ['Drawn now', drawnNow.includes(a.source.id) ? (drawnSources().some(e => e.tier) ? 'yes, beneath the detail tiers or at the edges' : 'yes') : 'no: every drawn surface tile uses a detail tier'], ['Overlay', view.imagery.coastlines ? `${view.imagery.coastlines.source.layer} · ${view.imagery.coastlines.source.license} · ${view.imagery.coastlines.source.attribution}` : 'none'], ['Coverage note', a.coverage_note || null], ['Licence', a.source.license], ['Attribution', a.source.attribution], ['Checked', `capabilities ${a.source.capabilities_checked_on}`]]);
     $('globe-ack').textContent = view.imagery.acknowledgement;
+    renderDetail();
     kv($('globe-renderer'), [['Renderer', `${view.renderer.name} ${view.renderer.pinned_version} · ${rendererState}`], ['Ion', view.renderer.ion], ['Terrain', view.renderer.terrain], ['Effects', reduced ? 'reduced: no atmosphere or fog' : 'atmosphere and fog (display only)']]);
+  }
+  const lonText = v => `${Math.abs(v)}° ${v < 0 ? 'W' : 'E'}`, latText = v => `${Math.abs(v)}° ${v < 0 ? 'S' : 'N'}`;
+  function renderDetail() {
+    const host = $('globe-imagery-detail');
+    host.replaceChildren();
+    if (!view.imagery.detail_enabled) { host.append(node('p', 'Off: only the basemap is drawn at every zoom. Closer than its deepest level the renderer magnifies its last tiles; no detail is added.', 'note')); return; }
+    for (const tier of view.imagery.detail) {
+      const s = tier.source, r = s.coverage_rectangle;
+      const dl = node('dl', undefined, 'kv');
+      kv(dl, [['Source', s.label], ['Drawn now', !drawnNow.includes(s.id) ? 'no' : drawnSources().find(e => e.tier)?.source.id === s.id ? 'yes, on top where it has tiles' : 'yes, beneath a finer tier or at the edges'], ['Provider', s.provider], ['Origin', s.origin], ['Layer', s.layer], ['From', `globe level ${tier.from_globe_level} to imagery level ${s.maximum_level}, then magnified`], ['Source pixels', `${fmt(s.source_resolution_m)} m nominal (provider's statement)`], ['Coverage', r ? `${lonText(r.west_deg)} to ${lonText(r.east_deg)}, ${latText(r.south_deg)} to ${latText(r.north_deg)}; places without tiles answer 404 and are counted as not published` : 'global'], ['Capture', s.capture_statement], ['Time', tier.time_relation, 'est'], ['Tiles', countsText(s.id), sourceTiles.get(s.id)?.failed ? 'est' : ''], ['Licence', s.license], ['Attribution', s.attribution], ['Terms', s.terms_url], ['Checked', `capabilities ${s.capabilities_checked_on}`]]);
+      host.append(dl);
+    }
   }
   function renderImageryForm() {
     const form = $('globe-imagery-form');
     const current = form.dataset.rendered;
-    const stamp = JSON.stringify([view.imagery.sources.map(s => s.id), view.imagery.active.source.id, view.imagery.active.date, !!view.imagery.coastlines, view.imagery.today_utc]);
+    const stamp = JSON.stringify([view.imagery.sources.map(s => s.id), view.imagery.active.source.id, view.imagery.active.date, !!view.imagery.coastlines, view.imagery.detail_enabled, view.imagery.today_utc]);
     if (current === stamp) return;
     form.dataset.rendered = stamp;
     form.replaceChildren();
@@ -686,6 +776,14 @@ const Globe = (() => {
       const text = node('span', source.label); text.append(node('small', source.capture_statement));
       label.append(input, text); form.append(label);
     }
+    const detailSources = view.imagery.sources.filter(s => s.role === 'detail');
+    if (detailSources.length) {
+      const label = node('label', undefined, 'row'), input = node('input');
+      input.type = 'checkbox'; input.name = 'detail'; input.checked = view.imagery.detail_enabled;
+      const text = node('span', 'Sharper imagery when zoomed in');
+      text.append(node('small', `${detailSources.map(s => s.label).join('; ')}. Each is another capture period than the basemap; turn off to keep one VIIRS day at every zoom.`));
+      label.append(input, text); form.append(label);
+    }
     const apply = node('button', 'Apply imagery', 'btn primary'); apply.type = 'submit';
     form.append(apply, node('p', 'Tiles are requested from the registered origin only; a day the source has not published is refused as a gap.', 'note'));
     const syncDate = () => {
@@ -696,7 +794,7 @@ const Globe = (() => {
     form.onsubmit = event => {
       event.preventDefault();
       const chosen = basemaps.find(s => s.id === form.source.value);
-      call('globe_imagery', { selection: { source_id: form.source.value, date: chosen && chosen.time && date.value ? date.value : null, coastlines: !!form.coastlines?.checked } });
+      call('globe_imagery', { selection: { source_id: form.source.value, date: chosen && chosen.time && date.value ? date.value : null, coastlines: !!form.coastlines?.checked, detail: !!form.detail?.checked } });
     };
   }
 

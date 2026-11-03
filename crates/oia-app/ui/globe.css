@@ -110,6 +110,7 @@
 .gform .date input { font: 12px var(--mono); color: var(--text); background: none; border: 1px solid var(--line-2); border-radius: var(--r-ctl); padding: 4px 6px; color-scheme: dark; }
 .gform .date input:disabled { color: var(--text-3); border-color: var(--line); }
 .gform .btn { align-self: flex-start; }
+.gdetail { display: flex; flex-direction: column; gap: 12px; }
 .globe-record-list .tag { justify-content: flex-start; }
 .globe-record-list .tag b { white-space: normal; text-transform: none; letter-spacing: .02em; text-align: left; }
 .globe-record-list .tag[aria-pressed="true"] { border-color: var(--accent); }

@@ -154,7 +154,7 @@ Differential tests against prior work help detect regressions; independently val
 
 ## 8. Verification commands and scope
 
-The repository defines a 15-crate Cargo workspace (`Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` `1.99.0`). The Lean 4.35.0 package in `proofs/` checks model proofs and the first Rust cutoff correspondence fixture; see `proofs/README.md`. Check for actual manifests, lockfiles, toolchains, scripts, and CI configuration before issuing build commands. Do not copy Kadmium crate names, versions, ports, or test paths into this repository.
+The repository defines a 20-crate Cargo workspace (`Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` `1.99.0`). The Lean 4.35.0 package in `proofs/` checks model proofs and the first Rust cutoff correspondence fixture; see `proofs/README.md`. Check for actual manifests, lockfiles, toolchains, scripts, and CI configuration before issuing build commands. Do not copy Kadmium crate names, versions, ports, or test paths into this repository.
 
 ### Local automation and functionality first
 

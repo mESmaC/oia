@@ -645,6 +645,21 @@ fn validate_request(
         }
         _ => {}
     }
+    // Offsets and session membership come from one venue calendar; a series on
+    // another venue would silently inherit unrelated hours and holidays.
+    if request.subject.venue != request.calendar.venue() {
+        return Err(MarketError::ScopeMismatch(
+            "subject venue differs from calendar venue",
+        ));
+    }
+    if request
+        .benchmark
+        .is_some_and(|benchmark| benchmark.venue != request.calendar.venue())
+    {
+        return Err(MarketError::ScopeMismatch(
+            "benchmark venue differs from calendar venue; cross-calendar studies are unsupported",
+        ));
+    }
     if request.estimation_window.end_offset() >= request.event_window.start_offset() {
         return Err(MarketError::InvalidEventStudy(
             "the estimation window must end before the event window starts",

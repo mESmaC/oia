@@ -465,6 +465,28 @@ fn gaps_cutoffs_and_coverage_stay_explicit() -> TestResult {
         Err(MarketError::CalendarCoverageUnknown(date(15)?))
     );
 
+    // A calendar for another venue cannot define this series' sessions.
+    let mut foreign = build_fixture()?;
+    let foreign_venue = OpaqueId::new("venue:unrelated")?;
+    foreign.calendar =
+        TradingCalendarVersion::new(calendar_input(&foreign_venue)?, MarketLimits::new(64)?)?;
+    assert!(matches!(
+        run_event_study(
+            request(&foreign, BenchmarkModel::MarketModelOls, day(19))?,
+            limits,
+            || Ok(()),
+        ),
+        Err(MarketError::ScopeMismatch(_))
+    ));
+    let mut benchmark_elsewhere = request(&fixture, BenchmarkModel::MarketModelOls, day(19))?;
+    if let Some(benchmark) = benchmark_elsewhere.benchmark.as_mut() {
+        benchmark.venue = &foreign_venue;
+    }
+    assert!(matches!(
+        run_event_study(benchmark_elsewhere, limits, || Ok(())),
+        Err(MarketError::ScopeMismatch(_))
+    ));
+
     // A supplied benchmark is not silently ignored, and cancellation returns no result.
     let mut ignored = request(&fixture, BenchmarkModel::MarketAdjusted, day(19))?;
     ignored.model = BenchmarkModel::MeanAdjusted;

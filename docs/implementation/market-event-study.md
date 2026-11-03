@@ -92,9 +92,11 @@ offered. Every aggregate is checked for finiteness (`NonFiniteResult`).
 | `MarketModelOls` | `market-model-ols-f64-v1` | `α + β·R_m` from OLS | Residual SD, `n − 2` |
 
 Benchmark models require a distinct benchmark instrument. A supplied benchmark is
-rejected for `MeanAdjusted` rather than silently ignored. Benchmark closes are
-aligned to the subject calendar's session bounds; cross-calendar synchronization
-is unsupported. An estimation observation requires every return the model uses.
+rejected for `MeanAdjusted` rather than silently ignored. The subject and any
+benchmark must share the calendar's venue; otherwise the request returns
+`ScopeMismatch` before any calculation. Benchmark closes are therefore aligned to
+the same session bounds. Cross-calendar synchronization, and a separate venue ID
+for an index computed on the subject's calendar, need an explicit mapping contract. An estimation observation requires every return the model uses.
 The request declares `min_estimation_returns`. It must leave at least one residual
 degree of freedom and cannot exceed the estimation window. Fewer usable returns
 yield `EstimationOutcome::Insufficient` with the available and required counts.
@@ -185,8 +187,8 @@ returns and CAR, and `1e-9` for standardized CAR. They also check:
 - an insufficient estimation sample after a removed close
 - the not-yet-public split qualification
 - anchor exclusion after the cutoff
-- unknown calendar coverage, a span beyond the calendar, rejection of an unused
-  benchmark, and cancellation
+- unknown calendar coverage, a span beyond the calendar, rejection of a calendar
+  or benchmark on another venue, rejection of an unused benchmark, and cancellation
 
 The fixtures are synthetic and do not establish market-data truth.
 

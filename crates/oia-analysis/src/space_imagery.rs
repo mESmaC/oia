@@ -1016,16 +1016,20 @@ impl SpaceMissionFeed {
         let estimated_event_utc_ms = match &self.classification {
             StreamClassification::DelayedTransmission { delay_seconds, .. } => {
                 let delay_ms_f64 = (*delay_seconds * 1000.0).round();
-                if !delay_ms_f64.is_finite()
-                    || delay_ms_f64 < 0.0
-                    || delay_ms_f64 > (i64::MAX as f64)
-                {
+                const TWO_POW_63: f64 = 9223372036854775808.0; // 2^63
+                if !delay_ms_f64.is_finite() || delay_ms_f64 < 0.0 || delay_ms_f64 >= TWO_POW_63 {
                     return Err(SpaceImageryError::TimestampOverflow {
                         operation: "delay_seconds_to_ms",
                         reason: "propagation delay seconds conversion to millisecond integer overflowed",
                     });
                 }
                 let delay_ms = delay_ms_f64 as i64;
+                if delay_ms < 0 || delay_ms == i64::MAX {
+                    return Err(SpaceImageryError::TimestampOverflow {
+                        operation: "delay_seconds_to_ms",
+                        reason: "propagation delay seconds conversion to millisecond integer overflowed",
+                    });
+                }
                 let event_before_offset = display_utc_ms.checked_sub(delay_ms).ok_or(
                     SpaceImageryError::TimestampOverflow {
                         operation: "display_utc_ms - delay_ms",
@@ -1233,7 +1237,7 @@ pub enum ChangeAnalysisStatus {
 pub struct ImageryChangeReport {
     pub baseline_observation_id: String,
     pub comparison_observation_id: String,
-    pub footprint_intersection: Option<GeoBoundingBoxWgs84>,
+    pub footprint_intersections: Vec<GeoBoundingBoxWgs84>,
     pub sun_elevation_diff_deg: f64,
     pub off_nadir_diff_deg: f64,
     pub seasonal_day_gap: u32,
@@ -1241,6 +1245,18 @@ pub struct ImageryChangeReport {
     pub limitations: Vec<GeometricLimitation>,
     pub analysis_status: ChangeAnalysisStatus,
     pub candidates: Vec<ImageryChangeCandidate>,
+}
+
+impl ImageryChangeReport {
+    /// Returns the single intersection bounding box if there is exactly one component, or None.
+    #[must_use]
+    pub fn primary_footprint_intersection(&self) -> Option<&GeoBoundingBoxWgs84> {
+        if self.footprint_intersections.len() == 1 {
+            self.footprint_intersections.first()
+        } else {
+            None
+        }
+    }
 }
 
 /// Standalone in-memory space imagery catalog and observation manager (`SPACE-01`–`SPACE-03`).
@@ -1510,18 +1526,18 @@ impl SpaceImageryCatalog {
             _ => {}
         }
 
-        let footprint_intersection = match (&baseline.target, &comparison.target) {
+        let footprint_intersections = match (&baseline.target, &comparison.target) {
             (
                 SpaceObservationTarget::EarthObservation { footprint: f1, .. },
                 SpaceObservationTarget::EarthObservation { footprint: f2, .. },
-            ) => compute_box_intersection(f1, f2),
-            _ => None,
+            ) => compute_box_intersections(f1, f2),
+            _ => Vec::new(),
         };
 
         Ok(ImageryChangeReport {
             baseline_observation_id: baseline_id.to_string(),
             comparison_observation_id: comparison_id.to_string(),
-            footprint_intersection,
+            footprint_intersections,
             sun_elevation_diff_deg,
             off_nadir_diff_deg,
             seasonal_day_gap,
@@ -1554,60 +1570,71 @@ fn decompose_lon_intervals(west: f64, east: f64) -> Vec<(f64, f64)> {
     }
 }
 
-/// Computes the exact geometric spatial intersection of two WGS84 bounding boxes,
-/// correctly supporting antimeridian dateline crossing.
-fn compute_box_intersection(
+/// Computes the exact geometric spatial intersection components of two WGS84 bounding boxes,
+/// preserving all disjoint components and correctly supporting antimeridian dateline crossing.
+fn compute_box_intersections(
     b1: &GeoBoundingBoxWgs84,
     b2: &GeoBoundingBoxWgs84,
-) -> Option<GeoBoundingBoxWgs84> {
+) -> Vec<GeoBoundingBoxWgs84> {
     let s = b1.south_lat_deg().max(b2.south_lat_deg());
     let n = b1.north_lat_deg().min(b2.north_lat_deg());
     if s >= n {
-        return None;
+        return Vec::new();
     }
 
     let l1 = decompose_lon_intervals(b1.west_lon_deg(), b1.east_lon_deg());
     let l2 = decompose_lon_intervals(b2.west_lon_deg(), b2.east_lon_deg());
 
-    let mut intersections = Vec::new();
+    let mut raw_intervals = Vec::new();
     for (w1, e1) in &l1 {
         for (w2, e2) in &l2 {
             let w = w1.max(*w2);
             let e = e1.min(*e2);
             if w < e {
-                intersections.push((w, e));
+                raw_intervals.push((w, e));
             }
         }
     }
 
-    if intersections.is_empty() {
-        return None;
-    }
-
-    if intersections.len() == 1 {
-        let (w, e) = intersections[0];
-        return GeoBoundingBoxWgs84::new(s, n, w, e).ok();
+    if raw_intervals.is_empty() {
+        return Vec::new();
     }
 
     // Check if intervals wrap across antimeridian: one ends at 180.0 and one starts at -180.0
-    let pos_piece = intersections
+    let pos_piece_idx = raw_intervals
         .iter()
-        .find(|(_w, e)| (*e - 180.0).abs() < 1e-7);
-    let neg_piece = intersections
+        .position(|(_w, e)| (*e - 180.0).abs() < 1e-7);
+    let neg_piece_idx = raw_intervals
         .iter()
-        .find(|(w, _e)| (*w - (-180.0)).abs() < 1e-7);
-    if let (Some(&(w, _)), Some(&(_, e))) = (pos_piece, neg_piece) {
-        return GeoBoundingBoxWgs84::new(s, n, w, e).ok();
+        .position(|(w, _e)| (*w - (-180.0)).abs() < 1e-7);
+
+    let mut result = Vec::new();
+
+    if let (Some(pi), Some(ni)) = (pos_piece_idx, neg_piece_idx)
+        && pi != ni
+    {
+        let pos_w = raw_intervals[pi].0;
+        let neg_e = raw_intervals[ni].1;
+        if let Ok(wrapped_box) = GeoBoundingBoxWgs84::new(s, n, pos_w, neg_e) {
+            result.push(wrapped_box);
+        }
+        for (i, &(w, e)) in raw_intervals.iter().enumerate() {
+            if i != pi
+                && i != ni
+                && let Ok(b) = GeoBoundingBoxWgs84::new(s, n, w, e)
+            {
+                result.push(b);
+            }
+        }
+    } else {
+        for (w, e) in raw_intervals {
+            if let Ok(b) = GeoBoundingBoxWgs84::new(s, n, w, e) {
+                result.push(b);
+            }
+        }
     }
 
-    // Otherwise pick the interval with the largest longitudinal span
-    intersections.sort_by(|a, b| {
-        (b.1 - b.0)
-            .partial_cmp(&(a.1 - a.0))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let (w, e) = intersections[0];
-    GeoBoundingBoxWgs84::new(s, n, w, e).ok()
+    result
 }
 
 /// Evaluates envelope rectangle union coverage using latitude band slicing across

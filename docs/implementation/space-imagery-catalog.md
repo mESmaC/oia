@@ -80,7 +80,7 @@ cargo +1.99.0 test -p oia-analysis --test space_imagery_contract --locked
 cargo +1.99.0 run -p oia-analysis --example inspect-space-observations --locked
 ```
 
-Nine contract tests in `space_imagery_contract.rs` verify:
+Eleven contract tests in `space_imagery_contract.rs` verify:
 1. `scientific_provenance_and_outreach_rendering_integrity`: FITS metadata preservation, Level-1B calibration, stacking
    residuals, outreach preview labeling, and strict outreach exclusion in queries.
 2. `mosaic_coverage_and_absence_without_seamless_illusion`: Evaluation of empty, partial, four-corner disconnected, and complete
@@ -98,6 +98,10 @@ Nine contract tests in `space_imagery_contract.rs` verify:
    propagation delay conversions, rejecting overflow with typed errors.
 9. `baseline_comparison_revalidates_geometry_inputs`: Revalidates input capture geometries at the analysis boundary,
    rejecting non-finite or invalid parameters.
+10. `disconnected_intersection_components_preserved`: Verifies that intersecting footprints with antimeridian crossings preserve
+    all disconnected geographic bounding box components in `footprint_intersections`.
+11. `delay_float_to_i64_exclusive_bound_overflow`: Enforces strict exclusive $2^{63}$ upper boundary check on floating-point
+    delay conversion before `i64` cast, preventing saturation overflow.
 
 ## Limitations and Remaining Scope
 

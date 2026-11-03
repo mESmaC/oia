@@ -808,3 +808,105 @@ fn baseline_comparison_revalidates_geometry_inputs() -> Result<(), Box<dyn std::
 
     Ok(())
 }
+
+#[test]
+fn disconnected_intersection_components_preserved() -> Result<(), Box<dyn std::error::Error>> {
+    let limits = SpaceCatalogLimits::default();
+    let mut catalog = SpaceImageryCatalog::new();
+    let provider = SpaceDataProvider::new("Prov", "Archive", true)?;
+
+    // b1 spans [-170, 170], b2 spans [160, -160] (antimeridian crossing)
+    // Their intersection has two disconnected components: [160, 170] and [-170, -160]
+    let b1 = GeoBoundingBoxWgs84::new(0.0, 10.0, -170.0, 170.0)?;
+    let b2 = GeoBoundingBoxWgs84::new(0.0, 10.0, 160.0, -160.0)?;
+
+    let obs1 = SpaceObservationEntry {
+        observation_id: "obs:multi:1".into(),
+        mission: "M1".into(),
+        instrument: "I1".into(),
+        target: SpaceObservationTarget::EarthObservation {
+            footprint: b1,
+            region_label: None,
+        },
+        spectral_regime: SpectralRegime::OpticalVisible,
+        wavelength_range_nm: None,
+        time_window: TimeWindow::new(1_700_000_000_000, 1_700_000_010_000)?,
+        spatial_resolution: Some(SpatialResolution::GroundSampleDistanceMeters(10.0)),
+        provider: provider.clone(),
+        scientific_product: ScientificProductRecord::new(
+            "p:multi:1",
+            ScientificProductFormat::FitsPrimaryImage,
+            CalibrationLevel::Level1BGeoreferenced,
+            1.0,
+            "v1",
+        )?,
+        previews: Vec::new(),
+    };
+
+    let obs2 = SpaceObservationEntry {
+        observation_id: "obs:multi:2".into(),
+        mission: "M2".into(),
+        instrument: "I2".into(),
+        target: SpaceObservationTarget::EarthObservation {
+            footprint: b2,
+            region_label: None,
+        },
+        spectral_regime: SpectralRegime::OpticalVisible,
+        wavelength_range_nm: None,
+        time_window: TimeWindow::new(1_700_000_000_000, 1_700_000_010_000)?,
+        spatial_resolution: Some(SpatialResolution::GroundSampleDistanceMeters(10.0)),
+        provider,
+        scientific_product: ScientificProductRecord::new(
+            "p:multi:2",
+            ScientificProductFormat::FitsPrimaryImage,
+            CalibrationLevel::Level1BGeoreferenced,
+            1.0,
+            "v1",
+        )?,
+        previews: Vec::new(),
+    };
+
+    catalog.add_observation(obs1, &limits)?;
+    catalog.add_observation(obs2, &limits)?;
+
+    let geom = ImageryCaptureGeometry::new(45.0, 180.0, 5.0, 100)?;
+    let report = catalog.compare_baselines("obs:multi:1", "obs:multi:2", &geom, &geom, &limits)?;
+
+    // Both disjoint components must be preserved in footprint_intersections
+    assert_eq!(report.footprint_intersections.len(), 2);
+    let has_pos = report.footprint_intersections.iter().any(|b| {
+        (b.west_lon_deg() - 160.0).abs() < 1e-4 && (b.east_lon_deg() - 170.0).abs() < 1e-4
+    });
+    let has_neg = report.footprint_intersections.iter().any(|b| {
+        (b.west_lon_deg() - (-170.0)).abs() < 1e-4 && (b.east_lon_deg() - (-160.0)).abs() < 1e-4
+    });
+    assert!(has_pos);
+    assert!(has_neg);
+
+    Ok(())
+}
+
+#[test]
+fn delay_float_to_i64_exclusive_bound_overflow() -> Result<(), Box<dyn std::error::Error>> {
+    // delay_seconds = (i64::MAX as f64) / 1000.0 yields 2^63 ms, which must be rejected
+    let feed_delayed = SpaceMissionFeed::new(
+        "feed:probe:max_bound",
+        "MaxBoundProbe",
+        "Max Bound Probe Video",
+        StreamClassification::DelayedTransmission {
+            delay_seconds: (i64::MAX as f64) / 1000.0,
+            delay_reason: "Boundary delay".into(),
+        },
+        MissionFeedStatus::NominalActive,
+        0,
+    )?;
+
+    let err =
+        feed_delayed.create_bookmark("bm:bound:overflow", 0, "Boundary overflow test", 10, "None");
+    assert!(matches!(
+        err,
+        Err(SpaceImageryError::TimestampOverflow { .. })
+    ));
+
+    Ok(())
+}

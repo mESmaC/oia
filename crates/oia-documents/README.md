@@ -18,6 +18,11 @@ results preserve original byte anchors and disclose the selected matching mode.
 
 The root workspace Cargo.lock pins builds.
 
+[`citations::validate_citations` and `check-citation`](../../docs/implementation/document-citations.md)
+check exact quote/byte ranges against supplied extracted text with explicit
+budgets and cancellation. Structural success does not establish source-version
+identity, semantic support or human review.
+
 `search::SearchSession` resumes either matching mode across bounded pages while
 preserving original anchors, cumulative coverage, and a retryable cursor after
 cancellation. The `find-text-pages` example bounds total pages as well as page

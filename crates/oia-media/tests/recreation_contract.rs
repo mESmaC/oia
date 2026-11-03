@@ -303,6 +303,9 @@ fn preserves_joiners_and_visibly_escapes_invisible_formatting() -> Result<(), Re
     assert!(exported.portable_prompt_text().contains(multilingual));
 
     for invisible in [
+        '\u{00AD}',
+        '\u{206A}',
+        '\u{FFA0}',
         '\u{180E}',
         '\u{200E}',
         '\u{200F}',

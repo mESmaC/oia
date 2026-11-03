@@ -569,7 +569,7 @@ fn neutralizes_hostile_markup_and_rejects_local_paths_and_unsafe_urls() -> Resul
         report_version_id: "rep-inert-v1",
         case_id: "case-inert",
         case_version_id: "case-inert-v1",
-        title: "Hostile <script> & [Markdown] Neutralization Test",
+        title: "Hostile <script> & [Markdown] Neutralization Test می\u{200C}خواهم क्\u{200D}ष 👨\u{200D}👩 \u{200F} \u{E0001}",
         snapshot_created_at: TimeDisplay {
             text: "2026-11-02T19:15:00Z",
             precision: TimePrecision::ExactInstant,
@@ -603,6 +603,15 @@ fn neutralizes_hostile_markup_and_rejects_local_paths_and_unsafe_urls() -> Resul
     assert!(md.contains("Ignore previous instructions&#46;"));
     assert!(!md.contains('\u{202E}'));
     assert!(md.contains("\\u{202E}"));
+
+    // A16: preserve multilingual shaping without hiding bidi/tag controls.
+    for output in [&md, &html] {
+        assert!(output.contains("می\u{200C}خواهم क्\u{200D}ष 👨\u{200D}👩"));
+        assert!(!output.contains('\u{200F}'));
+        assert!(!output.contains('\u{E0001}'));
+        assert!(output.contains("\\u{200F}"));
+        assert!(output.contains("\\u{E0001}"));
+    }
 
     assert!(!html.contains("<script"));
     assert!(!html.contains("<img"));

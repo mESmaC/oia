@@ -1,6 +1,6 @@
 use crate::{
     BlockMatch, BlockPosition, CappedWriter, Config, Coverage, DerivedArtifact, ForensicError,
-    Method, PROFILE, RepeatedBlocks, ResidualSummary, digest,
+    JPEG_VALIDATION, Method, PROFILE, RepeatedBlocks, ResidualSummary, digest,
 };
 use image::codecs::{jpeg::JpegEncoder, png::PngEncoder};
 use image::{DynamicImage, ExtendedColorType, ImageEncoder, ImageFormat, RgbaImage};
@@ -248,10 +248,7 @@ pub(crate) fn recompression(
 }
 
 fn label_map(png: &[u8], source_sha256: &str, config: &Config) -> Result<Vec<u8>, ForensicError> {
-    let end = png
-        .len()
-        .checked_sub(12)
-        .ok_or(ForensicError::Unsupported("encoded PNG length"))?;
+    let header_end = 33;
     let mut output = CappedWriter {
         bytes: Vec::new(),
         limit: config.max_artifact_bytes,
@@ -269,17 +266,14 @@ fn label_map(png: &[u8], source_sha256: &str, config: &Config) -> Result<Vec<u8>
         ),
         ("oia:source_sha256", source_sha256),
         ("oia:profile", PROFILE),
-        (
-            "oia:input_validation",
-            "JPEG entropy completeness unverified; decoder recovery possible",
-        ),
+        ("oia:input_validation", JPEG_VALIDATION),
         ("oia:settings", settings.as_str()),
     ];
     let write_error = |_| ForensicError::Limit("encoded artifact bytes");
     output
         .write_all(
-            png.get(..end)
-                .ok_or(ForensicError::Unsupported("encoded PNG body"))?,
+            png.get(..header_end)
+                .ok_or(ForensicError::Unsupported("encoded PNG header"))?,
         )
         .map_err(write_error)?;
     for (key, value) in fields {
@@ -302,8 +296,8 @@ fn label_map(png: &[u8], source_sha256: &str, config: &Config) -> Result<Vec<u8>
     }
     output
         .write_all(
-            png.get(end..)
-                .ok_or(ForensicError::Unsupported("encoded PNG end"))?,
+            png.get(header_end..)
+                .ok_or(ForensicError::Unsupported("encoded PNG body"))?,
         )
         .map_err(write_error)?;
     Ok(output.bytes)

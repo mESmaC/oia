@@ -41,6 +41,11 @@ implemented in this package.
 - Method scope/coverage/limitations, including unverified JPEG raster
   completeness. Assessment remains `inconclusive` and review `unreviewed`.
 
+Schema version `2` puts histograms in a method envelope, not a bare array. All
+applicable JPEG pixel methods carry partial coverage and the same input-recovery
+reason. PNG checks include bounded complete IDAT zlib/Adler-32 validation;
+derivative labels appear before image data. Neither establishes authenticity.
+
 Library: `oia_image_forensics::analyze(&bytes, &config, control)`. The callback
 may return `Cancelled`, `DeadlineExceeded` or `Superseded`. A final checkpoint
 prevents stopped calls returning reports. Codec calls are only cooperatively

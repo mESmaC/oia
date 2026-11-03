@@ -93,10 +93,16 @@ fn metadata_and_duplicate_cues_preserve_evidence_without_promoting_assertions()
             .is_empty()
     );
     assert_ne!(without_metadata.source.sha256, report.source.sha256);
-    assert_eq!(without_metadata.rgb_histograms, report.rgb_histograms);
+    assert_eq!(
+        without_metadata.rgb_histograms.result,
+        report.rgb_histograms.result
+    );
     assert_eq!(
         report
             .rgb_histograms
+            .result
+            .as_ref()
+            .ok_or("histogram result")?
             .first()
             .ok_or("histogram")?
             .iter()
@@ -121,6 +127,31 @@ fn jpeg_residual_matches_unamplified_reference_and_separate_visualization()
         Coverage::Partial
     );
     assert!(analysis.report.profile_is_partial());
+    for (coverage, limitations) in [
+        (
+            analysis.report.rgb_histograms.coverage,
+            &analysis.report.rgb_histograms.limitations,
+        ),
+        (
+            analysis.report.repeated_blocks.coverage,
+            &analysis.report.repeated_blocks.limitations,
+        ),
+        (
+            analysis.report.jpeg_recompression.coverage,
+            &analysis.report.jpeg_recompression.limitations,
+        ),
+    ] {
+        assert_eq!(coverage, Coverage::Partial);
+        assert!(
+            limitations.contains(
+                &analysis
+                    .report
+                    .raster_validation
+                    .result
+                    .ok_or("raster reason")?
+            )
+        );
+    }
     let original = image::load_from_memory_with_format(&input, ImageFormat::Jpeg)?.to_rgb8();
     let mut encoded = Vec::new();
     JpegEncoder::new_with_quality(&mut encoded, config.jpeg_quality).encode(
@@ -291,6 +322,16 @@ fn malformed_oversized_animated_and_stale_inputs_cannot_publish_reports()
     ));
     assert_eq!(replay_count, checkpoint_count);
     let jpeg = encode(&texture(32), ImageFormat::Jpeg)?;
+    let allocation_limited = Config {
+        decoder_allocation_bytes: 32 * 16 * 7,
+        ..Config::default()
+    };
+    assert!(matches!(
+        analyze(&jpeg, &allocation_limited, || Ok(())),
+        Err(ForensicError::Limit(
+            "JPEG output/conversion/coefficient bytes"
+        ))
+    ));
     let artifact_limited = Config {
         max_artifact_bytes: 1,
         ..Config::default()

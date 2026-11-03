@@ -13,7 +13,9 @@ use std::io::{self, Write};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const PROFILE: &str = "oia-still-image-cues-v1";
-pub const DECODER: &str = "image 0.25.10 (PNG/encoding); zune-jpeg 0.5.15 (JPEG, strict option enabled but recovery not excluded)";
+pub const DECODER: &str = "image 0.25.10 / png 0.18.1 (PNG); flate2 1.1.10 / zlib-rs 0.6.8 (PNG zlib validation); zune-jpeg 0.5.15 (JPEG, strict option enabled but recovery not excluded)";
+pub(crate) const JPEG_VALIDATION: &str =
+    "JPEG entropy completeness unverified; decoder recovery possible";
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Config {
@@ -179,6 +181,18 @@ pub struct Method<T> {
     pub limitations: Vec<&'static str>,
 }
 
+impl<T> Method<T> {
+    fn with_raster_validation(mut self, validation: &Method<&'static str>) -> Self {
+        if validation.coverage != Coverage::Complete
+            && matches!(self.coverage, Coverage::Complete | Coverage::Partial)
+        {
+            self.coverage = Coverage::Partial;
+            self.limitations.extend(validation.result);
+        }
+        self
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct BlockPosition {
     pub x: u32,
@@ -235,7 +249,7 @@ pub struct Report {
     pub review_status: &'static str,
     pub sample_domain: &'static str,
     pub raster_validation: Method<&'static str>,
-    pub rgb_histograms: [Vec<u64>; 3],
+    pub rgb_histograms: Method<[Vec<u64>; 3]>,
     pub metadata: Method<MetadataAnalysis>,
     pub repeated_blocks: Method<RepeatedBlocks>,
     pub jpeg_recompression: Method<ResidualSummary>,
@@ -253,8 +267,10 @@ pub struct Analysis {
 impl Report {
     pub fn profile_is_partial(&self) -> bool {
         self.raster_validation.coverage == Coverage::Partial
+            || self.rgb_histograms.coverage == Coverage::Partial
             || self.metadata.coverage == Coverage::Partial
             || self.repeated_blocks.coverage == Coverage::Partial
+            || self.jpeg_recompression.coverage == Coverage::Partial
     }
 }
 
@@ -290,8 +306,32 @@ pub fn analyze(
     let raster = decode::raster(&parsed.decode_bytes, parsed.format, config)?;
     let (width, height) = raster.dimensions();
     checkpoint()?;
-    let rgb_histograms = pixels::histograms(&raster, &mut checkpoint)?;
-    let repeated_blocks = pixels::repeated_blocks(&raster, config, &mut checkpoint)?;
+    let raster_validation = Method {
+        coverage: if parsed.format == ImageFormat::Jpeg {
+            Coverage::Partial
+        } else {
+            Coverage::Complete
+        },
+        scope: "container, PNG zlib integrity and decoder acceptance checks, not source authenticity",
+        result: Some(if parsed.format == ImageFormat::Jpeg {
+            JPEG_VALIDATION
+        } else {
+            "PNG container, bounded complete zlib stream/Adler-32 and limited raster decoder checks passed"
+        }),
+        limitations: vec![
+            "These profile checks are not a proof of full format conformance or authenticity.",
+            "JPEG decoder can zero-fill premature entropy even with its strict option. All JPEG results are partial decoder-output diagnostics, never verified source samples.",
+        ],
+    };
+    let rgb_histograms = Method {
+        coverage: Coverage::Complete,
+        scope: "256-bin RGB channel counts over decoder output, including color beneath transparency",
+        result: Some(pixels::histograms(&raster, &mut checkpoint)?),
+        limitations: vec!["Not color-managed display values or an authenticity test."],
+    }
+    .with_raster_validation(&raster_validation);
+    let repeated_blocks = pixels::repeated_blocks(&raster, config, &mut checkpoint)?
+        .with_raster_validation(&raster_validation);
     let (jpeg_recompression, residual_png) = pixels::recompression(
         &raster,
         parsed.format,
@@ -299,6 +339,7 @@ pub fn analyze(
         config,
         &mut checkpoint,
     )?;
+    let jpeg_recompression = jpeg_recompression.with_raster_validation(&raster_validation);
     let metadata = Method {
         coverage: if parsed.metadata.uninspected.is_empty() {
             Coverage::Complete
@@ -315,7 +356,7 @@ pub fn analyze(
     };
     let analysis = Analysis {
         report: Report {
-            schema_version: 1,
+            schema_version: 2,
             analysis_started_unix_ms,
             analysis_duration_ms: started.elapsed().as_millis(),
             profile: PROFILE,
@@ -337,23 +378,7 @@ pub fn analyze(
             assessment: "inconclusive",
             review_status: "unreviewed",
             sample_domain: "decoder output, not observations; encoded raster coordinates; 8-bit RGBA including RGB under transparency; EXIF orientation and color profiles not applied",
-            raster_validation: Method {
-                coverage: if parsed.format == ImageFormat::Jpeg {
-                    Coverage::Partial
-                } else {
-                    Coverage::Complete
-                },
-                scope: "container checks and decoder acceptance, not source authenticity",
-                result: Some(if parsed.format == ImageFormat::Jpeg {
-                    "JPEG entropy completeness unverified; decoder recovery possible"
-                } else {
-                    "PNG container checks and limited decoder accepted the supported raster"
-                }),
-                limitations: vec![
-                    "Decoder acceptance is not a proof of well-formedness or authenticity.",
-                    "JPEG decoder can zero-fill premature entropy even with its strict option. All JPEG results are partial decoder-output diagnostics, never verified source samples.",
-                ],
-            },
+            raster_validation,
             rgb_histograms,
             metadata,
             repeated_blocks,

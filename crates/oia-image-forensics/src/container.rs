@@ -70,6 +70,8 @@ fn png(
         decode_bytes: b"\x89PNG\r\n\x1a\n".to_vec(),
         metadata: MetadataAnalysis::default(),
     };
+    let mut compressed = Vec::new();
+    let mut data_offset = 0;
     let mut seen_data = false;
     let mut seen_palette = false;
     let mut seen_transparency = false;
@@ -98,7 +100,13 @@ fn png(
                 });
             }
         }
-        seen_data |= kind == b"IDAT";
+        if kind == b"IDAT" {
+            if !seen_data {
+                data_offset = chunk.payload_range.start;
+            }
+            compressed.extend_from_slice(payload);
+            seen_data = true;
+        }
         if matches!(kind, b"IHDR" | b"PLTE" | b"tRNS" | b"IDAT" | b"IEND") {
             parsed
                 .decode_bytes
@@ -115,6 +123,12 @@ fn png(
             )?;
         }
     }
+    crate::decode::validate_png_stream(
+        &compressed,
+        u64::from(inspection.width) * u64::from(inspection.height),
+        data_offset,
+        checkpoint,
+    )?;
     Ok(parsed)
 }
 
@@ -161,6 +175,23 @@ fn jpeg(
             offset: trailing.start,
             reason: "trailing JPEG bytes",
         });
+    }
+    if inspection.frame.marker == 0xc0 {
+        let blocks = u64::from(inspection.frame.width).div_ceil(32)
+            * u64::from(inspection.frame.height).div_ceil(32)
+            * u64::from(inspection.frame.components);
+        let entropy_bytes: u64 = inspection
+            .segments
+            .iter()
+            .filter_map(|segment| segment.entropy_coded_range.as_ref())
+            .map(|range| range.len() as u64)
+            .sum();
+        if entropy_bytes < blocks.div_ceil(4) {
+            return Err(ForensicError::Malformed {
+                offset: 0,
+                reason: "baseline JPEG entropy below two-bit-per-block minimum",
+            });
+        }
     }
     let mut parsed = Parsed {
         format: ImageFormat::Jpeg,

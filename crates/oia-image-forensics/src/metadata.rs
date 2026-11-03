@@ -46,7 +46,15 @@ pub(crate) fn png_field(
             String::from_utf8_lossy(kind).into_owned(),
             offset,
             payload.len(),
-            "container semantics not inspected; compressed text, Exif, credentials and profiles are not decoded",
+            match kind {
+                b"pHYs" | b"sRGB" | b"gAMA" | b"tIME" | b"bKGD" | b"cHRM" | b"sBIT" => {
+                    "fixed-layout ancillary metadata not interpreted; not a generation/edit text field"
+                }
+                b"zTXt" => "compressed text deliberately not decompressed",
+                b"iCCP" => "compressed color profile not decoded or applied",
+                b"eXIf" => "Exif structure and declarations not inspected",
+                _ => "ancillary chunk semantics not inspected",
+            },
         );
         return Ok(());
     }
@@ -120,13 +128,19 @@ pub(crate) fn jpeg_field(result: &mut MetadataAnalysis, marker: u8, payload: &[u
         if let Some(text) = payload.get(xmp_header.len()..) {
             inspect_text(result, b"XMP", text, "JPEG APP1 XMP", payload, offset);
         }
-    } else if marker != 0xe0 && marker != 0xee {
+    } else {
         skipped(
             result,
             format!("JPEG marker FF{marker:02X}"),
             offset,
             payload.len(),
-            "opaque application metadata; no Exif, extended XMP, ICC or C2PA validation",
+            match marker {
+                0xe0 => {
+                    "APP0 application data, including possible JFIF/JFXX thumbnails, not inspected"
+                }
+                0xee => "APP14 application data used by decoder; declarations not inspected",
+                _ => "opaque application metadata; no Exif, extended XMP, ICC or C2PA validation",
+            },
         );
     }
 }

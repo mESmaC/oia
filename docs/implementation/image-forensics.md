@@ -7,6 +7,9 @@ Implemented offline library/CLI slice of
 Entry point: [oia_image_forensics::analyze](../../crates/oia-image-forensics/src/lib.rs).
 This workspace package is not the full forensic workbench. D09 method/model,
 corpus, threshold, hardware and error-presentation selection remains open.
+The separate codec-worker crate keeps the image dependency tree out of
+`oia-media`; that crate retains ownership of the media application boundary and
+will integrate this worker rather than duplicate its diagnostics.
 
 ## Evidence contract
 
@@ -25,6 +28,10 @@ false-positive rate, detector accuracy or formal proof is claimed.
 Decoded samples are derivatives, not observations: encoded raster coordinates,
 8-bit RGBA, no EXIF rotation or ICC/gamma color management. Histograms include
 RGB beneath transparent PNG pixels, not a color-managed composited display.
+Report schema version 2 wraps `rgb_histograms` in the same method envelope as
+other pixel diagnostics (`coverage`, `scope`, `result`, `limitations`), replacing
+the version 1 bare array so input uncertainty is visible without reading a
+separate report field.
 
 ## Input and decoder boundary
 
@@ -40,10 +47,20 @@ cleaned copy.
   depths above 8 bits, unknown critical chunks, duplicate/late palette or
   transparency, container errors and budget overflow. Grayscale, indexed and
   alpha inputs within this profile use the pinned PNG decoder.
+  Before raster decoding, a separate bounded zlib integrity pass over IDAT
+  payloads from the shared inspector requires the final deflate block, Adler-32
+  and stream end with no trailing compressed bytes. It discards inflated data
+  in 8 KiB work units with control checks and a five-bytes-per-pixel cap (at
+  most four sample bytes plus a filter byte per pixel, also covering Adam7).
 - JPEG: retain codec segments, APP0 and APP14; inspect COM/application metadata
   separately. Accept supported sequential/progressive Huffman frames with one
   or three components; cap scans before decoding. Refuse unsupported processes,
   CMYK/YCCK, trailing bytes, structural errors, codec errors and budget overflow.
+  Baseline SOF0 entropy shorter than a conservative two-bit-per-block floor is
+  refused before decoding: each component needs at least one coded block per
+  32-by-32 source region (maximum sampling factor four). Stuffed/restart bytes
+  are counted generously, so this only rejects grossly impossible inputs and
+  does not certify remaining entropy. Progressive frames do not use this floor.
 - Other formats are unsupported. No fallback resizing or format conversion.
 
 ### JPEG entropy completeness is unverified
@@ -57,9 +74,12 @@ accepted that fixture; it is not shipped or used as a silent fallback.
 Every JPEG report therefore has raster_validation.coverage = partial and the
 result "JPEG entropy completeness unverified; decoder recovery possible".
 profile_is_partial() includes that state; the CLI exits 2 even for valid JPEG
-fixtures. Pixel-method completion refers only to calculations on decoder output,
-not verified source samples. Residual PNG metadata repeats the input validation
-limitation. No per-image claim of whether recovery actually occurred is made.
+fixtures. Histograms, applicable block-repeat scans and residuals also remain
+partial with the same raster-validation reason, even if their computations
+finish. A non-applicable method stays non-applicable. These are calculations
+on decoder output, not verified source samples. Residual PNG metadata repeats
+the input validation limitation. No per-image claim of whether recovery
+actually occurred is made.
 An audited fail-closed entropy contract or observable recovery status is needed
 before claiming stronger JPEG validation.
 
@@ -85,6 +105,11 @@ forgeable/removable. Compressed text, Exif, extended XMP, opaque application
 metadata and credential/profile regions remain explicit uninspected ranges,
 making metadata coverage partial. No compressed metadata inflation, C2PA or
 watermark verification is implemented.
+Fixed-layout ancillary PNG metadata (including pHYs, sRGB, gAMA, tIME and bKGD)
+also remains uninspected/partial, with a reason specific to that scope rather
+than calling it compressed text. APP0 records, including possible JFIF/JFXX
+embedded thumbnails, and APP14 declarations are listed as uninspected ranges;
+retaining them for codec interpretation does not imply metadata inspection.
 
 ### Histograms and repeated blocks
 
@@ -110,7 +135,8 @@ No resampling occurs. PNG is not_applicable; no lossy history is invented.
 
 Optional visualization channels are min(255, D * residual_gain), not probabilities
 or raw measurements. The separately hashed PNG contains oia:role,
-oia:source_sha256, oia:profile, oia:settings and oia:input_validation labels;
+oia:source_sha256, oia:profile, oia:settings and oia:input_validation labels
+immediately after IHDR, before IDAT, so readers encounter them before image data;
 source metadata is not copied. The CLI uses create-new and refuses existing
 destinations, including the input. On write failure it attempts to remove only
 the newly created incomplete derivative. Brightness depends on quality, encoder,
@@ -135,7 +161,10 @@ Reports include full configuration. Defaults:
 Input, dimensions/pixels, container/metadata/scan and artifact overflow fail the
 analysis instead of truncating. Block/candidate limits are explicitly partial.
 Zero/invalid configurations fail. PNG uses decoder limits; JPEG checks dimensions
-and seven bytes/pixel for output/conversion before decoding. These are not hard
+and seven bytes/pixel for output/conversion plus two bytes per component per
+pixel on a conservatively 32-pixel-padded raster for progressive coefficients
+before decoding (reserved for all JPEG frames, roughly six additional bytes
+per pixel for three components). These are not hard
 peak-RSS guarantees: codec scratch, working buffers, hash tables and report
 allocations consume additional memory. Do not raise budgets from untrusted input
 or assume this library creates a sandbox.
@@ -157,6 +186,7 @@ integration is changed.
 | Dependency | Role | Declared license |
 | --- | --- | --- |
 | image 0.25.10, PNG/JPEG only | PNG decoding, PNG/JPEG encoding | MIT OR Apache-2.0 |
+| flate2 1.1.10, zlib-rs backend | Bounded complete PNG IDAT zlib/Adler-32 validation before raster decoding | MIT OR Apache-2.0 |
 | zune-jpeg 0.5.15 / zune-core 0.5.3, std only | Direct JPEG decoder/options, avoiding image's non-strict wrapper | MIT OR Apache-2.0 OR Zlib |
 | crc32fast 1.5.4 | CRCs for derived PNG labels | MIT OR Apache-2.0 |
 | sha2 0.10.9 | Integrity identities and repeated-block lookup | MIT OR Apache-2.0 |
@@ -168,6 +198,9 @@ permissive declared licenses (MIT, Apache-2.0, Zlib, BSD, Unicode-3.0 and altern
 Unlicense/0BSD expressions). This records roles/declared licensing, not a complete
 security or legal audit. No God's Eye View source/data/model was ported, and no
 model weights are bundled.
+The PNG decoder identity explicitly names transitive png 0.18.1. The zlib
+integrity pass directly uses already-locked flate2/zlib-rs packages; it adds
+no packages or alternate production runtime.
 
 ## Verification and remaining work
 
@@ -191,7 +224,11 @@ uses the pinned codec in a separately calculated formula, not independent codec
 validation. The Pillow check independently verifies PNG histograms,
 baseline/progressive/grayscale JPEG acceptance, readable labelled derivatives,
 hashes, overwrite refusal, partial/error exits and explicit unverified coverage
-of the recoverable truncated-entropy fixture. Fixtures are synthetic patterns.
+of the recoverable truncated-entropy fixture. Review-follow-up assertions also
+cover pixel-method uncertainty propagation, the grossly inflated JPEG header
+refusal, the coefficient allocation allowance, APP0/ancillary omissions,
+pre-IDAT labels and PNG zlib checksum/end/trailing/excess-output failures.
+Fixtures are synthetic patterns.
 No corpus/operational accuracy evaluation, non-Windows execution, hardware
 measurement or Lean proof is claimed.
 

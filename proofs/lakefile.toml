@@ -1,0 +1,14 @@
+name = "oia-proofs"
+version = "0.1.0"
+defaultTargets = ["OiaProofs", "ProofAudit"]
+
+[leanOptions]
+autoImplicit = false
+warningAsError = true
+
+[[lean_lib]]
+name = "OiaProofs"
+
+[[lean_lib]]
+name = "ProofAudit"
+roots = ["Audit"]

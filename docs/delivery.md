@@ -182,9 +182,9 @@ External provider latency and model-service latency must be reported separately 
 
 ## 5. Lean and Rust verification plan
 
-Begin with a small deterministic target, such as selecting a source frame within an allowed time window or enforcing forecast input cutoff rules. Select the first target in an ADR after the relevant data contract is implemented.
+[ADR 0004](adr/0004-d13-lean-correspondence-target.md) selects the implemented forecast cutoff contract as the first Rust correspondence target, with frame-selection and dependency-propagation model proofs alongside it. The [proof manifest](../proofs/README.md) records theorem scope, assumptions, source revisions, numeric limits, and separate local Lean/Rust commands.
 
-For every proof-backed claim, record specification, theorem, assumptions, pinned Lean toolchain, Rust revision, correspondence method, fixture/property tests, and numeric limits. CI must check Lean artifacts and relevant Rust behavior independently. Admitted proofs or project-specific axioms cannot support a production verification claim unless explicitly disclosed and accepted as assumptions.
+For every proof-backed claim, record specification, theorem, assumptions, pinned Lean toolchain, Rust revision, correspondence method, fixture/property tests, and numeric limits. Local validation must check Lean artifacts and relevant Rust behavior independently; hosted CI is not enabled by this requirement. Admitted proofs or project-specific axioms cannot support a production verification claim unless explicitly disclosed and accepted as assumptions.
 
 Tests connecting Rust to a Lean model establish evidence of correspondence, not automatically a formal implementation proof. Verification labels in the product must reflect that distinction. Source truth, model calibration, and forecasting skill require empirical evaluation.
 
@@ -206,7 +206,7 @@ Decisions belong to the project owner and implementing maintainers. Each resolut
 | D10 | Collaboration and sync | Choose hosted transport/identity, capability matrix, merge rules, and sensitive-data defaults | P4 shared service |
 | D11 | Markets | Choose instruments, providers, calendars, corporate-action handling, historical depth, and licensed uses | P5 market ingestion |
 | D12 | Forecasting | Choose first targets/horizons, baselines, point-in-time datasets, calibration and resolution methods | P5 issued forecasts |
-| D13 | Lean correspondence | Choose first proof target and implementation/model connection method (#15, reserved for ADR 0004) | First proof claim |
+| D13 | Lean correspondence | [ADR 0004](adr/0004-d13-lean-correspondence-target.md): Lean 4.35.0 model proofs and shared forecast-cutoff fixture; finite Rust evidence, not formal implementation equivalence | First proof claim (implemented scope in #15) |
 | D14 | Distribution and project licensing | Accepted in [ADR 0003](adr/0003-d14-licensing-and-distribution.md) ([owner decision](https://github.com/mESmaC/oia/pull/56#issuecomment-6568675966)): dual `MIT OR Apache-2.0` repository code license ([`LICENSE-MIT`](../LICENSE-MIT), [`LICENSE-APACHE`](../LICENSE-APACHE)) with third-party datasets/fixtures excluded and tracked in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md); release installer/signing packaging deferred to #49 | Public release (code license decided; #49 open) |
 
 ## 7. Risk and dependency register

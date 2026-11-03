@@ -1,6 +1,6 @@
 # ADR 0008: D01 follow-up — Workspace renderer and presentation adapter
 
-- **Status:** Proposed. Owner decision required; nothing here is adopted. Dependency-independent slice of [#16](https://github.com/mESmaC/oia/issues/16). ADR 0001 (`docs/adr/0001-d01-deployment-and-ui-boundary.md`, proposed in PR [#56](https://github.com/mESmaC/oia/pull/56) and not on `main` when this was written) resolves the local-first Rust core and layering part of D01 and defers "the interactive graphical windowing and 3D globe adapter" to #16 and [#23](https://github.com/mESmaC/oia/issues/23). This ADR covers the workspace renderer for P1; the globe stays with #23.
+- **Status:** Accepted for the P1 desktop renderer. The project owner selected option C (Tauri desktop app) in the running-app session on 2026-11-02 America/New_York, recorded on [#16 (comment 6591833455)](https://github.com/mESmaC/oia/issues/16#issuecomment-6591833455) and confirmed to the review session on [#16 (comment 6591848264)](https://github.com/mESmaC/oia/issues/16#issuecomment-6591848264). The WebView2 traffic disclosure condition in §4 remains applicable. The initial local workbench is documented in [desktop-workbench.md](../implementation/desktop-workbench.md), whose [departures from §4 rules 1 and 2](../implementation/desktop-workbench.md#departures-from-adr-0008-4) are interim and owned by #14; full case-shell integration still depends on #14.
 - **Date:** 2026-11-02 UTC
 - **Decision ID:** D01, renderer and presentation layer ([`docs/delivery.md` §6](../delivery.md#6-decision-register))
 - **Requirements:** [`UX-01`](../spec.md#32-visual-identity) to [`UX-05`](../spec.md#32-visual-identity), [`CASE-02`](../spec.md#31-investigation-workspace), [`CASE-04`](../spec.md#31-investigation-workspace); acceptance A01 and A02 ([`docs/delivery.md`](../delivery.md))
@@ -52,13 +52,13 @@ Both built spikes share one model crate (`spikes/workspace-shell-core`: shell co
 | Reuse of delivered design work | Mockup re-implemented in Rust (about 1,900 formatted lines for the subset). | Same. | The merged mockup's tokens and layout map directly; the spike's stylesheet derives from it. | Measured |
 | Toolchain | Cargo only. | Cargo only. | Cargo only in the spike; a TypeScript or WASM layer would add one later. | Measured |
 
-## 4. Proposed decision
+## 4. Accepted decision
 
 Adopt **option C, Tauri 2, for the P1 workspace**, under the rules below, with the **network finding in §3 as a named condition**: before P1 ships, either the WebView2 runtime's own outbound connections are shown to be controllable (environment options, WebView2 or Edge policies, or a documented allow-list), or the user-facing privacy documentation states them plainly. If neither is achievable, the owner should prefer option A, whose spike shows the shell is realisable natively (including label tracking via `RichText::extra_letter_spacing`) at the cost of backdrop blur and media/PDF/globe convenience.
 
 1. **`oia-app` owns the shell.** Shared context, route stack, local filters, settings, job states, and the query sequence live in Rust and are exposed through typed commands and queries (architecture §7). The presentation layer never computes a domain value, never decides whether a late result applies, and never persists anything. Both spikes already work this way over one core crate.
 2. **Versioned transport.** Every response carries a schema identifier, an outcome, and a coverage statement, as the Tauri spike's envelope does. Types are generated from Rust for the presentation layer once the P0 contracts merge; hand-written duplicates are not acceptable.
-3. **No remote content from the page.** `default-src 'self'` or stricter; no plugin beyond core window and event permissions unless a scoped product decision adds one; no network client in the WebView. Source documents and web content are data, never executable (`AGENTS.md` §5). The runtime's own traffic is handled by the condition above, not by this rule.
+3. **No remote content from the page** (amended by §10 on 2026-11-03: registered, allow-listed, attributed imagery origins are permitted). `default-src 'self'` or stricter; no plugin beyond core window and event permissions unless a scoped product decision adds one; no network client in the WebView. Source documents and web content are data, never executable (`AGENTS.md` §5). The runtime's own traffic is handled by the condition above, not by this rule.
 4. **Effects stay out of data.** Reduced motion, reduced transparency, effects quality, clean evidence, and focused reading are typed settings applied by the presentation layer; numerical and analysis results are unaffected by construction (`UX-05`).
 5. **Presentation language: plain HTML, CSS, and JavaScript first**, with no build step, as in the spike. Rust compiled to WebAssembly (Leptos, Dioxus) stays open if presentation logic grows; TypeScript with generated types is the alternative. Not settled here.
 6. **Globe deferred to #23**, with Cesium inside the same WebView as the option to evaluate first and a `wgpu` globe as the alternative.
@@ -106,6 +106,22 @@ Not done: no screen-reader session; no Linux or macOS build; `iced` and `Slint` 
 - **Decide the globe now.** Rejected; #23 owns it and the P1 shell does not need it.
 - **Adopt a JavaScript framework and bundler.** Rejected for P1; the shell's presentation logic is small and a build step would add a toolchain the repository does not yet have.
 
-## 9. Owner decision requested
+## 9. Owner decision recorded
 
-Accept option C with the rules and condition in §4, accept option A instead, or ask for further evaluation (for example, WebView2 policy control of runtime traffic, or an `iced` spike). Until a decision is recorded, this ADR stays **Proposed** and the decision register in `docs/delivery.md` is not updated.
+On 2026-11-02 America/New_York, the project owner selected “Tauri desktop app (recommended by the existing ADR)” for the running app. Option C is accepted with the rules and runtime-traffic disclosure condition in §4. The first workbench implements local file tools without claiming persistent cases or complete P1 acceptance. Earlier comparison results above describe the evaluation spikes, not the new application.
+
+## 10. Amendment: registered online imagery in the WebView (2026-11-03)
+
+**Owner decision.** On 2026-11-03, in the globe session (T3 thread `44c6c7f7`, recorded on [#23 (comment 6594215166)](https://github.com/mESmaC/oia/issues/23#issuecomment-6594215166)), the project owner stated that reading §4 rule 3 as a ban on online data "is actually completely in violation of what I decided for the spec", and that online sources are encouraged, satellite APIs included, free sources preferred. The specification already requires them: `GEO-02` queries satellite imagery and other sources for the selected event, `CAM-06` names Overpass and DeFlock, and [`docs/architecture.md` §4](../architecture.md#4-source-adapters-and-ingestion) asks that each source be registered with a bounded query, a budget and recorded coverage.
+
+**What changes.** §4 rule 3 was written for the P1 file tools and read as "no network client in the WebView". For a tile-based globe (§4 rule 6) that reading is impractical: routing every tile through Rust IPC would add latency and code without adding control. Rule 3 is therefore amended:
+
+> The page may load imagery, tiles and the data behind them **only** from origins that are (a) registered in Rust as sources with their licence, attribution, capture statement and the date their capabilities were checked, (b) allow-listed by origin in the CSP, and (c) shown in the instrument with attribution, source status and capture or retrieval time. Everything else in rule 3 stands: `default-src 'self'`, no inline script, no `unsafe-eval`, no plugin beyond core window and event permissions, and source content remains data.
+
+The owner also confirmed the decision directly to the review session, recorded on [#16 (comment 6594753551)](https://github.com/mESmaC/oia/issues/16#issuecomment-6594753551).
+
+The first registered origin is `https://gibs.earthdata.nasa.gov` (NASA GIBS, keyless; two NASA public-domain layers, each with its licence and attribution in the registry), used by the Globe instrument ([globe-instrument.md](../implementation/globe-instrument.md)). Adding an origin is a change to the Rust registry, the CSP and the notices together, reviewed as such; a page cannot compose a URL to an origin that is not registered. The WebView2 runtime-traffic condition in §4 is unchanged.
+
+**CSP as amended.** `default-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://gibs.earthdata.nasa.gov; img-src 'self' data: blob: https://gibs.earthdata.nasa.gov; style-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'`. Beyond the registered origin, the additions are `'wasm-unsafe-eval'` (the renderer's bundled WebAssembly modules, compiled from files, not strings), `blob:` in `img-src` (tile bytes turned into object URLs by the renderer), and `'self'` in `connect-src` (the renderer's own asset fetches). `'unsafe-inline'`, `'unsafe-eval'` and `blob:` scripts or workers remain refused; the implementation note records the two bundle adjustments that made that possible.
+
+**Rule 6 outcome.** Cesium inside the same WebView was evaluated first, as rule 6 asked, and is adopted for the globe: self-hosted at a pinned version, fetched by the one-time `fetch` step, with Cesium Ion disabled and the one load-time patch recorded in the implementation note. The `wgpu` alternative remains the exit path of rule 7.

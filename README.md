@@ -33,18 +33,21 @@ Verification claims will be limited to the properties and implementation connect
 The repository currently includes the **#9 Rust workspace bootstrap**, platform decision records, and standalone document/privacy kernels:
 
 - **Rust workspace** (`Cargo.toml`, `rustc 1.99.0`, `edition = "2024"`, `#![forbid(unsafe_code)]`, dual-licensed `MIT OR Apache-2.0`):
-  - Implemented packages: `oia-documents` (bounded UTF-8 extraction and exact-text passage search), `oia-png-privacy` (bounded PNG metadata inspection and cleanup), `oia-jpeg-privacy` (bounded JPEG container metadata inspection and cleanup), `oia-domain` (validated identifiers and schema version primitives), and `oia-app` (bootstrap application CLI and crate boundary; shell state and service wiring follow in `#16` and `#14`).
+  - Implemented packages: `oia-documents` (bounded UTF-8 extraction and exact-text passage search), `oia-png-privacy` (bounded PNG metadata inspection and cleanup), `oia-jpeg-privacy` (bounded JPEG container metadata inspection and cleanup), `oia-domain` (validated identifiers and schema version primitives), and `oia-app` (Tauri desktop workbench for real local text and image privacy operations, plus a [Globe instrument](docs/implementation/globe-instrument.md) over a bundled synthetic case with live NASA GIBS imagery; persistent case services remain in `#14`/`#16`).
   - `oia-forecast` provides a standalone [binary scoring kernel](docs/implementation/forecast-scoring.md); forecast issuance, chronological validation, persistence, calibration, and application integration remain open in `#43`.
+  - `oia-market` provides standalone [point-in-time market normalization](docs/implementation/market-point-in-time.md); provider, storage, application, and full A14 integration remain open in `#41`.
   - Workspace boundary stubs awaiting split P0–P6 implementation PRs (`#10`–`#15` and subsequent phases): `oia-time-geo`, `oia-store`, `oia-ingest`, `oia-query`, `oia-analysis`, `oia-models`, `oia-media`, `oia-devices`, and `oia-export`.
+- **Lean model proofs** ([manifest and commands](proofs/README.md)): frame selection, dependency propagation, and forecast cutoff properties; a shared 24-case fixture tests the merged Rust forecast cutoff path. Model proofs and finite Rust correspondence evidence are distinct.
 - **Architecture Decision Records (`docs/adr/`)**:
-  - [ADR 0001 (D01): Deployment and UI boundary (Proposed)](docs/adr/0001-d01-deployment-and-ui-boundary.md)
+  - [ADR 0001 (D01): Deployment and UI boundary (Accepted)](docs/adr/0001-d01-deployment-and-ui-boundary.md)
   - [ADR 0002 (D02): Storage and indexing (Accepted: embedded SQLite + managed blobs)](docs/adr/0002-d02-storage-and-indexing.md)
   - [ADR 0003 (D14): Project licensing and distribution notices (Accepted: `MIT OR Apache-2.0`)](docs/adr/0003-d14-licensing-and-distribution.md)
+  - [ADR 0004 (D13): Lean targets and Rust correspondence](docs/adr/0004-d13-lean-correspondence-target.md)
   - [ADR 0005 (D03): Seed corpus and news sources](docs/adr/0005-d03-seed-corpus-and-news-sources.md)
   - [ADR 0006 (D05): Report and bundle formats](docs/adr/0006-d05-report-and-bundle-formats.md)
   - [ADR 0007 (D04): AI execution and grounding](docs/adr/0007-d04-ai-execution-and-grounding.md)
 
-The Lean 4 formal verification package (`proofs/`, `#15`), remaining P0 runtime packages (`#10`–`#14`), and Phases P1–P6 remain open work packages in the [GitHub implementation backlog](docs/backlog.md):
+The remaining P0 runtime packages (`#10`–`#14`) and Phases P1–P6 remain open work packages in the [GitHub implementation backlog](docs/backlog.md):
 
 - [Product specification](docs/spec.md): workflows, visual identity, and functional requirements across the suite.
 - [Architecture and data contracts](docs/architecture.md): Rust services, evidence and time models, integrations, storage, and the Lean verification boundary.
@@ -57,35 +60,50 @@ The [earlier exploration draft](docs/spec-draft.md) is retained as design histor
 
 Coding agents should read [AGENTS.md](AGENTS.md) before making changes.
 
+## Run the desktop app
+
+From the repository root, run `cargo run -p oia-app --locked` or `.\scripts\run.ps1 run` on Windows (`scripts/run.sh run` on POSIX shells). With no arguments, `oia` opens the Tauri desktop workbench.
+
+- Open a UTF-8 document, read passages, search exact text, and jump to the matching source line/byte range.
+- Inspect a PNG/JPEG, select supported metadata categories, and save a reinspected cleaned copy without overwriting the original or any existing destination.
+- Open the Globe (Ctrl+G): a CesiumJS globe over the bundled synthetic valley case, with tags and leaders to recorded positions, uncertainty rings, a dotted region, a not-plotted tray, and live basemap tiles from NASA GIBS (Blue Marble composite, or VIIRS true colour for a chosen UTC day) with attribution, capture statement and tile counts. Arrow keys pan, plus and minus zoom, Home returns to the case anchor.
+- Use keyboard navigation (Ctrl+O document, Ctrl+I image, Ctrl+F search, F6 regions), the Focus and Effects toggles, and the [visual language v2](docs/design/visual-language-v2.md) shell. Coverage, unsupported profiles and failures remain visible in the readout strip, inspector, and jobs strip.
+
+Files are held in memory for this session. Persistent investigations, PDF/OCR, AI summaries and report integration are not yet implemented. The only remote origin the bundled UI contacts is the registered imagery source shown in the Globe inspector ([ADR 0008 §10](docs/adr/0008-d01-workspace-renderer.md#10-amendment-registered-online-imagery-in-the-webview-2026-11-03)); Windows WebView2 may make its own background connections. See the [workbench contract, limits and validation](docs/implementation/desktop-workbench.md) and the [Globe instrument note](docs/implementation/globe-instrument.md).
+
 ## Build and run
 
-The workspace provides the bootstrap `oia` CLI in [`crates/oia-app`](crates/oia-app/src/main.rs) as well as read-only inspection and cleanup examples in [`crates/oia-documents`](crates/oia-documents/README.md), [`crates/oia-png-privacy`](crates/oia-png-privacy/README.md), and [`crates/oia-jpeg-privacy`](crates/oia-jpeg-privacy/README.md):
+The workspace provides the `oia` desktop application in [`crates/oia-app`](crates/oia-app/src/main.rs) as well as read-only inspection and cleanup examples in [`crates/oia-documents`](crates/oia-documents/README.md), [`crates/oia-png-privacy`](crates/oia-png-privacy/README.md), and [`crates/oia-jpeg-privacy`](crates/oia-jpeg-privacy/README.md):
 
 - `inspect-text` prints the UTF-8 passages, byte ranges, and coverage of a local file.
 - `find-text` searches a local UTF-8 file for an exact query and prints each match's byte range, line, and search coverage.
+- [Still-image forensic cues](crates/oia-image-forensics/README.md): `cargo run -p oia-image-forensics --locked --offline -- IMAGE` reports PNG/JPEG metadata signatures, RGB histograms, repeated-block candidates, and JPEG residuals; not an AI/authenticity verdict.
 
 Neither `oia-documents` example imports, stores, or detects file types, parses PDFs, or runs OCR.
 
-**Requirements:** Rust 1.99.0 via [rustup](https://rustup.rs/) (`rustup toolchain install 1.99.0`). No network access is needed for the current workspace (`--locked --offline`). Without rustup, the scripts warn and use whatever `cargo` is on `PATH`; only the pinned 1.99.0 toolchain has been checked.
+**Requirements:** Rust 1.99.0 via [rustup](https://rustup.rs/) (`rustup toolchain install 1.99.0`). Run `scripts/run.sh fetch` (or `.\scripts\run.ps1 fetch`) once to download the locked dependencies, including the desktop ones, and the pinned CesiumJS build for the Globe (verified by SHA-512 into the gitignored `crates/oia-app/ui/vendor/`); every other script command then runs without network access (`--locked --offline`). Build the desktop app after `fetch`, since the vendor directory is embedded at build time; without it the Globe instrument reports that the renderer is not present and everything else works. Windows requires the C++ build tools and WebView2 runtime. The desktop app has been checked on Windows only; Linux/macOS need Tauri platform prerequisites and remain unverified. Headless kernel checks can use `--no-default-features`. Without rustup, the scripts warn and use whatever `cargo` is on `PATH`; only the pinned 1.99.0 toolchain has been checked.
 
-The run scripts wrap the root workspace Cargo commands (and `lake build` in `proofs/` once `#15` lands and `lake` is installed). Use `scripts/run.sh` on Linux, macOS, or Git Bash and `scripts\run.ps1` in Windows PowerShell:
+The run scripts wrap the root workspace Cargo commands and the [pinned Lean 4.35.0 proof gate](proofs/README.md). Install elan and `leanprover/lean4:v4.35.0` for `proofs` or `check`; full validation fails if Lean is unavailable. Production builds do not require Lean. Use `scripts/run.sh` on Linux, macOS, or Git Bash and `scripts\run.ps1` in Windows PowerShell:
 
 | Task | POSIX shell | Windows PowerShell |
 | --- | --- | --- |
+| Fetch locked dependencies (online, once) | `scripts/run.sh fetch` | `.\scripts\run.ps1 fetch` |
 | Build workspace | `scripts/run.sh build` | `.\scripts\run.ps1 build` |
-| Inspect `README.md` | `scripts/run.sh run` | `.\scripts\run.ps1 run` |
+| Launch desktop | `scripts/run.sh run` | `.\scripts\run.ps1 run` |
+| Inspect `README.md` | `scripts/run.sh inspect` | `.\scripts\run.ps1 inspect` |
 | Inspect a file | `scripts/run.sh run PATH [MAX_INPUT_BYTES] [MAX_PASSAGES]` | `.\scripts\run.ps1 run PATH [MAX_INPUT_BYTES] [MAX_PASSAGES]` |
 | Search a file | `scripts/run.sh search PATH QUERY [MAX_MATCHES] [MAX_INPUT_BYTES] [MAX_PASSAGES]` | `.\scripts\run.ps1 search PATH QUERY [MAX_MATCHES] [MAX_INPUT_BYTES] [MAX_PASSAGES]` |
-| Format, lint, and test | `scripts/run.sh check` | `.\scripts\run.ps1 check` |
+| Check Lean proofs and fixture synchronization | `scripts/run.sh proofs` | `.\scripts\run.ps1 proofs` |
+| Check proofs, format, lint, and test | `scripts/run.sh check` | `.\scripts\run.ps1 check` |
 
-Defaults for `run` and `search` are 1,048,576 input bytes, 10,000 passages, and (for search) 100 matches. Exit code `0` means complete (including empty input or zero matches), `2` means explicitly partial because a budget was reached, and `1` means an error. Oversized input is refused rather than truncated. A complete search with zero matches covers only the file that was read; it is not evidence that the text is absent from the source. Set `OIA_RUST_TOOLCHAIN` to use a different installed toolchain. If PowerShell blocks local scripts, run `powershell -ExecutionPolicy Bypass -File scripts\run.ps1 run`.
+For the text examples (`inspect`, legacy `run PATH`, and `search`), defaults are 1,048,576 input bytes, 10,000 passages, and (for search) 100 matches. Exit code `0` means complete (including empty input or zero matches), `2` means explicitly partial because a budget was reached, and `1` means an error. Oversized input is refused rather than truncated. A complete search with zero matches covers only the file that was read; it is not evidence that the text is absent from the source. Set `OIA_RUST_TOOLCHAIN` to use a different installed toolchain. If PowerShell blocks local scripts, run `powershell -ExecutionPolicy Bypass -File scripts\run.ps1 run`.
 
 The equivalent direct commands are:
 
 ```text
 cargo +1.99.0 run -p oia-documents --example inspect-text --locked --offline -- README.md
 cargo +1.99.0 run -p oia-documents --example find-text --locked --offline -- fixtures/documents/a03/originals/report-v1.txt "two lights"
-cargo +1.99.0 run -p oia-app --bin oia --locked --offline
+cargo +1.99.0 run -p oia-app --bin oia --locked
 ```
 
 See [document text extraction](docs/implementation/document-text.md), [document text search](docs/implementation/document-search.md), [PNG privacy](docs/implementation/png-privacy.md), and [JPEG privacy](docs/implementation/jpeg-privacy.md) for the full contracts, limitations, and verification records.

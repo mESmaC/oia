@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
 publish = false
-description = "Provider-independent observer sky geometry for OIA: Earth rotation, topocentric place, horizontal coordinates, and refraction"
+description = "Provider-independent sky geometry for OIA: observer coordinates, two-body motion, and light-time correction"
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -38,6 +38,7 @@ These names describe intended boundaries; creating crates is outside this docume
 | `oia-media` | Original/derivative media handling, transforms, calibration, clip records |
 | `oia-devices` | Explicit hardware sessions, capability negotiation, video/telemetry/audio |
 | `oia-forecast` | Forecast vintages, scenarios, outcome resolution, evaluation |
+| `oia-market` | Stable instruments, calendars, quotes, corporate actions, point-in-time release vintages |
 | `oia-export` | Reports, recreation prompts, manifests, bundle validation/import |
 | `oia-app` | Composition, commands/queries, UI boundary, optional API/CLI/MCP adapters |
 | `proofs/` | Lean specifications, proof sources, correspondence notes, reference fixtures |
@@ -238,6 +239,8 @@ A subscription must support bounded buffering and a resynchronization mechanism 
 
 ## 8. Media, devices, and rendering
 
+[Still-image forensic cue kernel: implemented scope and integration limits](implementation/image-forensics.md).
+
 Video/audio packets may be transient; retained evidence clips must have manifests referencing original bytes, sample/frame timing, drop information, and source session. HUD and annotation rendering belongs in separate derivatives. A camera player's apparent smoothness must not conceal missing frames in analysis.
 
 Hardware sessions are explicitly registered and scoped to declared capabilities. Local endpoints may be allowed for a registered device without allowing arbitrary remote-source requests into the local network. Device configuration changes, disconnections, and calibration invalidation must be recorded.
@@ -288,6 +291,8 @@ The manifest must declare format/schema versions, package ID, creation time, ent
 Import stages must validate limits, paths, entry uniqueness, types, references, and hashes before making the case visible. Reject traversal, symlinks escaping the destination, decompression bombs, unsupported required schemas, and duplicate conflicting IDs. Generate local mappings for imported IDs without losing origin IDs. Failed import leaves existing cases untouched.
 
 ## 11. Rust and Lean verification boundary
+
+[ADR 0004](adr/0004-d13-lean-correspondence-target.md) and the [proof manifest](../proofs/README.md) document the implemented Lean models and the first finite Rust cutoff correspondence fixture, including assumptions and remaining gaps.
 
 Candidate proofs include interval selection, bounded searches, ordering/deduplication, structured privacy filtering, diff reconstruction, soundness of a restricted rule engine, and selected coordinate/abstraction properties.
 

@@ -223,7 +223,11 @@ fn search<'input>(
     search_from(extraction, query, limits, mode, 0, check_control)
 }
 
-fn validate_query(query: &str, limits: SearchLimits, mode: SearchMode) -> Result<(), SearchError> {
+pub(crate) fn validate_query(
+    query: &str,
+    limits: SearchLimits,
+    mode: SearchMode,
+) -> Result<(), SearchError> {
     if query.is_empty() {
         return Err(SearchError::EmptyQuery);
     }

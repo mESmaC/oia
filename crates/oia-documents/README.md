@@ -23,6 +23,11 @@ preserving original anchors, cumulative coverage, and a retryable cursor after
 cancellation. The `find-text-pages` example bounds total pages as well as page
 size; see the search documentation for commands and limitations.
 
+[`corpus::search_corpus` and `find-corpus`](../../docs/implementation/document-corpus-search.md)
+search an explicit list with shared document/byte/hit limits, input-slot attribution,
+and separate unavailable, unsearched and unextracted coverage. The CLI searches
+multiple local UTF-8 files without modifying them.
+
 PDF parsing, OCR, providers, source-version persistence, citation reassessment,
 and complete A03 acceptance remain open. The merged A03 synthetic originals are
 read in place for exact-byte/citation checks; they are not observed evidence.

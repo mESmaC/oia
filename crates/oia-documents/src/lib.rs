@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fmt;
 use std::ops::Range;
 
+pub mod corpus;
 pub mod lineage;
 pub mod search;
 

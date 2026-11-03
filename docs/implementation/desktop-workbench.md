@@ -1,0 +1,87 @@
+# Local desktop workbench
+
+Implemented slice of [#16](https://github.com/mESmaC/oia/issues/16), following the owner's Tauri selection in [ADR 0008](../adr/0008-d01-workspace-renderer.md). `oia-app` now opens a desktop window and connects the merged document and PNG/JPEG privacy kernels to real local files. It does not import files into a case or implement the persistent services owned by #10/#11/#14.
+
+## Run
+
+```text
+cargo run -p oia-app --locked
+```
+
+On Windows, `.\scripts\run.ps1 run` launches the same app. `scripts/run.sh run` is the POSIX equivalent. `run PATH ...` retains the existing text-inspection behavior; the explicit spelling is `inspect PATH ...`. `search` remains the text CLI example. `oia --status` reports scope without opening a window. `cargo run -p oia-app --no-default-features --locked -- --status` works without desktop dependencies being compiled.
+
+The pinned Rust toolchain is 1.99.0. First builds need the locked Cargo dependencies; subsequent cached builds may add `--offline`. The Windows desktop needs MSVC C++ build tools and WebView2. The UI has no npm, Node, development server, or network provider requirement. Linux/macOS need the usual Tauri system dependencies and have not been validated by this slice.
+
+## Available workflows
+
+1. **Document reader:** select a UTF-8 file through a native dialog, read line passages, search exact case-sensitive text, and select a match to focus its original source line. Byte offsets are zero-based/end-exclusive and remain anchored to the opened bytes. Pagination presents 100 passages at a time without changing extraction coverage.
+2. **File privacy:** select a PNG/JPEG, inspect container classifications and coverage, choose removable metadata categories, and save a cleaned copy through a native dialog. The original stays unchanged. The existing kernels reinspect the output and check their exact container-preservation contracts before the copy is published. This is not full image decoding, content anonymization, or proof that every identifying field was removed.
+3. **Presentation:** the shell follows [visual language v2](../design/visual-language-v2.md): a readout strip that states only view facts (source, byte hash, coverage, selection), a rail that lists unavailable instruments with a reason, an evidence canvas (reader or container map) with the inspector beside it, and a jobs strip whose text comes from the single worker's state. Selection is a bracket on the selected passage or container row; coverage is a meter with its numerator and denominator printed. Keyboard: Ctrl+O opens a document, Ctrl+I inspects an image, Ctrl+F searches the open document, F6 cycles regions, arrow keys move between inspector tabs. Effects and Focus toggles remove blur and the grid or hide the rail and inspector; neither changes any value. There is no animation or sound. Controls and coverage use glyphs and labels in addition to color. Source content is assigned as text, never HTML, and no inline style or script is used, so the CSP needs no `unsafe-inline`.
+
+4. **Globe:** a CesiumJS globe over a bundled synthetic case with live NASA GIBS basemap tiles, documented separately in [globe-instrument.md](globe-instrument.md). It shares this shell (rail, readout strip, inspector, Effects and Focus) and the `oia-local-tools/1` envelope, and its Rust state is independent of the single file-operation worker below.
+
+One document and one image snapshot can be held at a time. Switching views retains them and the displayed search in memory; closing the process discards them. UI settings are also session-only. Reopening a changed source explicitly replaces the snapshot. A cancelled or failed open preserves the previous snapshot. No file is automatically reopened after restart.
+
+## Provenance
+
+The Rust side of this workbench (`src/local_tools/`, `src/desktop.rs`, `tauri.conf.json`, `capabilities/`, `build.rs`, `tests/local_tools.rs`, and the first draft of this document) was written by the Codex running-app session ([#16 claim 6591833455](https://github.com/mESmaC/oia/issues/16#issuecomment-6591833455)) and taken unchanged from its worktree on 2026-11-03. The project owner released that work to the visual-study session on 2026-11-03 ([#16 comment 6592993871](https://github.com/mESmaC/oia/issues/16#issuecomment-6592993871)), which delivered it in [PR #105](https://github.com/mESmaC/oia/pull/105) together with the `ui/` presentation layer and now maintains both.
+
+## Departures from ADR 0008 §4
+
+[ADR 0008](../adr/0008-d01-workspace-renderer.md) is Accepted, and this first build departs from two of its §4 rules. Both are interim and are owned by #14, which introduces the shared application services and the renderer-independent shell state.
+
+| Rule | What the ADR requires | What this build does | Why, and follow-up |
+| --- | --- | --- | --- |
+| §4 rule 1 | `oia-app` (Rust) owns shared context, route stack, local filters, settings, and job states; the page draws state and sends intents. | The active instrument, reading page, selected passage or container row, the Effects and Focus toggles, and the busy flag live in `ui/app.js`. Rust owns the snapshots, the operation gate, cancellation, and publication. | There is no case, route stack, or job registry yet to hold them in. The page state is presentation state with no domain value and no persistence. #14 moves instrument, selection, and settings into the Rust shell state and the page becomes a projection of it. |
+| §4 rule 2 | Every response carries a schema identifier, an outcome, and a coverage statement; types generated from Rust. | Successful responses carry `schema: "oia-local-tools/1"` and the DTO, whose `complete` and byte fields are the coverage statement. Errors return a bare `ToolError { code, message }` with no envelope. Types are hand-matched in JavaScript, not generated. | The envelope and the generated types belong to the P0 contracts; adding a second, throwaway envelope here would create the duplicate the ADR forbids. #14 wraps errors in the same versioned envelope and generates the page's types. |
+
+Related deferrals from review: the kernels' handling and target enums cross the transport as plain strings (`local_tools/privacy.rs`), including a `Debug` rendering of the JPEG segment kind; #14 should carry them as serde-serialised enums. The v2 typefaces (IBM Plex Mono, Inter) are not bundled; the page uses system stacks and loads nothing from the network. The Windows Save dialog may offer to replace an existing file; the export then refuses with `destination_exists` because OIA never overwrites, and the refusal says so.
+
+## Boundary and limits
+
+`src/local_tools/` is a stateless I/O/DTO adapter over the merged kernels: bounded reads, immutable byte snapshots, SHA-256, kernel calls, typed errors and safe output staging. It introduces no case store, job service, query index or alternative extraction/cleanup algorithm. #14 can adopt these functions behind its shared service contracts. `src/desktop.rs` is the Tauri/native-dialog adapter; it owns the transient single-operation gate and publishes results only after a cancellation check. `ui/` draws Rust responses and sends intents; its local state is presentation (tabs, reading pages, focus, checked removal choices), not a parallel evidence model.
+
+The application-specific transport envelope is `oia-local-tools/1`; Rust serializable structs are the schema, and JavaScript does not declare a duplicate domain type model. These are transient file-tool results, not persisted evidence envelopes or source-version IDs. A SHA-256 identifies bytes only; a local path is not a stable citation or source record. Publication, capture and event times are not invented from filesystem timestamps.
+
+| Operation | Bound and visible effect |
+| --- | --- |
+| Text read | 2 MiB; oversized input rejected, never silently truncated |
+| Extraction | 10,000 passages; remaining bytes explicitly reported as partial |
+| Search | 512 UTF-8 query bytes, 200 matches, exact non-overlapping matches within LF-delimited passages; a reached budget remains partial |
+| Image read/output | 16 MiB; bounded regular-file reads and no image decoding |
+| Image container | 4,096 chunks/segments, 2 MiB metadata, 32,768 pixels per axis, 100 million pixels total |
+| Processing | One active worker; 30-second cooperative deadline after dialog selection; cancellation checked inside kernels and at publication |
+
+File I/O and OS dialogs are not preemptible. Cancel requests prevent subsequent publication but may need the user to close an open dialog, or wait for an OS read to return. No fabricated progress percentage is displayed. Busy commands are rejected rather than queued. Cancellation and commit share the same lock: once an export has committed, a later cancellation does not undo it. These workers are not durable jobs and do not claim restart recovery.
+
+The reader escapes hidden controls and bidi formatting for display only; exact source bytes/offsets stay intact. Text and image tools do not silently substitute a parser, infer missing metadata, or convert an unsupported image profile into a successful cleanup. In particular, many camera JPEGs with ICC/MPF/gain-map metadata are outside the conservative profile. See [PNG privacy](png-privacy.md) and [JPEG privacy](jpeg-privacy.md).
+
+Exports stage in a temporary file beside the chosen destination, flush it, then use no-clobber publication. Existing destinations, including the source and links to existing files, are refused. A collision after staging is also refused. Failed/cancelled staging is removed by the temporary-file owner. A process/OS crash may leave a temporary file; no case-store crash recovery or directory durability claim is made.
+
+## Runtime privacy
+
+There is no localhost HTTP listener, JavaScript file/network/shell plugin, or source-text execution. Tauri IPC is available only to the bundled main window. The CSP forbids inline script, `eval`, frames, objects and form submission, and allows exactly one remote origin, the registered imagery source used by the Globe instrument (`https://gibs.earthdata.nasa.gov`, [ADR 0008 §10](../adr/0008-d01-workspace-renderer.md#10-amendment-registered-online-imagery-in-the-webview-2026-11-03)); `'wasm-unsafe-eval'` is granted for the renderer's WebAssembly modules, which are bundled files, not strings. The document and privacy tools make no network request. Native dialogs select the files; the frontend cannot supply an arbitrary path to a Rust command.
+
+The Windows **WebView2 runtime may contact Microsoft independently of the page**. ADR 0008 observed background HTTPS connections in the renderer spike; this work does not claim to suppress them or establish network silence. The app's overview discloses this behavior. That observation belongs to the spike, not a new measurement of this build.
+
+## Requirements and verification scope
+
+This supplies bounded local-file portions of CASE-04/05, DOC-02/04, PRIVACY-01 and UX-01–UX-05. It exercises relevant subsets of A02/A03/A18. Persistent cases, durable cancellation/retry/restart, workspace permissions, provenance envelopes, PDF/OCR, remote acquisition, semantic search, AI answers, reports and integrated A01–A03/A18 acceptance remain open. No Lean theorem or Rust/Lean correspondence claim is introduced.
+
+Three compact integration tests address concrete risks: source mutation changing an already-open search/anchor; hidden limits, malformed input and cancellation; and destructive export/late destination collisions plus output reinspection for PNG and JPEG. One desktop gate test verifies rejection of overlapping work and publication after cancellation. The desktop adapter also needs a manual interaction walkthrough; kernel tests alone do not establish a working app.
+
+Validation results are recorded with the PR after local checks and the desktop walkthrough finish.
+
+### Presentation layer validation (2026-11-03, Windows 11, v2 shell)
+
+- Browser harness: the `ui/` files opened directly in the Chromium headless shell (build 1248, Playwright 1.58.0) with `window.__TAURI__.core.invoke` stubbed by fixture responses in the `oia-local-tools/1` shape. At 1380×900 and 1024×768: document load, search with a selected match, image inspection with a selected container row, category selection, and export result rendered; no horizontal overflow; no rendered text under 11 px; no network requests; axe-core 4.10.3 (`wcag2a`, `wcag2aa`, `wcag21aa`) reported no violations. Automated only; not a conformance claim.
+- Real application: `target/debug/oia.exe` launched by a PowerShell script that drove the page through UI Automation and the native dialogs through the clipboard, then captured the window. Opened `fixtures/documents/a03/originals/report-v1.txt` (170 bytes, complete extraction, SHA-256 shown), searched `two lights` (1 match, line 3, bytes 117–127, complete search), and inspected `scan-page-1.png` (9,485 bytes; the kernel reported a partial inspection with an unsupported region, so the cleaned-copy controls stayed unavailable and the coverage readout showed `partial`). The cleaned-copy export was exercised only in the browser harness, not against a real file in this run.
+- Not run: screen readers, print, Linux/macOS WebViews.
+
+### Review follow-ups (2026-11-03, PR #105 review)
+
+- **Focus exit (B1).** An `Exit focus` control sits in the canvas tools, outside the hidden rail, while Focus is on, and Escape leaves Focus when no error banner is open; focus returns to the rail's Focus toggle. Browser harness at 1380 and 1024: Focus on shows the exit control and hides the rail; Escape and the exit control both restore the rail with the loaded image and its export controls intact.
+- **Capability (B2).** `capabilities/default.json` grants `core:event:default` only. The page uses no window, menu, tray, path, image, or webview API, and the application commands (five file tools, four globe commands) need no core permission. Rebuilt and re-ran the real-app walkthrough: document open, exact search, and image inspection all completed through `invoke` under the narrowed capability.
+- **ADR departures (B3).** Recorded above under "Departures from ADR 0008 §4" and linked from the ADR 0008 status line.
+- **Query limit.** The command field now measures the query in UTF-8 bytes and disables Find with a stated byte count once it exceeds the 512-byte Rust limit, instead of relying on the character-based `maxlength`.
+- **Scripts.** `fetch` is the one online step; every other script command runs `--locked --offline`.

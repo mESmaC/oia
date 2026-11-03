@@ -9,7 +9,7 @@ Independent reference data for [#25](https://github.com/mESmaC/oia/issues/25) (S
 - `originals/<case>.json`: response bytes exactly as received from `https://ssd.jpl.nasa.gov/api/horizons.api`. Never edit them.
 - `manifest.json`: for each case, the purpose, requirement and scenario IDs, the exact request parameters and encoded query, retrieval time, byte length, SHA-256, and metadata extracted from the bytes (API version, ephemeris sources, header fields, column names, row count, first and last time tags). Extracted metadata is descriptive; it is re-derived and checked by the validator.
 
-Retrieval: 2026-11-02 02:22:54Z to 02:23:20Z UTC. Horizons API version 1.2. Ephemeris sources named in the responses: `DE441` (planets, Moon, Sun), `mar099` (Mars system), `jup365_merged` (Jupiter system). Earth-orientation file: `eop.261030.p270126` (data-based through 2026-10-30, so all post-1962 epochs used here precede its prediction interval).
+Original set retrieval: 2026-11-02 02:22:54Z to 02:23:20Z UTC. The two SSB Mars cases were added from responses retrieved on 2026-11-03 at 03:23:02Z and 03:23:03Z; their exact citations travel in their case entries. Horizons API version 1.2. Ephemeris sources named in the responses: `DE441` (planets, Moon, Sun, SSB), `mar099` (Mars system), `jup365_merged` (Jupiter system). Earth-orientation file: `eop.261030.p270126` (data-based through 2026-10-30, so all post-1962 epochs used here precede its prediction interval).
 
 ## Cases
 
@@ -24,7 +24,8 @@ Retrieval: 2026-11-02 02:22:54Z to 02:23:20Z UTC. Horizons API version 1.2. Ephe
 | `moon-phase-lunation` | Geocentric lunar illumination, S-T-O angle, and phase angle/bisector, daily over 2024-04-01 to 2024-05-01. |
 | `earth-subsolar-point` | Sub-solar point on Earth (Earth viewed from the Sun's centre), for illumination and terminator checks. |
 | `vec-helio-{earth,mars,jupiter}-geometric` | Heliocentric geometric state vectors (no light-time correction), ecliptic of J2000.0, AU and AU/day, at TDB epochs. |
-| `vec-helio-mars-lt` | Same as `vec-helio-mars-geometric` with one-way light-time correction. |
+| `vec-helio-mars-lt` | Same as `vec-helio-mars-geometric` with one-way light-time correction. A heliocentric origin is not inertial; this pair is not used as an inertial light-time oracle. |
+| `vec-ssb-mars-geometric`, `vec-ssb-mars-lt` | Mars relative to the solar-system barycenter, geometric versus one-way-light-time-corrected. These retain an inertial-center reference for the light-time solver. |
 | `vec-geo-moon-geometric` | Geocentric geometric state vector of the Moon. |
 | `error-jwst-before-launch` | An unsupported date range (JWST before its ephemeris coverage). The expected result is an explicit provider error, which must not be presented as an empty or interpolated result. |
 
@@ -76,7 +77,7 @@ Horizons was developed at the Jet Propulsion Laboratory (Solar System Dynamics G
 - Neither page states a copyright notice, license, or redistribution restriction. This is an absence of stated terms, not an explicit grant.
 - The manual calls files that users produce "informal file releases". They must not be used for purposes affecting spacecraft hardware safety or mission success without first contacting the JPL Solar System Dynamics Group. OIA uses them only as test references.
 
-The same citation and terms summary is recorded in `manifest.json` under `provider`, so it travels with the data. Formal third-party notices for bundled datasets remain to be settled with D06 or the repository licensing work in #9.
+The same citation and terms summary is recorded in `manifest.json` under `provider`, so it travels with the data. Cases retrieved on another UTC date carry their own matching Horizons and SSD citations under `retrieval`; the validator checks those against the actual case timestamp. Formal third-party notices for bundled datasets remain to be settled with D06 or the repository licensing work in #9.
 
 ## Limitations
 

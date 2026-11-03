@@ -8,6 +8,9 @@ matching slice of [#18](https://github.com/mESmaC/oia/issues/18), supporting
 only the anchor/coverage/passive-text subset of
 [A03](../delivery.md#a03-cited-document-research).
 
+For an explicit list of documents with shared byte/hit limits and per-input
+coverage, see [bounded multi-document search](document-corpus-search.md).
+
 ## Run locally
 
 From the repository root with Rust 1.99.0 installed:

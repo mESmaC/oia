@@ -2882,6 +2882,264 @@
         "outcome": "provider_error",
         "error_text": "No ephemeris for target \"James Webb Space Telescope (spacecraft)\" prior to A.D. 2021-DEC-25 13:00:00.0000 UT"
       }
+    },
+    {
+      "id": "vec-ssb-mars-geometric",
+      "purpose": "Solar-system-barycentric geometric (no light-time correction) ICRF ecliptic state vector of Mars; TDB epochs; inertial light-time reference.",
+      "requirements": [
+        "SPACE-05"
+      ],
+      "scenarios": [
+        "A05"
+      ],
+      "expected_outcome": "ephemeris",
+      "request": {
+        "method": "GET",
+        "endpoint": "https://ssd.jpl.nasa.gov/api/horizons.api",
+        "parameters": {
+          "EPHEM_TYPE": "VECTORS",
+          "REF_SYSTEM": "ICRF",
+          "REF_PLANE": "ECLIPTIC",
+          "VEC_TABLE": "3",
+          "OUT_UNITS": "AU-D",
+          "VEC_LABELS": "YES",
+          "CSV_FORMAT": "YES",
+          "OBJ_DATA": "NO",
+          "TIME_DIGITS": "SECONDS",
+          "START_TIME": "2024-04-08 18:00 TDB",
+          "STOP_TIME": "2024-04-08 19:00",
+          "STEP_SIZE": "1h",
+          "COMMAND": "499",
+          "CENTER": "500@0",
+          "VEC_CORR": "NONE"
+        },
+        "query": "format=json&MAKE_EPHEM=YES&EPHEM_TYPE=%27VECTORS%27&REF_SYSTEM=%27ICRF%27&REF_PLANE=%27ECLIPTIC%27&VEC_TABLE=%273%27&OUT_UNITS=%27AU-D%27&VEC_LABELS=%27YES%27&CSV_FORMAT=%27YES%27&OBJ_DATA=%27NO%27&TIME_DIGITS=%27SECONDS%27&START_TIME=%272024-04-08%2018%3A00%20TDB%27&STOP_TIME=%272024-04-08%2019%3A00%27&STEP_SIZE=%271h%27&COMMAND=%27499%27&CENTER=%27500%400%27&VEC_CORR=%27NONE%27"
+      },
+      "retrieval": {
+        "requested_at_utc": "2026-11-03T03:23:02Z",
+        "http_date": "Tue, 03 Nov 2026 03:23:03 GMT",
+        "citation": "Giorgini, JD and JPL Solar System Dynamics Group, NASA/JPL Horizons On-Line Ephemeris System, <https://ssd.jpl.nasa.gov/horizons/>, data retrieved 2026-Nov-03.",
+        "ssd_citation": "Solar System Dynamics. (Downloaded 2026, November 3). (Horizons System). https://ssd.jpl.nasa.gov"
+      },
+      "artifact": {
+        "path": "originals/vec-ssb-mars-geometric.json",
+        "media_type": "application/json",
+        "byte_length": 5832,
+        "sha256": "22732794581512ccca56d58606bb3eec143c94dc9c0c5ef0b605e7bfd5a5f791"
+      },
+      "extracted": {
+        "api_version": "1.2",
+        "api_source": "NASA/JPL Horizons API",
+        "outcome": "ephemeris",
+        "provider_banner": "Ephemeris / API_USER Mon Nov  2 19:23:03 2026 Pasadena, USA      / Horizons",
+        "ephemeris_sources": [
+          "DE441",
+          "mar099"
+        ],
+        "header_fields": [
+          [
+            "Target body name",
+            "Mars (499)                      {source: mar099}"
+          ],
+          [
+            "Center body name",
+            "Solar System Barycenter (0)     {source: DE441}"
+          ],
+          [
+            "Center-site name",
+            "BODY CENTER"
+          ],
+          [
+            "Start time",
+            "A.D. 2024-Apr-08 18:00:00.0000 TDB"
+          ],
+          [
+            "Stop  time",
+            "A.D. 2024-Apr-08 19:00:00.0000 TDB"
+          ],
+          [
+            "Step-size",
+            "60 minutes"
+          ],
+          [
+            "Center geodetic",
+            "0.0, 0.0, 0.0                   {E-lon(deg),Lat(deg),Alt(km)}"
+          ],
+          [
+            "Center cylindric",
+            "0.0, 0.0, 0.0                   {E-lon(deg),Dxy(km),Dz(km)}"
+          ],
+          [
+            "Center radii",
+            "(undefined)"
+          ],
+          [
+            "Output units",
+            "AU-D"
+          ],
+          [
+            "Calendar mode",
+            "Mixed Julian/Gregorian"
+          ],
+          [
+            "Output type",
+            "GEOMETRIC cartesian states"
+          ],
+          [
+            "Output format",
+            "3 (position, velocity, LT, range, range-rate)"
+          ],
+          [
+            "Reference frame",
+            "Ecliptic of J2000.0"
+          ]
+        ],
+        "columns": [
+          "JDTDB",
+          "Calendar Date (TDB)",
+          "X",
+          "Y",
+          "Z",
+          "VX",
+          "VY",
+          "VZ",
+          "LT",
+          "RG",
+          "RR"
+        ],
+        "row_count": 2,
+        "first_row_label": "2460409.250000000",
+        "last_row_label": "2460409.291666667"
+      }
+    },
+    {
+      "id": "vec-ssb-mars-lt",
+      "purpose": "Same as vec-ssb-mars-geometric with one-way light-time correction, retaining an inertial-center reference for the light-time solver.",
+      "requirements": [
+        "SPACE-05"
+      ],
+      "scenarios": [
+        "A05"
+      ],
+      "expected_outcome": "ephemeris",
+      "request": {
+        "method": "GET",
+        "endpoint": "https://ssd.jpl.nasa.gov/api/horizons.api",
+        "parameters": {
+          "EPHEM_TYPE": "VECTORS",
+          "REF_SYSTEM": "ICRF",
+          "REF_PLANE": "ECLIPTIC",
+          "VEC_TABLE": "3",
+          "OUT_UNITS": "AU-D",
+          "VEC_LABELS": "YES",
+          "CSV_FORMAT": "YES",
+          "OBJ_DATA": "NO",
+          "TIME_DIGITS": "SECONDS",
+          "START_TIME": "2024-04-08 18:00 TDB",
+          "STOP_TIME": "2024-04-08 19:00",
+          "STEP_SIZE": "1h",
+          "COMMAND": "499",
+          "CENTER": "500@0",
+          "VEC_CORR": "LT"
+        },
+        "query": "format=json&MAKE_EPHEM=YES&EPHEM_TYPE=%27VECTORS%27&REF_SYSTEM=%27ICRF%27&REF_PLANE=%27ECLIPTIC%27&VEC_TABLE=%273%27&OUT_UNITS=%27AU-D%27&VEC_LABELS=%27YES%27&CSV_FORMAT=%27YES%27&OBJ_DATA=%27NO%27&TIME_DIGITS=%27SECONDS%27&START_TIME=%272024-04-08%2018%3A00%20TDB%27&STOP_TIME=%272024-04-08%2019%3A00%27&STEP_SIZE=%271h%27&COMMAND=%27499%27&CENTER=%27500%400%27&VEC_CORR=%27LT%27"
+      },
+      "retrieval": {
+        "requested_at_utc": "2026-11-03T03:23:03Z",
+        "http_date": "Tue, 03 Nov 2026 03:23:04 GMT",
+        "citation": "Giorgini, JD and JPL Solar System Dynamics Group, NASA/JPL Horizons On-Line Ephemeris System, <https://ssd.jpl.nasa.gov/horizons/>, data retrieved 2026-Nov-03.",
+        "ssd_citation": "Solar System Dynamics. (Downloaded 2026, November 3). (Horizons System). https://ssd.jpl.nasa.gov"
+      },
+      "artifact": {
+        "path": "originals/vec-ssb-mars-lt.json",
+        "media_type": "application/json",
+        "byte_length": 5854,
+        "sha256": "dbc5e52ea90555cc874da35f58c8a82e11639340365dd2ca33f2a84fcf778694"
+      },
+      "extracted": {
+        "api_version": "1.2",
+        "api_source": "NASA/JPL Horizons API",
+        "outcome": "ephemeris",
+        "provider_banner": "Ephemeris / API_USER Mon Nov  2 19:23:04 2026 Pasadena, USA      / Horizons",
+        "ephemeris_sources": [
+          "DE441",
+          "mar099"
+        ],
+        "header_fields": [
+          [
+            "Target body name",
+            "Mars (499)                      {source: mar099}"
+          ],
+          [
+            "Center body name",
+            "Solar System Barycenter (0)     {source: DE441}"
+          ],
+          [
+            "Center-site name",
+            "BODY CENTER"
+          ],
+          [
+            "Start time",
+            "A.D. 2024-Apr-08 18:00:00.0000 TDB"
+          ],
+          [
+            "Stop  time",
+            "A.D. 2024-Apr-08 19:00:00.0000 TDB"
+          ],
+          [
+            "Step-size",
+            "60 minutes"
+          ],
+          [
+            "Center geodetic",
+            "0.0, 0.0, 0.0                   {E-lon(deg),Lat(deg),Alt(km)}"
+          ],
+          [
+            "Center cylindric",
+            "0.0, 0.0, 0.0                   {E-lon(deg),Dxy(km),Dz(km)}"
+          ],
+          [
+            "Center radii",
+            "(undefined)"
+          ],
+          [
+            "Output units",
+            "AU-D"
+          ],
+          [
+            "Calendar mode",
+            "Mixed Julian/Gregorian"
+          ],
+          [
+            "Output type",
+            "LT CORRECTED cartesian states"
+          ],
+          [
+            "Output format",
+            "3 (position, velocity, LT, range, range-rate)"
+          ],
+          [
+            "Reference frame",
+            "Ecliptic of J2000.0"
+          ]
+        ],
+        "columns": [
+          "JDTDB",
+          "Calendar Date (TDB)",
+          "X",
+          "Y",
+          "Z",
+          "VX",
+          "VY",
+          "VZ",
+          "LT",
+          "RG",
+          "RR"
+        ],
+        "row_count": 2,
+        "first_row_label": "2460409.250000000",
+        "last_row_label": "2460409.291666667"
+      }
     }
   ]
 }

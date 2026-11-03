@@ -6,6 +6,7 @@ pub mod citations;
 pub mod corpus;
 pub mod lineage;
 pub mod search;
+pub mod utf16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Limit {

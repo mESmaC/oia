@@ -5,7 +5,8 @@
 # pinned Rust toolchain (1.99.0), and runs `lake build` in `proofs/` during
 # `check` when the `proofs/` directory exists and `lake` is available on PATH.
 #
-# Usage: scripts/run.sh [build|fmt|lint|test|check|run|inspect|search] [-- ARGS...]
+# Usage: scripts/run.sh [fetch|build|fmt|lint|test|check|run|inspect|search] [-- ARGS...]
+#   fetch             Download the locked dependencies once (the only online step).
 #   build             Build the entire workspace (`--workspace --all-targets`).
 #   fmt               Check formatting across the workspace.
 #   lint              Run clippy across the workspace (`-D warnings`).
@@ -40,11 +41,13 @@ else
     echo "run.sh: rustup not found; using $(command cargo --version) instead of pinned $TOOLCHAIN" >&2
 fi
 
-# First builds may download the locked desktop dependencies. Cargo caches them.
+# Workspace commands run offline against the committed lockfile. `fetch` is the
+# one online step; run it once (or after a lockfile change) to cache the
+# locked dependencies, including the desktop ones.
 ws() {
     subcommand=$1
     shift
-    cargo "$subcommand" --manifest-path "$MANIFEST" --locked "$@"
+    cargo "$subcommand" --manifest-path "$MANIFEST" --locked --offline "$@"
 }
 
 action=${1:-run}
@@ -52,6 +55,9 @@ action=${1:-run}
 [ "${1:-}" = "--" ] && shift
 
 case $action in
+    fetch)
+        cargo fetch --manifest-path "$MANIFEST" --locked
+        ;;
     build)
         ws build --workspace --all-targets
         ;;
@@ -93,7 +99,7 @@ case $action in
         sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
         ;;
     *)
-        echo "run.sh: unknown command '$action'; use build, fmt, lint, test, check, run, inspect, or search" >&2
+        echo "run.sh: unknown command '$action'; use fetch, build, fmt, lint, test, check, run, inspect, or search" >&2
         exit 1
         ;;
 esac

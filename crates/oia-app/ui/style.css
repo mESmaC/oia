@@ -111,6 +111,7 @@ body.focused .rail, body.focused .inspector { display: none; }
 .tools button { font: 11px var(--mono); letter-spacing: .04em; padding: 6px 10px; border-radius: var(--r-ctl); color: var(--text-2); }
 .tools button:hover:not(:disabled) { color: var(--text); background: rgba(255,255,255,.05); }
 .tools button:disabled { color: var(--text-3); }
+.tools .exit-focus { color: var(--accent); border: 1px solid var(--accent); }
 .view { position: absolute; inset: 48px 0 40px 0; }
 .empty { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(520px, 90%); text-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px; }
 .empty h2 { font: 500 20px/1.2 var(--sans); }

@@ -330,7 +330,14 @@ $('search-form').onsubmit = event => {
     return `${data.matches.length} ${data.matches.length === 1 ? 'match' : 'matches'} · ${data.complete ? 'complete search' : 'partial search, see coverage'}`;
   });
 };
-$('query').oninput = () => { if (searchView) clearSearch(false); };
+const QUERY_BYTE_LIMIT = 512; // the Rust side caps the query in UTF-8 bytes, not characters
+$('query').oninput = () => {
+  if (searchView) clearSearch(false);
+  const bytes = new TextEncoder().encode($('query').value).length;
+  const over = bytes > QUERY_BYTE_LIMIT;
+  $('search-submit').disabled = busy || !documentView || over;
+  if (over) setText('status', `Query is ${fmt(bytes)} bytes; the limit is ${QUERY_BYTE_LIMIT} UTF-8 bytes`, 'count bad');
+};
 $('clear-search').onclick = () => { $('query').value = ''; clearSearch(true); };
 $('previous-page').onclick = () => { page--; renderPassages(); };
 $('next-page').onclick = () => { page++; renderPassages(); };
@@ -350,9 +357,18 @@ $('cancel').onclick = async () => {
   catch (error) { $('error-message').textContent = error?.message || String(error); $('error').hidden = false; }
 };
 $('dismiss-error').onclick = () => { $('error').hidden = true; };
-for (const [id, className] of [['effects', 'reduced'], ['focus', 'focused']]) {
-  $(id).onclick = () => { const on = document.body.classList.toggle(className); $(id).setAttribute('aria-pressed', String(on)); $('vs-overlays').textContent = document.body.classList.contains('reduced') ? 'reduced' : 'on'; };
+function setPresentation(className, on) {
+  // Presentation only: never touches a value. Focus hides the rail and inspector, so an exit
+  // control stays visible in the canvas tools and Escape leaves Focus (review B1).
+  document.body.classList.toggle(className, on);
+  const toggle = className === 'reduced' ? $('effects') : $('focus');
+  toggle.setAttribute('aria-pressed', String(on));
+  $('vs-overlays').textContent = document.body.classList.contains('reduced') ? 'reduced' : 'on';
+  if (className === 'focused') $('exit-focus').hidden = !on;
 }
+$('effects').onclick = () => setPresentation('reduced', !document.body.classList.contains('reduced'));
+$('focus').onclick = () => setPresentation('focused', !document.body.classList.contains('focused'));
+$('exit-focus').onclick = () => { setPresentation('focused', false); $('focus').focus(); };
 document.addEventListener('keydown', event => {
   if (event.key === 'F6') {
     event.preventDefault();
@@ -365,7 +381,10 @@ document.addEventListener('keydown', event => {
   if ((event.ctrlKey || event.metaKey) && key === 'f' && documentView) { event.preventDefault(); showInstrument('documents'); $('query').focus(); }
   if ((event.ctrlKey || event.metaKey) && key === 'o') { event.preventDefault(); if (!busy) openDocument(); }
   if ((event.ctrlKey || event.metaKey) && key === 'i') { event.preventDefault(); if (!busy) openImage(); }
-  if (event.key === 'Escape') $('error').hidden = true;
+  if (event.key === 'Escape') {
+    if (!$('error').hidden) $('error').hidden = true;
+    else if (document.body.classList.contains('focused')) { setPresentation('focused', false); $('focus').focus(); }
+  }
 });
-if (window.matchMedia('(prefers-reduced-transparency: reduce)').matches) { document.body.classList.add('reduced'); $('effects').setAttribute('aria-pressed', 'true'); $('vs-overlays').textContent = 'reduced'; }
+if (window.matchMedia('(prefers-reduced-transparency: reduce)').matches) setPresentation('reduced', true);
 showInstrument('session');

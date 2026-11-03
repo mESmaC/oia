@@ -77,12 +77,13 @@ The workspace provides the `oia` desktop application in [`crates/oia-app`](crate
 
 Neither `oia-documents` example imports, stores, or detects file types, parses PDFs, or runs OCR.
 
-**Requirements:** Rust 1.99.0 via [rustup](https://rustup.rs/) (`rustup toolchain install 1.99.0`). The first desktop build downloads dependencies from the committed lockfile; after they are cached, builds and diagnostics run without network access (`--locked --offline`). Windows requires the C++ build tools and WebView2 runtime. The desktop app has been checked on Windows only; Linux/macOS need Tauri platform prerequisites and remain unverified. Headless kernel checks can use `--no-default-features`. Without rustup, the scripts warn and use whatever `cargo` is on `PATH`; only the pinned 1.99.0 toolchain has been checked.
+**Requirements:** Rust 1.99.0 via [rustup](https://rustup.rs/) (`rustup toolchain install 1.99.0`). Run `scripts/run.sh fetch` (or `.\scripts\run.ps1 fetch`) once to download the locked dependencies, including the desktop ones; every other script command then runs without network access (`--locked --offline`). Windows requires the C++ build tools and WebView2 runtime. The desktop app has been checked on Windows only; Linux/macOS need Tauri platform prerequisites and remain unverified. Headless kernel checks can use `--no-default-features`. Without rustup, the scripts warn and use whatever `cargo` is on `PATH`; only the pinned 1.99.0 toolchain has been checked.
 
 The run scripts wrap the root workspace Cargo commands (and `lake build` in `proofs/` once `#15` lands and `lake` is installed). Use `scripts/run.sh` on Linux, macOS, or Git Bash and `scripts\run.ps1` in Windows PowerShell:
 
 | Task | POSIX shell | Windows PowerShell |
 | --- | --- | --- |
+| Fetch locked dependencies (online, once) | `scripts/run.sh fetch` | `.\scripts\run.ps1 fetch` |
 | Build workspace | `scripts/run.sh build` | `.\scripts\run.ps1 build` |
 | Launch desktop | `scripts/run.sh run` | `.\scripts\run.ps1 run` |
 | Inspect `README.md` | `scripts/run.sh inspect` | `.\scripts\run.ps1 inspect` |

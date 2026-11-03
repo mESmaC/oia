@@ -1,7 +1,7 @@
 # ADR 0001: Deployment Model, Application Shell, and UI Boundary (D01)
 
 - **Date:** 2026-11-01
-- **Status:** Accepted for the local-first Rust application boundary and Tauri 2 desktop renderer (owner selection on 2026-11-02 America/New_York; ADR 0008). Persistent services and case-shell integration remain in #14/#16.
+- **Status:** Accepted for the local-first Rust application boundary and Tauri 2 desktop renderer (owner selection on 2026-11-02 America/New_York, [#16 comment 6591833455](https://github.com/mESmaC/oia/issues/16#issuecomment-6591833455), confirmed in [#16 comment 6591848264](https://github.com/mESmaC/oia/issues/16#issuecomment-6591848264); ADR 0008). Persistent services and case-shell integration remain in #14/#16.
 - **Decision ID:** D01
 - **Issues:** #9, #14, #16
 - **Requirements:** `CASE-01`–`CASE-05`, `UX-01`–`UX-05`

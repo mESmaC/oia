@@ -1,7 +1,7 @@
 # Bounded news claim-checking, misleading-coverage review, and publisher summary kernel
 
-- **Implemented:** The dependency-independent **consistency-checking** kernel and contract slice of [issue #21](https://github.com/mESmaC/oia/issues/21) for caller-supplied claim assessments, evidence links, quotation fidelity, correction propagation, and publisher summaries, supporting [`NEWS-03`](../spec.md#44-regional-news-and-public-events), [`NEWS-04`](../spec.md#44-regional-news-and-public-events), [`NEWS-05`](../spec.md#44-regional-news-and-public-events), and the claim-assessment subset of [`A06`](../delivery.md#a06-news-lineage-and-claim-assessment).
-- **Not implemented:** Automated claim extraction or truth evaluation, shared application-service integration (`oia-domain`, `oia-analysis`, `oia-app`), database persistence, UI claim-review workflows, and full end-to-end `A06` acceptance. Those remain open on [#21](https://github.com/mESmaC/oia/issues/21) and depend on `#10`, `#14`, `#16`, `#18`, and `#20`. Because `oia-news-claims` is standard-library-only, it validates the 64-digit lowercase hex format of `declared_sha256_hex` and exact UTF-8 byte/char lengths while [`scripts/news/validate_a06.py`](../../scripts/news/validate_a06.py) verifies the cryptographic SHA-256 digest of each fixture blob. No formal Lean proof or measured performance target is claimed.
+- **Implemented:** The dependency-independent **consistency-checking** kernel and contract slice of [issue #21](https://github.com/mESmaC/oia/issues/21) for caller-supplied claim assessments, evidence links, quotation fidelity, correction propagation, and publisher summaries, plus a bounded in-memory append-only claim review ledger, supporting [`NEWS-03`](../spec.md#44-regional-news-and-public-events), [`NEWS-04`](../spec.md#44-regional-news-and-public-events), [`NEWS-05`](../spec.md#44-regional-news-and-public-events), and the claim-assessment/review-history subsets of [`A06`](../delivery.md#a06-news-lineage-and-claim-assessment).
+- **Not implemented:** Automated claim extraction or truth evaluation, shared application-service integration (`oia-domain`, `oia-analysis`, `oia-app`), review persistence, reviewer authentication/authorization, durable reassessment resolution, UI claim-review workflows, and full end-to-end `A06` acceptance. Those remain open on [#21](https://github.com/mESmaC/oia/issues/21) and depend on `#10`, `#14`, `#16`, `#18`, and `#20`. The ledger borrows caller-owned data and is dropped without external effect; it does not publish projections into application state. Because `oia-news-claims` is standard-library-only, it validates the 64-digit lowercase hex format of `declared_sha256_hex` and exact UTF-8 byte/char lengths while [`scripts/news/validate_a06.py`](../../scripts/news/validate_a06.py) verifies the cryptographic SHA-256 digest of each fixture blob. No formal Lean proof or measured performance target is claimed.
 
 The full domain contract is specified in [`docs/contracts/news-claim-checking.md`](../contracts/news-claim-checking.md).
 
@@ -11,6 +11,7 @@ From the repository root with Rust 1.99.0 installed:
 
 ```text
 cargo +1.99.0 run -p oia-news-claims --example check-a06-claims --locked --offline
+cargo +1.99.0 test -p oia-news-claims --test review_contract --locked --offline
 ```
 
 This read-only example validates the merged synthetic [`fixtures/news/a06/`](../../fixtures/news/a06/README.md) corpus against `NEWS-03`, `NEWS-04`, `NEWS-05`, and `A06`, printing per-claim assessment states, independent supporting/contrary lineage-root counts, quotation fidelity status, and temporal assessment shifts.
@@ -38,6 +39,11 @@ This read-only example validates the merged synthetic [`fixtures/news/a06/`](../
 4. **Correction propagation and publisher summaries (`NEWS-05`):**
    - Verifies that every `DependencyInvalidation` triggered by a source correction (`sr-meridian-wire-884@v2`) or adjudication outcome (`sr-maritime-adj-panel-0412@v1`) sets `needs_reassessment = true` on all affected `SourceRecord`, `EventCandidate`, `Claim` (matched strictly by `version_id`), and `Report` records while preserving prior issued versions (`prior_issued_version_preserved = true`).
    - Verifies that every `PublisherSummaryInput` declares a valid RFC 3339 UTC `time_window` (`window_start_utc <= window_end_utc`), non-empty `sampling_method`, `sample_size == evaluated_source_record_versions.len()` with `1 <= sample_size <= article_count_in_window` (and `sample_size == article_count_in_window` when `sampling_method == "complete_case_corpus_within_window"`), consistent `assessment_counts` and `unresolved_assessment_count == assessment_counts.unresolved + assessment_counts.disputed` across the publisher's evaluated records, valid `correction_history` supersession links, complete `uncorrected_upstream_dependencies` for any active evaluated record referencing a superseded upstream record via `{Quotes, Republishes}`, and `represents_incident_frequency_or_crime_rate == false` with a non-empty `methodology_note`.
+5. **Append-only review history (`NEWS-03`, `NEWS-04`, `A06` review-history subset):**
+   - `review::ClaimReviewLedger::new` borrows one exact claim version and its source records only after running the existing `verify_corpus` validation. It does not duplicate the corpus verifier.
+   - `append` validates the entire borrowed `ReviewEntry` before one fallible history reservation and push. It enforces exact target version, unique review IDs, optional non-self/non-duplicate supersession of an existing entry, non-regressing caller-supplied signed Unix-second timestamps, non-empty reviewer/scope/rationale, validated passage evidence, assessment-evidence requirements, and non-zero `ReviewLimits` for history length, combined evidence links, fault categories, and review text/identifier bytes.
+   - `history` retains every entry in append order. `projection` selects only the latest assessment and review status while preserving publication-time assessment, availability, and sticky reassessment state. Earlier entries and borrowed claim/source values are never mutated. `Reviewed` and `Supported` remain independent caller values.
+   - The implementation performs no wall-clock reads, storage, networking, reviewer authentication/authorization, truth inference, or UI/application publication.
 
 ## Local verification evidence
 
@@ -57,3 +63,31 @@ The four targeted integration tests in [`crates/oia-news-claims/tests/claim_cont
 2. `rejects_removed_page_auto_retracted_and_unfounded_contradiction`: Mutation checks confirming rejection of auto-retracted removed pages (`RemovedPageAutoRetracted`), marking an uncorroborated claim `Contradicted` without contrary evidence (`UnsupportedAutomaticallyFalse`), omitting `DistortedQuotation` on a fabricated quote (`DistortedQuoteNotFlagged`), and ensuring a sibling reprint (`sr-pelagic-digest-884@v1`) sharing `independent_lineage_root_id` cannot vouch for Tribune's fabricated quote when not upstream via `{Quotes, Republishes}`.
 3. `rejects_unpropagated_corrections_and_publisher_volume_or_sample_violations`: Mutation checks confirming rejection of unpropagated `needs_reassessment` flags (`UnpropagatedCorrection`), equating article volume with crime rate (`VolumeEquatedWithCrimeRate`), mismatched publisher sample sizes (`PublisherSummarySampleMismatch`), and omitting superseded upstream dependencies from `uncorrected_upstream_dependencies` (`PublisherSummarySampleMismatch`).
 4. `enforces_multibyte_anchors_budgets_and_cooperative_stop`: Mutation checks confirming rejection of a split UTF-8 codepoint on the Japanese passage `p-harbor-ja-1` (`InvalidPassageAnchor`), zero-limit configuration (`ZeroLimit`), claim budget overflow (`BudgetExceeded`), and cancellation at every callback point (`Stopped(StopReason::Cancelled)`).
+
+## Review-ledger focused checks
+
+Run from the repository root with Rust 1.99.0:
+
+```text
+cargo +1.99.0 fmt --all -- --check
+cargo +1.99.0 clippy -p oia-news-claims --all-targets --locked --offline -- -D warnings
+cargo +1.99.0 test -p oia-news-claims --locked --offline
+```
+
+The two synthetic-data integration tests in [`crates/oia-news-claims/tests/review_contract.rs`](../../crates/oia-news-claims/tests/review_contract.rs) cover the successful challenge-to-reviewed history/projection path and transactional rejection of stale targets, duplicate IDs, invalid supersession, timestamp regression, empty required text, unknown or malformed passage evidence, missing assessment evidence, and review/evidence/text budget overflow. These tests do not establish persistence, application integration, or full `A06`.
+
+### Review-ledger slice verification record
+
+Executed on 2026-11-03 (America/New_York), Windows x86_64/MSVC, Rust/Cargo 1.99.0, on the review-ledger working tree based at `433e253`:
+
+```text
+cargo +1.99.0 test -p oia-news-claims --test review_contract --locked --offline
+cargo +1.99.0 run -p oia-news-claims --example check-a06-claims --locked --offline
+python -I scripts/news/validate_a06.py --self-test
+cargo +1.99.0 fmt --all -- --check
+cargo +1.99.0 clippy --workspace --all-targets --locked --offline -- -D warnings
+cargo +1.99.0 test --workspace --locked --offline
+git diff --check
+```
+
+All commands passed. The focused run passed both new review contract tests; the workspace run also passed the existing four claim contract tests. The app build reported that the gitignored CesiumJS vendor directory was absent, so this verification did not exercise the Globe renderer. No Lean gate was run because this slice does not change a proof-covered algorithm or make a proof/correspondence claim.

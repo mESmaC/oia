@@ -1,6 +1,6 @@
 # ADR 0008: D01 follow-up — Workspace renderer and presentation adapter
 
-- **Status:** Proposed. Owner decision required; nothing here is adopted. Dependency-independent slice of [#16](https://github.com/mESmaC/oia/issues/16). ADR 0001 (`docs/adr/0001-d01-deployment-and-ui-boundary.md`, proposed in PR [#56](https://github.com/mESmaC/oia/pull/56) and not on `main` when this was written) resolves the local-first Rust core and layering part of D01 and defers "the interactive graphical windowing and 3D globe adapter" to #16 and [#23](https://github.com/mESmaC/oia/issues/23). This ADR covers the workspace renderer for P1; the globe stays with #23.
+- **Status:** Accepted for the P1 desktop renderer. The project owner selected option C (Tauri desktop app) in the running-app session on 2026-11-02 America/New_York, recorded on [#16 (comment 6591833455)](https://github.com/mESmaC/oia/issues/16#issuecomment-6591833455) and confirmed to the review session on [#16 (comment 6591848264)](https://github.com/mESmaC/oia/issues/16#issuecomment-6591848264). The WebView2 traffic disclosure condition in §4 remains applicable. The initial local workbench is documented in [desktop-workbench.md](../implementation/desktop-workbench.md), whose [departures from §4 rules 1 and 2](../implementation/desktop-workbench.md#departures-from-adr-0008-4) are interim and owned by #14; full case-shell integration still depends on #14.
 - **Date:** 2026-11-02 UTC
 - **Decision ID:** D01, renderer and presentation layer ([`docs/delivery.md` §6](../delivery.md#6-decision-register))
 - **Requirements:** [`UX-01`](../spec.md#32-visual-identity) to [`UX-05`](../spec.md#32-visual-identity), [`CASE-02`](../spec.md#31-investigation-workspace), [`CASE-04`](../spec.md#31-investigation-workspace); acceptance A01 and A02 ([`docs/delivery.md`](../delivery.md))
@@ -52,7 +52,7 @@ Both built spikes share one model crate (`spikes/workspace-shell-core`: shell co
 | Reuse of delivered design work | Mockup re-implemented in Rust (about 1,900 formatted lines for the subset). | Same. | The merged mockup's tokens and layout map directly; the spike's stylesheet derives from it. | Measured |
 | Toolchain | Cargo only. | Cargo only. | Cargo only in the spike; a TypeScript or WASM layer would add one later. | Measured |
 
-## 4. Proposed decision
+## 4. Accepted decision
 
 Adopt **option C, Tauri 2, for the P1 workspace**, under the rules below, with the **network finding in §3 as a named condition**: before P1 ships, either the WebView2 runtime's own outbound connections are shown to be controllable (environment options, WebView2 or Edge policies, or a documented allow-list), or the user-facing privacy documentation states them plainly. If neither is achievable, the owner should prefer option A, whose spike shows the shell is realisable natively (including label tracking via `RichText::extra_letter_spacing`) at the cost of backdrop blur and media/PDF/globe convenience.
 
@@ -106,6 +106,6 @@ Not done: no screen-reader session; no Linux or macOS build; `iced` and `Slint` 
 - **Decide the globe now.** Rejected; #23 owns it and the P1 shell does not need it.
 - **Adopt a JavaScript framework and bundler.** Rejected for P1; the shell's presentation logic is small and a build step would add a toolchain the repository does not yet have.
 
-## 9. Owner decision requested
+## 9. Owner decision recorded
 
-Accept option C with the rules and condition in §4, accept option A instead, or ask for further evaluation (for example, WebView2 policy control of runtime traffic, or an `iced` spike). Until a decision is recorded, this ADR stays **Proposed** and the decision register in `docs/delivery.md` is not updated.
+On 2026-11-02 America/New_York, the project owner selected “Tauri desktop app (recommended by the existing ADR)” for the running app. Option C is accepted with the rules and runtime-traffic disclosure condition in §4. The first workbench implements local file tools without claiming persistent cases or complete P1 acceptance. Earlier comparison results above describe the evaluation spikes, not the new application.

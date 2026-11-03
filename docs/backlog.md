@@ -41,6 +41,7 @@ The repository was empty on GitHub when this backlog was created, so issue bodie
 - [#18: Add document search, cited summaries, and grounded question answering](https://github.com/mESmaC/oia/issues/18)
 - [#19: Track document releases, source lineage, and correction propagation](https://github.com/mESmaC/oia/issues/19)
 - [#20: Construct regional news events from multiple sources](https://github.com/mESmaC/oia/issues/20)
+  - [#156: Local News desk, dossier schema, and remaining integration](implementation/news-desk.md)
 - [#21: Build claim-checking and misleading-coverage review](https://github.com/mESmaC/oia/issues/21)
 - [#22: Ship cited report drafting and portable case import/export](https://github.com/mESmaC/oia/issues/22)
 

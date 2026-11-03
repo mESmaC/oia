@@ -17,7 +17,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod forensics;
 mod privacy;
+pub use forensics::{ForensicView, SNAPSHOT_SCHEME, analyze_image, media_type};
 pub use privacy::{PrivacyView, Selection, clean_image, inspect_image};
 
 pub const TEXT_BYTES: usize = 2 * 1024 * 1024;

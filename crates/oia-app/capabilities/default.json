@@ -1,6 +1,6 @@
 {
   "identifier": "main-window",
-  "description": "Bundled main window only. The page calls the thirteen application commands (five file tools, four globe queries and intents, four witness queries and intents) through core invoke and uses no plugin, window, menu, tray, path, image or webview API. File dialogs and bounded file operations run in Rust commands; no filesystem, shell or network plugins.",
+  "description": "Bundled main window only. The page calls the sixteen application commands (six file tools, six globe queries and intents, four witness queries and intents) through core invoke and uses no plugin, window, menu, tray, path, image or webview API. File dialogs and bounded file operations run in Rust commands; the held image snapshot is served read-only to the page by a Rust URI scheme keyed by its hash; no filesystem, shell or network plugins.",
   "windows": ["main"],
   "permissions": ["core:event:default"]
 }

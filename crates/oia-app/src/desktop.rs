@@ -3,15 +3,16 @@
 use crate::globe::{
     CameraView, GlobeState, GlobeView,
     imagery::{CivilDate, ImagerySelection},
+    layers::AlprFilterId,
 };
 use crate::local_tools::{
-    self as tools, Control, DocumentView, FileKind, PreparedExport, PrivacyView, Result,
-    SearchView, Selection, Snapshot, ToolError,
+    self as tools, Control, DocumentView, FileKind, ForensicView, PreparedExport, PrivacyView,
+    Result, SNAPSHOT_SCHEME, SearchView, Selection, Snapshot, ToolError,
 };
 use crate::witness::{WitnessFormData, WitnessOrigin, WitnessState, WitnessView};
 use serde::Serialize;
 use std::sync::{Arc, Mutex, MutexGuard};
-use tauri::State;
+use tauri::{Manager, State};
 
 #[derive(Debug, Default)]
 struct Inner {
@@ -222,6 +223,61 @@ async fn export_cleaned(
 }
 
 #[tauri::command]
+async fn analyze_image(
+    state: State<'_, Services>,
+    sha256: String,
+) -> Result<Envelope<ForensicView>> {
+    let mut operation = state.begin()?;
+    worker(move || {
+        let snapshot = operation.snapshot(FileKind::Image, &sha256)?;
+        operation.control = operation.control.processing();
+        let view = tools::analyze_image(&snapshot, &operation.control)?;
+        operation.publish(|_| Ok(envelope(view)))
+    })
+    .await
+}
+
+/// Serves the held image snapshot's original bytes to the page, read-only, keyed by its
+/// SHA-256. Anything else under the scheme is a 404. No path, file or other state is
+/// reachable through it, and nothing is cached. The response allows cross-origin reads
+/// because the page's own origin differs from the scheme's: without it the WebView ignores
+/// `image-orientation: none` and would display an EXIF-rotated image in a different
+/// orientation from the forensic report's encoded raster coordinates.
+fn snapshot_protocol(
+    ctx: tauri::UriSchemeContext<'_, tauri::Wry>,
+    request: tauri::http::Request<Vec<u8>>,
+) -> tauri::http::Response<Vec<u8>> {
+    let respond = |status: u16, media_type: &str, body: Vec<u8>| {
+        tauri::http::Response::builder()
+            .status(status)
+            .header("Content-Type", media_type)
+            .header("Cache-Control", "no-store")
+            .header("X-Content-Type-Options", "nosniff")
+            .header("Access-Control-Allow-Origin", "*")
+            .body(body)
+            .unwrap_or_else(|_| tauri::http::Response::new(Vec::new()))
+    };
+    let path = request.uri().path().trim_start_matches('/');
+    let valid = path.len() == 64 && path.bytes().all(|b| b.is_ascii_hexdigit());
+    if !valid {
+        return respond(404, "text/plain", b"not found".to_vec());
+    }
+    let services = ctx.app_handle().state::<Services>();
+    let Ok(state) = services.lock() else {
+        return respond(500, "text/plain", b"lock failed".to_vec());
+    };
+    match state
+        .image
+        .as_ref()
+        .filter(|s| s.info.sha256 == path)
+        .map(|s| (tools::media_type(s.bytes()), s.bytes().to_vec()))
+    {
+        Some((Some(media_type), bytes)) => respond(200, media_type, bytes),
+        _ => respond(404, "text/plain", b"not found".to_vec()),
+    }
+}
+
+#[tauri::command]
 fn cancel_operation(state: State<'_, Services>) -> Result<()> {
     if let Some(control) = &state.lock()?.active {
         control.cancel();
@@ -268,6 +324,24 @@ fn globe_imagery(
     let today = CivilDate::today_utc(); // the one place the clock is read for the globe
     let mut state = globe.lock()?;
     state.set_imagery(selection, today)?;
+    state.view().map(envelope)
+}
+
+#[tauri::command]
+fn globe_layer(
+    globe: State<'_, Globe>,
+    layer_id: String,
+    visible: bool,
+) -> Result<Envelope<GlobeView>> {
+    let mut state = globe.lock()?;
+    state.set_layer_visible(&layer_id, visible)?;
+    state.view().map(envelope)
+}
+
+#[tauri::command]
+fn globe_alpr_filter(globe: State<'_, Globe>, filter: AlprFilterId) -> Result<Envelope<GlobeView>> {
+    let mut state = globe.lock()?;
+    state.set_alpr_filter(filter)?;
     state.view().map(envelope)
 }
 
@@ -322,17 +396,21 @@ pub fn run() -> std::result::Result<(), tauri::Error> {
     tauri::Builder::default()
         .manage(Services::default())
         .manage(Globe::default())
+        .register_uri_scheme_protocol(SNAPSHOT_SCHEME, snapshot_protocol)
         .manage(Witness::default())
         .invoke_handler(tauri::generate_handler![
             open_document,
             open_image,
             search_document,
             export_cleaned,
+            analyze_image,
             cancel_operation,
             globe_view,
             globe_select,
             globe_camera,
             globe_imagery,
+            globe_layer,
+            globe_alpr_filter,
             witness_view,
             witness_capture,
             witness_revise,

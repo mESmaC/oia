@@ -1,3 +1,5 @@
+pub mod review;
+
 use std::error::Error;
 use std::fmt;
 use std::ops::Range;

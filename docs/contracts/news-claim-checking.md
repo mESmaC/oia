@@ -3,7 +3,7 @@
 - **Status:** Implementation design, contract specification, and deterministic validation rules for [issue #21](https://github.com/mESmaC/oia/issues/21), building on [ADR 0005 (`D03`)](../adr/0005-d03-seed-corpus-and-news-sources.md) and the [document lineage contract](document-lineage-and-correction.md).
 - **Date:** 2026-11-02 UTC
 - **Requirements:** [`NEWS-03`](../spec.md#44-regional-news-and-public-events), [`NEWS-04`](../spec.md#44-regional-news-and-public-events), [`NEWS-05`](../spec.md#44-regional-news-and-public-events)
-- **Acceptance scenario:** [`A06: news lineage and claim assessment`](../delivery.md#a06-news-lineage-and-claim-assessment) (claim assessment, correction propagation, and publisher summary subset)
+- **Acceptance scenario:** [`A06: news lineage and claim assessment`](../delivery.md#a06-news-lineage-and-claim-assessment) (claim assessment, review history, correction propagation, and publisher summary subsets; not full end-to-end acceptance)
 - **Companion kernel & fixture:** [`crates/oia-news-claims`](../../crates/oia-news-claims/Cargo.toml), [`docs/implementation/news-claim-checking.md`](../implementation/news-claim-checking.md), [`fixtures/news/a06/`](../../fixtures/news/a06/README.md)
 
 The [architecture](../architecture.md) owns the shared domain records, origin classes (`§2.3`), claim/review/availability states (`§2.4`), storage (`§5`), and durable jobs (`§6.1`). This contract specifies passage-level factual and presentation evaluation, claim assessment criteria, correction/outcome invalidation, and publisher-level summaries; final shared workspace integration awaits the merged `oia-domain` and `oia-analysis` packages (`#10`, `#14`, `#18`, `#20`).
@@ -77,6 +77,18 @@ Implementations and validators must enforce these invariants before persisting o
 6. **Removed pages are not auto-retracted (`A06`):** When a source page later returns HTTP `404` or `410 Gone` (`availability: removed`, such as `sr-sable-shore-notebook@v1`), its `retraction_status` remains `not_retracted` unless an explicit retraction notice is evidenced. Any record or claim that marks `retraction_status: retracted` solely because `availability == removed` fails validation (`RemovedPageAutoRetracted`).
 7. **Corroboration independence (`INTEL-01`, `NEWS-01`):** Syndicated reprints (`republishes`) and derivative quotes (`quotes`) sharing the same `independent_lineage_root_id` must be collapsed when counting independent supporting sources for a claim. Multiple outlets repeating `sr-meridian-wire-884@v1` count as one upstream lineage root, never independent corroboration.
 
+### 3.3 Bounded append-only claim review history (`NEWS-03`, `NEWS-04`, `A06` review-history subset)
+
+The `oia_news_claims::review` module provides an in-memory `ClaimReviewLedger` for one exact claim version. It records caller-authored reviews; it does not decide truth, authenticate reviewers, persist history, or integrate with an application workflow.
+
+1. **Validated immutable basis:** `ClaimReviewLedger::new` selects exactly one `ClaimInput.version_id` from a borrowed `CorpusAssessmentInput` and runs the existing `verify_corpus` checker with caller-supplied `AssessmentLimits`. Missing or ambiguous claim versions and every corpus/claim/source/passage validation failure reject construction. The ledger retains only shared borrows of the target claim and immutable `SourceRecordInput` versions, so review evidence remains pinned to the same validated passage anchors.
+2. **Complete review entries:** Each `ReviewEntry` carries a unique `review_version_id`, exact `target_claim_version_id`, optional `supersedes_review_version_id`, caller-supplied `reviewer_id` (attribution only), `reviewed_at_unix_seconds`, non-empty `scope`, independent `assessment` and `review_status`, non-empty `rationale_and_criteria`, supporting and contrary `PassageRef` slices, relevant `FaultCategory` values, and a `needs_reassessment` request.
+3. **Explicit numeric time:** Review time is a signed Unix-seconds value supplied by the caller; the module never reads a wall clock. A timestamp lower than the latest entry is rejected. Equal timestamps are permitted and use append order as the deterministic tie-breaker.
+4. **Append-only history and supersession:** Successful appends are exposed in order through `history()` and `latest_review()`. A supersession link must name an existing review in the same ledger, cannot name the new review itself, and cannot name a review already superseded by another entry. Supersession never rewrites the earlier entry or its `ReviewStatus`; it is a link in the new immutable entry.
+5. **Latest projection without evidence erasure:** `projection()` uses the original claim assessment/status when no review exists and otherwise the latest entry's assessment/status. It always preserves `assessment_at_publication` and source `AvailabilityState`. `needs_reassessment` is sticky: it is true when either the original claim or any review requests it. A later `Reviewed` entry cannot implicitly clear an unresolved correction/challenge, and `Reviewed` never implies `Supported`. Issuing a new claim version or clearing reassessment in an application workflow is outside this ledger.
+6. **Evidence rules:** Every review evidence reference must resolve to a passage in the validated source basis. `Supported` requires at least one supporting passage. `Contradicted` and `MateriallyMisleading` require at least one contrary passage plus the globally required non-empty reasoning; `MateriallyMisleading` also requires at least one fault category. A review declaring `HeadlineCaptionMismatch` requires the target claim to retain `headline_passage_id`, just as the corpus verifier requires for the original claim assessment. These checks do not automatically evaluate the proposition or the quality/independence of the cited evidence beyond the existing corpus checks.
+7. **Transactional bounded append:** Non-zero `ReviewLimits` bound total reviews, combined supporting-plus-contrary evidence links per review, fault categories per review, and total UTF-8 bytes per review across identifiers, reviewer/scope/rationale text, supersession ID, and evidence IDs. All fields, counts, links, timestamps, evidence, and assessment requirements are validated before a fallible `Vec::try_reserve(1)` and the sole history push. Any error, including allocation failure, leaves history and the projection unchanged.
+
 ## 4. Correction propagation and publisher-level summaries (`NEWS-05`)
 
 ### 4.1 Correction, retraction, and outcome propagation
@@ -123,6 +135,16 @@ Implementations of this contract must validate sizes, counts, and invariants bef
 - `AllocationFailed`: Fallible vector reservation (`try_reserve`) fails.
 - `Stopped`: Cooperative cancellation, deadline expiry, or supersession callback fired.
 
+The review ledger uses `ReviewLedgerError` for its additional failure boundary:
+
+- `InvalidBasis`, `TargetClaimVersionNotFound`, or `AmbiguousTargetClaimVersion`: The exact validated claim/source basis cannot be established.
+- `ZeroLimit`, `BudgetExceeded`, or `SizeOverflow`: A review budget is zero, an append would exceed a review/evidence/fault/text limit, or count arithmetic overflows.
+- `StaleTargetClaimVersion`, `DuplicateReviewVersionId`, `InvalidSupersession`, or `TimestampRegression`: The append is not a unique, chronologically ordered review of the ledger's pinned claim version with a valid optional supersession link.
+- `EmptyText`: Review version ID, reviewer ID, scope, or rationale/criteria is empty or whitespace-only.
+- `UnknownPassageEvidence`: An evidence record version or passage is absent from the validated basis. Malformed retained anchors fail earlier as `InvalidBasis(ClaimCheckError::InvalidPassageAnchor)`.
+- `SupportedWithoutEvidence`, `RefutationWithoutEvidence`, `MateriallyMisleadingWithoutFaultCategory`, or `HeadlineMismatchMissingHeadlineAnchor`: The caller's assessment lacks its mandatory evidence, fault annotation, or inspectable headline/caption anchor.
+- `AllocationFailed`: The final fallible history reservation failed. No append error partially publishes an entry.
+
 ## 6. Local verification
 
 The standalone Rust kernel in [`crates/oia-news-claims`](../../crates/oia-news-claims/Cargo.toml) and the Python fixture validator in [`scripts/news/validate_a06.py`](../../scripts/news/validate_a06.py) enforce these rules offline against `fixtures/news/a06/`:
@@ -131,6 +153,7 @@ The standalone Rust kernel in [`crates/oia-news-claims`](../../crates/oia-news-c
 cargo +1.99.0 fmt --manifest-path crates/oia-news-claims/Cargo.toml --all -- --check
 cargo +1.99.0 clippy --manifest-path crates/oia-news-claims/Cargo.toml --workspace --all-targets --locked --offline -- -D warnings
 cargo +1.99.0 test --manifest-path crates/oia-news-claims/Cargo.toml --workspace --locked --offline
+cargo +1.99.0 test -p oia-news-claims --test review_contract --locked --offline
 cargo +1.99.0 run --manifest-path crates/oia-news-claims/Cargo.toml --example check-a06-claims --locked --offline
 python -I scripts/news/validate_a06.py --self-test
 ```

@@ -31,6 +31,9 @@ pub const DEFAULT_CAMERA_HEIGHT_M: f64 = 80_000.0;
 pub const WORLD_CAMERA_HEIGHT_M: f64 = 20_000_000.0;
 /// The CesiumJS build pinned by `scripts/fetch-ui-vendor.*`.
 pub const RENDERER_VERSION: &str = "1.147.0";
+/// The CesiumJS version `build.rs` found in `ui/vendor/cesium/VERSION` when this binary was
+/// built, i.e. the build embedded with the page. `None` when it was not fetched.
+pub const BUNDLED_RENDERER_VERSION: Option<&str> = option_env!("OIA_CESIUM_BUNDLED_VERSION");
 
 const FIXTURE_JSON: &str = include_str!("../../../../fixtures/globe/synthetic-valley-case.json");
 const FIXTURE_PATH: &str = "fixtures/globe/synthetic-valley-case.json";
@@ -463,10 +466,34 @@ pub struct NotPlottedRecord {
     pub notes: String,
 }
 
+/// Whether the CesiumJS build embedded in this binary is the pinned one. The page loads the
+/// renderer only when it is `Present`: a missing asset is answered with the page's own
+/// `index.html`, which would otherwise surface as a script syntax error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RendererBundle {
+    Present,
+    Absent,
+    VersionMismatch,
+}
+
+impl RendererBundle {
+    pub fn classify(pinned: &str, bundled: Option<&str>) -> Self {
+        match bundled {
+            None => Self::Absent,
+            Some(version) if version == pinned => Self::Present,
+            Some(_) => Self::VersionMismatch,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct RendererInfo {
     pub name: &'static str,
     pub pinned_version: &'static str,
+    /// Version recorded in the embedded vendor directory at build time, if any.
+    pub bundled_version: Option<&'static str>,
+    pub bundle: RendererBundle,
     pub ion: &'static str,
     pub terrain: &'static str,
 }
@@ -647,6 +674,8 @@ impl GlobeState {
             renderer: RendererInfo {
                 name: "CesiumJS",
                 pinned_version: RENDERER_VERSION,
+                bundled_version: BUNDLED_RENDERER_VERSION,
+                bundle: RendererBundle::classify(RENDERER_VERSION, BUNDLED_RENDERER_VERSION),
                 ion: "disabled: no token, no Ion assets",
                 terrain: "WGS84 ellipsoid; no terrain source is registered",
             },

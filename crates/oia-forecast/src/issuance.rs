@@ -8,6 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::{Arc, Mutex};
 
 use oia_domain::{ActorId, OpaqueId, SchemaVersion, VersionId};
 
@@ -643,6 +644,51 @@ struct RegisteredOutcomeContract {
     horizon_end_utc_ms: i64,
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct SharedReassessmentHandle {
+    reasons: Arc<Mutex<Vec<ReassessmentReason>>>,
+}
+
+impl Clone for SharedReassessmentHandle {
+    fn clone(&self) -> Self {
+        Self::with_initial(self.snapshot())
+    }
+}
+
+impl PartialEq for SharedReassessmentHandle {
+    fn eq(&self, other: &Self) -> bool {
+        self.snapshot() == other.snapshot()
+    }
+}
+
+impl Eq for SharedReassessmentHandle {}
+
+impl SharedReassessmentHandle {
+    pub(crate) fn with_initial(initial: Vec<ReassessmentReason>) -> Self {
+        Self {
+            reasons: Arc::new(Mutex::new(initial)),
+        }
+    }
+
+    pub(crate) fn share(&self) -> Self {
+        Self {
+            reasons: Arc::clone(&self.reasons),
+        }
+    }
+
+    pub(crate) fn push_unique(&self, reason: ReassessmentReason) {
+        if let Ok(mut guard) = self.reasons.lock()
+            && !guard.contains(&reason)
+        {
+            guard.push(reason);
+        }
+    }
+
+    pub(crate) fn snapshot(&self) -> Vec<ReassessmentReason> {
+        self.reasons.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+}
+
 /// Bounded in-memory ledger of immutable forecast vintages, independent outcome resolution
 /// versions, and version-pinned evaluation runs.
 #[derive(Debug, Clone, PartialEq)]
@@ -656,6 +702,7 @@ pub struct ForecastLedger {
     outcome_resolutions: BTreeMap<OpaqueId, Vec<VersionId>>,
     superseded_precedents: BTreeMap<VersionId, (OpaqueId, VersionId)>,
     evaluations_by_version: BTreeMap<VersionId, EvaluationRunRecord>,
+    shared_evaluation_reassessments: BTreeMap<VersionId, SharedReassessmentHandle>,
     evaluation_order: Vec<VersionId>,
     total_evaluated_vintages: usize,
 }
@@ -680,6 +727,7 @@ impl ForecastLedger {
             outcome_resolutions: BTreeMap::new(),
             superseded_precedents: BTreeMap::new(),
             evaluations_by_version: BTreeMap::new(),
+            shared_evaluation_reassessments: BTreeMap::new(),
             evaluation_order: Vec::new(),
             total_evaluated_vintages: 0,
         })
@@ -1198,7 +1246,13 @@ impl ForecastLedger {
                         };
                         eval.needs_reassessment = true;
                         if !eval.reassessment_reasons.contains(&reason) {
-                            eval.reassessment_reasons.push(reason);
+                            eval.reassessment_reasons.push(reason.clone());
+                        }
+                        if let Some(shared) = self
+                            .shared_evaluation_reassessments
+                            .get(&eval.evaluation_version)
+                        {
+                            shared.push_unique(reason);
                         }
                     }
                 }
@@ -1470,6 +1524,8 @@ impl ForecastLedger {
             });
         }
 
+        let shared_reassessment =
+            SharedReassessmentHandle::with_initial(reassessment_reasons.clone());
         let record = EvaluationRunRecord {
             evaluation_version: evaluation_version.clone(),
             evaluated_at_utc_ms,
@@ -1485,6 +1541,8 @@ impl ForecastLedger {
         self.total_evaluated_vintages = self.total_evaluated_vintages.saturating_add(cohort.len());
         self.used_versions.insert(evaluation_version.clone());
         self.evaluation_order.push(evaluation_version.clone());
+        self.shared_evaluation_reassessments
+            .insert(evaluation_version.clone(), shared_reassessment);
         self.evaluations_by_version
             .insert(evaluation_version.clone(), record);
         self.evaluations_by_version.get(&evaluation_version).ok_or(
@@ -1561,12 +1619,27 @@ impl ForecastLedger {
                 };
                 eval.needs_reassessment = true;
                 if !eval.reassessment_reasons.contains(&reason) {
-                    eval.reassessment_reasons.push(reason);
+                    eval.reassessment_reasons.push(reason.clone());
+                }
+                if let Some(shared) = self
+                    .shared_evaluation_reassessments
+                    .get(&eval.evaluation_version)
+                {
+                    shared.push_unique(reason);
                 }
             }
         }
 
         affected_vintages
+    }
+
+    pub(crate) fn shared_evaluation_reassessment_handle(
+        &self,
+        evaluation_version: &VersionId,
+    ) -> Option<SharedReassessmentHandle> {
+        self.shared_evaluation_reassessments
+            .get(evaluation_version)
+            .map(SharedReassessmentHandle::share)
     }
 
     /// Look up an issued forecast vintage by its immutable [`VersionId`].

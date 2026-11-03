@@ -1,14 +1,16 @@
 //! Forecast issuance, cutoff admissibility, historical analogue precedent retrieval,
-//! and evaluation kernels for Open Intelligence Agency.
+//! market-effects scenario forecasting, and evaluation kernels for Open Intelligence Agency.
 //!
 //! Binary scoring (`scoring`), reliability (`reliability`), scalar intervals (`interval`),
-//! immutable issuance/revision/resolution lifecycle (`issuance`), and historical analogue
-//! forecasting (`analogues`, `#45`) are implemented; durable storage, calibration fitting,
-//! `D12` dataset selection, and application service integration remain open in `#43` and `#45`.
+//! immutable issuance/revision/resolution lifecycle (`issuance`), historical analogue
+//! forecasting (`analogues`, `#45`), and market-effects forecasting (`market_effects`, `#44`)
+//! are implemented; durable storage, calibration fitting, `D12` dataset selection, and
+//! application service integration remain open in `#43`–`#45`.
 
 pub mod analogues;
 pub mod interval;
 pub mod issuance;
+pub mod market_effects;
 pub mod reliability;
 pub mod scoring;
 

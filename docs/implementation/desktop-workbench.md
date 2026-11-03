@@ -81,7 +81,7 @@ Validation results are recorded with the PR after local checks and the desktop w
 ### Review follow-ups (2026-11-03, PR #105 review)
 
 - **Focus exit (B1).** An `Exit focus` control sits in the canvas tools, outside the hidden rail, while Focus is on, and Escape leaves Focus when no error banner is open; focus returns to the rail's Focus toggle. Browser harness at 1380 and 1024: Focus on shows the exit control and hides the rail; Escape and the exit control both restore the rail with the loaded image and its export controls intact.
-- **Capability (B2).** `capabilities/default.json` grants `core:event:default` only. The page uses no window, menu, tray, path, image, or webview API, and the five application commands need no core permission. Rebuilt and re-ran the real-app walkthrough: document open, exact search, and image inspection all completed through `invoke` under the narrowed capability.
+- **Capability (B2).** `capabilities/default.json` grants `core:event:default` only. The page uses no window, menu, tray, path, image, or webview API, and the application commands (five file tools, four globe commands) need no core permission. Rebuilt and re-ran the real-app walkthrough: document open, exact search, and image inspection all completed through `invoke` under the narrowed capability.
 - **ADR departures (B3).** Recorded above under "Departures from ADR 0008 §4" and linked from the ADR 0008 status line.
 - **Query limit.** The command field now measures the query in UTF-8 bytes and disables Find with a stated byte count once it exceeds the 512-byte Rust limit, instead of relying on the character-based `maxlength`.
 - **Scripts.** `fetch` is the one online step; every other script command runs `--locked --offline`.

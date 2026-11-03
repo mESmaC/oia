@@ -18,11 +18,12 @@ const Globe = (() => {
   let overlays = true;
   let reduced = false;
   let active = false;
-  let imageryKey = '';
   let plottedKey = '';
   let cameraTimer = null;
   let suppressCameraReport = false;
-  const tiles = { loaded: 0, failed: 0, pending: 0 };
+  const tiles = { loaded: 0, failed: 0, cancelled: 0, pending: 0 };
+  const FLIGHT_MS = 320; // visual language v2 §5.5 coordinated selection; immediate under reduced motion
+  const prefersReducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const LOG_LIMIT = 24;
   const log = [];               // renderer messages the page observed, newest last, bounded
   function note(kind, text) {
@@ -110,6 +111,8 @@ const Globe = (() => {
     // is present, starts workers from blob: URLs with importScripts, which the CSP refuses.
     // Without it Cesium loads the same-origin module workers from vendor/cesium/Workers/.
     delete globalThis.CESIUM_WORKERS;
+    // GIBS asks for no bulk use: at most six tile requests in flight to it (Cesium's default is 18).
+    Cesium.RequestScheduler.requestsByServer['gibs.earthdata.nasa.gov:443'] = 6;
     viewer = new Cesium.Viewer($('globe-canvas'), {
       animation: false, baseLayerPicker: false, fullscreenButton: false, geocoder: false, homeButton: false,
       infoBox: false, sceneModePicker: false, selectionIndicator: false, timeline: false,
@@ -155,7 +158,8 @@ const Globe = (() => {
       orientation: { heading: Cesium.Math.toRadians(camera.heading_deg), pitch: Cesium.Math.toRadians(camera.pitch_deg), roll: 0 }
     };
     viewer.camera.cancelFlight(); // including the viewer's own initial flight to its default view
-    if (fly && !reduced) viewer.camera.flyTo({ ...target, duration: 0.8, complete: () => { suppressCameraReport = false; reportCamera(); } });
+    const release = () => { suppressCameraReport = false; reportCamera(); };
+    if (fly && !reduced && !prefersReducedMotion()) viewer.camera.flyTo({ ...target, duration: FLIGHT_MS / 1000, complete: release, cancel: release });
     else { viewer.camera.flyTo({ ...target, duration: 0 }); suppressCameraReport = false; }
     viewer.scene.requestRender();
   }
@@ -205,18 +209,27 @@ const Globe = (() => {
   }
 
   // ---- Imagery ----
+  let baseKey = '', overlayKey = '', baseLayer = null, overlayLayer = null;
   function setImagery(imagery) {
     if (!viewer) return;
-    const key = `${imagery.active.url}|${imagery.coastlines ? imagery.coastlines.url : ''}`;
-    if (key === imageryKey) return;
-    imageryKey = key;
-    viewer.imageryLayers.removeAll(true);
-    tiles.loaded = 0; tiles.failed = 0;
-    addLayer(imagery.active);
-    if (imagery.coastlines) addLayer(imagery.coastlines);
+    const nextBase = imagery.active.url;
+    const nextOverlay = imagery.coastlines ? imagery.coastlines.url : '';
+    if (nextBase === baseKey && nextOverlay === overlayKey) return;
+    // Only the layer that changed is replaced, so toggling the overlay keeps the loaded basemap.
+    if (nextBase !== baseKey) {
+      if (baseLayer) viewer.imageryLayers.remove(baseLayer, true);
+      tiles.loaded = 0; tiles.failed = 0; tiles.cancelled = 0;
+      baseLayer = addLayer(imagery.active, 0);
+      baseKey = nextBase;
+    }
+    if (nextOverlay !== overlayKey) {
+      if (overlayLayer) viewer.imageryLayers.remove(overlayLayer, true);
+      overlayLayer = nextOverlay ? addLayer(imagery.coastlines) : null;
+      overlayKey = nextOverlay;
+    }
     viewer.scene.requestRender();
   }
-  function addLayer(layer) {
+  function addLayer(layer, index) {
     const Cesium = window.Cesium;
     const source = layer.source;
     const provider = new Cesium.WebMapTileServiceImageryProvider({
@@ -229,10 +242,17 @@ const Globe = (() => {
       const promise = request(x, y, level, req);
       if (!promise) return promise;
       return promise.then(image => { tiles.loaded += 1; renderAttribution(); return image; },
-        error => { tiles.failed += 1; note('tile', `${source.layer} ${level}/${x}/${y}: ${error?.message || error}`); renderAttribution(); throw error; });
+        error => {
+          // A request Cesium cancelled because the tile left the view is navigation, not a gap.
+          const cancelled = req?.state === Cesium.RequestState.CANCELLED || /cancelled/i.test(String(error?.message || ''));
+          if (cancelled) tiles.cancelled += 1;
+          else { tiles.failed += 1; note('tile', `${source.layer} ${level}/${x}/${y}: ${error?.message || error}`); }
+          renderAttribution();
+          throw error;
+        });
     };
     provider.errorEvent.addEventListener(error => note('provider', error?.message || error)); // counted above; keep the console quiet
-    viewer.imageryLayers.addImageryProvider(provider);
+    return viewer.imageryLayers.addImageryProvider(provider, index);
   }
 
   // ---- Geometry ----
@@ -424,10 +444,11 @@ const Globe = (() => {
     const a = view.imagery.active;
     el.replaceChildren();
     el.append(node('b', 'Imagery '), node('span', `${a.source.provider} · ${a.source.layer}${a.date ? ` · ${a.date} UTC` : ' · composite, no date'}`));
-    if (view.imagery.coastlines) el.append(node('span', ` · + ${view.imagery.coastlines.source.layer}`));
+    if (view.imagery.coastlines) el.append(node('span', ` · + ${view.imagery.coastlines.source.layer} (${view.imagery.coastlines.source.attribution})`));
     el.append(node('span', ` · tiles ${fmt(tiles.loaded)} loaded`));
     if (tiles.failed) el.append(node('span', `, ${fmt(tiles.failed)} failed (gap, not empty scene)`, 'warn'));
     if (tiles.pending) el.append(node('span', `, ${fmt(tiles.pending)} pending`));
+    if (tiles.cancelled) el.append(node('span', `, ${fmt(tiles.cancelled)} cancelled by navigation`));
     if (a.coverage_note) el.append(node('span', ' · beyond recorded coverage', 'warn'));
     if (rendererState !== 'ready') el.append(node('span', ` · renderer ${rendererState}`, 'warn'));
     notify();
@@ -458,7 +479,8 @@ const Globe = (() => {
     const chip = (text, cls) => { const c = node('span', text, `chip${cls ? ` ${cls}` : ''}`); chips.append(c); };
     if (view.case) chip(`◇ ${view.case.origin_class} case`, 'fx');
     if (record) chip(record.geometry ? (record.geometry.kind === 'region' ? '▦ Region' : record.geometry.kind === 'approximate_centroid' ? '◌ Approximate' : '◉ Point') : '○ Not plotted');
-    chip('▮ Imagery live from source');
+    if (rendererState === 'ready' && tiles.loaded > 0) chip('▮ Imagery live from source');
+    else chip(`○ Imagery not loaded · renderer ${rendererState}`, 'warn');
     kv($('globe-record'), record ? [['Record', record.label], ['Kind', record.kind], ...geometryRows(record), ...timeRows(record), ['Source', record.source_label]] : [['Record', 'none selected']]);
     $('globe-record-note').textContent = record ? record.notes : 'Select a tag on the globe, a record below, or an entry in the not-plotted tray.';
     const list = $('globe-records');
@@ -479,7 +501,7 @@ const Globe = (() => {
     }
     renderImageryForm();
     const a = view.imagery.active;
-    kv($('globe-imagery-active'), [['Layer', a.source.layer], ['Provider', a.source.provider], ['Origin', a.source.origin], ['Date', a.date ? `${a.date} (UTC day)` : 'composite · none'], ['Capture', a.source.capture_statement], ['Tiles', `${fmt(tiles.loaded)} loaded · ${fmt(tiles.failed)} failed · ${fmt(tiles.pending)} pending`, tiles.failed ? 'est' : ''], ['Coverage note', a.coverage_note || null], ['Licence', a.source.license], ['Attribution', a.source.attribution], ['Checked', `capabilities ${a.source.capabilities_checked_on}`]]);
+    kv($('globe-imagery-active'), [['Layer', a.source.layer], ['Provider', a.source.provider], ['Origin', a.source.origin], ['Date', a.date ? `${a.date} (UTC day)` : 'composite · none'], ['Capture', a.source.capture_statement], ['Tiles', `${fmt(tiles.loaded)} loaded · ${fmt(tiles.failed)} failed · ${fmt(tiles.pending)} pending · ${fmt(tiles.cancelled)} cancelled by navigation`, tiles.failed ? 'est' : ''], ['Overlay', view.imagery.coastlines ? `${view.imagery.coastlines.source.layer} · ${view.imagery.coastlines.source.license} · ${view.imagery.coastlines.source.attribution}` : 'none'], ['Coverage note', a.coverage_note || null], ['Licence', a.source.license], ['Attribution', a.source.attribution], ['Checked', `capabilities ${a.source.capabilities_checked_on}`]]);
     $('globe-ack').textContent = view.imagery.acknowledgement;
     kv($('globe-renderer'), [['Renderer', `${view.renderer.name} ${view.renderer.pinned_version} · ${rendererState}`], ['Ion', view.renderer.ion], ['Terrain', view.renderer.terrain], ['Effects', reduced ? 'reduced: no atmosphere or fog' : 'atmosphere and fog (display only)']]);
   }

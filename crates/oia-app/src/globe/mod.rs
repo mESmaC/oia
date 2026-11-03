@@ -19,6 +19,8 @@ pub const MAX_RECORDS: usize = 512;
 pub const MAX_RING_POINTS: usize = 256;
 pub const MIN_RING_POINTS: usize = 3;
 pub const MAX_TEXT_BYTES: usize = 2_048;
+/// Longest record id accepted over IPC.
+pub const MAX_ID_BYTES: usize = 256;
 pub const MIN_CAMERA_HEIGHT_M: f64 = 50.0;
 pub const MAX_CAMERA_HEIGHT_M: f64 = 60_000_000.0;
 /// Starting height over the case anchor.
@@ -296,7 +298,19 @@ pub fn parse_fixture(json: &str) -> Result<GlobeCaseFixture> {
     text("case.id", &fixture.case.id)?;
     text("case.label", &fixture.case.label)?;
     fixture.case.anchor.validate("case.anchor")?;
+    text(
+        "case.interval.start_local",
+        &fixture.case.interval.start_local,
+    )?;
+    text("case.interval.end_local", &fixture.case.interval.end_local)?;
     text("case.interval.zone", &fixture.case.interval.zone)?;
+    if fixture.case.interval.note.len() > MAX_TEXT_BYTES {
+        return Err(ToolError::new(
+            "fixture_invalid",
+            format!("case.interval.note exceeds {MAX_TEXT_BYTES} bytes."),
+        ));
+    }
+    text("case.clock.local", &fixture.case.clock.local)?;
     text("case.clock.zone", &fixture.case.clock.zone)?;
     if fixture.records.len() > MAX_RECORDS {
         return Err(ToolError::new(
@@ -311,6 +325,7 @@ pub fn parse_fixture(json: &str) -> Result<GlobeCaseFixture> {
     for source in &fixture.sources {
         text("sources[].id", &source.id)?;
         text("sources[].label", &source.label)?;
+        text("sources[].kind", &source.kind)?;
         if !source_ids.insert(source.id.as_str()) {
             return Err(ToolError::new(
                 "fixture_invalid",
@@ -483,23 +498,38 @@ pub struct GlobeState {
     fixture: std::result::Result<GlobeCaseFixture, ToolError>,
     selection: Option<String>,
     camera: CameraView,
-    imagery: ImagerySelection,
+    /// Resolved once, when selected, against the date given then. Viewing never re-validates,
+    /// so a clock that moves cannot turn an accepted selection into a failing view. `None`
+    /// only if the registry's default basemap cannot be resolved, which is a build defect.
+    imagery: Option<ImageryView>,
 }
 
 impl Default for GlobeState {
     fn default() -> Self {
-        Self::from_fixture(parse_fixture(FIXTURE_JSON))
+        Self::new(CivilDate::today_utc())
     }
 }
 
 impl GlobeState {
-    fn from_fixture(fixture: std::result::Result<GlobeCaseFixture, ToolError>) -> Self {
+    /// Builds the state from the bundled fixture, resolving the default imagery for `today`.
+    #[must_use]
+    pub fn new(today: CivilDate) -> Self {
+        Self::from_fixture(parse_fixture(FIXTURE_JSON), today)
+    }
+
+    fn from_fixture(
+        fixture: std::result::Result<GlobeCaseFixture, ToolError>,
+        today: CivilDate,
+    ) -> Self {
         let camera = Self::home_for(&fixture);
+        // The default selection has no date and a registered basemap, so this resolves unless
+        // the registry itself is broken; `view` then reports that instead of guessing.
+        let imagery = imagery::resolve(&ImagerySelection::default(), today).ok();
         Self {
             fixture,
             selection: None,
             camera,
-            imagery: ImagerySelection::default(),
+            imagery,
         }
     }
 
@@ -519,6 +549,15 @@ impl GlobeState {
     /// Selects a record by id, or clears the selection. Unknown ids are refused.
     pub fn select(&mut self, record_id: Option<String>) -> Result<()> {
         if let Some(id) = &record_id {
+            if id.len() > MAX_ID_BYTES {
+                return Err(ToolError::new(
+                    "unknown_record",
+                    format!(
+                        "A record id of {} bytes exceeds the {MAX_ID_BYTES}-byte limit.",
+                        id.len()
+                    ),
+                ));
+            }
             let known = self
                 .fixture
                 .as_ref()
@@ -541,14 +580,19 @@ impl GlobeState {
         Ok(())
     }
 
-    pub fn set_imagery(&mut self, selection: ImagerySelection) -> Result<()> {
-        imagery::resolve(&selection, CivilDate::today_utc())?;
-        self.imagery = selection;
+    /// Validates the selection against the registry and `today`, then keeps the resolved view.
+    pub fn set_imagery(&mut self, selection: ImagerySelection, today: CivilDate) -> Result<()> {
+        self.imagery = Some(imagery::resolve(&selection, today)?);
         Ok(())
     }
 
     pub fn view(&self) -> Result<GlobeView> {
-        let imagery = imagery::resolve(&self.imagery, CivilDate::today_utc())?;
+        let imagery = self.imagery.clone().ok_or_else(|| {
+            ToolError::new(
+                "imagery_unavailable",
+                "The default imagery source could not be resolved; the registry in this build is misconfigured.",
+            )
+        })?;
         let mut view = GlobeView {
             fixture_error: None,
             case: None,

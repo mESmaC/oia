@@ -22,13 +22,13 @@ const GIBS_LICENSE: &str = "U.S. Government work, public domain (NASA Earthdata 
 
 pub const SOURCE_BLUE_MARBLE: &str = "gibs-bluemarble";
 pub const SOURCE_VIIRS_TRUE_COLOR: &str = "gibs-viirs-truecolor";
-pub const SOURCE_COASTLINES: &str = "gibs-coastlines";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ImageryRole {
+    /// Only basemaps are registered; an overlay role returns when a source that serves
+    /// transparent tiles is registered (see the withdrawn coastline layer in the note).
     Basemap,
-    Overlay,
 }
 
 /// An inclusive, daily date range published by the provider.
@@ -164,27 +164,9 @@ pub fn sources() -> Vec<ImagerySource> {
                     ("2026-07-16", "2026-11-02"),
                 ]),
             }),
-            capture_statement: "Daily mosaic of Suomi NPP VIIRS day-side passes for the selected UTC date. Overpass time varies by longitude (about 13:30 local solar time); it is not a single instant. Cloud, haze and swath gaps are that day's data. Resolution about 250 m per pixel at best. Tiles older than the 1994 case period do not exist; nothing here shows the case.",
+            capture_statement: "Daily mosaic of Suomi NPP VIIRS day-side passes for the selected UTC date. Overpass time varies by longitude (about 13:30 local solar time); it is not a single instant. Cloud, haze and swath gaps are that day's data. Resolution about 250 m per pixel at best. No tiles exist before 2015-11-24, so nothing here shows the 1994 case period.",
             license: GIBS_LICENSE,
             attribution: "NASA GIBS / NASA Worldview, VIIRS SNPP Corrected Reflectance",
-            terms_url: GIBS_TERMS_URL,
-            capabilities_checked_on: CAPABILITIES_CHECKED_ON,
-        },
-        ImagerySource {
-            id: SOURCE_COASTLINES,
-            label: "Coastlines (reference lines)",
-            provider: "NASA GIBS",
-            origin: GIBS_ORIGIN,
-            layer: "Coastlines_15m",
-            url_template: "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/Coastlines_15m/default/{TileMatrixSet}/{TileMatrix}/{TileRow}/{TileCol}.png",
-            tile_matrix_set: "GoogleMapsCompatible_Level13",
-            maximum_level: 13,
-            format: "image/png",
-            role: ImageryRole::Overlay,
-            time: None,
-            capture_statement: "Cartographic coastline outlines rendered by GIBS from the Natural Earth and OpenStreetMap-derived reference set. Lines, not observations.",
-            license: GIBS_LICENSE,
-            attribution: "NASA GIBS reference layer (Coastlines_15m)",
             terms_url: GIBS_TERMS_URL,
             capabilities_checked_on: CAPABILITIES_CHECKED_ON,
         },
@@ -355,18 +337,16 @@ fn activate(
 /// Validates a selection against the registry and today's date.
 pub fn resolve(selection: &ImagerySelection, today: CivilDate) -> Result<ImageryView> {
     let source = find(&selection.source_id)?;
-    if source.role != ImageryRole::Basemap {
+    let active = activate(source, selection.date.clone(), today)?;
+    if selection.coastlines {
+        // Evaluated and withdrawn: GIBS `Coastlines_15m` answered HTTP 500 for tiles at levels
+        // 5 to 9 and served opaque black tiles inland on 2026-11-03 (globe-instrument.md).
         return Err(ToolError::new(
-            "imagery_not_basemap",
-            format!("{} is an overlay, not a basemap.", source.label),
+            "imagery_unknown",
+            "No overlay source is registered in this build.",
         ));
     }
-    let active = activate(source, selection.date.clone(), today)?;
-    let coastlines = if selection.coastlines {
-        Some(activate(find(SOURCE_COASTLINES)?, None, today)?)
-    } else {
-        None
-    };
+    let coastlines = None;
     Ok(ImageryView {
         active,
         coastlines,

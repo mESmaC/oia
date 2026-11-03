@@ -1,6 +1,9 @@
 //! Tauri adapter. Rust owns file snapshots, operations, cancellation and publication,
 //! and the globe instrument's state.
-use crate::globe::{CameraView, GlobeState, GlobeView, imagery::ImagerySelection};
+use crate::globe::{
+    CameraView, GlobeState, GlobeView,
+    imagery::{CivilDate, ImagerySelection},
+};
 use crate::local_tools::{
     self as tools, Control, DocumentView, FileKind, PreparedExport, PrivacyView, Result,
     SearchView, Selection, Snapshot, ToolError,
@@ -261,8 +264,9 @@ fn globe_imagery(
     globe: State<'_, Globe>,
     selection: ImagerySelection,
 ) -> Result<Envelope<GlobeView>> {
+    let today = CivilDate::today_utc(); // the one place the clock is read for the globe
     let mut state = globe.lock()?;
-    state.set_imagery(selection)?;
+    state.set_imagery(selection, today)?;
     state.view().map(envelope)
 }
 

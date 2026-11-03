@@ -8,7 +8,7 @@ use oia_domain::SchemaVersion;
 
 #[cfg(feature = "desktop")]
 pub mod desktop;
-pub mod globe;
+pub(crate) mod globe;
 pub mod local_tools;
 
 /// Canonical application binary name.

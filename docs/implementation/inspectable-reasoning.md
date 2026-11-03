@@ -26,11 +26,14 @@ competing hypotheses:
      (`ReasoningError::UnexpectedInitialRevisionRationale`), while revisions
      require a non-empty rationale.
    - Prevents inference laundering: a premise `source_version` cannot reference
-     any reasoning step, hypothesis, or the premise's own `version_id`
-     (`ReasoningError::PremiseSourceReferencesGraphNode`), steps and hypotheses
-     cannot reuse an existing premise `source_version`, and revising a premise
-     cannot change its `origin_class`
-     (`ReasoningError::PremiseOriginClassChangeForbidden`).
+     any existing graph node (premise, reasoning step, or hypothesis) or the
+     premise's own `version_id` (`ReasoningError::PremiseSourceReferencesGraphNode`),
+     new premises/steps/hypotheses cannot reuse an existing premise's
+     `source_version` as their `version_id`, and revising a premise cannot
+     change its `origin_class` (`ReasoningError::PremiseOriginClassChangeForbidden`).
+     If a premise was registered with the wrong `origin_class`, callers should
+     register a new `premise_id` with the corrected class rather than revising
+     the existing premise in place.
 
 2. **Abstraction (`REASON-03`, `ReasoningStepKind::Abstraction`):**
    - Normalizes reports into versioned event schemas and taxonomy concepts while
@@ -38,11 +41,16 @@ competing hypotheses:
      unknowns (`AbstractionFieldState::ExplicitUnknown`), and conflicting
      source accounts (`AbstractionFieldState::Conflicting`).
    - Validates that every `source_version` cited on normalized/conflicting
-     fields, entity-match candidates (`candidate_source_version` and
-     `target_source_version`), and relationships (`source_version`) is backed by
-     the step's declared inputs (`ReasoningError::AbstractionSourceVersionNotInInputs`),
-     and rejects `Conflicting` fields where `primary_source_version == competing_source_version`
-     (`ReasoningError::ConflictingFieldSameSourceVersion`).
+     fields, entity-match candidates (`EntityMatchCandidate::source_version`),
+     and relationships (`AbstractionRelationship::source_version`) is an
+     upstream external `source_version` backed by the step's declared inputs
+     (never a graph node `version_id`, returning
+     `ReasoningError::AbstractionSourceVersionNotInInputs`).
+   - Rejects `Conflicting` fields where `primary_value == competing_value` or
+     where `primary_source_version == competing_source_version` with identical
+     `primary_verbatim == competing_verbatim`
+     (`ReasoningError::ConflictingFieldSameSourceVersion`), while allowing
+     intra-source contradictions across distinct verbatim passages.
    - Records explicit source/sensor omissions (`explicit_omissions`).
    - Keeps entity-match candidates (`EntityMatchCandidate`) and typed
      relationships (`AbstractionRelationship` with `AbstractionRelationType`)
@@ -68,12 +76,14 @@ competing hypotheses:
      the declared temporal and spatial tolerances, and record
      `SourceDependencyStatus` (`IndependentSources`, `SharedUpstreamSource`, or
      `UnverifiedIndependence`).
-   - Verifies source-independence claims against the graph's upstream
-     `source_version` lineage: if `left_node_version` and `right_node_version`
-     share an upstream `source_version`, claiming `IndependentSources` is
-     rejected (`ReasoningError::SharedSourceClaimedIndependent`), and
-     `SharedUpstreamSource` must cite a real upstream `source_version` present
-     in the step's inputs (`ReasoningError::InvalidSharedUpstreamSource`).
+   - Verifies source-independence claims against each pair's upstream
+     `source_version` lineage: if `left_version` and `right_version` share one
+     or more upstream `source_version`s, claiming `IndependentSources` or
+     `UnverifiedIndependence` is rejected (`ReasoningError::SharedSourceClaimedIndependent`),
+     and `SharedUpstreamSource` must cite a shared `source_version` from that
+     intersection (or, when the sides share no direct in-graph source, a backing
+     `source_version` of at least one side of the pair, rejecting unrelated third
+     inputs with `ReasoningError::InvalidSharedUpstreamSource`).
    - Attaches `CORRELATION_NON_CAUSATION_NOTICE` so correlation never silently
      asserts causation or independent corroboration.
 
@@ -87,9 +97,10 @@ competing hypotheses:
      - `HumanReviewed { reviewer, review_note }`
      - `AssertedUnverifiedLeanRef { theorem_id, lean_toolchain, model_revision, assumptions_summary }`
        (records a caller-asserted theorem/model reference without claiming runtime
-       Lean verification or formal Rust implementation correspondence; rejects
-       placeholder `sorry`/`admit` tokens via case-insensitive token inspection,
-       and `establishes_lean_proof_or_correspondence()` returns `false`).
+       Lean verification or formal Rust implementation correspondence; applies a
+       syntactic theorem-identifier name filter that rejects `sorry`/`admit`
+       subtokens on non-alphanumeric and camelCase boundaries, and
+       `establishes_lean_proof_or_correspondence()` returns `false`).
    - Attaches `DEDUCTION_CONDITIONALITY_NOTICE` stating that validity is
      conditional on the stated premises and assumptions.
 

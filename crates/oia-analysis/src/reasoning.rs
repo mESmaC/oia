@@ -1276,10 +1276,34 @@ fn validate_finite(field: &'static str, value: f64) -> Result<(), ReasoningError
     Ok(())
 }
 
+/// Heuristic theorem-identifier name filter that splits on non-alphanumeric delimiters and
+/// camelCase boundaries to reject `sorry` or `admit` subtokens (e.g., `Oia.Sorry`,
+/// `Oia.sorryLemma`) while accepting words like `admittedEvidence`.
+///
+/// This is a syntactic identifier check only; it does not verify a Lean 4 proof.
 fn has_placeholder_token(identifier: &str) -> bool {
-    identifier
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .any(|tok| tok.eq_ignore_ascii_case("sorry") || tok.eq_ignore_ascii_case("admit"))
+    for word in identifier.split(|ch: char| !ch.is_ascii_alphanumeric()) {
+        if word.is_empty() {
+            continue;
+        }
+        let mut subtoken = String::new();
+        let mut prev_lower = false;
+        for ch in word.chars() {
+            if prev_lower && ch.is_ascii_uppercase() && !subtoken.is_empty() {
+                if subtoken.eq_ignore_ascii_case("sorry") || subtoken.eq_ignore_ascii_case("admit")
+                {
+                    return true;
+                }
+                subtoken.clear();
+            }
+            prev_lower = ch.is_ascii_lowercase();
+            subtoken.push(ch);
+        }
+        if subtoken.eq_ignore_ascii_case("sorry") || subtoken.eq_ignore_ascii_case("admit") {
+            return true;
+        }
+    }
+    false
 }
 
 /// Bounded, acyclic composed-reasoning graph (`REASON-01`..=`REASON-04`, `A07`).
@@ -1368,7 +1392,9 @@ impl ReasoningGraph {
     /// marking every dependent reasoning step and competing hypothesis `needs_reassessment = true`
     /// without mutating their historical outputs (`REASON-04`, `A07`).
     ///
-    /// A premise revision must preserve the original premise's [`EvidenceOriginClass`].
+    /// A premise revision must preserve the original premise's [`EvidenceOriginClass`]; if a
+    /// premise was registered with the wrong origin class, register a new `premise_id` with the
+    /// corrected class rather than revising the existing premise in place.
     pub fn revise_premise(&mut self, draft: PremiseDraft) -> Result<VersionId, ReasoningError> {
         let Some(history) = self.premise_history.get(&draft.premise_id) else {
             return Err(ReasoningError::UnknownPremiseVersion(
@@ -1430,16 +1456,24 @@ impl ReasoningGraph {
         if self.all_versions.contains(&draft.version_id) {
             return Err(ReasoningError::DuplicateVersionId(draft.version_id));
         }
-        // Prevent a premise from laundering a reasoning step, hypothesis, or its own version ID
-        // as an external `source_version` (`AGENTS.md` §2, `A07`, `REASON-04`).
+        // Prevent a premise from laundering any existing graph node (premise, step, or
+        // hypothesis) or its own version ID as an external `source_version`, and prevent a new
+        // premise version ID from aliasing an existing premise's `source_version`
+        // (`AGENTS.md` §2, `A07`, `REASON-04`).
         if draft.source_version == draft.version_id
-            || self.steps_by_version.contains_key(&draft.source_version)
-            || self
-                .hypotheses_by_version
-                .contains_key(&draft.source_version)
+            || self.all_versions.contains(&draft.source_version)
         {
             return Err(ReasoningError::PremiseSourceReferencesGraphNode(
                 draft.source_version,
+            ));
+        }
+        if self
+            .premises_by_version
+            .values()
+            .any(|premise| premise.source_version() == &draft.version_id)
+        {
+            return Err(ReasoningError::PremiseSourceReferencesGraphNode(
+                draft.version_id,
             ));
         }
 
@@ -2202,8 +2236,9 @@ impl ReasoningGraph {
         }
     }
 
-    /// Collects all admissible `source_version` / node-version identifiers backed by `seen_inputs`
-    /// (including transitive upstream premises).
+    /// Collects all external `source_version` identifiers backed by `seen_inputs`
+    /// (including transitive upstream premises). Graph node versions themselves are never
+    /// returned as wording `source_version`s.
     fn collect_backed_source_versions(
         &self,
         seen_inputs: &BTreeSet<VersionId>,
@@ -2215,7 +2250,6 @@ impl ReasoningGraph {
             if !visited.insert(ver.clone()) {
                 continue;
             }
-            backed.insert(ver.clone());
             if let Some(premise) = self.premises_by_version.get(&ver) {
                 backed.insert(premise.source_version().clone());
             } else if let Some(step) = self.steps_by_version.get(&ver) {
@@ -2231,23 +2265,7 @@ impl ReasoningGraph {
     fn node_source_versions(&self, node_version: &VersionId) -> BTreeSet<VersionId> {
         let mut single = BTreeSet::new();
         single.insert(node_version.clone());
-        let mut out = BTreeSet::new();
-        let mut queue = vec![node_version.clone()];
-        let mut visited = BTreeSet::new();
-        while let Some(ver) = queue.pop() {
-            if !visited.insert(ver.clone()) {
-                continue;
-            }
-            if let Some(premise) = self.premises_by_version.get(&ver) {
-                out.insert(premise.source_version().clone());
-            } else if let Some(step) = self.steps_by_version.get(&ver) {
-                for inp in step.inputs() {
-                    queue.push(inp.node_version.clone());
-                }
-            }
-        }
-        let _ = single;
-        out
+        self.collect_backed_source_versions(&single)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -2353,7 +2371,10 @@ impl ReasoningGraph {
                                     competing_source_version.clone(),
                                 ));
                             }
-                            if primary_source_version == competing_source_version {
+                            if primary_value.trim() == competing_value.trim()
+                                || (primary_source_version == competing_source_version
+                                    && primary_verbatim.trim() == competing_verbatim.trim())
+                            {
                                 return Err(ReasoningError::ConflictingFieldSameSourceVersion(
                                     primary_source_version.clone(),
                                 ));
@@ -2550,15 +2571,16 @@ impl ReasoningGraph {
 
                     let left_sources = self.node_source_versions(&pair.left_version);
                     let right_sources = self.node_source_versions(&pair.right_version);
-                    let shared_source = left_sources.intersection(&right_sources).next().cloned();
+                    let shared_sources: BTreeSet<VersionId> =
+                        left_sources.intersection(&right_sources).cloned().collect();
 
                     match &pair.source_dependency {
                         SourceDependencyStatus::IndependentSources => {
-                            if let Some(shared) = shared_source {
+                            if let Some(shared) = shared_sources.iter().next() {
                                 return Err(ReasoningError::SharedSourceClaimedIndependent {
                                     left_version: pair.left_version.clone(),
                                     right_version: pair.right_version.clone(),
-                                    shared_source_version: shared,
+                                    shared_source_version: shared.clone(),
                                 });
                             }
                         }
@@ -2566,29 +2588,27 @@ impl ReasoningGraph {
                             common_source_version,
                         } => {
                             // `common_source_version` must be a known backing source version of at
-                            // least one side (or if both sides already share a direct source in the
-                            // graph, it must match that shared source) and cannot be a step/hypothesis ID.
-                            if self.steps_by_version.contains_key(common_source_version)
-                                || self
-                                    .hypotheses_by_version
-                                    .contains_key(common_source_version)
-                            {
+                            // least one side of the pair (or, if both sides already share one or
+                            // more direct sources in the graph, it must be in that shared set) and
+                            // cannot be a graph node version ID.
+                            if self.all_versions.contains(common_source_version) {
                                 return Err(ReasoningError::InvalidSharedUpstreamSource {
                                     left_version: pair.left_version.clone(),
                                     right_version: pair.right_version.clone(),
                                     claimed_common_source: common_source_version.clone(),
                                 });
                             }
-                            if let Some(ref exact_shared) = shared_source
-                                && common_source_version != exact_shared
+                            if !shared_sources.is_empty() {
+                                if !shared_sources.contains(common_source_version) {
+                                    return Err(ReasoningError::InvalidSharedUpstreamSource {
+                                        left_version: pair.left_version.clone(),
+                                        right_version: pair.right_version.clone(),
+                                        claimed_common_source: common_source_version.clone(),
+                                    });
+                                }
+                            } else if !left_sources.contains(common_source_version)
+                                && !right_sources.contains(common_source_version)
                             {
-                                return Err(ReasoningError::InvalidSharedUpstreamSource {
-                                    left_version: pair.left_version.clone(),
-                                    right_version: pair.right_version.clone(),
-                                    claimed_common_source: common_source_version.clone(),
-                                });
-                            }
-                            if !backed_sources.contains(common_source_version) {
                                 return Err(ReasoningError::InvalidSharedUpstreamSource {
                                     left_version: pair.left_version.clone(),
                                     right_version: pair.right_version.clone(),
@@ -2597,11 +2617,11 @@ impl ReasoningGraph {
                             }
                         }
                         SourceDependencyStatus::UnverifiedIndependence { limitation_note } => {
-                            if let Some(shared) = shared_source {
+                            if let Some(shared) = shared_sources.iter().next() {
                                 return Err(ReasoningError::SharedSourceClaimedIndependent {
                                     left_version: pair.left_version.clone(),
                                     right_version: pair.right_version.clone(),
-                                    shared_source_version: shared,
+                                    shared_source_version: shared.clone(),
                                 });
                             }
                             validate_text("limitation_note", limitation_note, max_bytes, true)?;

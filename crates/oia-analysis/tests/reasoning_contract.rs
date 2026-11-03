@@ -188,6 +188,67 @@ fn composed_reasoning_preserves_origins_and_propagates_reassessment()
         ))
     );
 
+    // B3: Attempting to launder another premise version ID (including an `AnalyticalInference`
+    // premise) as a premise `source_version` is rejected in both registration orders.
+    let p_inf_v1 = graph.register_premise(PremiseDraft {
+        premise_id: OpaqueId::new("premise:prior-inference")?,
+        version_id: VersionId::new("ver:p-inf-v1")?,
+        predecessor_version: None,
+        schema_version: SchemaVersion::V1,
+        actor: actor.clone(),
+        origin_class: EvidenceOriginClass::AnalyticalInference,
+        source_version: VersionId::new("ver:src-prior-inf")?,
+        citation_anchor: "memo=1".to_owned(),
+        verbatim_excerpt: "prior inference memo".to_owned(),
+        proposition: "prior inference proposition".to_owned(),
+        quantity: None,
+        uncertainty_note: "model-derived".to_owned(),
+        revision_rationale: None,
+    })?;
+    let laundered_from_premise = graph.register_premise(PremiseDraft {
+        premise_id: OpaqueId::new("premise:laundered-from-premise")?,
+        version_id: VersionId::new("ver:p-laundered-from-premise")?,
+        predecessor_version: None,
+        schema_version: SchemaVersion::V1,
+        actor: actor.clone(),
+        origin_class: EvidenceOriginClass::NormalizedObservation,
+        source_version: p_inf_v1.clone(),
+        citation_anchor: "prem=p-inf".to_owned(),
+        verbatim_excerpt: "laundered premise".to_owned(),
+        proposition: "laundered premise output".to_owned(),
+        quantity: None,
+        uncertainty_note: "none".to_owned(),
+        revision_rationale: None,
+    });
+    assert_eq!(
+        laundered_from_premise,
+        Err(ReasoningError::PremiseSourceReferencesGraphNode(
+            p_inf_v1.clone()
+        ))
+    );
+
+    let reverse_laundered_premise = graph.register_premise(PremiseDraft {
+        premise_id: OpaqueId::new("premise:reverse-launder")?,
+        version_id: VersionId::new("ver:src-witness-1")?,
+        predecessor_version: None,
+        schema_version: SchemaVersion::V1,
+        actor: actor.clone(),
+        origin_class: EvidenceOriginClass::AnalyticalInference,
+        source_version: VersionId::new("ver:src-external-inf")?,
+        citation_anchor: "sec=1".to_owned(),
+        verbatim_excerpt: "inferred".to_owned(),
+        proposition: "collides with existing premise source_version".to_owned(),
+        quantity: None,
+        uncertainty_note: "none".to_owned(),
+        revision_rationale: None,
+    });
+    assert_eq!(
+        reverse_laundered_premise,
+        Err(ReasoningError::PremiseSourceReferencesGraphNode(
+            VersionId::new("ver:src-witness-1")?
+        ))
+    );
+
     // Feeding `s_abs_v1` into Correlation must declare `AnalyticalInference`, not `NormalizedObservation`.
     let promoted_err = graph.add_step(ReasoningStepDraft {
         step_id: OpaqueId::new("step:corr-bad")?,
@@ -942,6 +1003,116 @@ fn rejects_unsupported_units_domains_corroboration_overstatements_and_malformed_
     assert_eq!(
         sorry_err,
         Err(ReasoningError::InvalidVerificationMetadata("theorem_id"))
+    );
+
+    let camel_sorry_err = graph.add_step(ReasoningStepDraft {
+        step_id: OpaqueId::new("step:ded-camel-sorry")?,
+        version_id: VersionId::new("ver:ded-camel-sorry")?,
+        predecessor_version: None,
+        schema_version: SchemaVersion::V1,
+        actor: actor.clone(),
+        inputs: vec![StepInputRef {
+            node_version: p_knots.clone(),
+            declared_origin_class: EvidenceOriginClass::NormalizedObservation,
+        }],
+        kind: ReasoningStepKind::Deduction(DeductionSpec {
+            rule_system: "propositional".to_owned(),
+            explicit_assumptions: vec!["assumption".to_owned()],
+            derivation_steps: vec![DerivationStep {
+                step_number: 1,
+                rule_name: "modus_ponens".to_owned(),
+                cited_input_versions: vec![p_knots.clone()],
+                required_assumptions: vec![],
+                inferred_statement: "derived".to_owned(),
+            }],
+            conditional_conclusion: "conclusion".to_owned(),
+            verification_tier: ReasoningVerificationTier::AssertedUnverifiedLeanRef {
+                theorem_id: "Oia.sorryLemma".to_owned(),
+                lean_toolchain: "leanprover/lean4:v4.35.0".to_owned(),
+                model_revision: "unverified-fixture-ref".to_owned(),
+                assumptions_summary: "none".to_owned(),
+            },
+            contradictions_noted: vec![],
+        }),
+        revision_rationale: None,
+    });
+    assert_eq!(
+        camel_sorry_err,
+        Err(ReasoningError::InvalidVerificationMetadata("theorem_id"))
+    );
+
+    // Abstraction field citing a graph node version (`p_knots`) instead of an upstream
+    // `source_version` is rejected, while an intra-source contradiction with distinct
+    // verbatim excerpts is accepted.
+    let node_as_source_err = graph.add_step(ReasoningStepDraft {
+        step_id: OpaqueId::new("step:abs-node-src")?,
+        version_id: VersionId::new("ver:abs-node-src")?,
+        predecessor_version: None,
+        schema_version: SchemaVersion::V1,
+        actor: actor.clone(),
+        inputs: vec![StepInputRef {
+            node_version: p_knots.clone(),
+            declared_origin_class: EvidenceOriginClass::NormalizedObservation,
+        }],
+        kind: ReasoningStepKind::Abstraction(AbstractionSpec {
+            event_schema: "oia.event.v1".to_owned(),
+            taxonomy_version: VersionId::new("ver:tax-1")?,
+            fields: vec![AbstractionField {
+                field_name: "speed".to_owned(),
+                state: AbstractionFieldState::Normalized {
+                    normalized_value: "40 kt".to_owned(),
+                    verbatim_wording: "40 knots".to_owned(),
+                    source_version: p_knots.clone(),
+                },
+            }],
+            entity_matches: vec![],
+            relationships: vec![],
+            explicit_omissions: vec![],
+        }),
+        revision_rationale: None,
+    });
+    assert_eq!(
+        node_as_source_err,
+        Err(ReasoningError::AbstractionSourceVersionNotInInputs(
+            p_knots.clone()
+        ))
+    );
+
+    let intra_source_conflict_ok = graph.add_step(ReasoningStepDraft {
+        step_id: OpaqueId::new("step:abs-intra-conflict")?,
+        version_id: VersionId::new("ver:abs-intra-conflict")?,
+        predecessor_version: None,
+        schema_version: SchemaVersion::V1,
+        actor: actor.clone(),
+        inputs: vec![StepInputRef {
+            node_version: p_knots.clone(),
+            declared_origin_class: EvidenceOriginClass::NormalizedObservation,
+        }],
+        kind: ReasoningStepKind::Abstraction(AbstractionSpec {
+            event_schema: "oia.event.v1".to_owned(),
+            taxonomy_version: VersionId::new("ver:tax-1")?,
+            fields: vec![AbstractionField {
+                field_name: "speed".to_owned(),
+                state: AbstractionFieldState::Conflicting {
+                    primary_value: "40 kt".to_owned(),
+                    primary_verbatim: "Page 1: 40 knots".to_owned(),
+                    primary_source_version: VersionId::new("ver:src-shared")?,
+                    competing_value: "55 kt".to_owned(),
+                    competing_verbatim: "Page 4: 55 knots".to_owned(),
+                    competing_source_version: VersionId::new("ver:src-shared")?,
+                    conflict_note: "Document contradicts itself between page 1 and page 4"
+                        .to_owned(),
+                },
+            }],
+            entity_matches: vec![],
+            relationships: vec![],
+            explicit_omissions: vec![],
+        }),
+        revision_rationale: None,
+    })?;
+    assert_eq!(
+        intra_source_conflict_ok,
+        VersionId::new("ver:abs-intra-conflict")?
     );
 
     let overlap_err = graph.register_hypothesis(CompetingHypothesisDraft {

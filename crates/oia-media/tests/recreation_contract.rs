@@ -4,9 +4,10 @@
 use oia_domain::{OpaqueId, VersionId};
 use oia_media::recreation::{
     AccountVariant, ApparentScale, AssetExportPolicy, AttemptedArtifactClass, ContextField,
-    ExplicitAssumption, ExplicitUnknown, ImportedRecreationInput, RecreationError,
-    RecreationLimitKind, RecreationLimits, RecreationPromptInput, ReferenceAssetInput,
-    ReportedDetail, SceneContext, VISIBLE_RECREATION_LABEL, export_recreation_prompt,
+    ExplicitAssumption, ExplicitUnknown, ImportedRecreationInput, NegativeKeyword,
+    NegativeKeywordOrigin, RecreationError, RecreationLimitKind, RecreationLimits,
+    RecreationPromptInput, ReferenceAssetInput, ReportedDetail, SceneContext,
+    VISIBLE_RECREATION_LABEL, derive_unknown_negative_keywords, export_recreation_prompt,
     validate_imported_recreation,
 };
 
@@ -90,6 +91,36 @@ fn sample_prompt_input() -> Result<RecreationPromptInput, RecreationError> {
             impact_on_recreation:
                 "Rendered height above water is illustrative and not a measurement".to_owned(),
         }],
+        negative_keywords: vec![
+            NegativeKeyword::from_unknown(
+                OpaqueId::new("neg:altitude-grid")?,
+                "no altitude-grid overlay or range-marker HUD".to_owned(),
+                "True altitude above sea level and slant range remain unmeasured".to_owned(),
+                OpaqueId::new("unknown:object-altitude")?,
+            ),
+            NegativeKeyword::from_contradicted_detail(
+                OpaqueId::new("neg:navigation-strobes")?,
+                "no red-green navigation strobes or anti-collision beacons".to_owned(),
+                "Both witness statements contradict aircraft navigation strobe lighting".to_owned(),
+                OpaqueId::new("detail:navigation-strobes")?,
+                vec![
+                    VersionId::new("ver:witness-1")?,
+                    VersionId::new("ver:witness-2")?,
+                ],
+            ),
+            NegativeKeyword::from_variant(
+                OpaqueId::new("neg:tandem-separation-for-single-orb")?,
+                "no separated dual-light formation when rendering variant:single-orb".to_owned(),
+                "Single-orb witness account excludes the separated two-light variant".to_owned(),
+                OpaqueId::new("variant:single-orb")?,
+            ),
+            NegativeKeyword::from_variant(
+                OpaqueId::new("neg:continuous-sphere-for-tandem-pair")?,
+                "no single continuous sphere rim when rendering variant:tandem-pair".to_owned(),
+                "Tandem-pair witness account excludes the single-orb variant".to_owned(),
+                OpaqueId::new("variant:tandem-pair")?,
+            ),
+        ],
         reference_assets: vec![
             ReferenceAssetInput {
                 asset_id: OpaqueId::new("asset:coastline-dem")?,
@@ -165,7 +196,46 @@ fn conflicting_accounts_and_imported_recreation_preserve_separation_and_labels()
     assert!(text.contains(
         "- apparent_scale: [REPORTED ANGULAR/RELATIVE | sources: ver:witness-1, ver:witness-2]"
     ));
+    assert!(
+        text.contains("## Positive Prompt Keywords (Reported Details and Declared Assumptions)")
+    );
+    assert!(text.contains("## Negative Prompt Keywords (Evidence-Derived Exclusions)"));
+    assert!(text.contains("origin=unknown unknown_id=unknown:object-altitude"));
+    assert!(text.contains(
+        "origin=contradicted_detail detail_id=detail:navigation-strobes contradicting_sources=[ver:witness-1, ver:witness-2]"
+    ));
+    assert!(text.contains("origin=variant variant_id=variant:single-orb"));
+    assert!(text.contains("origin=variant variant_id=variant:tandem-pair"));
     assert!(text.contains("## Omitted Reference Assets (Redistribution Restricted)"));
+    assert_eq!(exported.negative_keywords().len(), 4);
+    assert_eq!(
+        exported.negative_keywords().first().map(|n| n.origin()),
+        Some(&NegativeKeywordOrigin::Unknown {
+            unknown_id: OpaqueId::new("unknown:object-altitude")?,
+        })
+    );
+    assert_eq!(
+        exported.negative_keywords().get(1).map(|n| n.origin()),
+        Some(&NegativeKeywordOrigin::ContradictedDetail {
+            detail_id: OpaqueId::new("detail:navigation-strobes")?,
+            contradicting_source_versions: vec![
+                VersionId::new("ver:witness-1")?,
+                VersionId::new("ver:witness-2")?,
+            ],
+        })
+    );
+    assert_eq!(
+        exported.negative_keywords().get(2).map(|n| n.origin()),
+        Some(&NegativeKeywordOrigin::Variant {
+            variant_id: OpaqueId::new("variant:single-orb")?,
+        })
+    );
+    assert_eq!(
+        exported.negative_keywords().get(3).map(|n| n.origin()),
+        Some(&NegativeKeywordOrigin::Variant {
+            variant_id: OpaqueId::new("variant:tandem-pair")?,
+        })
+    );
 
     // Valid imported recreation preserves lineage, settings, and non-evidentiary flags.
     let import_input = ImportedRecreationInput {
@@ -183,6 +253,7 @@ fn conflicting_accounts_and_imported_recreation_preserve_separation_and_labels()
     };
     let validated = validate_imported_recreation(&import_input, &exported, 2048)?;
     assert_eq!(validated.visible_label(), VISIBLE_RECREATION_LABEL);
+    assert_eq!(validated.negative_keywords(), exported.negative_keywords());
     assert!(!validated.can_serve_as_observation_evidence());
     assert!(!validated.can_establish_physical_measurement());
 
@@ -202,12 +273,19 @@ fn conflicting_accounts_and_imported_recreation_preserve_separation_and_labels()
         "variant_id=\"variant:tandem-pair\"",
         "generator_model=\"flux-illustrative-v1\"",
         "media_type=\"image/png\"",
+        "negative_keyword_count=4",
         "Observation evidence: false",
         "Physical measurement: false",
         "Digest is caller-declared; image bytes have not been verified.",
     ] {
         assert!(sidecar.lines().any(|actual| actual == line), "{line}");
     }
+    assert!(sidecar.contains(
+        "negative_keyword=[neg:altitude-grid] origin=unknown unknown_id=unknown:object-altitude"
+    ));
+    assert!(sidecar.contains(
+        "negative_keyword=[neg:navigation-strobes] origin=contradicted_detail detail_id=detail:navigation-strobes contradicting_sources=[ver:witness-1, ver:witness-2]"
+    ));
     assert!(sidecar.contains(&format!(
         "declared_sha256_hex=\"{}\"",
         import_input.sha256_hex
@@ -230,8 +308,16 @@ fn conflicting_accounts_and_imported_recreation_preserve_separation_and_labels()
 
     let mut shared_input = input.clone();
     shared_input.conflicting_variants.clear();
+    shared_input.negative_keywords = derive_unknown_negative_keywords(&shared_input.unknowns)?;
     let shared =
         export_recreation_prompt(&shared_input, limits, AssetExportPolicy::OmitWithNotice)?;
+    assert_eq!(shared.negative_keywords().len(), 1);
+    assert_eq!(
+        shared.negative_keywords().first().map(|n| n.origin()),
+        Some(&NegativeKeywordOrigin::Unknown {
+            unknown_id: OpaqueId::new("unknown:object-altitude")?,
+        })
+    );
     let mut shared_import = import_input.clone();
     shared_import.variant_id = None;
     let shared_validated = validate_imported_recreation(&shared_import, &shared, 4096)?;
@@ -454,6 +540,112 @@ fn rejects_injection_unbounded_versions_and_structural_violations() -> Result<()
             ..
         })
     ));
+
+    // Negative keywords without a declared origin, with undeclared unknown/variant origins,
+    // with empty contradicting source versions, or referencing shared reported details are refused.
+    let mut missing_neg_origin = sample_prompt_input()?;
+    if let Some(first_neg) = missing_neg_origin.negative_keywords.first_mut() {
+        first_neg.origin = None;
+    }
+    assert_eq!(
+        Err(RecreationError::MissingNegativeKeywordOrigin {
+            negative_id: OpaqueId::new("neg:altitude-grid")?,
+        }),
+        export_recreation_prompt(
+            &missing_neg_origin,
+            limits,
+            AssetExportPolicy::OmitWithNotice
+        )
+    );
+
+    let mut undeclared_unknown_neg = sample_prompt_input()?;
+    if let Some(first_neg) = undeclared_unknown_neg.negative_keywords.first_mut() {
+        first_neg.origin = Some(NegativeKeywordOrigin::Unknown {
+            unknown_id: OpaqueId::new("unknown:undeclared")?,
+        });
+    }
+    assert_eq!(
+        Err(RecreationError::UnknownNegativeOriginReference {
+            negative_id: OpaqueId::new("neg:altitude-grid")?,
+            kind: "unknown",
+            target_id: OpaqueId::new("unknown:undeclared")?,
+        }),
+        export_recreation_prompt(
+            &undeclared_unknown_neg,
+            limits,
+            AssetExportPolicy::OmitWithNotice
+        )
+    );
+
+    let mut undeclared_variant_neg = sample_prompt_input()?;
+    if let Some(first_neg) = undeclared_variant_neg.negative_keywords.first_mut() {
+        first_neg.origin = Some(NegativeKeywordOrigin::Variant {
+            variant_id: OpaqueId::new("variant:undeclared")?,
+        });
+    }
+    assert_eq!(
+        Err(RecreationError::UnknownNegativeOriginReference {
+            negative_id: OpaqueId::new("neg:altitude-grid")?,
+            kind: "variant",
+            target_id: OpaqueId::new("variant:undeclared")?,
+        }),
+        export_recreation_prompt(
+            &undeclared_variant_neg,
+            limits,
+            AssetExportPolicy::OmitWithNotice
+        )
+    );
+
+    let mut empty_contradiction_sources = sample_prompt_input()?;
+    if let Some(first_neg) = empty_contradiction_sources.negative_keywords.first_mut() {
+        first_neg.origin = Some(NegativeKeywordOrigin::ContradictedDetail {
+            detail_id: OpaqueId::new("detail:navigation-strobes")?,
+            contradicting_source_versions: Vec::new(),
+        });
+    }
+    assert_eq!(
+        Err(RecreationError::MissingSourceVersions {
+            item_id: OpaqueId::new("neg:altitude-grid")?,
+        }),
+        export_recreation_prompt(
+            &empty_contradiction_sources,
+            limits,
+            AssetExportPolicy::OmitWithNotice
+        )
+    );
+
+    let mut shared_detail_contradicted = sample_prompt_input()?;
+    if let Some(first_neg) = shared_detail_contradicted.negative_keywords.first_mut() {
+        first_neg.origin = Some(NegativeKeywordOrigin::ContradictedDetail {
+            detail_id: OpaqueId::new("detail:horizontal-path")?,
+            contradicting_source_versions: vec![VersionId::new("ver:witness-1")?],
+        });
+    }
+    assert_eq!(
+        Err(RecreationError::ContradictedDetailInSharedDetails {
+            negative_id: OpaqueId::new("neg:altitude-grid")?,
+            detail_id: OpaqueId::new("detail:horizontal-path")?,
+        }),
+        export_recreation_prompt(
+            &shared_detail_contradicted,
+            limits,
+            AssetExportPolicy::OmitWithNotice
+        )
+    );
+
+    let tight_neg_limits = limits.with_max_negative_keywords(2)?;
+    assert_eq!(
+        Err(RecreationError::LimitExceeded {
+            kind: RecreationLimitKind::NegativeKeywords,
+            actual: 4,
+            max: 2,
+        }),
+        export_recreation_prompt(
+            &valid_input,
+            tight_neg_limits,
+            AssetExportPolicy::OmitWithNotice
+        )
+    );
 
     Ok(())
 }

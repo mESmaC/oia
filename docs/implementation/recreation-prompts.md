@@ -1,18 +1,21 @@
 # Illustrative recreation-prompt export and imported-recreation labeling
 
-Implemented slice of [#31](https://github.com/mESmaC/oia/issues/31), supporting
-`MEDIA-04` and the recreation-prompt subset of `A10` in
-[the product specification](../spec.md) and [delivery plan](../delivery.md).
+Implemented slice of [#31](https://github.com/mESmaC/oia/issues/31) and
+[#140](https://github.com/mESmaC/oia/issues/140), supporting `MEDIA-04` and the
+recreation-prompt subset of `A10` in [the product specification](../spec.md) and
+[delivery plan](../delivery.md).
 The Rust entry points live in [`crates/oia-media/src/recreation.rs`](../../crates/oia-media/src/recreation.rs):
 
 - `oia_media::recreation::export_recreation_prompt`
+- `oia_media::recreation::derive_unknown_negative_keywords`
 - `oia_media::recreation::validate_imported_recreation`
 - `ValidatedImportedRecreation::portable_metadata_text`
 
 ## Contract
 
 `export_recreation_prompt` validates a `RecreationPromptInput` under explicit
-`RecreationLimits` (including `max_source_versions_per_item`, default `64`) and
+`RecreationLimits` (including `max_source_versions_per_item` and
+`max_negative_keywords`, both default `64`) and
 an `AssetExportPolicy`, returning an encapsulated `ExportedRecreationPrompt`
 with read-only getters and a deterministic, human-editable UTF-8 prompt document
 (`portable_prompt_text()`):
@@ -22,6 +25,8 @@ with read-only getters and a deterministic, human-editable UTF-8 prompt document
    - `ExplicitAssumption` entries record an illustrative assumption and its rationale.
    - `ExplicitUnknown` entries record aspects that remain undetermined and their impact on the recreation.
    - `AccountVariant` entries preserve competing witness or source accounts separately with validated, symmetric `conflicts_with` links rather than merging or discarding disagreements. A single unconflicted variant is rejected (`SingleVariantRequiresSharedDetails`); each variant must contain at least one `ReportedDetail` (`EmptyVariantDetails`).
+   - `NegativeKeyword` entries record explicit prompt exclusions and require a validated `NegativeKeywordOrigin`: `Unknown { unknown_id }` (referencing a declared `ExplicitUnknown`), `ContradictedDetail { detail_id, contradicting_source_versions }` (requiring between `1` and `max_source_versions_per_item` unique pinned `VersionId`s and refusing any `detail_id` present in `shared_reported_details`), or `Variant { variant_id }` (referencing a declared `AccountVariant`). Unattributed negative keywords (`origin: None`) and references to undeclared unknowns or variants are refused (`MissingNegativeKeywordOrigin`, `UnknownNegativeOriginReference`, `ContradictedDetailInSharedDetails`). `derive_unknown_negative_keywords(&[ExplicitUnknown])` deterministically derives unknown-origin negative keywords for single-witness or unknown-only prompts without inventing defaults.
+   - `portable_prompt_text()` renders separate, explicitly labeled `## Positive Prompt Keywords (Reported Details and Declared Assumptions)` and `## Negative Prompt Keywords (Evidence-Derived Exclusions)` sections while keeping `VISIBLE_RECREATION_LABEL` and `FIDELITY_AND_EXTERNAL_LABEL_CAVEAT` intact.
    - All identifier and text bytes are charged against `max_text_bytes` before allocation. Single-line text fields reject ASCII/Unicode control characters, line/paragraph separators (`U+0085`, `U+2028`, `U+2029`), structural bidi controls, and disallowed zero-width characters, while preserving `ZWNJ`/`ZWJ` (`U+200C`/`U+200D`) for multilingual text and emoji. Free-text values in `portable_prompt_text()` are quoted with `\` and `"` escaped so source strings cannot inject headings, forge tags, or alter manifest attributes. `U+200E`/`U+200F`, `U+FFF9..=U+FFFB`, `U+E0000..=U+E007F`, `U+180E`, and `U+3164` are rendered as visible `\u{...}` ASCII escapes rather than exported invisibly. Output length is checked incrementally against `max_output_bytes` on every write, including escape expansion.
 2. **Scene, time, viewpoint, lighting, and apparent scale (`SceneContext`):**
    - Each context attribute is tagged as `Reported` (with pinned source versions), `Assumed` (referencing a declared `ExplicitAssumption`), or `Unknown` (preserving the reason without inventing a default time, lens, or altitude).
@@ -113,3 +118,24 @@ module; the successful baseline used the task's isolated build cache. The option
 Cesium payload was absent, so Globe rendering was not exercised. No Lean proof
 check was rerun; no covered algorithm or proof claim changed. These checks cover
 the Unicode export slice, not full A10/A16 integration.
+
+### Evidence-derived negative keywords verification (2026-11-03)
+
+Executed on Windows x86_64 MSVC with pinned `rustc 1.99.0` for the `#140`
+`oia-media::recreation` kernel slice:
+
+- `cargo +1.99.0 fmt --all -- --check`
+- `cargo +1.99.0 clippy --workspace --all-targets --locked --offline -- -D warnings`
+- `cargo +1.99.0 test --workspace --locked --offline`
+- `cargo +1.99.0 run -p oia-media --example export-recreation-prompt --locked --offline`
+
+The three contract tests in [`crates/oia-media/tests/recreation_contract.rs`](../../crates/oia-media/tests/recreation_contract.rs)
+verify positive and negative prompt section separation, `Unknown`/`ContradictedDetail`/`Variant`
+negative-keyword origins, `derive_unknown_negative_keywords` for single-witness
+unknown-only prompts, sidecar `negative_keyword_count` and `negative_keyword=[...]`
+metadata preservation, and refusals for missing origins, undeclared unknown/variant
+references, empty contradicting source lists, contradicted details present in
+`shared_reported_details`, and `max_negative_keywords` overflows. Desktop
+workbench single-witness prompt wiring (`#136`) and statement-comparison/composer
+wiring (`#138`/`#139`) remain open on `#140`. No Lean proof check was rerun; no
+covered algorithm or formal proof claim changed.

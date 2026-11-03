@@ -27,6 +27,9 @@ pub const FIDELITY_AND_EXTERNAL_LABEL_CAVEAT: &str = "Prompt wording organizes r
 /// Default per-item cap on `source_versions` references when `RecreationLimits::new` is used.
 pub const DEFAULT_MAX_SOURCE_VERSIONS_PER_ITEM: usize = 64;
 
+/// Default cap on `negative_keywords` entries when `RecreationLimits::new` is used.
+pub const DEFAULT_MAX_NEGATIVE_KEYWORDS: usize = 64;
+
 /// Which budget was zero or exceeded during recreation-prompt validation or rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecreationLimitKind {
@@ -34,6 +37,7 @@ pub enum RecreationLimitKind {
     Assumptions,
     Unknowns,
     Variants,
+    NegativeKeywords,
     Assets,
     SourceVersionsPerItem,
     TextBytes,
@@ -47,6 +51,7 @@ impl fmt::Display for RecreationLimitKind {
             Self::Assumptions => f.write_str("max_assumptions"),
             Self::Unknowns => f.write_str("max_unknowns"),
             Self::Variants => f.write_str("max_variants"),
+            Self::NegativeKeywords => f.write_str("max_negative_keywords"),
             Self::Assets => f.write_str("max_assets"),
             Self::SourceVersionsPerItem => f.write_str("max_source_versions_per_item"),
             Self::TextBytes => f.write_str("max_text_bytes"),
@@ -62,6 +67,7 @@ pub struct RecreationLimits {
     max_assumptions: usize,
     max_unknowns: usize,
     max_variants: usize,
+    max_negative_keywords: usize,
     max_assets: usize,
     max_source_versions_per_item: usize,
     max_text_bytes: usize,
@@ -70,7 +76,8 @@ pub struct RecreationLimits {
 
 impl RecreationLimits {
     /// Validates that all recreation-prompt budgets are non-zero, using
-    /// [`DEFAULT_MAX_SOURCE_VERSIONS_PER_ITEM`] for per-item source-version lists.
+    /// [`DEFAULT_MAX_SOURCE_VERSIONS_PER_ITEM`] for per-item source-version lists and
+    /// [`DEFAULT_MAX_NEGATIVE_KEYWORDS`] for negative keywords.
     pub fn new(
         max_reported_details: usize,
         max_assumptions: usize,
@@ -108,6 +115,7 @@ impl RecreationLimits {
             max_assumptions,
             max_unknowns,
             max_variants,
+            max_negative_keywords: DEFAULT_MAX_NEGATIVE_KEYWORDS,
             max_assets,
             max_source_versions_per_item: DEFAULT_MAX_SOURCE_VERSIONS_PER_ITEM,
             max_text_bytes,
@@ -129,6 +137,20 @@ impl RecreationLimits {
         Ok(self)
     }
 
+    /// Overrides the limit on `negative_keywords` entries (`>= 1`).
+    pub fn with_max_negative_keywords(
+        mut self,
+        max_negative_keywords: usize,
+    ) -> Result<Self, RecreationError> {
+        if max_negative_keywords == 0 {
+            return Err(RecreationError::ZeroLimit(
+                RecreationLimitKind::NegativeKeywords,
+            ));
+        }
+        self.max_negative_keywords = max_negative_keywords;
+        Ok(self)
+    }
+
     #[must_use]
     pub const fn max_reported_details(self) -> usize {
         self.max_reported_details
@@ -147,6 +169,11 @@ impl RecreationLimits {
     #[must_use]
     pub const fn max_variants(self) -> usize {
         self.max_variants
+    }
+
+    #[must_use]
+    pub const fn max_negative_keywords(self) -> usize {
+        self.max_negative_keywords
     }
 
     #[must_use]
@@ -249,6 +276,18 @@ pub enum RecreationError {
         target_id: OpaqueId,
         reason: &'static str,
     },
+    MissingNegativeKeywordOrigin {
+        negative_id: OpaqueId,
+    },
+    UnknownNegativeOriginReference {
+        negative_id: OpaqueId,
+        kind: &'static str,
+        target_id: OpaqueId,
+    },
+    ContradictedDetailInSharedDetails {
+        negative_id: OpaqueId,
+        detail_id: OpaqueId,
+    },
     InvalidSha256Hex {
         item_id: OpaqueId,
     },
@@ -340,6 +379,31 @@ impl fmt::Display for RecreationError {
                 write!(
                     f,
                     "variant `{variant_id}` has invalid conflict reference `{target_id}`: {reason}"
+                )
+            }
+            Self::MissingNegativeKeywordOrigin { negative_id } => {
+                write!(
+                    f,
+                    "negative keyword `{negative_id}` must carry an explicit evidence-derived origin"
+                )
+            }
+            Self::UnknownNegativeOriginReference {
+                negative_id,
+                kind,
+                target_id,
+            } => {
+                write!(
+                    f,
+                    "negative keyword `{negative_id}` references undeclared {kind} `{target_id}`"
+                )
+            }
+            Self::ContradictedDetailInSharedDetails {
+                negative_id,
+                detail_id,
+            } => {
+                write!(
+                    f,
+                    "negative keyword `{negative_id}` marks detail `{detail_id}` as contradicted, but it appears in shared_reported_details"
                 )
             }
             Self::InvalidSha256Hex { item_id } => {
@@ -486,6 +550,158 @@ pub struct AccountVariant {
     pub conflicts_with: Vec<OpaqueId>,
 }
 
+/// Evidence-derived origin required for every [`NegativeKeyword`] (`MEDIA-04`, `#140`).
+///
+/// Negative keywords may only exclude aspects justified by a declared [`ExplicitUnknown`],
+/// a contradicted/unsupported detail with its contradicting source versions, or a
+/// declared [`AccountVariant`] whose elements must not be merged into another variant's
+/// image (`AGENTS.md` §2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NegativeKeywordOrigin {
+    /// Derived from a declared [`ExplicitUnknown`] in the same prompt (for example,
+    /// excluding an unestablished craft shape, range, or size that no source reported).
+    Unknown { unknown_id: OpaqueId },
+    /// Derived from a detail contradicted by one or more pinned source versions.
+    ContradictedDetail {
+        detail_id: OpaqueId,
+        contradicting_source_versions: Vec<VersionId>,
+    },
+    /// Derived from a declared [`AccountVariant`] whose elements must not be merged
+    /// into a single image.
+    Variant { variant_id: OpaqueId },
+}
+
+/// Input negative keyword excluding an unestablished, contradicted, or competing-variant
+/// element from an illustrative recreation (`MEDIA-04`, `#140`).
+///
+/// `origin` is `Option<NegativeKeywordOrigin>` at the input boundary so callers or
+/// deserialized payloads that omit an origin are explicitly refused with
+/// [`RecreationError::MissingNegativeKeywordOrigin`] rather than silently accepted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NegativeKeyword {
+    pub negative_id: OpaqueId,
+    pub keyword: String,
+    pub rationale: String,
+    pub origin: Option<NegativeKeywordOrigin>,
+}
+
+impl NegativeKeyword {
+    /// Constructs a negative keyword grounded in a declared [`ExplicitUnknown`].
+    #[must_use]
+    pub const fn from_unknown(
+        negative_id: OpaqueId,
+        keyword: String,
+        rationale: String,
+        unknown_id: OpaqueId,
+    ) -> Self {
+        Self {
+            negative_id,
+            keyword,
+            rationale,
+            origin: Some(NegativeKeywordOrigin::Unknown { unknown_id }),
+        }
+    }
+
+    /// Constructs a negative keyword grounded in a contradicted detail and the
+    /// pinned source versions that contradict it.
+    #[must_use]
+    pub const fn from_contradicted_detail(
+        negative_id: OpaqueId,
+        keyword: String,
+        rationale: String,
+        detail_id: OpaqueId,
+        contradicting_source_versions: Vec<VersionId>,
+    ) -> Self {
+        Self {
+            negative_id,
+            keyword,
+            rationale,
+            origin: Some(NegativeKeywordOrigin::ContradictedDetail {
+                detail_id,
+                contradicting_source_versions,
+            }),
+        }
+    }
+
+    /// Constructs a negative keyword grounded in a competing [`AccountVariant`] whose
+    /// elements must not be merged into another variant's image.
+    #[must_use]
+    pub const fn from_variant(
+        negative_id: OpaqueId,
+        keyword: String,
+        rationale: String,
+        variant_id: OpaqueId,
+    ) -> Self {
+        Self {
+            negative_id,
+            keyword,
+            rationale,
+            origin: Some(NegativeKeywordOrigin::Variant { variant_id }),
+        }
+    }
+}
+
+/// Validated negative keyword with a verified evidence-derived [`NegativeKeywordOrigin`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedNegativeKeyword {
+    negative_id: OpaqueId,
+    keyword: String,
+    rationale: String,
+    origin: NegativeKeywordOrigin,
+}
+
+impl ValidatedNegativeKeyword {
+    #[must_use]
+    pub const fn negative_id(&self) -> &OpaqueId {
+        &self.negative_id
+    }
+
+    #[must_use]
+    pub fn keyword(&self) -> &str {
+        &self.keyword
+    }
+
+    #[must_use]
+    pub fn rationale(&self) -> &str {
+        &self.rationale
+    }
+
+    #[must_use]
+    pub const fn origin(&self) -> &NegativeKeywordOrigin {
+        &self.origin
+    }
+}
+
+/// Derives evidence-backed [`NegativeKeyword`] entries solely from a prompt's declared
+/// [`ExplicitUnknown`] items (`MEDIA-04`, `#140`).
+///
+/// Single-witness prompts have no cross-source contradiction matrix or competing account
+/// variants, so their negative keywords can only be derived from declared unknowns
+/// (`NegativeKeywordOrigin::Unknown`). When `unknowns` is empty, an empty list is returned
+/// without inventing default exclusions.
+pub fn derive_unknown_negative_keywords(
+    unknowns: &[ExplicitUnknown],
+) -> Result<Vec<NegativeKeyword>, RecreationError> {
+    let mut out = Vec::new();
+    out.try_reserve_exact(unknowns.len())
+        .map_err(|_| RecreationError::AllocationFailed)?;
+    for (idx, unknown) in unknowns.iter().enumerate() {
+        let candidate_id = format!("neg:{}", unknown.unknown_id.as_str());
+        let negative_id = if candidate_id.len() <= oia_domain::MAX_ID_LEN {
+            OpaqueId::new(candidate_id)?
+        } else {
+            OpaqueId::new(format!("neg:u{}", idx + 1))?
+        };
+        out.push(NegativeKeyword::from_unknown(
+            negative_id,
+            unknown.aspect.clone(),
+            unknown.impact_on_recreation.clone(),
+            unknown.unknown_id.clone(),
+        ));
+    }
+    Ok(out)
+}
+
 /// Reference asset selected to accompany a recreation prompt (`MEDIA-04`, `A10`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReferenceAssetInput {
@@ -530,6 +746,7 @@ pub struct RecreationPromptInput {
     pub conflicting_variants: Vec<AccountVariant>,
     pub assumptions: Vec<ExplicitAssumption>,
     pub unknowns: Vec<ExplicitUnknown>,
+    pub negative_keywords: Vec<NegativeKeyword>,
     pub reference_assets: Vec<ReferenceAssetInput>,
 }
 
@@ -549,6 +766,7 @@ pub struct ExportedRecreationPrompt {
     conflicting_variants: Vec<AccountVariant>,
     assumptions: Vec<ExplicitAssumption>,
     unknowns: Vec<ExplicitUnknown>,
+    negative_keywords: Vec<ValidatedNegativeKeyword>,
     permitted_assets: Vec<PermittedReferenceAsset>,
     omitted_assets: Vec<OmittedReferenceAsset>,
     portable_prompt_text: String,
@@ -616,6 +834,11 @@ impl ExportedRecreationPrompt {
     }
 
     #[must_use]
+    pub fn negative_keywords(&self) -> &[ValidatedNegativeKeyword] {
+        &self.negative_keywords
+    }
+
+    #[must_use]
     pub fn permitted_assets(&self) -> &[PermittedReferenceAsset] {
         &self.permitted_assets
     }
@@ -663,6 +886,7 @@ pub struct ValidatedImportedRecreation {
     variant_id: Option<OpaqueId>,
     generator_model: String,
     generator_settings: String,
+    negative_keywords: Vec<ValidatedNegativeKeyword>,
 }
 
 impl ValidatedImportedRecreation {
@@ -717,6 +941,11 @@ impl ValidatedImportedRecreation {
     }
 
     #[must_use]
+    pub fn negative_keywords(&self) -> &[ValidatedNegativeKeyword] {
+        &self.negative_keywords
+    }
+
+    #[must_use]
     pub const fn visible_label(&self) -> &'static str {
         VISIBLE_RECREATION_LABEL
     }
@@ -737,7 +966,7 @@ impl ValidatedImportedRecreation {
     }
 
     /// Exports a plain UTF-8 metadata sidecar with the recreation label and pinned
-    /// lineage (`MEDIA-04`, portable-label subset of `A10`).
+    /// lineage (`MEDIA-04`, portable-label subset of `A10`, `#140`).
     ///
     /// Every write, including quote/Unicode escape expansion, counts toward the
     /// byte limit. Failure returns no partial document. This does not write a file,
@@ -775,6 +1004,16 @@ impl ValidatedImportedRecreation {
             push_str_bounded(&mut out, "=", max_output_bytes)?;
             push_quoted_escaped(&mut out, value, max_output_bytes)?;
             push_str_bounded(&mut out, "\n", max_output_bytes)?;
+        }
+        push_str_bounded(&mut out, "negative_keyword_count=", max_output_bytes)?;
+        push_u32_bounded(
+            &mut out,
+            u32::try_from(self.negative_keywords.len()).unwrap_or(u32::MAX),
+            max_output_bytes,
+        )?;
+        push_str_bounded(&mut out, "\n", max_output_bytes)?;
+        for neg in &self.negative_keywords {
+            render_negative_keyword_line("negative_keyword=", neg, &mut out, max_output_bytes)?;
         }
         push_str_bounded(
             &mut out,
@@ -1132,6 +1371,13 @@ pub fn export_recreation_prompt(
             max: limits.max_variants(),
         });
     }
+    if input.negative_keywords.len() > limits.max_negative_keywords() {
+        return Err(RecreationError::LimitExceeded {
+            kind: RecreationLimitKind::NegativeKeywords,
+            actual: input.negative_keywords.len(),
+            max: limits.max_negative_keywords(),
+        });
+    }
     if input.reference_assets.len() > limits.max_assets() {
         return Err(RecreationError::LimitExceeded {
             kind: RecreationLimitKind::Assets,
@@ -1316,8 +1562,10 @@ pub fn export_recreation_prompt(
     }
 
     let mut detail_ids = BTreeSet::new();
+    let mut shared_detail_ids = BTreeSet::new();
     for detail in &input.shared_reported_details {
         validate_reported_detail(detail, &mut detail_ids, limits, &mut text_budget)?;
+        shared_detail_ids.insert(detail.detail_id.clone());
     }
 
     let mut variant_map: BTreeMap<OpaqueId, &AccountVariant> = BTreeMap::new();
@@ -1405,6 +1653,101 @@ pub fn export_recreation_prompt(
         }
     }
 
+    let mut negative_ids = BTreeSet::new();
+    let mut validated_negatives = Vec::new();
+    validated_negatives
+        .try_reserve_exact(input.negative_keywords.len())
+        .map_err(|_| RecreationError::AllocationFailed)?;
+
+    for neg in &input.negative_keywords {
+        charge_text_bytes(
+            neg.negative_id.as_str().len(),
+            &mut text_budget,
+            limits.max_text_bytes(),
+        )?;
+        if !negative_ids.insert(neg.negative_id.clone()) {
+            return Err(RecreationError::DuplicateId {
+                kind: "negative_keyword",
+                id: neg.negative_id.clone(),
+            });
+        }
+        validate_single_line(
+            &neg.keyword,
+            "negative_keyword.keyword",
+            &mut text_budget,
+            limits.max_text_bytes(),
+        )?;
+        validate_single_line(
+            &neg.rationale,
+            "negative_keyword.rationale",
+            &mut text_budget,
+            limits.max_text_bytes(),
+        )?;
+        let Some(origin) = &neg.origin else {
+            return Err(RecreationError::MissingNegativeKeywordOrigin {
+                negative_id: neg.negative_id.clone(),
+            });
+        };
+        match origin {
+            NegativeKeywordOrigin::Unknown { unknown_id } => {
+                charge_text_bytes(
+                    unknown_id.as_str().len(),
+                    &mut text_budget,
+                    limits.max_text_bytes(),
+                )?;
+                if !unknown_ids.contains(unknown_id) {
+                    return Err(RecreationError::UnknownNegativeOriginReference {
+                        negative_id: neg.negative_id.clone(),
+                        kind: "unknown",
+                        target_id: unknown_id.clone(),
+                    });
+                }
+            }
+            NegativeKeywordOrigin::ContradictedDetail {
+                detail_id,
+                contradicting_source_versions,
+            } => {
+                charge_text_bytes(
+                    detail_id.as_str().len(),
+                    &mut text_budget,
+                    limits.max_text_bytes(),
+                )?;
+                if shared_detail_ids.contains(detail_id) {
+                    return Err(RecreationError::ContradictedDetailInSharedDetails {
+                        negative_id: neg.negative_id.clone(),
+                        detail_id: detail_id.clone(),
+                    });
+                }
+                validate_source_versions(
+                    &neg.negative_id,
+                    contradicting_source_versions,
+                    limits,
+                    &mut text_budget,
+                )?;
+            }
+            NegativeKeywordOrigin::Variant { variant_id } => {
+                charge_text_bytes(
+                    variant_id.as_str().len(),
+                    &mut text_budget,
+                    limits.max_text_bytes(),
+                )?;
+                if !variant_map.contains_key(variant_id) {
+                    return Err(RecreationError::UnknownNegativeOriginReference {
+                        negative_id: neg.negative_id.clone(),
+                        kind: "variant",
+                        target_id: variant_id.clone(),
+                    });
+                }
+            }
+        }
+        validated_negatives.push(ValidatedNegativeKeyword {
+            negative_id: neg.negative_id.clone(),
+            keyword: neg.keyword.clone(),
+            rationale: neg.rationale.clone(),
+            origin: origin.clone(),
+        });
+    }
+
     let mut asset_ids = BTreeSet::new();
     let mut permitted_assets = Vec::new();
     let mut omitted_assets = Vec::new();
@@ -1476,8 +1819,13 @@ pub fn export_recreation_prompt(
         }
     }
 
-    let portable_prompt_text =
-        render_portable_text(input, &permitted_assets, &omitted_assets, limits)?;
+    let portable_prompt_text = render_portable_text(
+        input,
+        &validated_negatives,
+        &permitted_assets,
+        &omitted_assets,
+        limits,
+    )?;
 
     Ok(ExportedRecreationPrompt {
         schema_version: SchemaVersion::V1,
@@ -1490,6 +1838,7 @@ pub fn export_recreation_prompt(
         conflicting_variants: input.conflicting_variants.clone(),
         assumptions: input.assumptions.clone(),
         unknowns: input.unknowns.clone(),
+        negative_keywords: validated_negatives,
         permitted_assets,
         omitted_assets,
         portable_prompt_text,
@@ -1516,8 +1865,81 @@ fn render_reported_detail_line(
     push_str_bounded(out, "\n", max_out)
 }
 
+fn render_negative_keyword_line(
+    prefix: &str,
+    neg: &ValidatedNegativeKeyword,
+    out: &mut String,
+    max_out: usize,
+) -> Result<(), RecreationError> {
+    push_str_bounded(out, prefix, max_out)?;
+    push_str_bounded(out, "[", max_out)?;
+    push_str_bounded(out, neg.negative_id.as_str(), max_out)?;
+    push_str_bounded(out, "] ", max_out)?;
+    match &neg.origin {
+        NegativeKeywordOrigin::Unknown { unknown_id } => {
+            push_str_bounded(out, "origin=unknown unknown_id=", max_out)?;
+            push_str_bounded(out, unknown_id.as_str(), max_out)?;
+        }
+        NegativeKeywordOrigin::ContradictedDetail {
+            detail_id,
+            contradicting_source_versions,
+        } => {
+            push_str_bounded(out, "origin=contradicted_detail detail_id=", max_out)?;
+            push_str_bounded(out, detail_id.as_str(), max_out)?;
+            push_str_bounded(out, " contradicting_sources=[", max_out)?;
+            push_version_list(out, contradicting_source_versions, max_out)?;
+            push_str_bounded(out, "]", max_out)?;
+        }
+        NegativeKeywordOrigin::Variant { variant_id } => {
+            push_str_bounded(out, "origin=variant variant_id=", max_out)?;
+            push_str_bounded(out, variant_id.as_str(), max_out)?;
+        }
+    }
+    push_str_bounded(out, " keyword=", max_out)?;
+    push_quoted_escaped(out, &neg.keyword, max_out)?;
+    push_str_bounded(out, " rationale=", max_out)?;
+    push_quoted_escaped(out, &neg.rationale, max_out)?;
+    push_str_bounded(out, "\n", max_out)
+}
+
+fn render_positive_context_entry(
+    label: &str,
+    field: &ContextField,
+    out: &mut String,
+    max_out: usize,
+) -> Result<(), RecreationError> {
+    match field {
+        ContextField::Reported {
+            description,
+            source_versions,
+        } => {
+            push_str_bounded(out, "- [context:", max_out)?;
+            push_str_bounded(out, label, max_out)?;
+            push_str_bounded(out, "] origin=reported sources=[", max_out)?;
+            push_version_list(out, source_versions, max_out)?;
+            push_str_bounded(out, "] keyword=", max_out)?;
+            push_quoted_escaped(out, description, max_out)?;
+            push_str_bounded(out, "\n", max_out)
+        }
+        ContextField::Assumed {
+            description,
+            assumption_id,
+        } => {
+            push_str_bounded(out, "- [context:", max_out)?;
+            push_str_bounded(out, label, max_out)?;
+            push_str_bounded(out, "] origin=assumption assumption_id=", max_out)?;
+            push_str_bounded(out, assumption_id.as_str(), max_out)?;
+            push_str_bounded(out, " keyword=", max_out)?;
+            push_quoted_escaped(out, description, max_out)?;
+            push_str_bounded(out, "\n", max_out)
+        }
+        ContextField::Unknown { .. } => Ok(()),
+    }
+}
+
 fn render_portable_text(
     input: &RecreationPromptInput,
+    validated_negatives: &[ValidatedNegativeKeyword],
     permitted_assets: &[PermittedReferenceAsset],
     omitted_assets: &[OmittedReferenceAsset],
     limits: RecreationLimits,
@@ -1675,6 +2097,58 @@ fn render_portable_text(
             push_str_bounded(&mut out, " impact=", max_out)?;
             push_quoted_escaped(&mut out, &item.impact_on_recreation, max_out)?;
             push_str_bounded(&mut out, "\n", max_out)?;
+        }
+    }
+
+    push_str_bounded(
+        &mut out,
+        "\n## Positive Prompt Keywords (Reported Details and Declared Assumptions)\n",
+        max_out,
+    )?;
+    render_positive_context_entry("scene", &input.context.scene, &mut out, max_out)?;
+    render_positive_context_entry("time", &input.context.time_context, &mut out, max_out)?;
+    render_positive_context_entry("viewpoint", &input.context.viewpoint, &mut out, max_out)?;
+    render_positive_context_entry("lighting", &input.context.lighting, &mut out, max_out)?;
+    for detail in &input.shared_reported_details {
+        push_str_bounded(&mut out, "- [", max_out)?;
+        push_str_bounded(&mut out, detail.detail_id.as_str(), max_out)?;
+        push_str_bounded(&mut out, "] origin=reported_detail sources=[", max_out)?;
+        push_version_list(&mut out, &detail.source_versions, max_out)?;
+        push_str_bounded(&mut out, "] keyword=", max_out)?;
+        push_quoted_escaped(&mut out, &detail.statement, max_out)?;
+        push_str_bounded(&mut out, "\n", max_out)?;
+    }
+    for variant in &input.conflicting_variants {
+        for detail in &variant.reported_details {
+            push_str_bounded(&mut out, "- [", max_out)?;
+            push_str_bounded(&mut out, detail.detail_id.as_str(), max_out)?;
+            push_str_bounded(&mut out, "] origin=variant_detail variant_id=", max_out)?;
+            push_str_bounded(&mut out, variant.variant_id.as_str(), max_out)?;
+            push_str_bounded(&mut out, " sources=[", max_out)?;
+            push_version_list(&mut out, &detail.source_versions, max_out)?;
+            push_str_bounded(&mut out, "] keyword=", max_out)?;
+            push_quoted_escaped(&mut out, &detail.statement, max_out)?;
+            push_str_bounded(&mut out, "\n", max_out)?;
+        }
+    }
+    for item in &input.assumptions {
+        push_str_bounded(&mut out, "- [", max_out)?;
+        push_str_bounded(&mut out, item.assumption_id.as_str(), max_out)?;
+        push_str_bounded(&mut out, "] origin=assumption keyword=", max_out)?;
+        push_quoted_escaped(&mut out, &item.assumption, max_out)?;
+        push_str_bounded(&mut out, "\n", max_out)?;
+    }
+
+    push_str_bounded(
+        &mut out,
+        "\n## Negative Prompt Keywords (Evidence-Derived Exclusions)\n",
+        max_out,
+    )?;
+    if validated_negatives.is_empty() {
+        push_str_bounded(&mut out, "- (none)\n", max_out)?;
+    } else {
+        for neg in validated_negatives {
+            render_negative_keyword_line("- ", neg, &mut out, max_out)?;
         }
     }
 
@@ -1857,5 +2331,6 @@ pub fn validate_imported_recreation(
         variant_id: input.variant_id.clone(),
         generator_model: input.generator_model.clone(),
         generator_settings: input.generator_settings.clone(),
+        negative_keywords: exported_prompt.negative_keywords.clone(),
     })
 }

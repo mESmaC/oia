@@ -1,12 +1,12 @@
 'use strict';
-// Presentation only: Rust owns bytes, extraction, search, cleanup, cancellation and publication.
+// Presentation only: Rust owns bytes, file operations, globe state and witness capture transitions.
 // This file draws responses from the `oia-local-tools/1` commands and sends intents. Local state
 // here is presentation state (active instrument, reading page, selected row, inspector tab).
 const $ = id => document.getElementById(id);
 const invoke = (command, args) => window.__TAURI__.core.invoke(command, args);
 const SCHEMA = 'oia-local-tools/1';
 const PAGE_SIZE = 100;
-const INSTRUMENTS = ['session', 'documents', 'privacy', 'globe'];
+const INSTRUMENTS = ['session', 'documents', 'witness', 'privacy', 'globe'];
 const TARGETS = {
   text: ['Text metadata', 'PNG text containers'],
   modification_time: ['Modification time', 'PNG tIME container'],
@@ -65,6 +65,7 @@ function showInstrument(name, focus = false) {
   });
   document.querySelectorAll('.globe-tool').forEach(button => { button.hidden = instrument !== 'globe'; });
   if (instrument === 'globe') Globe.activate(); else Globe.deactivate();
+  if (instrument === 'witness') Witness.activate(); else Witness.deactivate();
   if (focus) (instrument === 'globe' ? $('globe-canvas') : $('canvas')).focus();
   renderShell();
 }
@@ -72,12 +73,14 @@ function currentView() {
   return instrument === 'documents' ? documentView : instrument === 'privacy' ? imageView : null;
 }
 function renderShell() {
-  const names = { session: '', documents: 'Documents', privacy: 'Privacy', globe: 'Globe' };
+  const names = { session: '', documents: 'Documents', witness: 'Witness', privacy: 'Privacy', globe: 'Globe' };
   const view = currentView();
   $('crumb-sep').hidden = $('crumb-instrument').hidden = instrument === 'session';
   $('crumb-instrument').textContent = names[instrument];
   const loaded = Number(!!documentView) + Number(!!imageView);
-  $('crumb-chip').textContent = loaded ? `${loaded} ${loaded === 1 ? 'file' : 'files'} in memory · no case` : 'No case · memory only';
+  const witnessLoaded = Witness.summary().loaded;
+  const sessionRecords = loaded + Number(witnessLoaded);
+  $('crumb-chip').textContent = sessionRecords ? `${sessionRecords} session ${sessionRecords === 1 ? 'record' : 'records'} · no case` : 'No case · memory only';
 
   setText('ro-source', view ? view.file.name : '—', view ? 'v' : 'v none');
   setText('ro-hash', view ? view.file.sha256.slice(0, 8) + '…' : '—', view ? 'v' : 'v none');
@@ -90,6 +93,12 @@ function renderShell() {
     setText('ro-coverage', imageView.complete ? 'profile supported' : 'partial', imageView.complete ? 'v' : 'v est');
     const row = selectedRow === null ? null : imageView.rows[selectedRow];
     setText('ro-selection', row ? `${pad2(selectedRow + 1)} ${row.kind} · b${row.start}–${row.end}` : 'none', row ? 'v' : 'v none');
+  } else if (instrument === 'witness') {
+    const w = Witness.summary();
+    setText('ro-source', w.source, w.loaded ? 'v' : 'v none');
+    setText('ro-hash', '—', 'v none');
+    setText('ro-coverage', w.coverage, 'v est');
+    setText('ro-selection', w.selection, w.loaded ? 'v' : 'v none');
   } else if (instrument === 'globe') {
     const g = Globe.summary();
     setText('ro-source', g.source, g.loaded ? 'v' : 'v none');
@@ -108,8 +117,8 @@ function renderShell() {
   for (const id of ['query', 'search-submit', 'clear-search']) $(id).disabled = busy || !documentView;
 
   // Session instrument
-  $('session-title').textContent = loaded ? 'Sources in this session' : 'No source loaded';
-  $('session-prompt').textContent = loaded ? 'Select a source to open its instrument. Nothing is saved; nothing is plotted on a map or timeline because these files carry no recorded position or time.' : 'Open a UTF-8 document or a PNG/JPEG image. Files stay in memory for this session.';
+  $('session-title').textContent = sessionRecords ? 'Records in this session' : 'No session records';
+  $('session-prompt').textContent = sessionRecords ? 'Select a record to open its instrument. Nothing is saved; files carry no recorded position or time, and witness text is not normalized into measurements.' : 'Open a UTF-8 document or PNG/JPEG image, or capture a witness account. Everything stays in memory for this session.';
   const tray = $('session-tray'), list = $('session-sources');
   tray.replaceChildren(); list.replaceChildren();
   let n = 0;
@@ -122,7 +131,16 @@ function renderShell() {
       host.append(t);
     }
   }
-  if (!n) list.append(node('p', 'No files in this session.'));
+  if (witnessLoaded) {
+    n += 1;
+    const w = Witness.summary();
+    for (const host of [tray, list]) {
+      const t = tag(n, `${w.source} · ${w.selection}`);
+      t.onclick = () => showInstrument('witness', true);
+      host.append(t);
+    }
+  }
+  if (!n) list.append(node('p', 'No records in this session.'));
 }
 
 // ---- Operations: one worker, cancellable, publication only on success ----
@@ -398,5 +416,6 @@ document.addEventListener('keydown', event => {
   }
 });
 Globe.onView(() => { if (instrument === 'globe') renderShell(); });
+Witness.onView(() => renderShell());
 if (window.matchMedia('(prefers-reduced-transparency: reduce)').matches) setPresentation('reduced', true);
 showInstrument('session');

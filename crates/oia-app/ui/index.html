@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="globe.css">
 <script src="globe.js" defer></script>
+<script src="witness.js" defer></script>
 <script src="app.js" defer></script>
 </head>
 <body>
@@ -44,6 +45,7 @@
   <nav class="rail glass" aria-label="Instruments">
     <button type="button" data-instrument="session" aria-current="page"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.5"/><path d="M12 4v3M12 17v3M4 12h3M17 12h3"/></svg><span>Session</span></button>
     <button type="button" data-instrument="documents"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="1"/><path d="M8 9h8M8 13h8M8 17h5"/></svg><span>Documents</span></button>
+    <button type="button" data-instrument="witness"><svg viewBox="0 0 24 24"><path d="M4 5h16v12H9l-5 4z"/><path d="M8 9h8M8 13h5"/></svg><span>Witness</span></button>
     <button type="button" data-instrument="privacy"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg><span>Privacy</span></button>
     <hr>
     <button type="button" aria-disabled="true" title="Not in this build"><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4z"/><path d="M8 10h8M8 14h5"/></svg><span>News</span></button>
@@ -101,6 +103,73 @@
           <div class="passages" id="passages" tabindex="0" aria-label="Passages"></div>
           <div class="pager"><button type="button" id="previous-page">← Previous</button><span class="k" id="page-label"></span><button type="button" id="next-page">Next →</button></div>
         </div>
+      </div>
+    </section>
+
+    <!-- Witness view: session-only capture, not durable evidence -->
+    <section class="view" id="view-witness" hidden>
+      <div class="witness-scroll">
+        <p class="coverage partial" id="witness-retention">Memory only; discarded on exit.</p>
+        <section class="witness-panel glass" id="witness-capture-panel" aria-labelledby="witness-capture-title">
+          <div class="witness-panel-head"><span class="k">FIELD-02 · initial account</span><h2 id="witness-capture-title">Capture a witness account</h2><span class="chip warn">▮ Not a durable save</span></div>
+          <p class="note">Record the account before exposing candidate explanation prompts. Optional fields remain unreported when empty; nonempty wording is sent without trimming or measurement conversion.</p>
+          <form class="witness-form" id="witness-capture-form">
+            <label>Origin<select id="witness-origin"><option value="reported">Reported testimony</option><option value="simulated">Simulated account</option></select></label>
+            <label class="witness-wide">Narrative<textarea id="witness-initial-narrative" rows="5" maxlength="8192" required></textarea></label>
+            <label>Reported time<input id="witness-initial-reported_time" maxlength="8192" placeholder="Unreported if empty"></label>
+            <label>Location<input id="witness-initial-location" maxlength="8192" placeholder="Unreported if empty"></label>
+            <label>Duration<input id="witness-initial-duration" maxlength="8192"></label>
+            <label>Direction<input id="witness-initial-direction" maxlength="8192"></label>
+            <label>Apparent size<input id="witness-initial-apparent_size" maxlength="8192"></label>
+            <label>Motion<input id="witness-initial-motion" maxlength="8192"></label>
+            <label>Sound<input id="witness-initial-sound" maxlength="8192"></label>
+            <label>Conditions<input id="witness-initial-conditions" maxlength="8192"></label>
+            <div class="witness-actions witness-wide"><button type="submit" class="btn primary">Capture initial account</button><span class="note">8,192 UTF-8 bytes maximum per field. Capture keeps this session only.</span></div>
+          </form>
+        </section>
+
+        <div id="witness-account" hidden>
+          <section class="witness-panel glass" aria-labelledby="witness-initial-title">
+            <div class="witness-panel-head"><span class="k">Original wording · read-only</span><h2 id="witness-initial-title">Initial account</h2><div class="chips"><span class="chip" id="witness-account-origin"></span><span class="chip" id="witness-initial-version"></span></div></div>
+            <dl class="kv witness-fields" id="witness-initial-fields"></dl>
+          </section>
+
+          <section class="witness-panel glass" aria-labelledby="witness-explanation-title">
+            <div class="witness-panel-head"><span class="k">Workflow transition</span><h2 id="witness-explanation-title">Candidate explanation prompts</h2></div>
+            <p class="note" id="witness-exposure-state"></p>
+            <button type="button" class="btn" id="witness-expose">Expose unassessed prompts</button>
+            <div id="witness-explanations" hidden>
+              <p class="coverage partial">Unassessed static checklist · not generated findings, rankings or evidence-backed conclusions.</p>
+              <ul class="witness-checklist">
+                <li>Natural or astronomical phenomenon — unassessed.</li>
+                <li>Aircraft, satellite, drone or another human-made object — unassessed.</li>
+                <li>Sensor, compression or observation artifact — unassessed.</li>
+                <li>Unknown or insufficient evidence — always remains available.</li>
+              </ul>
+            </div>
+          </section>
+
+          <section class="witness-panel glass" aria-labelledby="witness-revision-title">
+            <div class="witness-panel-head"><span class="k">Append-only edit</span><h2 id="witness-revision-title">Record a revision</h2></div>
+            <p class="note">A revision never replaces the initial account. Rationale is required. Expected-version checks reject stale edits without discarding either version.</p>
+            <form class="witness-form" id="witness-revision-form">
+              <label class="witness-wide">Revised narrative<textarea id="witness-revision-narrative" rows="5" maxlength="8192" required></textarea></label>
+              <label>Reported time<input id="witness-revision-reported_time" maxlength="8192"></label>
+              <label>Location<input id="witness-revision-location" maxlength="8192"></label>
+              <label>Duration<input id="witness-revision-duration" maxlength="8192"></label>
+              <label>Direction<input id="witness-revision-direction" maxlength="8192"></label>
+              <label>Apparent size<input id="witness-revision-apparent_size" maxlength="8192"></label>
+              <label>Motion<input id="witness-revision-motion" maxlength="8192"></label>
+              <label>Sound<input id="witness-revision-sound" maxlength="8192"></label>
+              <label>Conditions<input id="witness-revision-conditions" maxlength="8192"></label>
+              <label class="witness-wide">Revision rationale<textarea id="witness-rationale" rows="3" maxlength="8192" required></textarea></label>
+              <div class="witness-actions witness-wide"><button type="submit" class="btn primary">Append revision</button><span class="note">Optional fields are unreported only when completely empty.</span></div>
+            </form>
+          </section>
+
+          <section class="witness-history" aria-labelledby="witness-history-title"><span class="k">Retained history</span><h2 id="witness-history-title">Revisions</h2><p class="note" id="witness-no-revisions">No revisions recorded.</p><div id="witness-revisions"></div></section>
+        </div>
+        <p class="coverage" id="witness-status" role="status" aria-live="polite">No witness account captured.</p>
       </div>
     </section>
 
@@ -174,6 +243,15 @@
           <p class="coverage" id="document-coverage"></p>
         </section>
         <section class="sec" data-pane="doc-limits" hidden><span class="k">Limits</span><p class="note">Exact, case-sensitive search within single lines, up to 200 matches. Zero matches cover only the searched bytes. Byte ranges are zero-based and end-exclusive. Hidden controls are escaped for display only. A hash shows byte identity, not authenticity. Publication, author, and event time are not recorded. Changes on disk do not change this snapshot.</p></section>
+      </div>
+    </div>
+    <!-- Witness inspector -->
+    <div class="ipanel" id="insp-witness" hidden>
+      <div class="head"><span class="k">Inspect · witness</span><h2 id="insp-witness-title">No account captured</h2><div class="chips"><span class="chip" id="insp-witness-origin">▣ No account</span><span class="chip warn">▮ Memory only</span></div></div>
+      <div class="body" tabindex="0">
+        <section class="sec"><span class="k">Session record</span><dl class="kv" id="witness-record"></dl></section>
+        <section class="sec"><span class="k" id="insp-witness-exposure">Explanations not exposed here</span><p class="note" id="witness-exposure-qualification"></p><p class="note">External explanation exposure is not observed by this workflow. A before-explanations marker does not establish independent testimony.</p></section>
+        <section class="sec"><span class="k">Boundary and limits</span><p class="note" id="witness-limits"></p></section>
       </div>
     </div>
     <!-- Privacy inspector -->

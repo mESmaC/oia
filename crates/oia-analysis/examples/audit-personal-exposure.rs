@@ -6,11 +6,11 @@
 
 use oia_analysis::exposure_audit::{
     AccountMatchInput, AccountMatchReviewInput, AccountMatchSignal, AuditTimePrecision,
-    AuditTimestamp, DeclaredAuditScope, DnsRecordType, ExposedContactKind, ExposureAuditLimits,
-    ExposureCitationAnchor, InfrastructureArtifactKind, InfrastructureEntryInput,
-    MatchAssessmentState, MatchSignalKind, ObservationTimeEnvelope, OutboundQueryTarget,
-    OutboundSourceQueryCandidate, OwnershipBasis, PersonalExposureAudit, PublicProfileInput,
-    SourceCitation, SourceCoverageRecord, SourceQueryCoverage,
+    AuditTimestamp, DeclaredAccountHandle, DeclaredAuditScope, DnsRecordType, ExposedContactKind,
+    ExposureAuditLimits, ExposureCitationAnchor, InfrastructureArtifactKind,
+    InfrastructureEntryInput, MatchAssessmentState, MatchSignalKind, ObservationTimeEnvelope,
+    OutboundQueryTarget, OutboundSourceQueryCandidate, OwnershipBasis, PersonalExposureAudit,
+    PublicProfileInput, SourceCitation, SourceCoverageRecord, SourceQueryCoverage,
 };
 use oia_domain::collaboration::{AccessSurface, CaseRole, ClearanceGrant};
 use oia_domain::witness::AccountOrigin;
@@ -39,7 +39,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .to_owned(),
         },
         vec!["example.org".to_owned()],
-        vec!["fictional_observer_01".to_owned()],
+        vec![DeclaredAccountHandle::new(
+            "SyntheticCodeHost",
+            "fictional_observer_01",
+        )],
         limits,
     )?;
 
@@ -82,13 +85,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         listed_website_domain: Some("example.org".to_owned()),
         exposed_contact_values: vec!["ops@example.org".to_owned()],
         claimed_in_declared_scope: true,
+        anchor_primary_profile_id: None,
         citation: SourceCitation {
             source_id: OpaqueId::new("source:synthetic-code-host")?,
             source_version: VersionId::new("ver:src-code-20261102")?,
             anchor: ExposureCitationAnchor::Utf8ByteRange(0..128),
         },
         timestamps: ObservationTimeEnvelope {
-            observed_or_valid_from: Some(exact_utc(1_720_000_000_000)),
+            observed_at: Some(exact_utc(1_720_000_000_000)),
             published_or_issued_at: None,
             retrieved_at: exact_utc(1_730_500_010_000),
             audited_at: exact_utc(1_730_500_020_000),
@@ -106,6 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         listed_website_domain: None,
         exposed_contact_values: Vec::new(),
         claimed_in_declared_scope: false,
+        anchor_primary_profile_id: Some(OpaqueId::new("prof:synthetic-primary")?),
         citation: SourceCitation {
             source_id: OpaqueId::new("source:synthetic-forum")?,
             source_version: VersionId::new("ver:src-forum-20261102")?,
@@ -116,7 +121,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         },
         timestamps: ObservationTimeEnvelope {
-            observed_or_valid_from: None,
+            observed_at: None,
             published_or_issued_at: Some(AuditTimestamp {
                 unix_ms: 1_715_040_000_000,
                 precision: AuditTimePrecision::DateOnly {
@@ -212,7 +217,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         },
         timestamps: ObservationTimeEnvelope {
-            observed_or_valid_from: Some(exact_utc(1_730_490_000_000)),
+            observed_at: Some(exact_utc(1_730_490_000_000)),
             published_or_issued_at: Some(exact_utc(1_730_490_000_000)),
             retrieved_at: exact_utc(1_730_500_070_000),
             audited_at: exact_utc(1_730_500_080_000),
@@ -243,7 +248,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         },
         timestamps: ObservationTimeEnvelope {
-            observed_or_valid_from: Some(exact_utc(1_725_000_000_000)),
+            observed_at: Some(exact_utc(1_725_000_000_000)),
             published_or_issued_at: Some(exact_utc(1_725_000_005_000)),
             retrieved_at: exact_utc(1_730_500_090_000),
             audited_at: exact_utc(1_730_500_100_000),
@@ -270,7 +275,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         },
         timestamps: ObservationTimeEnvelope {
-            observed_or_valid_from: Some(exact_utc(1_700_000_000_000)),
+            observed_at: Some(exact_utc(1_700_000_000_000)),
             published_or_issued_at: None,
             retrieved_at: exact_utc(1_730_500_070_000),
             audited_at: exact_utc(1_730_500_085_000),
@@ -281,7 +286,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         coverage_id: OpaqueId::new("cov:ct-query-01")?,
         source_id: OpaqueId::new("source:ct-log-fixture")?,
         source_version: VersionId::new("ver:ct-entry-99102")?,
-        queried_target: "example.org".to_owned(),
+        queried_target: OutboundQueryTarget::DeclaredDomain("example.org".to_owned()),
         queried_at: exact_utc(1_730_500_090_000),
         coverage: SourceQueryCoverage::PartialBudgetReached {
             returned_items: 1,

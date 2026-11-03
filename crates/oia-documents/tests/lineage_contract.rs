@@ -3,14 +3,14 @@ use std::error::Error;
 
 use oia_documents::StopReason;
 use oia_documents::lineage::{
-    ArtifactDescriptor, AvailabilityState, ComparisonSegmentKind, CycleClassification,
-    DerivationNode, DerivationOriginClass, EarliestSourceResolution, ExactDuplicateGroup,
-    InvalidationNotice, InvalidationReason, LineageError, LineageLimit, LineageLimits,
-    PageAttachment, RecordRelation, RelationKind, ReleaseComparisonSegment,
+    ArtifactDescriptor, AvailabilityState, ClaimCorroborationInputs, ComparisonSegmentKind,
+    CycleClassification, DerivationNode, DerivationOriginClass, EarliestSourceResolution,
+    ExactDuplicateGroup, InvalidationNotice, InvalidationReason, LineageError, LineageLimit,
+    LineageLimits, PageAttachment, RecordRelation, RelationKind, ReleaseComparisonSegment,
     ReleaseRedactionComparison, RetentionMode, SourceLifecycleState, SourceRecordDescriptor,
-    Utf8ByteCitation, compute_exact_duplicate_groups, compute_invalidation_propagation,
-    compute_lineage_sccs, evaluate_corroboration, validate_records, verify_release_comparison,
-    verify_utf8_byte_citation,
+    UnresolvedExternalCitation, Utf8ByteCitation, compute_exact_duplicate_groups,
+    compute_invalidation_propagation, compute_lineage_sccs, evaluate_claim_corroboration,
+    evaluate_corroboration, validate_records, verify_release_comparison, verify_utf8_byte_citation,
 };
 
 struct LineageFixture {
@@ -398,6 +398,16 @@ fn build_fixture() -> LineageFixture {
             to: "retracted-advisory-v1".to_owned(),
             kind: RelationKind::RetractedBy,
         },
+        RecordRelation {
+            from: "retraction-notice-v2".to_owned(),
+            to: "retracted-advisory-v1".to_owned(),
+            kind: RelationKind::Quotes,
+        },
+        RecordRelation {
+            from: "dispatch-primary-v2".to_owned(),
+            to: "cycle-memo-a-v1".to_owned(),
+            kind: RelationKind::Cites,
+        },
     ];
 
     let derivations = vec![
@@ -688,6 +698,14 @@ fn lineage_fixture_satisfies_a03_and_a08_contracts() -> Result<(), Box<dyn Error
         vec!["dispatch-primary-v1", "harbor-radar-log-v1"]
     );
     assert_eq!(corr.independent_root_count, 2);
+    assert_eq!(corr.exact_duplicate_group_count, 6);
+    assert!(corr.contradicting_independent_roots.is_empty());
+    assert!(
+        corr.earliest_known_source_view
+            .coverage_qualification
+            .unresolved_external_citations
+            .is_empty()
+    );
     assert_eq!(
         corr.earliest_known_source_view.resolution,
         EarliestSourceResolution::AmbiguousCandidates
@@ -702,11 +720,11 @@ fn lineage_fixture_satisfies_a03_and_a08_contracts() -> Result<(), Box<dyn Error
         corr.earliest_known_source_view.undated_candidate_roots,
         vec!["harbor-radar-log-v1"]
     );
-    assert_eq!(
+    assert!(
         corr.earliest_known_source_view
             .coverage_qualification
-            .omitted_reference_only_records,
-        vec!["restricted-deck-log-v1"]
+            .omitted_reference_only_records
+            .is_empty()
     );
     assert_eq!(
         corr.earliest_known_source_view
@@ -759,6 +777,138 @@ fn lineage_fixture_satisfies_a03_and_a08_contracts() -> Result<(), Box<dyn Error
     assert_eq!(
         inv.removed_not_auto_retracted_record_versions,
         vec!["removed-endpoint-v1"]
+    );
+    Ok(())
+}
+
+// INTEL-01/DOC-02/DOC-04 (A08): stance, duplicate-hash and coverage reporting
+// must remain claim-scoped and must not promote derivative runs or unrelated records.
+#[test]
+fn claim_stance_and_coverage_are_scoped_to_reached_ancestry() -> Result<(), Box<dyn Error>> {
+    let LineageFixture {
+        artifacts,
+        records: records_list,
+        mut relations,
+        derivations: derivations_list,
+        ..
+    } = build_fixture();
+    relations.push(RecordRelation {
+        from: "retraction-notice-v2".to_owned(),
+        to: "retracted-advisory-v1".to_owned(),
+        kind: RelationKind::Quotes,
+    });
+    let limits = LineageLimits::new(200, 500, 100)?;
+    let records = validate_records(&records_list, &artifacts, limits, || Ok(()))?;
+    let derivations: BTreeMap<String, DerivationNode> = derivations_list
+        .into_iter()
+        .map(|node| (node.version_id.clone(), node))
+        .collect();
+    let external_citations = vec![
+        UnresolvedExternalCitation {
+            citing_record_version_id: "retracted-advisory-v1".to_owned(),
+            reference: "Synthetic Calibration Board advisory bibliography entry CB-EXT-1"
+                .to_owned(),
+        },
+        UnresolvedExternalCitation {
+            citing_record_version_id: "retraction-notice-v2".to_owned(),
+            reference: "Synthetic Calibration Board retraction bibliography entry RN-EXT-2"
+                .to_owned(),
+        },
+        UnresolvedExternalCitation {
+            citing_record_version_id: "removed-endpoint-v1".to_owned(),
+            reference: "UNRELATED citation must not enter this claim".to_owned(),
+        },
+    ];
+
+    let summary = evaluate_claim_corroboration(
+        ClaimCorroborationInputs {
+            supporting: &["retracted-advisory-v1".to_owned()],
+            contradicting: &[
+                "retraction-notice-v2".to_owned(),
+                "summary-coastal-track-v1".to_owned(),
+            ],
+            external_citations: &external_citations,
+        },
+        &records,
+        &derivations,
+        &relations,
+        &artifacts,
+        limits,
+        || Ok(()),
+    )?;
+    assert_eq!(summary.exact_duplicate_group_count, 1);
+    assert_eq!(
+        summary.independent_supporting_roots,
+        vec!["retracted-advisory-v1"]
+    );
+    assert_eq!(
+        summary.contradicting_independent_roots,
+        vec!["retracted-advisory-v1"]
+    );
+    assert_eq!(
+        summary.excluded_derivative_runs,
+        vec!["summary-coastal-track-v1"]
+    );
+    assert_eq!(
+        summary
+            .earliest_known_source_view
+            .coverage_qualification
+            .detected_cycle_count,
+        0
+    );
+    assert!(
+        summary
+            .earliest_known_source_view
+            .coverage_qualification
+            .omitted_reference_only_records
+            .is_empty()
+    );
+    assert_eq!(
+        summary
+            .earliest_known_source_view
+            .coverage_qualification
+            .unresolved_external_citations,
+        external_citations
+            .iter()
+            .take(2)
+            .cloned()
+            .collect::<Vec<_>>()
+    );
+
+    let coverage = evaluate_claim_corroboration(
+        ClaimCorroborationInputs {
+            supporting: &["restricted-deck-log-v1".to_owned()],
+            contradicting: &[],
+            external_citations: &external_citations,
+        },
+        &records,
+        &derivations,
+        &relations,
+        &artifacts,
+        limits,
+        || Ok(()),
+    )?;
+    assert_eq!(coverage.exact_duplicate_group_count, 0);
+    assert_eq!(
+        coverage
+            .earliest_known_source_view
+            .coverage_qualification
+            .omitted_reference_only_records,
+        vec!["restricted-deck-log-v1"]
+    );
+    assert!(
+        coverage
+            .earliest_known_source_view
+            .coverage_qualification
+            .unresolved_external_citations
+            .is_empty()
+    );
+    assert_eq!(
+        coverage
+            .earliest_known_source_view
+            .coverage_qualification
+            .detected_cycle_count,
+        0
     );
     Ok(())
 }
@@ -874,6 +1024,55 @@ fn adversarial_lineage_violations_and_control_stops_are_rejected() -> Result<(),
             .first()
             .map(|c| c.classification),
         Some(CycleClassification::AnchoredCycle)
+    );
+
+    // A downstream input and a chain into a second rootless cycle retain their
+    // circular-only status and witness; neither cycle is falsely anchored.
+    let mut rootless_cycle_relations = relations.clone();
+    for (from, to) in [
+        ("dispatch-primary-v2", "cycle-memo-a-v1"),
+        ("cycle-review-c-v1", "foia-release-2024-v1"),
+        ("foia-release-2024-v1", "foia-release-2026-v1"),
+        ("foia-release-2026-v1", "foia-release-2024-v1"),
+    ] {
+        rootless_cycle_relations.push(RecordRelation {
+            from: from.to_owned(),
+            to: to.to_owned(),
+            kind: RelationKind::Cites,
+        });
+    }
+    let (_, rootless_report) =
+        compute_lineage_sccs(&records, &rootless_cycle_relations, limits, || Ok(()))?;
+    assert_eq!(rootless_report.detected_cycles.len(), 2);
+    assert!(
+        rootless_report
+            .detected_cycles
+            .iter()
+            .all(|cycle| cycle.classification == CycleClassification::UnanchoredCycle)
+    );
+    let downstream_cycle = evaluate_corroboration(
+        &["dispatch-primary-v2".to_owned()],
+        &records,
+        &BTreeMap::new(),
+        &rootless_cycle_relations,
+        &artifacts,
+        limits,
+        || Ok(()),
+    )?;
+    assert_eq!(
+        downstream_cycle.circular_only_record_versions,
+        vec!["dispatch-primary-v2"]
+    );
+    assert!(downstream_cycle.independent_supporting_roots.is_empty());
+    assert!(rootless_report.detected_cycles.iter().any(|cycle| {
+        Some(&cycle.witness_path) == downstream_cycle.primary_cycle_witness.as_ref()
+    }));
+    assert_eq!(
+        downstream_cycle
+            .earliest_known_source_view
+            .coverage_qualification
+            .detected_cycle_count,
+        2
     );
 
     assert_eq!(

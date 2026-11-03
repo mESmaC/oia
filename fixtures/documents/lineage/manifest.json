@@ -631,6 +631,16 @@
       "from": "retraction-notice-v2",
       "to": "retracted-advisory-v1",
       "kind": "retracted_by"
+    },
+    {
+      "from": "retraction-notice-v2",
+      "to": "retracted-advisory-v1",
+      "kind": "quotes"
+    },
+    {
+      "from": "dispatch-primary-v2",
+      "to": "cycle-memo-a-v1",
+      "kind": "cites"
     }
   ],
   "derivations": [
@@ -906,6 +916,8 @@
           "cycle-review-c-v1",
           "summary-coastal-track-v1"
         ],
+        "contradicting_inputs": [],
+        "unresolved_external_citations": [],
         "expected_supporting_record_versions": [
           "cycle-bulletin-b-v1",
           "cycle-memo-a-v1",
@@ -934,6 +946,8 @@
           "harbor-radar-log-v1"
         ],
         "expected_independent_root_count": 2,
+        "expected_contradicting_independent_roots": [],
+        "expected_exact_duplicate_group_count": 6,
         "earliest_known_source_view": {
           "resolution": "ambiguous_candidates",
           "earliest_dated_root": "dispatch-primary-v1",
@@ -942,9 +956,104 @@
           ],
           "coverage_qualification": {
             "scope": "retained_and_cataloged_workspace_records",
-            "omitted_reference_only_records": [
-              "restricted-deck-log-v1"
+            "omitted_reference_only_records": [],
+            "unresolved_external_citations": [],
+            "detected_cycle_count": 1
+          }
+        }
+      },
+      {
+        "query_id": "calibration-advisory-stance-and-coverage",
+        "citing_inputs": [
+          "retracted-advisory-v1"
+        ],
+        "contradicting_inputs": [
+          "retraction-notice-v2",
+          "summary-coastal-track-v1"
+        ],
+        "unresolved_external_citations": [
+          {
+            "citing_record_version_id": "retracted-advisory-v1",
+            "reference": "Synthetic Calibration Board advisory bibliography entry CB-EXT-1"
+          },
+          {
+            "citing_record_version_id": "retraction-notice-v2",
+            "reference": "Synthetic Calibration Board retraction bibliography entry RN-EXT-2"
+          },
+          {
+            "citing_record_version_id": "removed-endpoint-v1",
+            "reference": "UNRELATED citation excluded from calibration claim coverage"
+          }
+        ],
+        "expected_supporting_record_versions": [
+          "retracted-advisory-v1"
+        ],
+        "expected_excluded_derivative_runs": [
+          "summary-coastal-track-v1"
+        ],
+        "expected_circular_only_record_versions": [],
+        "expected_cycle_witness": [],
+        "expected_independent_supporting_roots": [
+          "retracted-advisory-v1"
+        ],
+        "expected_independent_root_count": 1,
+        "expected_contradicting_independent_roots": [
+          "retracted-advisory-v1"
+        ],
+        "expected_exact_duplicate_group_count": 1,
+        "earliest_known_source_view": {
+          "resolution": "single_earliest_dated",
+          "earliest_dated_root": "retracted-advisory-v1",
+          "undated_candidate_roots": [],
+          "coverage_qualification": {
+            "scope": "retained_and_cataloged_workspace_records",
+            "omitted_reference_only_records": [],
+            "unresolved_external_citations": [
+              {
+                "citing_record_version_id": "retracted-advisory-v1",
+                "reference": "Synthetic Calibration Board advisory bibliography entry CB-EXT-1"
+              },
+              {
+                "citing_record_version_id": "retraction-notice-v2",
+                "reference": "Synthetic Calibration Board retraction bibliography entry RN-EXT-2"
+              }
             ],
+            "detected_cycle_count": 0
+          }
+        }
+      },
+      {
+        "query_id": "downstream-circular-only-witness",
+        "citing_inputs": [
+          "dispatch-primary-v2"
+        ],
+        "contradicting_inputs": [],
+        "unresolved_external_citations": [],
+        "expected_supporting_record_versions": [
+          "dispatch-primary-v2"
+        ],
+        "expected_excluded_derivative_runs": [],
+        "expected_circular_only_record_versions": [
+          "dispatch-primary-v2"
+        ],
+        "expected_cycle_witness": [
+          "cycle-bulletin-b-v1",
+          "cycle-review-c-v1",
+          "cycle-memo-a-v1",
+          "cycle-bulletin-b-v1"
+        ],
+        "expected_independent_supporting_roots": [],
+        "expected_independent_root_count": 0,
+        "expected_contradicting_independent_roots": [],
+        "expected_exact_duplicate_group_count": 1,
+        "earliest_known_source_view": {
+          "resolution": "no_independent_roots",
+          "earliest_dated_root": null,
+          "undated_candidate_roots": [],
+          "coverage_qualification": {
+            "scope": "retained_and_cataloged_workspace_records",
+            "omitted_reference_only_records": [],
+            "unresolved_external_citations": [],
             "detected_cycle_count": 1
           }
         }

@@ -66,11 +66,11 @@ graph algorithms with explicit `LineageLimits`, fallible allocations
      decomposition over `{Republishes, Quotes, Cites, Translates}` edges using
      an explicit heap-allocated work stack bounded by `max_nodes` and `max_edges`
      (no unbounded recursion).
-   - Classifies each cycle as `UnanchoredCycle` (no outbound lineage edge
-     leaving the cycle) or `AnchoredCycle` (cites an external upstream record)
-     and extracts a shortest deterministic closed cycle witness path
+   - Classifies each cycle as `UnanchoredCycle` (cannot reach a terminal,
+     non-cyclic upstream root) or `AnchoredCycle` (can reach such a root, including
+     through another cycle) and extracts a shortest deterministic closed cycle witness path
      (`v_0 -> ... -> v_0`) via BFS.
-   - Computes `CorroborationSummary`: deduplicates `citing_inputs`, separates
+   - Computes `CorroborationSummary`: deduplicates claim inputs, separates
      `supporting_record_versions` from `excluded_derivative_runs`
      (`ExtractedClaim` / `AnalyticalInference`), identifies
      `circular_only_record_versions`, and builds transitive union-find
@@ -81,6 +81,22 @@ graph algorithms with explicit `LineageLimits`, fallible allocations
      equivalence class (`independent_supporting_roots`) ordered by earliest
      verified UTC `publication_time` instant, then UTC `retrieval_time` instant,
      then lexical `version_id`.
+   - `evaluate_claim_corroboration` accepts `ClaimCorroborationInputs` and applies
+     the same traversal and collapse to contradicting inputs, emitting
+     `contradicting_independent_roots` separately;
+     the two stances are never combined into a net truth score. Derivative runs
+     supplied for either stance enter only `excluded_derivative_runs`.
+     `evaluate_corroboration` remains as a positive-support compatibility wrapper.
+   - Reports `exact_duplicate_group_count` as the number of distinct retained
+     content hashes across direct supporting records, including singleton hashes;
+     reference-only records are excluded. This is distinct from
+     `compute_exact_duplicate_groups`, which lists only hashes shared by multiple
+     records.
+   - Scopes coverage to ancestry reached from supporting or contradicting inputs:
+     unrelated restricted/reference-only/missing records and unrelated cycles do
+     not appear. `unresolved_external_citations` are bounded, deterministic,
+     caller-supplied `(citing_record_version_id, reference)` pairs filtered to
+     reached records; the kernel does not infer or scrape citations from prose.
    - Parses RFC 3339 timestamps (`parse_rfc3339_utc_nanos`) requiring strict
      ASCII digit fields and explicit timezone offsets into UTC instants while
      preserving original strings for display; preserves undated upstream roots
@@ -107,11 +123,12 @@ graph algorithms with explicit `LineageLimits`, fallible allocations
 
 This kernel implements the pure graph and validation logic from
 [`docs/contracts/document-lineage-and-correction.md`](../contracts/document-lineage-and-correction.md)
-inside the standalone `oia-documents` package. `CorroborationSummary` in this
-slice covers the positive-support, version-chain, and cycle-exclusion fields;
-`contradicting_independent_roots`, `exact_duplicate_group_count` on the summary,
-and `unresolved_external_citations` remain part of the broader domain/query
-integration. Still open on [#19](https://github.com/mESmaC/oia/issues/19):
+inside the standalone `oia-documents` package. `CorroborationSummary` covers
+positive and contradicting roots, retained supporting content-hash counts,
+derivative exclusion, cycle handling, and claim-scoped coverage including
+unresolved external citations. It does not infer claim stances or bibliographic
+references from document prose. Still open on
+[#19](https://github.com/mESmaC/oia/issues/19):
 
 - Integration with P0 domain envelopes (`oia-domain`), persistent storage
   (`oia-store`), ingestion (`oia-ingest`), analysis (`oia-analysis`), and query
@@ -129,10 +146,15 @@ cargo +1.99.0 run --manifest-path crates/oia-documents/Cargo.toml --example insp
 python -I scripts/fixtures/verify_document_lineage.py --self-test
 ```
 
-Two targeted contract tests in `crates/oia-documents/tests/lineage_contract.rs`
-verify positive `A03`/`A08` fixture expectations (`lineage_fixture_satisfies_a03_and_a08_contracts`)
-and adversarial contract violations (`adversarial_lineage_violations_and_control_stops_are_rejected`:
-shifted and mid-codepoint UTF-8 byte anchors, hidden cleartext inside redacted
-artifacts, `derived_from` cycles, auto-retracted removed endpoints, anchored vs.
-unanchored cycles, node-budget overflow, and cooperative cancellation at every
-callback boundary).
+Three targeted contract tests in `crates/oia-documents/tests/lineage_contract.rs`
+verify positive `A03`/`A08` fixture expectations
+(`lineage_fixture_satisfies_a03_and_a08_contracts`), claim-scoped stance and
+coverage (`claim_stance_and_coverage_are_scoped_to_reached_ancestry`), and
+adversarial contract violations
+(`adversarial_lineage_violations_and_control_stops_are_rejected`: shifted and
+mid-codepoint UTF-8 byte anchors, hidden cleartext inside redacted artifacts,
+`derived_from` cycles, auto-retracted removed endpoints, anchored vs. unanchored
+cycles, rootless cycle-to-cycle chains, downstream circular-only witnesses,
+node-budget overflow, and cooperative cancellation at every callback boundary).
+The stance test addresses derivative-evidence promotion and unrelated-record
+metadata leakage; neither test is an integrated A08 acceptance run.

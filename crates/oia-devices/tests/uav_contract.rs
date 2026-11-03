@@ -423,6 +423,7 @@ fn uav_hud_clock_drift_drops_bookmarks_and_onboard_linking_preserve_evidence()
         invalidated_hud.footprint_status,
         FootprintStatus::CalibrationInvalidated {
             effective_from_device_ms: 106_001,
+            association_needs_reassessment: false,
             calibration_version: VersionId::new("ver:cam-cal-v1")?,
             reason: "Hard wind gust shifted gimbal mount stop".to_owned(),
         }
@@ -1590,6 +1591,102 @@ fn recorded_metadata_is_dated_and_flags_pinned_evidence() -> Result<(), UavError
         &CameraCalibrationState::Uncalibrated
     );
     assert!(frame.needs_reassessment());
+    Ok(())
+}
+
+/// N1 / DEVICE-02..04: late calibration evidence must disclose a stale invalidation association
+/// without rewriting the original assertion or an issued handoff.
+#[test]
+fn late_calibration_flags_invalidation_association() -> Result<(), UavError> {
+    use oia_devices::uav::CameraCalibrationState;
+    let first = CameraCalibration {
+        effective_from_device_ms: 0,
+        calibration_version: VersionId::new("ver:association-first")?,
+        horizontal_fov_deg: 40.0,
+        vertical_fov_deg: 40.0,
+        angular_uncertainty_deg: 0.5,
+    };
+    let second = CameraCalibration {
+        effective_from_device_ms: 2_000,
+        calibration_version: VersionId::new("ver:association-second")?,
+        ..first.clone()
+    };
+    let mut recorded = review_session()?;
+    recorded.set_camera_calibration(first.clone())?;
+    recorded.invalidate_camera_calibration(3_000, "mount shock")?;
+    recorded.ingest_telemetry_sample(review_sample(3_500)?)?;
+    recorded.ingest_video_frame(VideoFrameInput {
+        frame_index: 0,
+        frame_version: VersionId::new("ver:association-frame")?,
+        device_clock_ms: 3_500,
+        receipt_utc_ms: 3_500,
+        exposure_duration_us: None,
+        sha256_hex: "d".repeat(64),
+    })?;
+    let issued = recorded.export_forensic_frame_handoff(
+        OpaqueId::new("handoff:association-issued")?,
+        0,
+        None,
+    )?;
+    let issued_text = issued.render_handoff_manifest(32_768)?;
+    recorded.set_camera_calibration(second.clone())?;
+    assert_eq!(
+        recorded.camera_calibration_state_at(2_500),
+        CameraCalibrationState::Valid(second.clone())
+    );
+    let expected = CameraCalibrationState::Invalidated {
+        calibration_version: first.calibration_version.clone(),
+        effective_from_device_ms: 3_000,
+        reason: "mount shock".into(),
+        association_needs_reassessment: true,
+    };
+    assert_eq!(recorded.camera_calibration_state_at(3_500), expected);
+    assert_eq!(
+        recorded.camera_calibration_history().last(),
+        Some(&expected)
+    );
+    let revised = recorded.export_forensic_frame_handoff(
+        OpaqueId::new("handoff:association-revised")?,
+        0,
+        None,
+    )?;
+    assert!(revised.needs_reassessment());
+    assert_eq!(
+        revised.current_camera_calibration_state_at_frame(),
+        &expected
+    );
+    assert_eq!(
+        revised.camera_calibration_state_at_frame(),
+        issued.camera_calibration_state_at_frame()
+    );
+    assert_eq!(issued.render_handoff_manifest(32_768)?, issued_text);
+    let hud = recorded.project_hud_snapshot(3_500, 3_500);
+    assert!(matches!(
+        hud.footprint_status,
+        FootprintStatus::CalibrationInvalidated {
+            association_needs_reassessment: true,
+            ..
+        }
+    ));
+    assert!(
+        hud.render_hud_text(32_768)?
+            .contains("association_needs_reassessment: true")
+    );
+    assert!(
+        revised
+            .render_handoff_manifest(32_768)?
+            .contains("association_needs_reassessment: true")
+    );
+
+    // With chronological attachment the original assertion names the second version.
+    let mut chronological = review_session()?;
+    chronological.set_camera_calibration(first)?;
+    chronological.set_camera_calibration(second.clone())?;
+    chronological.invalidate_camera_calibration(3_000, "mount shock")?;
+    assert!(matches!(chronological.camera_calibration_state_at(3_500),
+        CameraCalibrationState::Invalidated {
+            calibration_version, association_needs_reassessment: false, ..
+        } if calibration_version == second.calibration_version));
     Ok(())
 }
 

@@ -1117,8 +1117,11 @@ pub enum CameraCalibrationState {
     Valid(CameraCalibration),
     /// Previous calibration was invalidated by camera/mount movement or mechanical shock.
     Invalidated {
-        /// Version of the calibration that was invalidated.
+        /// Calibration version asserted by the original invalidation; never rewritten.
         calibration_version: VersionId,
+        /// Later history disagrees with the asserted active version at the invalidation time.
+        /// The original association requires review; footprint projection remains withheld.
+        association_needs_reassessment: bool,
         /// Device-clock timestamp (in milliseconds) at which the invalidation took effect.
         effective_from_device_ms: i64,
         /// Reason the calibration is no longer valid.
@@ -1301,8 +1304,10 @@ pub enum FootprintStatus {
     UncalibratedViewingRayOnly,
     /// Camera calibration was invalidated by camera/mount movement or mechanical shock (`A12`, `A13`).
     CalibrationInvalidated {
-        /// Invalidated calibration version.
+        /// Calibration version asserted by the original invalidation.
         calibration_version: VersionId,
+        /// The original invalidation's version association disagrees with current dated history.
+        association_needs_reassessment: bool,
         /// Device-clock timestamp (in milliseconds) at which the invalidation took effect.
         effective_from_device_ms: i64,
         /// Recorded invalidation reason.
@@ -2103,19 +2108,42 @@ impl UavFlightSession {
     /// Preserves prior calibration versions and dated invalidation events for earlier frames even
     /// if a new calibration or invalidation is later recorded on the session.
     pub fn camera_calibration_state_at(&self, device_clock_ms: i64) -> CameraCalibrationState {
-        self.calibration_history
+        let mut state = self
+            .calibration_history
             .iter()
             .filter(|e| e.effective_from_device_ms <= device_clock_ms)
             .max_by_key(|e| e.effective_from_device_ms)
-            .map_or(CameraCalibrationState::Uncalibrated, |e| e.state.clone())
+            .map_or(CameraCalibrationState::Uncalibrated, |e| e.state.clone());
+        if let CameraCalibrationState::Invalidated {
+            calibration_version,
+            effective_from_device_ms,
+            association_needs_reassessment,
+            ..
+        } = &mut state
+        {
+            // Reconcile only the derived association status. Keep the recorded assertion intact.
+            let preceding = self
+                .calibration_history
+                .iter()
+                .filter(|e| e.effective_from_device_ms < *effective_from_device_ms)
+                .max_by_key(|e| e.effective_from_device_ms);
+            *association_needs_reassessment = !matches!(preceding.map(|e| &e.state),
+                Some(CameraCalibrationState::Valid(cal))
+                    if cal.calibration_version == *calibration_version);
+        }
+        state
     }
 
     /// Full chronological history of camera calibration states recorded in the session, preserving
-    /// any invalidated calibration versions alongside later replacements.
+    /// original invalidation assertions alongside later replacements. Association reassessment
+    /// flags reflect the current history; previously returned copies remain unchanged.
     pub fn camera_calibration_history(&self) -> Vec<CameraCalibrationState> {
         let mut entries: Vec<_> = self.calibration_history.iter().collect();
         entries.sort_by_key(|e| e.effective_from_device_ms);
-        entries.into_iter().map(|e| e.state.clone()).collect()
+        entries
+            .into_iter()
+            .map(|e| self.camera_calibration_state_at(e.effective_from_device_ms))
+            .collect()
     }
 
     /// Configures or updates the session's documented clock-alignment record (`DEVICE-04`).
@@ -2263,6 +2291,7 @@ impl UavFlightSession {
         self.calibration_history.push(CameraCalibrationEntry {
             state: CameraCalibrationState::Invalidated {
                 calibration_version: active_version,
+                association_needs_reassessment: false,
                 effective_from_device_ms,
                 reason: reason.to_owned(),
             },
@@ -2841,11 +2870,13 @@ impl UavFlightSession {
             }
             CameraCalibrationState::Invalidated {
                 calibration_version,
+                association_needs_reassessment,
                 effective_from_device_ms,
                 reason,
             } => {
                 return FootprintStatus::CalibrationInvalidated {
                     calibration_version: calibration_version.clone(),
+                    association_needs_reassessment: *association_needs_reassessment,
                     effective_from_device_ms: *effective_from_device_ms,
                     reason: reason.clone(),
                 };

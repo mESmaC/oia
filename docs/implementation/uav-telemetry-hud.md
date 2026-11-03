@@ -61,6 +61,7 @@ domain/replay subset of `A12` in [the product specification](../spec.md),
 ## Dated metadata and reassessment
 
 - `CameraCalibration::effective_from_device_ms` and `invalidate_camera_calibration(effective_from_device_ms, reason)` explicitly date state changes. Camera history is append-only and exposed in effective-time order. A state applies until the next dated event; equal-time changes are rejected so an invalidation cannot silently cover zero time. Invalidating requires a calibration valid at that instant.
+- An invalidation preserves the calibration version asserted when it was recorded. If earlier calibration evidence arrives later and changes that association, current queries/history, HUD refusals, and handoffs expose `association_needs_reassessment: true`. The original assertion and issued handoffs stay intact, affected frames are flagged for reassessment, and footprint projection remains withheld. This flag identifies a history conflict; it does not automatically reassociate an invalidation with another version.
 - Clock windows are half-open. The covering record with the latest start wins, regardless of attachment order; an expired window cannot shadow another covering record. Equal-start windows are rejected rather than using arrival order as a hidden tie-breaker. This API does not replace records with the same effective time.
 - Samples, frames, and bookmarks retain the metadata known at ingestion/issuance. Late alignment or calibration changes set sticky `needs_reassessment` flags when the pinned interpretation differs. Even the first alignment/calibration attached after frame import cannot rewrite its pinned state.
 - A new `ForensicFrameHandoff` includes pinned camera/alignment values, the current dated interpretations, and reassessment status. The HUD text marks a pinned projection needing reassessment before its geometry is shown. Current `project_hud_snapshot` queries use current dated records, including historical invalidation refusals. Previously exported copies stay immutable; consumers inspect the session's frame record or export again to discover later corrections. Durable dependency notifications remain outside this kernel.
@@ -80,3 +81,18 @@ Executed on 2026-11-02 (America/New_York), Windows x86_64 MSVC / pinned Rust 1.9
 - Branch diff, relative documentation links, and code fences checked.
 
 No hosted CI, Linux/macOS execution, live hardware, end-to-end A12 acceptance, or UAV Rust-to-Lean correspondence claim is made.
+
+### N1 follow-up verification (2026-11-03)
+
+Session `codex-pr95-followup-20261103-cameron` checked the invalidation-association
+follow-up locally on Windows x86_64 MSVC / Rust 1.99.0. The added
+`late_calibration_flags_invalidation_association` regression covers the review's
+late-v2 reproduction, disclosure in history/HUD/handoffs, continued footprint
+refusal, frame reassessment, unchanged issued handoffs, and chronological attachment.
+
+- Workspace formatting, strict all-target Clippy, and locked/offline workspace tests: exit 0.
+- Locked/offline UAV contract tests in debug and release: exit 0, 6 passed in each.
+- Locked/offline `replay-uav-flight` example: exit 0; stale context and original-version preservation inspected.
+- `git diff --check`: exit 0; documentation links and requirement references inspected.
+- The initial offline Clippy attempt lacked cached `cc v1.11.0`; `cargo +1.99.0 fetch --locked` populated the cache without changing `Cargo.lock`, then offline checks passed.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 proofs`: exit 1 because Lake is not installed on this machine. No proof files or proof-backed algorithms changed; the prior machine's successful proof run above is historical evidence, not a fresh local pass.

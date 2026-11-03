@@ -12,7 +12,7 @@
       "center": true, "backgroundColor": "#000000"
     }],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://gibs.earthdata.nasa.gov; img-src 'self' data: blob: https://gibs.earthdata.nasa.gov http://oia-snapshot.localhost oia-snapshot:; style-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'"
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://gibs.earthdata.nasa.gov https://tiles.maps.eox.at https://basemap.nationalmap.gov; img-src 'self' data: blob: https://gibs.earthdata.nasa.gov https://tiles.maps.eox.at https://basemap.nationalmap.gov http://oia-snapshot.localhost oia-snapshot:; style-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'"
     }
   },
   "bundle": { "active": false, "icon": ["icons/oia.ico"] }

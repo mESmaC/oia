@@ -67,5 +67,23 @@ SOFTWARE.
 
 - **Upstream service:** NASA GIBS WMTS, `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/` (ESDIS). Layers registered in `crates/oia-app/src/globe/imagery.rs`: `BlueMarble_ShadedRelief_Bathymetry`, `VIIRS_SNPP_CorrectedReflectance_TrueColor`. Capabilities checked 2026-11-03.
 - **Terms consulted:** NASA Earthdata data use policy, https://www.earthdata.nasa.gov/engage/open-data-services-software-policies/data-use-policy (U.S. Government work, public domain; keyless; no bulk use). Both registered layers are NASA data under that policy. The GIBS `Coastlines_15m` reference layer (OpenStreetMap-derived, © OpenStreetMap contributors, ODbL 1.0) was evaluated for an overlay and withdrawn on 2026-11-03 before merge; it is not registered, requested or attributed in this build.
-- **Scope in repository:** No tiles are stored. The desktop page requests tiles at runtime from this origin only, bounded to the visible view, and shows the layer, date and tile counts. Tiles are display imagery for orientation; they are never presented as observations of a case.
+- **Scope in repository:** No tiles are stored. The desktop page requests basemap tiles at runtime from this origin, bounded to the visible view, and shows the layer, date and tile counts. The detail tiers in sections 5 and 6 come from their own registered origins. Tiles are display imagery for orientation; they are never presented as observations of a case.
 - **Acknowledgement (shown in the instrument):** "We acknowledge the use of imagery provided by services from NASA's Global Imagery Browse Services (GIBS), part of NASA's Earth Science Data and Information System (ESDIS)." Blue Marble Next Generation: Reto Stöckli, NASA Earth Observatory. NASA endorsement is not implied.
+
+---
+
+## 5. EOX Sentinel-2 cloudless (EOxCloudless) — Globe detail imagery
+
+- **Upstream service:** EOX WMTS, `https://tiles.maps.eox.at/wmts/1.0.0/`, layer `s2cloudless-2025_3857` (GoogleMapsCompatible), registered in `crates/oia-app/src/globe/imagery.rs` as the global detail tier. Capabilities checked 2026-11-03.
+- **Licence:** Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International for non-commercial use, as stated in the layer's capabilities abstract and the EOX licence summary (https://cloudless.eox.at/documentation/license). Commercial use requires a licence from EOX. The licence covers the imagery, not OIA's code.
+- **Attribution (shown in the instrument whenever the tier is drawn):** "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2025)".
+- **Scope in repository:** No tiles are stored. The page requests them at runtime for the visible view only, from imagery level 7 or 8 to 14 (the 10 m source resolution), with at most six requests in flight. Turning detail off in the Imagery tab stops all requests to this origin.
+
+---
+
+## 6. USGS The National Map orthoimagery — Globe detail imagery (United States)
+
+- **Upstream service:** USGS The National Map, `https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer` (tile cache to 1:9,028, level 16), registered in `crates/oia-app/src/globe/imagery.rs` as the United States detail tier, limited to the conterminous United States rectangle. Service description checked 2026-11-03 ("Data refreshed June, 2024").
+- **Licence:** Public domain (U.S. Government work; USDA National Agriculture Imagery Program and USGS), per the USGS copyrights and credits policy (https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits). The service states that its 10 m Alaska SPOT imagery is licence-restricted; Alaska lies outside the registered rectangle and is not requested.
+- **Attribution (shown in the instrument whenever the tier is drawn):** "USDA, USGS The National Map: Orthoimagery". USGS and USDA endorsement is not implied.
+- **Scope in repository:** No tiles are stored. The page requests them at runtime for the visible view only, from imagery level 13 to 16, with at most six requests in flight. Turning detail off stops all requests to this origin.

@@ -5,13 +5,23 @@
 //! The page never composes a tile URL from anything that is not in this registry.
 //! Dates are validated here so a day outside the published coverage is refused as a
 //! documented gap rather than drawn as an empty scene (`AGENTS.md` §2).
+//!
+//! Above the selected basemap sits a resolution ladder of detail sources: real imagery
+//! with a finer source resolution that the renderer draws only once the camera is close
+//! enough for it to add detail. Each detail source keeps its own capture statement,
+//! licence and coverage rectangle; none of them is a resampled copy of the basemap, and
+//! none of them shares the basemap's capture date.
 
 use crate::local_tools::{Result, ToolError};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// The only remote origin registered for globe imagery in this slice.
+/// NASA GIBS: the basemap origin.
 pub const GIBS_ORIGIN: &str = "https://gibs.earthdata.nasa.gov";
+/// EOX IT Services: the global detail origin (Sentinel-2 cloudless).
+pub const EOX_ORIGIN: &str = "https://tiles.maps.eox.at";
+/// USGS The National Map: the United States orthoimagery origin.
+pub const USGS_TNM_ORIGIN: &str = "https://basemap.nationalmap.gov";
 /// When the GIBS `epsg3857/best` WMTS capabilities were last read for this registry.
 pub const CAPABILITIES_CHECKED_ON: &str = "2026-11-03";
 /// Acknowledgement text GIBS asks users to display.
@@ -22,13 +32,45 @@ const GIBS_LICENSE: &str = "U.S. Government work, public domain (NASA Earthdata 
 
 pub const SOURCE_BLUE_MARBLE: &str = "gibs-bluemarble";
 pub const SOURCE_VIIRS_TRUE_COLOR: &str = "gibs-viirs-truecolor";
+pub const SOURCE_S2_CLOUDLESS: &str = "eox-s2cloudless-2025";
+pub const SOURCE_USGS_ORTHO: &str = "usgs-tnm-orthoimagery";
+
+/// Requests in flight per origin. GIBS asks for no bulk use; the two detail origins publish
+/// no rate figure, so they get the same conservative bound (Cesium's default is 18).
+const REQUESTS_IN_FLIGHT: u8 = 6;
+
+/// The globe level from which the United States orthoimagery is drawn: the level where the
+/// Sentinel-2 tier (10 m source) stops adding detail.
+const USGS_FROM_GLOBE_LEVEL: u8 = 13;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ImageryRole {
-    /// Only basemaps are registered; an overlay role returns when a source that serves
-    /// transparent tiles is registered (see the withdrawn coastline layer in the note).
+    /// One is selected by the user and drawn at every zoom. An overlay role returns when a
+    /// source that serves transparent tiles is registered (see the withdrawn coastline layer).
     Basemap,
+    /// Drawn above the basemap only from [`DetailTier::from_globe_level`] down, where its finer
+    /// source resolution adds real detail.
+    Detail,
+}
+
+/// How the renderer fills the URL template.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TileAddressing {
+    /// WMTS REST: `{TileMatrixSet}`, `{TileMatrix}`, `{TileRow}`, `{TileCol}`.
+    WmtsRest,
+    /// Web Mercator `{z}/{y}/{x}`, rows counted from the north.
+    Xyz,
+}
+
+/// A WGS84 longitude/latitude box in degrees, west < east (no antimeridian crossing).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct GeoRectangle {
+    pub west_deg: f64,
+    pub south_deg: f64,
+    pub east_deg: f64,
+    pub north_deg: f64,
 }
 
 /// An inclusive, daily date range published by the provider.
@@ -45,17 +87,27 @@ pub struct TimeDimension {
     pub coverage: Vec<DateCoverage>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ImagerySource {
     pub id: &'static str,
     pub label: &'static str,
     pub provider: &'static str,
     pub origin: &'static str,
     pub layer: &'static str,
-    /// WMTS REST template; `{Time}` is substituted here, the rest by the renderer.
+    /// Tile URL template; `{Time}` is substituted here, the rest by the renderer.
     pub url_template: &'static str,
+    pub addressing: TileAddressing,
+    /// WMTS tile matrix set; empty for [`TileAddressing::Xyz`].
     pub tile_matrix_set: &'static str,
+    /// Deepest Web Mercator level the provider publishes with source pixels. Closer than
+    /// that the renderer magnifies the last level; it never requests resampled tiles.
     pub maximum_level: u8,
+    /// Nominal source ground sample distance in metres, as the provider states it. Pixels on
+    /// screen may be coarser (tile pyramid); they are never finer than this.
+    pub source_resolution_m: f64,
+    /// Where the provider publishes tiles; `None` is global. Nothing is requested outside it.
+    pub coverage_rectangle: Option<GeoRectangle>,
+    pub max_requests_in_flight: u8,
     pub format: &'static str,
     pub role: ImageryRole,
     pub time: Option<TimeDimension>,
@@ -75,6 +127,14 @@ pub struct ImagerySelection {
     pub date: Option<String>,
     #[serde(default)]
     pub coastlines: bool,
+    /// Draw the detail ladder when zoomed in. Off keeps only the selected basemap (for
+    /// example a single VIIRS day) at every zoom.
+    #[serde(default = "detail_default")]
+    pub detail: bool,
+}
+
+const fn detail_default() -> bool {
+    true
 }
 
 impl Default for ImagerySelection {
@@ -83,11 +143,26 @@ impl Default for ImagerySelection {
             source_id: SOURCE_BLUE_MARBLE.to_owned(),
             date: None,
             coastlines: false,
+            detail: detail_default(),
         }
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+/// A detail source as the renderer should draw it over the selected basemap.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct DetailTier {
+    pub source: ImagerySource,
+    pub url: String,
+    /// Cesium globe surface tile level (geographic quadtree on the WGS84 ellipsoid) from
+    /// which this tier is drawn; coarser surface tiles show only the layers below it. Imagery
+    /// levels coarser than this are never requested for the tier, so where the provider has
+    /// no tile the layer below shows instead of a coarse ancestor tile magnified on top.
+    pub from_globe_level: u8,
+    /// How this tier differs in time from the selected basemap, in plain words.
+    pub time_relation: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ActiveImagery {
     pub source: ImagerySource,
     pub date: Option<String>,
@@ -97,10 +172,14 @@ pub struct ActiveImagery {
     pub coverage_note: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ImageryView {
     pub active: ActiveImagery,
     pub coastlines: Option<ActiveImagery>,
+    /// Whether the user asked for the detail ladder.
+    pub detail_enabled: bool,
+    /// Coarse to fine; empty when `detail_enabled` is false.
+    pub detail: Vec<DetailTier>,
     pub sources: Vec<ImagerySource>,
     pub acknowledgement: &'static str,
     /// Today's UTC civil date, so the page can bound its date control without a clock of its own.
@@ -129,8 +208,12 @@ pub fn sources() -> Vec<ImagerySource> {
             origin: GIBS_ORIGIN,
             layer: "BlueMarble_ShadedRelief_Bathymetry",
             url_template: "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_ShadedRelief_Bathymetry/default/{TileMatrixSet}/{TileMatrix}/{TileRow}/{TileCol}.jpeg",
+            addressing: TileAddressing::WmtsRest,
             tile_matrix_set: "GoogleMapsCompatible_Level8",
             maximum_level: 8,
+            source_resolution_m: 500.0,
+            coverage_rectangle: None,
+            max_requests_in_flight: REQUESTS_IN_FLIGHT,
             format: "image/jpeg",
             role: ImageryRole::Basemap,
             time: None,
@@ -147,8 +230,12 @@ pub fn sources() -> Vec<ImagerySource> {
             origin: GIBS_ORIGIN,
             layer: "VIIRS_SNPP_CorrectedReflectance_TrueColor",
             url_template: "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_SNPP_CorrectedReflectance_TrueColor/default/{Time}/{TileMatrixSet}/{TileMatrix}/{TileRow}/{TileCol}.jpeg",
+            addressing: TileAddressing::WmtsRest,
             tile_matrix_set: "GoogleMapsCompatible_Level9",
             maximum_level: 9,
+            source_resolution_m: 250.0,
+            coverage_rectangle: None,
+            max_requests_in_flight: REQUESTS_IN_FLIGHT,
             format: "image/jpeg",
             role: ImageryRole::Basemap,
             time: Some(TimeDimension {
@@ -168,6 +255,61 @@ pub fn sources() -> Vec<ImagerySource> {
             license: GIBS_LICENSE,
             attribution: "NASA GIBS / NASA Worldview, VIIRS SNPP Corrected Reflectance",
             terms_url: GIBS_TERMS_URL,
+            capabilities_checked_on: CAPABILITIES_CHECKED_ON,
+        },
+        ImagerySource {
+            id: SOURCE_S2_CLOUDLESS,
+            label: "Sentinel-2 cloudless 2025 (EOX), 10 m",
+            provider: "EOX IT Services GmbH",
+            origin: EOX_ORIGIN,
+            layer: "s2cloudless-2025_3857",
+            url_template: "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/GoogleMapsCompatible/{z}/{y}/{x}.jpg",
+            addressing: TileAddressing::Xyz,
+            tile_matrix_set: "",
+            // 10 m source pixels; level 14 is 9.55 m per pixel at the equator. EOX serves
+            // deeper levels, but they are upsampled from the same pixels, so none is requested.
+            maximum_level: 14,
+            source_resolution_m: 10.0,
+            coverage_rectangle: None,
+            max_requests_in_flight: REQUESTS_IN_FLIGHT,
+            format: "image/jpeg",
+            role: ImageryRole::Detail,
+            time: None,
+            capture_statement: "Cloud-free yearly mosaic built by EOX from Copernicus Sentinel-2 scenes acquired during 2025, choosing cloud-free pixels per location. Different places, and neighbouring tiles, come from different days of that year; no pixel carries its acquisition date here. Natural colour, 10 m source pixels. It shows nothing from the case period.",
+            license: "CC BY-NC-SA 4.0 for non-commercial use; commercial use needs an EOX licence (https://cloudless.eox.at)",
+            attribution: "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2025)",
+            terms_url: "https://cloudless.eox.at/documentation/license",
+            capabilities_checked_on: CAPABILITIES_CHECKED_ON,
+        },
+        ImagerySource {
+            id: SOURCE_USGS_ORTHO,
+            label: "USGS The National Map orthoimagery (United States), about 1 m",
+            provider: "USGS The National Map",
+            origin: USGS_TNM_ORIGIN,
+            layer: "USGSImageryOnly",
+            url_template: "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}",
+            addressing: TileAddressing::Xyz,
+            tile_matrix_set: "",
+            // The service is cached to 1:9,028 (level 16, 2.39 m per pixel at the equator,
+            // about 1.8 m at 40° N); deeper levels answer HTTP 404.
+            maximum_level: 16,
+            source_resolution_m: 1.0,
+            // Conterminous United States. Inside the box, places the cache has no tile for
+            // (sea, Canada, Mexico) answer HTTP 404 and are counted as not published.
+            coverage_rectangle: Some(GeoRectangle {
+                west_deg: -125.0,
+                south_deg: 24.3,
+                east_deg: -66.8,
+                north_deg: 49.5,
+            }),
+            max_requests_in_flight: REQUESTS_IN_FLIGHT,
+            format: "image/jpeg",
+            role: ImageryRole::Detail,
+            time: None,
+            capture_statement: "Orthorectified aerial photography, mostly from the USDA National Agriculture Imagery Program (NAIP), 1 m, leaf-on, flown 2017 to 2021 for the conterminous United States (service refreshed June 2024). The flight year differs by state and is not identified per tile here. Aerial, not satellite. It shows nothing from the case period.",
+            license: "Public domain (USDA and USGS, U.S. Government work)",
+            attribution: "USDA, USGS The National Map: Orthoimagery",
+            terms_url: "https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits",
             capabilities_checked_on: CAPABILITIES_CHECKED_ON,
         },
     ]
@@ -271,12 +413,15 @@ fn days_in_month(year: i64, month: u8) -> u8 {
 }
 
 fn find(id: &str) -> Result<ImagerySource> {
-    sources().into_iter().find(|s| s.id == id).ok_or_else(|| {
-        ToolError::new(
-            "imagery_unknown",
-            format!("{id:?} is not a registered imagery source."),
-        )
-    })
+    sources()
+        .into_iter()
+        .find(|s| s.id == id && s.role == ImageryRole::Basemap)
+        .ok_or_else(|| {
+            ToolError::new(
+                "imagery_unknown",
+                format!("{id:?} is not a registered basemap source."),
+            )
+        })
 }
 
 fn activate(
@@ -334,6 +479,34 @@ fn activate(
     })
 }
 
+/// The detail tiers for a basemap, coarse to fine. The global Sentinel-2 tier starts one
+/// globe level before the basemap runs out of source pixels (Cesium's globe level is about
+/// one less than the Web Mercator imagery level it draws); the United States orthoimagery
+/// starts where the Sentinel-2 tier stops adding detail.
+fn detail_ladder(basemap: &ActiveImagery) -> Vec<DetailTier> {
+    let basemap_time = match &basemap.date {
+        Some(date) => format!(
+            "Not the selected day: where this tier is drawn it replaces the {date} UTC {} pixels with imagery from another period.",
+            basemap.source.layer
+        ),
+        None => "A different capture period from the basemap composite.".to_owned(),
+    };
+    let from = |source: &ImagerySource| match source.id {
+        SOURCE_USGS_ORTHO => USGS_FROM_GLOBE_LEVEL,
+        _ => basemap.source.maximum_level.saturating_sub(1),
+    };
+    sources()
+        .into_iter()
+        .filter(|s| s.role == ImageryRole::Detail)
+        .map(|source| DetailTier {
+            url: source.url_template.to_owned(),
+            from_globe_level: from(&source),
+            time_relation: basemap_time.clone(),
+            source,
+        })
+        .collect()
+}
+
 /// Validates a selection against the registry and today's date.
 pub fn resolve(selection: &ImagerySelection, today: CivilDate) -> Result<ImageryView> {
     let source = find(&selection.source_id)?;
@@ -347,9 +520,16 @@ pub fn resolve(selection: &ImagerySelection, today: CivilDate) -> Result<Imagery
         ));
     }
     let coastlines = None;
+    let detail = if selection.detail {
+        detail_ladder(&active)
+    } else {
+        Vec::new()
+    };
     Ok(ImageryView {
         active,
         coastlines,
+        detail_enabled: selection.detail,
+        detail,
         sources: sources(),
         acknowledgement: GIBS_ACKNOWLEDGEMENT,
         today_utc: today.to_string(),
@@ -359,6 +539,9 @@ pub fn resolve(selection: &ImagerySelection, today: CivilDate) -> Result<Imagery
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every registered origin; the CSP must allow exactly these.
+    const REGISTERED_ORIGINS: [&str; 3] = [GIBS_ORIGIN, EOX_ORIGIN, USGS_TNM_ORIGIN];
 
     fn day(text: &str) -> CivilDate {
         CivilDate::parse(text).unwrap_or(CivilDate {
@@ -377,6 +560,7 @@ mod tests {
             source_id: SOURCE_VIIRS_TRUE_COLOR.to_owned(),
             date: Some(date.to_owned()),
             coastlines: false,
+            detail: false,
         };
         assert_eq!(
             resolve(&select("2022-08-01"), today).err().map(|e| e.code),
@@ -417,5 +601,81 @@ mod tests {
             CivilDate::from_days(day("2024-02-29").to_days()),
             day("2024-02-29")
         );
+    }
+
+    // GEO-02 / ADR 0008 §10: the detail ladder is real registered imagery, coarse to fine,
+    // labelled as another capture period than a selected day, absent when turned off, never
+    // selectable as the basemap; and the CSP allows exactly the registered origins.
+    #[test]
+    fn detail_ladder_and_csp_follow_registry() {
+        let today = day("2026-11-03");
+        let viirs = ImagerySelection {
+            source_id: SOURCE_VIIRS_TRUE_COLOR.to_owned(),
+            date: Some("2026-10-01".to_owned()),
+            coastlines: false,
+            detail: true,
+        };
+        let view = resolve(&viirs, today).ok();
+        let tiers: Vec<_> = view
+            .as_ref()
+            .map(|v| {
+                v.detail
+                    .iter()
+                    .map(|t| (t.source.id, t.from_globe_level))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(tiers, [(SOURCE_S2_CLOUDLESS, 8), (SOURCE_USGS_ORTHO, 13)]);
+        assert!(view.is_some_and(|v| {
+            v.detail.iter().all(|t| {
+                t.time_relation.contains("2026-10-01")
+                    && t.source.source_resolution_m < v.active.source.source_resolution_m
+            })
+        }));
+        let off = resolve(
+            &ImagerySelection {
+                detail: false,
+                ..viirs.clone()
+            },
+            today,
+        )
+        .ok();
+        assert!(off.is_some_and(|v| v.detail.is_empty() && !v.detail_enabled));
+        let as_basemap = ImagerySelection {
+            source_id: SOURCE_USGS_ORTHO.to_owned(),
+            ..viirs
+        };
+        assert_eq!(
+            resolve(&as_basemap, today).err().map(|e| e.code),
+            Some("imagery_unknown")
+        );
+
+        let conf = include_str!("../../tauri.conf.json");
+        let csp = conf
+            .split("\"csp\": \"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .unwrap_or_default();
+        for directive in ["connect-src", "img-src"] {
+            let remote: Vec<&str> = csp
+                .split(';')
+                .map(str::trim)
+                .find(|d| d.starts_with(directive))
+                .map(|d| {
+                    d.split_whitespace()
+                        .filter(|t| t.starts_with("https://"))
+                        .collect()
+                })
+                .unwrap_or_default();
+            assert_eq!(remote, REGISTERED_ORIGINS, "{directive}");
+        }
+        for source in sources() {
+            assert!(REGISTERED_ORIGINS.contains(&source.origin));
+            assert!(
+                source
+                    .url_template
+                    .starts_with(&format!("{}/", source.origin))
+            );
+        }
     }
 }

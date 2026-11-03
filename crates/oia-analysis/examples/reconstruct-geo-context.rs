@@ -2,10 +2,10 @@
 //!
 //! Demonstrates:
 //! 1. Weather observation vs. forecast distinction and sounding profiles.
-//! 2. Direct aircraft track observations vs. bounded interpolated states with uncertainty growth.
-//! 3. Maritime vessel tracks and active navigation notices.
-//! 4. Empty-scene prevention: absent tracks produce `InconclusiveUnobserved` when sensors are missing.
-//! 5. Dateline-crossing spatial query envelope.
+//! 2. Direct aircraft track observations vs. bounded spherical great-circle interpolated states with uncertainty growth.
+//! 3. Maritime vessel tracks and active navigation notices with dateline-aware spatial intersection.
+//! 4. Empty-scene prevention: absent tracks produce `InconclusiveUnobserved` when sensors are missing, offline, or stale.
+//! 5. Dateline-crossing spatial query envelope (crossing 180° antimeridian).
 
 use oia_analysis::geo_context::{
     AircraftTrack, AircraftTrackPoint, Altitude, AltitudeBand, AltitudeReference, CloudCoverage,
@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let limits = ContextLimits::default();
 
-    // 1. Spatio-temporal query envelope over the Pacific crossing the 180° antimeridian (A04)
+    // 1. Spatio-temporal query envelope crossing the 180° antimeridian (A04)
     // Spans from 175.0°E to -175.0°W across the dateline
     let envelope_box = GeoBoundingBoxWgs84::new(20.0, 30.0, 175.0, -175.0)?;
     let time_window = TimeWindow::new(1_700_000_000_000, 1_700_003_600_000)?; // 1 hour window
@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let observation = WeatherRecord {
-        source_id: OpaqueId::new("weather:synth:station-01")?,
+        source_id: OpaqueId::new("synth:source:weather-station-01")?,
         version_id: VersionId::new("v2023-11-14t2000z")?,
         station_id: OpaqueId::new("station:synth-pacific-01")?,
         station_position: weather_station_pos,
@@ -95,7 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let forecast = WeatherRecord {
-        source_id: OpaqueId::new("weather:synth:forecast-model")?,
+        source_id: OpaqueId::new("synth:source:forecast-model-01")?,
         version_id: VersionId::new("run-20231114-12z")?,
         station_id: OpaqueId::new("grid:25n-178w")?,
         station_position: GeoPosition::new(
@@ -123,10 +123,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // 3. Aircraft Track with direct observations and an interpolated state
+    // Unallocated ICAO test address (000000-003FFF reserved block per ICAO Annex 10)
     let track_point_1 = AircraftTrackPoint {
-        transmit_instant_utc_ms: 1_700_000_500_000,
-        receiver_instant_utc_ms: 1_700_000_500_050,
-        retrieval_instant_utc_ms: 1_700_000_500_100,
+        transmit_instant_utc_ms: Some(1_700_000_500_000),
+        receiver_instant_utc_ms: Some(1_700_000_500_050),
+        retrieval_instant_utc_ms: Some(1_700_000_500_100),
+        target_interpolation_instant_utc_ms: None,
         position: GeoPointWgs84::new(24.5, 178.5)?,
         barometric_altitude: Some(Altitude::new(
             10_668.0,
@@ -136,15 +138,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ground_speed_mps: Some(240.0),
         track_angle_deg: Some(85.0),
         vertical_rate_mps: Some(0.0),
-        squawk_octal: Some(0o7712),
+        squawk_octal: Some("7712".to_string()),
         observation_source: ObservationSource::DirectObservation,
         raw_source_hash: Some([0x11; 32]),
     };
 
     let track_point_2 = AircraftTrackPoint {
-        transmit_instant_utc_ms: 1_700_000_620_000, // 120 seconds later
-        receiver_instant_utc_ms: 1_700_000_620_050,
-        retrieval_instant_utc_ms: 1_700_000_620_100,
+        transmit_instant_utc_ms: Some(1_700_000_620_000), // 120 seconds later
+        receiver_instant_utc_ms: Some(1_700_000_620_050),
+        retrieval_instant_utc_ms: Some(1_700_000_620_100),
+        target_interpolation_instant_utc_ms: None,
         position: GeoPointWgs84::new(24.6, 178.8)?,
         barometric_altitude: Some(Altitude::new(
             10_668.0,
@@ -154,17 +157,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ground_speed_mps: Some(242.0),
         track_angle_deg: Some(86.0),
         vertical_rate_mps: Some(0.5),
-        squawk_octal: Some(0o7712),
+        squawk_octal: Some("7712".to_string()),
         observation_source: ObservationSource::DirectObservation,
         raw_source_hash: Some([0x22; 32]),
     };
 
     let flight_track = AircraftTrack::new(
-        "A00001",
+        "000001", // Unallocated ICAO test address
         Some("SIM101".to_string()),
         Some("SIM77W".to_string()),
         PositionSource::Adsb,
-        OpaqueId::new("adsb:synth-pacific-feeder-01")?,
+        OpaqueId::new("synth:source:feeder-01")?,
         vec![track_point_1, track_point_2],
         &limits,
     )?;
@@ -192,22 +195,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 4. Maritime vessel track
+    // Unassigned ITU MID 111 (range 000-199 has no assigned nation)
+    // Synthetic test IMO 9000003 ((9*7)%10 = 3)
     let vessel_identity = VesselIdentity {
-        mmsi: 366_000_001,
+        mmsi: 111_000_001,
         vessel_name: Some("SYNTHETIC RESEARCH VESSEL".to_string()),
-        imo_number: Some(9123453),
-        callsign: Some("WXYZ".to_string()),
+        imo_number: Some(9000003),
+        callsign: Some("SIMV01".to_string()),
         vessel_type: VesselType::Cargo,
         nav_status: NavigationalStatus::UnderwayUsingEngine,
         draught_m: Some(12.5),
     };
     let vessel_track = MaritimeVesselTrack::new(
         vessel_identity,
-        OpaqueId::new("ais:synth-constellation")?,
+        OpaqueId::new("synth:source:ais-satellite-01")?,
         vec![
             MaritimeTrackPoint {
-                transmit_instant_utc_ms: 1_700_000_000_000,
-                receiver_instant_utc_ms: 1_700_000_000_050,
+                transmit_instant_utc_ms: Some(1_700_000_000_000),
+                receiver_instant_utc_ms: Some(1_700_000_000_050),
+                retrieval_instant_utc_ms: Some(1_700_000_000_100),
+                target_interpolation_instant_utc_ms: None,
                 position: GeoPointWgs84::new(22.0, 177.0)?,
                 speed_over_ground_mps: Some(9.5),
                 course_over_ground_deg: Some(45.0),
@@ -215,8 +222,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 observation_source: ObservationSource::DirectObservation,
             },
             MaritimeTrackPoint {
-                transmit_instant_utc_ms: 1_700_001_800_000,
-                receiver_instant_utc_ms: 1_700_001_800_050,
+                transmit_instant_utc_ms: Some(1_700_001_800_000),
+                receiver_instant_utc_ms: Some(1_700_001_800_050),
+                retrieval_instant_utc_ms: Some(1_700_001_800_100),
+                target_interpolation_instant_utc_ms: None,
                 position: GeoPointWgs84::new(22.1, 177.2)?,
                 speed_over_ground_mps: Some(9.6),
                 course_over_ground_deg: Some(46.0),
@@ -229,8 +238,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 5. Navigation Notice: Rocket Launch Corridor
     let notice = NavigationNotice {
-        notice_id: OpaqueId::new("notam:synth-pac-launch-01")?,
-        issuing_authority: "Synthetic Aviation Authority".to_string(),
+        notice_id: OpaqueId::new("notam:synth-launch-corridor-01")?,
+        issuing_authority: "Synthetic Aviation & Space Authority".to_string(),
         notice_kind: NoticeKind::RocketLaunchCorridor,
         issuance_instant_utc_ms: 1_699_990_000_000,
         retrieval_instant_utc_ms: 1_700_000_000_000,
@@ -248,7 +257,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 6. Reconstruction with sensor coverage
     let sensor_mask = SensorCoverageMask {
         sensor_id: OpaqueId::new("sensor:synth-pacific-net")?,
-        source_id: OpaqueId::new("source:synth-oceanic")?,
+        source_id: OpaqueId::new("synth:source:oceanic-radar-01")?,
         coverage_bounds: GeoBoundingBoxWgs84::new(15.0, 35.0, 170.0, -170.0)?,
         altitude_band: Some(AltitudeBand::new(
             Altitude::new(0.0, AltitudeReference::OrthometricMsl)?,
@@ -257,7 +266,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         operational_window: TimeWindow::new(1_699_900_000_000, 1_701_000_000_000)?,
         sensor_type: PositionSource::Adsb,
         is_operational: true,
-        last_feed_update_utc_ms: 1_700_000_590_000,
+        last_feed_update_utc_ms: 1_700_004_000_000, // Covers through envelope end (1_700_003_600_000)
     };
 
     let weather_slice = [observation, forecast];

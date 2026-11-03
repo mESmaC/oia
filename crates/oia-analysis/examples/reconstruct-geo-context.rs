@@ -7,13 +7,17 @@
 //! 4. Empty-scene prevention: absent tracks produce `InconclusiveUnobserved` when sensors are missing, offline, or stale.
 //! 5. Dateline-crossing spatial query envelope (crossing 180° antimeridian).
 
+use oia_analysis::geo_context::provisional::{
+    Altitude, AltitudeBand, AltitudeReference, GeoBoundingBoxWgs84, GeoPointWgs84, GeoPosition,
+    TimeWindow,
+};
 use oia_analysis::geo_context::{
-    AircraftTrack, AircraftTrackPoint, Altitude, AltitudeBand, AltitudeReference, CloudCoverage,
-    CloudLayer, ContextLimits, ContextReconstructionInputs, GeoBoundingBoxWgs84, GeoPointWgs84,
-    GeoPosition, METHOD_ID, MaritimeTrackPoint, MaritimeVesselTrack, NavigationNotice,
-    NavigationalStatus, NoticeKind, NoticeSpatialBoundary, ObservationSource, PositionSource,
-    SceneTrafficAssessment, SensorCoverageMask, SoundingLevel, SpatioTemporalEnvelope, TimeWindow,
-    VesselIdentity, VesselType, WeatherRecord, WeatherReportKind, reconstruct_geographic_context,
+    AircraftTrack, AircraftTrackPoint, CloudCoverage, CloudLayer, ContextLimits,
+    ContextReconstructionInputs, METHOD_ID, MaritimeTrackPoint, MaritimeVesselTrack,
+    NavigationNotice, NavigationalStatus, NoticeKind, NoticeSpatialBoundary, ObservationSource,
+    PositionSource, SceneTrafficAssessment, SensorCoverageMask, SoundingLevel,
+    SpatioTemporalEnvelope, VesselIdentity, VesselType, WeatherRecord, WeatherReportKind,
+    reconstruct_geographic_context,
 };
 use oia_domain::{OpaqueId, VersionId};
 
@@ -195,12 +199,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 4. Maritime vessel track
-    // Unassigned ITU MID 111 (range 000-199 has no assigned nation)
-    // Synthetic test IMO 9000003 ((9*7)%10 = 3)
+    // Synthetic test vessel: unassigned ITU MID 111 (SAR prefix under ITU-R M.585)
+    // No commercial IMO number is assigned.
     let vessel_identity = VesselIdentity {
         mmsi: 111_000_001,
         vessel_name: Some("SYNTHETIC RESEARCH VESSEL".to_string()),
-        imo_number: Some(9000003),
+        imo_number: None,
         callsign: Some("SIMV01".to_string()),
         vessel_type: VesselType::Cargo,
         nav_status: NavigationalStatus::UnderwayUsingEngine,

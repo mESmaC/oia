@@ -1,12 +1,16 @@
 //! Targeted contract tests for geographic context reconstruction (`GEO-02`, `GEO-05`, `INTEL-03`, `A04`).
 
+use oia_analysis::geo_context::provisional::{
+    Altitude, AltitudeBand, AltitudeReference, GeoBoundingBoxWgs84, GeoPointWgs84, GeoPosition,
+    TimeWindow,
+};
 use oia_analysis::geo_context::{
-    AircraftTrack, AircraftTrackPoint, Altitude, AltitudeBand, AltitudeReference, CloudCoverage,
-    CloudLayer, ContextLimits, ContextReconstructionInputs, GeoBoundingBoxWgs84, GeoContextError,
-    GeoPointWgs84, GeoPosition, MaritimeTrackPoint, MaritimeVesselTrack, NavigationNotice,
-    NavigationalStatus, NoticeKind, NoticeSpatialBoundary, ObservationSource, PositionSource,
+    AircraftTrack, AircraftTrackPoint, CloudCoverage, CloudLayer, ContextLimits,
+    ContextReconstructionInputs, GeoContextError, MaritimeTrackPoint, MaritimeVesselTrack,
+    NavigationNotice, NavigationalStatus, NoticeEnvelopeOverlap, NoticeKind,
+    NoticePositionIntersection, NoticeSpatialBoundary, ObservationSource, PositionSource,
     SceneTrafficAssessment, SensorCoverageMask, SoundingLevel, SpatioTemporalEnvelope, StopReason,
-    TimeWindow, UnobservedReason, VesselIdentity, VesselType, WeatherRecord, WeatherReportKind,
+    UnobservedReason, VesselIdentity, VesselType, WeatherRecord, WeatherReportKind,
     reconstruct_geographic_context, spherical_slerp,
 };
 use oia_domain::{OpaqueId, VersionId};
@@ -346,7 +350,7 @@ fn test_spherical_slerp_great_circle_accuracy() -> Result<(), Box<dyn std::error
     let p1 = GeoPointWgs84::new(79.0, 0.0)?;
     let p2 = GeoPointWgs84::new(79.0, 20.0)?;
 
-    let mid = spherical_slerp(p1, p2, 0.5);
+    let mid = spherical_slerp(p1, p2, 0.5)?;
 
     // Great circle bows northward towards the pole from latitude 79.0°
     assert!(mid.latitude_deg() > 79.0);
@@ -364,12 +368,12 @@ fn test_spherical_slerp_great_circle_accuracy() -> Result<(), Box<dyn std::error
 #[test]
 fn test_maritime_vessel_track_and_interpolation() -> Result<(), Box<dyn std::error::Error>> {
     let limits = ContextLimits::default();
-    // Unallocated ITU MID 111 (000-199 unassigned)
-    // Synthetic test IMO 9000003 ((9*7)%10 = 3)
+    // Unallocated ITU MID 111 (SAR prefix under ITU-R M.585)
+    // No commercial IMO number is assigned.
     let identity = VesselIdentity {
         mmsi: 111_987_654,
         vessel_name: Some("SYNTHETIC RESEARCH SHIP".to_string()),
-        imo_number: Some(9000003),
+        imo_number: None,
         callsign: Some("SIMV01".to_string()),
         vessel_type: VesselType::SearchAndRescue,
         nav_status: NavigationalStatus::UnderwayUsingEngine,
@@ -435,9 +439,9 @@ fn test_maritime_vessel_track_and_interpolation() -> Result<(), Box<dyn std::err
     );
     assert!(matches!(bad_mmsi, Err(GeoContextError::InvalidMmsi(12345))));
 
-    // Deliberately failing IMO check digit (9876542 instead of 9876543)
+    // Deliberately failing IMO check digit: for 1_000_000, 1*7 % 10 = 7 != 0
     let bad_imo_identity = VesselIdentity {
-        imo_number: Some(9876542),
+        imo_number: Some(1_000_000),
         ..identity
     };
     let bad_imo = MaritimeVesselTrack::new(
@@ -448,7 +452,7 @@ fn test_maritime_vessel_track_and_interpolation() -> Result<(), Box<dyn std::err
     );
     assert!(matches!(
         bad_imo,
-        Err(GeoContextError::InvalidImoNumber(9876542))
+        Err(GeoContextError::InvalidImoNumber(1_000_000))
     ));
 
     Ok(())
@@ -593,7 +597,10 @@ fn test_navigation_notice_dateline_boundary_intersection() -> Result<(), Box<dyn
         None,
         TimeWindow::new(1_700_000_000_000, 1_700_010_000_000)?,
     );
-    assert!(notice.overlaps_envelope(&envelope));
+    assert_eq!(
+        notice.overlaps_envelope(&envelope),
+        NoticeEnvelopeOverlap::DefiniteOverlap
+    );
 
     Ok(())
 }
@@ -752,6 +759,226 @@ fn test_cancellation_resource_limits_and_overflow_safety() -> Result<(), Box<dyn
         ..ContextLimits::default()
     };
     assert!(bad_limits.validate().is_err());
+
+    Ok(())
+}
+
+/// N1 Contract: A vessel operating at sea level cannot be assigned 0m in an ellipsoidal datum (N1).
+/// Against an ellipsoidal band, vertical overlap is unresolvable and must yield InconclusiveUnobserved.
+#[test]
+fn test_n1_vessel_surface_altitude_and_ellipsoid_datum_inconclusive()
+-> Result<(), Box<dyn std::error::Error>> {
+    let limits = ContextLimits::default();
+    let bbox = GeoBoundingBoxWgs84::new(10.0, 12.0, 20.0, 22.0)?;
+    let time_window = TimeWindow::new(1_000_000, 1_200_000)?;
+
+    // Query envelope uses an ellipsoidal altitude band [10m, 1000m]
+    let ellipsoid_band = AltitudeBand::new(
+        Altitude::new(10.0, AltitudeReference::Wgs84Ellipsoid)?,
+        Altitude::new(1000.0, AltitudeReference::Wgs84Ellipsoid)?,
+    )?;
+    let envelope = SpatioTemporalEnvelope::new(bbox, Some(ellipsoid_band), time_window);
+
+    // Vessel inside the 2D bounding box and time window
+    let identity = VesselIdentity {
+        mmsi: 111_000_002,
+        vessel_name: Some("SYNTHETIC PATROL".to_string()),
+        imo_number: None,
+        callsign: Some("SIMV02".to_string()),
+        vessel_type: VesselType::SearchAndRescue,
+        nav_status: NavigationalStatus::UnderwayUsingEngine,
+        draught_m: Some(5.0),
+    };
+    let pt = MaritimeTrackPoint {
+        transmit_instant_utc_ms: Some(1_100_000),
+        receiver_instant_utc_ms: Some(1_100_050),
+        retrieval_instant_utc_ms: Some(1_100_100),
+        target_interpolation_instant_utc_ms: None,
+        position: GeoPointWgs84::new(11.0, 21.0)?, // Inside 2D box
+        speed_over_ground_mps: Some(8.0),
+        course_over_ground_deg: Some(90.0),
+        true_heading_deg: Some(90.0),
+        observation_source: ObservationSource::DirectObservation,
+    };
+    let vessel_track = MaritimeVesselTrack::new(
+        identity,
+        OpaqueId::new("synth:source:ais-satellite")?,
+        vec![pt],
+        &limits,
+    )?;
+
+    // Fully active sensor mask covering the envelope horizontally and vertically
+    let sensor = SensorCoverageMask {
+        sensor_id: OpaqueId::new("sensor:synth-radar-01")?,
+        source_id: OpaqueId::new("synth:source:provider-01")?,
+        coverage_bounds: GeoBoundingBoxWgs84::new(9.0, 13.0, 19.0, 23.0)?,
+        altitude_band: Some(AltitudeBand::new(
+            Altitude::new(0.0, AltitudeReference::Wgs84Ellipsoid)?,
+            Altitude::new(20_000.0, AltitudeReference::Wgs84Ellipsoid)?,
+        )?),
+        operational_window: TimeWindow::new(900_000, 1_300_000)?,
+        sensor_type: PositionSource::PrimaryRadar,
+        is_operational: true,
+        last_feed_update_utc_ms: 1_250_000,
+    };
+    let masks = [sensor];
+
+    let inputs = ContextReconstructionInputs {
+        weather_records: &[],
+        aircraft_tracks: &[],
+        vessel_tracks: &[vessel_track],
+        notices: &[],
+        sensor_masks: &masks,
+    };
+
+    let result = reconstruct_geographic_context(&envelope, &inputs, &limits, 1_250_000, None)?;
+
+    // Crucial N1 assertion: must NOT assert ObservedAbsenceWithinCoverage!
+    // Because the vessel's vertical overlap against an ellipsoidal band is not comparable.
+    assert_eq!(
+        result.traffic_assessment,
+        SceneTrafficAssessment::InconclusiveUnobserved {
+            reason: UnobservedReason::IncompleteAltitudeCoverage,
+        }
+    );
+
+    Ok(())
+}
+
+/// N2 Contract: Retrieval time must never be used as event time, and direct observations
+/// must require a transmit or receiver time (N2).
+#[test]
+fn test_n2_retrieval_time_not_event_time_and_required_tx_rx()
+-> Result<(), Box<dyn std::error::Error>> {
+    // 1. Direct aircraft observation with only retrieval time is rejected
+    let bad_pt = AircraftTrackPoint {
+        transmit_instant_utc_ms: None,
+        receiver_instant_utc_ms: None,
+        retrieval_instant_utc_ms: Some(1_700_000_000_000),
+        target_interpolation_instant_utc_ms: None,
+        position: GeoPointWgs84::new(10.0, 20.0)?,
+        barometric_altitude: None,
+        geometric_altitude: None,
+        ground_speed_mps: None,
+        track_angle_deg: None,
+        vertical_rate_mps: None,
+        squawk_octal: None,
+        observation_source: ObservationSource::DirectObservation,
+        raw_source_hash: None,
+    };
+    assert!(matches!(
+        bad_pt.validate(),
+        Err(GeoContextError::InvalidTemporalOrdering(_))
+    ));
+    // effective_instant_utc_ms returns None (never retrieval time)
+    assert_eq!(bad_pt.effective_instant_utc_ms(), None);
+
+    // 2. Direct maritime observation with only retrieval time is rejected
+    let bad_vessel_pt = MaritimeTrackPoint {
+        transmit_instant_utc_ms: None,
+        receiver_instant_utc_ms: None,
+        retrieval_instant_utc_ms: Some(1_700_000_000_000),
+        target_interpolation_instant_utc_ms: None,
+        position: GeoPointWgs84::new(10.0, 20.0)?,
+        speed_over_ground_mps: None,
+        course_over_ground_deg: None,
+        true_heading_deg: None,
+        observation_source: ObservationSource::DirectObservation,
+    };
+    assert!(matches!(
+        bad_vessel_pt.validate(),
+        Err(GeoContextError::InvalidTemporalOrdering(_))
+    ));
+    assert_eq!(bad_vessel_pt.effective_instant_utc_ms(), None);
+
+    Ok(())
+}
+
+/// N3 Contract: Notices with mixed vertical datums (e.g. SFC AGL to FL180 barometric)
+/// must be reported as vertical overlap unknown rather than dropped silently (N3).
+#[test]
+fn test_n3_mixed_datum_notice_reported_as_vertical_overlap_unknown()
+-> Result<(), Box<dyn std::error::Error>> {
+    let limits = ContextLimits::default();
+    let bbox = GeoBoundingBoxWgs84::new(10.0, 12.0, 20.0, 22.0)?;
+    let time_window = TimeWindow::new(1_000_000, 1_200_000)?;
+
+    let envelope_band = AltitudeBand::new(
+        Altitude::new(1_000.0, AltitudeReference::OrthometricMsl)?,
+        Altitude::new(3_000.0, AltitudeReference::OrthometricMsl)?,
+    )?;
+    let envelope = SpatioTemporalEnvelope::new(bbox, Some(envelope_band), time_window);
+
+    // Mixed datum notice: SFC in AGL, top in BarometricUnadjusted (FL180 ~ 5500m)
+    let mixed_notice = NavigationNotice {
+        notice_id: OpaqueId::new("notice:notam-mixed-01")?,
+        issuing_authority: "SIMULATED-CAA".to_string(),
+        notice_kind: NoticeKind::AirspaceRestriction,
+        issuance_instant_utc_ms: 950_000,
+        retrieval_instant_utc_ms: 960_000,
+        effective_window: TimeWindow::new(990_000, 1_300_000)?,
+        spatial_boundary: NoticeSpatialBoundary::BoundingBox(GeoBoundingBoxWgs84::new(
+            9.0, 13.0, 19.0, 23.0,
+        )?),
+        lower_altitude: Some(Altitude::new(0.0, AltitudeReference::AboveGroundLevel)?),
+        upper_altitude: Some(Altitude::new(
+            5500.0,
+            AltitudeReference::BarometricUnadjusted,
+        )?),
+        summary: "Mixed datum airspace restriction".to_string(),
+        raw_content_sha256: [0x55; 32],
+    };
+    mixed_notice.validate()?;
+
+    // overlaps_envelope must classify as VerticalOverlapUnknown
+    assert_eq!(
+        mixed_notice.overlaps_envelope(&envelope),
+        NoticeEnvelopeOverlap::VerticalOverlapUnknown
+    );
+
+    // intersects_position against MSL position must return VerticalOverlapUnknown
+    let test_pos = GeoPosition::new(
+        GeoPointWgs84::new(10.0, 20.0)?,
+        Some(Altitude::new(2000.0, AltitudeReference::OrthometricMsl)?),
+    );
+    assert_eq!(
+        mixed_notice.intersects_position(&test_pos, 1_000_000),
+        NoticePositionIntersection::VerticalOverlapUnknown
+    );
+
+    let inputs = ContextReconstructionInputs {
+        weather_records: &[],
+        aircraft_tracks: &[],
+        vessel_tracks: &[],
+        notices: &[mixed_notice],
+        sensor_masks: &[],
+    };
+
+    let result = reconstruct_geographic_context(&envelope, &inputs, &limits, 1_250_000, None)?;
+
+    // Crucial N3 assertion: notice is counted in vertical_overlap_unknown_count and recorded in
+    // notices_with_vertical_overlap_unknown, NOT dropped silently!
+    assert_eq!(result.active_notices.len(), 0);
+    assert_eq!(result.notices_with_vertical_overlap_unknown.len(), 1);
+    assert_eq!(result.notice_summary.active_matching_notices_count, 0);
+    assert_eq!(result.notice_summary.vertical_overlap_unknown_count, 1);
+
+    // Validation rejects NaN radius and retrieval before issuance
+    let bad_radius_notice = NavigationNotice {
+        spatial_boundary: NoticeSpatialBoundary::Circle {
+            center: GeoPointWgs84::new(10.0, 20.0)?,
+            radius_m: f64::NAN,
+        },
+        ..result.notices_with_vertical_overlap_unknown[0].clone()
+    };
+    assert!(bad_radius_notice.validate().is_err());
+
+    let bad_time_notice = NavigationNotice {
+        issuance_instant_utc_ms: 1_000_000,
+        retrieval_instant_utc_ms: 900_000, // before issuance!
+        ..result.notices_with_vertical_overlap_unknown[0].clone()
+    };
+    assert!(bad_time_notice.validate().is_err());
 
     Ok(())
 }

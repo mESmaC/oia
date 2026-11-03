@@ -147,21 +147,25 @@ impl NavigationNotice {
             match pos.altitude() {
                 Some(pos_alt) => {
                     if let Some(ref lower) = self.lower_altitude {
-                        if lower.reference() == pos_alt.reference() {
-                            if pos_alt.meters() < lower.meters() {
+                        match pos_alt.compare_in_same_reference(lower) {
+                            Ok(std::cmp::Ordering::Less) => {
                                 return NoticePositionIntersection::DoesNotIntersect;
                             }
-                        } else {
-                            return NoticePositionIntersection::VerticalOverlapUnknown;
+                            Ok(_) => {}
+                            Err(_) => {
+                                return NoticePositionIntersection::VerticalOverlapUnknown;
+                            }
                         }
                     }
                     if let Some(ref upper) = self.upper_altitude {
-                        if upper.reference() == pos_alt.reference() {
-                            if pos_alt.meters() > upper.meters() {
+                        match pos_alt.compare_in_same_reference(upper) {
+                            Ok(std::cmp::Ordering::Greater) => {
                                 return NoticePositionIntersection::DoesNotIntersect;
                             }
-                        } else {
-                            return NoticePositionIntersection::VerticalOverlapUnknown;
+                            Ok(_) => {}
+                            Err(_) => {
+                                return NoticePositionIntersection::VerticalOverlapUnknown;
+                            }
                         }
                     }
                     NoticePositionIntersection::Intersects

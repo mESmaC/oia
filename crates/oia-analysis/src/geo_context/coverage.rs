@@ -1,5 +1,7 @@
 //! Sensor surveillance coverage and empty-scene absence verification (`GEO-05`, `A04`).
 
+use std::fmt;
+
 use crate::geo_context::provisional::{AltitudeBand, GeoBoundingBoxWgs84, TimeWindow};
 use crate::geo_context::tracks::PositionSource;
 use crate::geo_context::{ContextLimits, GeoContextError, SpatioTemporalEnvelope};
@@ -39,6 +41,28 @@ pub enum UnobservedReason {
     PartialCoverageBlindSpots,
     IncompleteAltitudeCoverage,
     QueryIntervalOutsideSensorLogWindow,
+}
+
+impl fmt::Display for UnobservedReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoSensorsCoveringRegion => {
+                f.write_str("no active sensor feeds registered covering this region")
+            }
+            Self::PartialCoverageBlindSpots => {
+                f.write_str("registered sensors have horizontal blind spots across the query area")
+            }
+            Self::SensorFeedDownOrStale => {
+                f.write_str("sensor feed is down, offline, or telemetry packets are stale")
+            }
+            Self::IncompleteAltitudeCoverage => f.write_str(
+                "altitude band is not completely encompassed by sensor vertical coverage",
+            ),
+            Self::QueryIntervalOutsideSensorLogWindow => {
+                f.write_str("query time interval falls outside sensor operational logging window")
+            }
+        }
+    }
 }
 
 /// Area-level coverage verification status over a query envelope.
@@ -97,6 +121,18 @@ pub fn evaluate_sensor_coverage(
     for mask in sensor_masks {
         mask.validate()?;
 
+        // Refuse sensor feeds with last_update in the future relative to the evaluation instant
+        if mask.last_feed_update_utc_ms > evaluation_instant_utc_ms {
+            return Err(GeoContextError::InvalidTemporalOrdering(
+                "sensor feed last_feed_update_utc_ms cannot be later than evaluation_instant_utc_ms",
+            ));
+        }
+
+        // Skip sensors that do not overlap the query envelope spatially
+        if !mask.coverage_bounds.overlaps_box(&envelope.spatial_bounds) {
+            continue;
+        }
+
         // Liveness check: sensor must be operational
         if !mask.is_operational {
             any_sensor_offline = true;
@@ -119,10 +155,12 @@ pub fn evaluate_sensor_coverage(
             continue;
         }
 
-        // If evaluation_instant is after mask last update, verify feed is not stale relative to evaluation_instant
-        if evaluation_instant_utc_ms > mask.last_feed_update_utc_ms
-            && evaluation_instant_utc_ms.abs_diff(mask.last_feed_update_utc_ms)
-                > limits.max_sensor_staleness_ms
+        // Age check: applies ONLY when the envelope window reaches into or beyond the evaluation instant
+        // (i.e. real-time or in-progress evaluation). For an archived window that ended in the past,
+        // log completeness through envelope.time_window.end_utc_ms() is sufficient regardless of evaluation age.
+        if envelope.time_window.end_utc_ms() >= evaluation_instant_utc_ms
+            && evaluation_instant_utc_ms.saturating_sub(mask.last_feed_update_utc_ms)
+                > limits.max_sensor_staleness_ms as i64
         {
             any_sensor_stale = true;
             continue;

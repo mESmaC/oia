@@ -33,27 +33,14 @@ pub const METHOD_ID: &str = "oia-geo-context-reconstruction-v1";
 /// Kinematic interpolation method identifier for spherical great-circle interpolation.
 pub const INTERPOLATION_METHOD_ID: &str = "bounded-great-circle-spherical-v1";
 
-/// Mean Earth radius in metres (IUGG R1 spherical approximation).
+/// Mean Earth radius in metres (IUGG R1 spherical mean approximation; Moritz 2000).
 pub const EARTH_RADIUS_METERS: f64 = 6_371_008.8;
+
+// Maintain single definition across crate
+pub use crate::multilingual::StopReason;
 
 /// Cooperative cancellation token hook.
 pub type CancelToken<'a> = &'a mut (dyn FnMut() -> Result<(), StopReason> + 'a);
-
-/// Reason a long-running reconstruction operation was stopped cooperatively.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StopReason {
-    Cancelled,
-    DeadlineExceeded,
-}
-
-impl fmt::Display for StopReason {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Cancelled => write!(f, "operation cancelled"),
-            Self::DeadlineExceeded => write!(f, "execution deadline exceeded"),
-        }
-    }
-}
 
 /// Operational and safety bounding limits for geographic context reconstruction (`AGENTS.md` §5).
 #[derive(Debug, Clone, PartialEq)]
@@ -63,11 +50,13 @@ pub struct ContextLimits {
     pub max_notices: usize,
     pub max_weather_records: usize,
     pub max_interpolation_gap_ms: u64,
-    /// Base observation uncertainty in metres (default 15.0m, derived from RTCA DO-260B / FAA AC 20-165B
-    /// NACp >= 9 GPS containment bounds where 95% horizontal accuracy is < 30m).
+    /// Base observation uncertainty in metres (default 15.0m nominal radius / 1-sigma,
+    /// derived from RTCA DO-260B / FAA AC 20-165B Table 2-2 NACp >= 9 95% horizontal accuracy bound of < 30m;
+    /// note 14 CFR 91.227(c)(1)(i) operational minimum for ADS-B Out is NACp >= 8 / < 92.6m).
     pub base_observation_uncertainty_m: f64,
-    /// Kinetic divergence growth rate in m/s (default 2.0 m/s transport aircraft straight-line
-    /// inertial wind-drift uncertainty bound during brief dropouts).
+    /// Kinetic divergence growth rate in m/s (default 2.0 m/s operational heuristic representing
+    /// transport aircraft straight-line inertial wind-drift uncertainty bound during brief dropouts).
+    /// Note: maritime vessels currently share this default parameter unless customized in ContextLimits.
     pub interpolation_growth_rate_mps: f64,
     /// Maximum sensor feed staleness tolerance in milliseconds (default 300,000 ms = 5 minutes).
     pub max_sensor_staleness_ms: u64,
@@ -275,7 +264,7 @@ impl fmt::Display for GeoContextError {
                     "incompatible altitude datums: actual {actual:?}, expected {expected:?}"
                 )
             }
-            Self::Stopped(reason) => write!(f, "processing stopped: {reason}"),
+            Self::Stopped(reason) => write!(f, "processing stopped: {reason:?}"),
         }
     }
 }
@@ -416,6 +405,14 @@ pub struct ContextReconstructionInputs<'a> {
     pub sensor_masks: &'a [SensorCoverageMask],
 }
 
+/// Basis for vessel vertical attribution in reconstructed context (`GEO-05`, `INTEL-03`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VesselAltitudeBasis {
+    /// Assumed nominal sea surface at 0.0 m in Orthometric MSL / AGL datums.
+    /// Note: Astronomical tide and dynamic ocean topography / sea-surface height are ignored.
+    AssumedSeaSurface,
+}
+
 /// Unified reconstructed geographic context result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContextReconstructionResult {
@@ -424,6 +421,7 @@ pub struct ContextReconstructionResult {
     pub weather_summary: WeatherReconstructionSummary,
     pub aircraft_tracks: Vec<AircraftTrack>,
     pub vessel_tracks: Vec<MaritimeVesselTrack>,
+    pub vessel_altitude_basis: Option<VesselAltitudeBasis>,
     pub active_notices: Vec<NavigationNotice>,
     pub notices_with_vertical_overlap_unknown: Vec<NavigationNotice>,
     pub notice_summary: NoticeReconstructionSummary,
@@ -443,10 +441,17 @@ pub fn reconstruct_geographic_context(
     limits.validate()?;
     envelope.validate()?;
 
-    if inputs.aircraft_tracks.len() + inputs.vessel_tracks.len() > limits.max_tracks {
+    if inputs.aircraft_tracks.len() > limits.max_tracks {
         return Err(GeoContextError::LimitExceeded {
-            limit: "tracks",
-            actual: inputs.aircraft_tracks.len() + inputs.vessel_tracks.len(),
+            limit: "aircraft_tracks",
+            actual: inputs.aircraft_tracks.len(),
+            max: limits.max_tracks,
+        });
+    }
+    if inputs.vessel_tracks.len() > limits.max_tracks {
+        return Err(GeoContextError::LimitExceeded {
+            limit: "vessel_tracks",
+            actual: inputs.vessel_tracks.len(),
             max: limits.max_tracks,
         });
     }
@@ -534,7 +539,6 @@ pub fn reconstruct_geographic_context(
     let mut filtered_aircraft = Vec::new();
     let mut observed_aircraft_count = 0;
     let mut has_unresolved_altitude_observation = false;
-    let mut has_unresolved_temporal_observation = false;
 
     for track in inputs.aircraft_tracks {
         track.validate(limits)?;
@@ -544,9 +548,6 @@ pub fn reconstruct_geographic_context(
         for pt in track.points() {
             pt.validate()?;
             let Some(ts) = pt.effective_instant_utc_ms() else {
-                if pt.observation_source == ObservationSource::DirectObservation {
-                    has_unresolved_temporal_observation = true;
-                }
                 continue;
             };
             if !envelope.time_window.contains(ts) {
@@ -621,9 +622,6 @@ pub fn reconstruct_geographic_context(
         for pt in track.points() {
             pt.validate()?;
             let Some(ts) = pt.effective_instant_utc_ms() else {
-                if pt.observation_source == ObservationSource::DirectObservation {
-                    has_unresolved_temporal_observation = true;
-                }
                 continue;
             };
             if !envelope.time_window.contains(ts) {
@@ -726,10 +724,6 @@ pub fn reconstruct_geographic_context(
         SceneTrafficAssessment::InconclusiveUnobserved {
             reason: UnobservedReason::IncompleteAltitudeCoverage,
         }
-    } else if has_unresolved_temporal_observation {
-        SceneTrafficAssessment::InconclusiveUnobserved {
-            reason: UnobservedReason::QueryIntervalOutsideSensorLogWindow,
-        }
     } else {
         match coverage_status {
             AreaCoverageStatus::UncoveredNoSensorData => {
@@ -749,6 +743,12 @@ pub fn reconstruct_geographic_context(
         }
     };
 
+    let vessel_altitude_basis = if !filtered_vessels.is_empty() {
+        Some(VesselAltitudeBasis::AssumedSeaSurface)
+    } else {
+        None
+    };
+
     Ok(ContextReconstructionResult {
         method_id: METHOD_ID,
         query_envelope: envelope.clone(),
@@ -763,6 +763,7 @@ pub fn reconstruct_geographic_context(
         },
         aircraft_tracks: filtered_aircraft,
         vessel_tracks: filtered_vessels,
+        vessel_altitude_basis,
         active_notices,
         notices_with_vertical_overlap_unknown: vertical_overlap_unknown_notices,
         notice_summary,

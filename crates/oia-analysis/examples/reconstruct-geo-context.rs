@@ -288,7 +288,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let result =
-        reconstruct_geographic_context(&envelope, &inputs, &limits, 1_700_000_600_000, None)?;
+        reconstruct_geographic_context(&envelope, &inputs, &limits, 1_700_005_000_000, None)?;
 
     println!("\nReconstruction Summary:");
     println!(
@@ -327,7 +327,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sensor_masks: &[], // No sensors!
     };
     let empty_result =
-        reconstruct_geographic_context(&envelope, &empty_inputs, &limits, 1_700_000_600_000, None)?;
+        reconstruct_geographic_context(&envelope, &empty_inputs, &limits, 1_700_005_000_000, None)?;
     println!("\nEmpty-Scene Check (zero tracks, zero sensors):");
     match empty_result.traffic_assessment {
         SceneTrafficAssessment::InconclusiveUnobserved { reason } => {

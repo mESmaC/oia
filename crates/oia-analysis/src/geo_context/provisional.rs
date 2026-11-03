@@ -127,6 +127,13 @@ impl Altitude {
         Ok(Self { meters, reference })
     }
 
+    pub fn validate(&self) -> Result<(), GeoContextError> {
+        if !self.meters.is_finite() {
+            return Err(GeoContextError::NonFiniteValue("altitude.meters"));
+        }
+        Ok(())
+    }
+
     #[inline]
     #[must_use]
     pub fn meters(&self) -> f64 {
@@ -370,12 +377,13 @@ impl GeoBoundingBoxWgs84 {
         }
     }
 
-    /// Nearest point on the bounding box to a target point.
+    /// Nearest point on the bounding box to a target point via coordinate-aligned planar approximation.
     ///
-    /// NOTE: Clamping latitude and selecting the closest boundary longitude provides a fast,
-    /// coordinate-aligned rectangular approximation of the nearest point on the sphere for conservative
-    /// spatial overlap checks. At high latitudes, this planar clamp may overestimate geodesic distance
-    /// (e.g. by ~1.6 km at 60° latitude) rather than computing the exact spherical geodesic point.
+    /// NOTE: Clamping latitude and selecting the closest boundary longitude provides a fast
+    /// planar equirectangular approximation of the nearest point. At higher latitudes, this planar
+    /// approximation overestimates true spherical geodesic distance (e.g., +1.6 km at 60° latitude,
+    /// +25 km at (60°, -15°)), which can yield false negatives (spurious `NoOverlap`) for circular notices
+    /// near bounding box corners. True spherical point-to-polygon geodesic computation is deferred.
     #[must_use]
     pub fn nearest_point_to(&self, pt: GeoPointWgs84) -> GeoPointWgs84 {
         let clamped_lat = pt.lat_deg.clamp(self.south_lat_deg, self.north_lat_deg);

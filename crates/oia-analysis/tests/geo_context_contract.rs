@@ -47,7 +47,7 @@ fn test_empty_scene_contract_prevents_unfounded_absence_claim()
         &envelope,
         &inputs_no_sensors,
         &limits,
-        1_700_000_600_000,
+        1_700_005_000_000,
         None,
     )?;
     assert_eq!(
@@ -83,7 +83,7 @@ fn test_empty_scene_contract_prevents_unfounded_absence_claim()
         &envelope,
         &inputs_offline,
         &limits,
-        1_700_000_600_000,
+        1_700_005_000_000,
         None,
     )?;
     assert_eq!(
@@ -120,7 +120,7 @@ fn test_empty_scene_contract_prevents_unfounded_absence_claim()
         &envelope,
         &inputs_premature,
         &limits,
-        1_700_000_600_000,
+        1_700_005_000_000,
         None,
     )?;
     assert_eq!(
@@ -157,7 +157,7 @@ fn test_empty_scene_contract_prevents_unfounded_absence_claim()
         &unbounded_envelope,
         &inputs_bounded,
         &limits,
-        1_700_000_600_000,
+        1_700_005_000_000,
         None,
     )?;
     assert_eq!(
@@ -193,7 +193,7 @@ fn test_empty_scene_contract_prevents_unfounded_absence_claim()
         &envelope,
         &inputs_covered,
         &limits,
-        1_700_000_600_000,
+        1_700_005_000_000,
         None,
     )?;
     assert!(matches!(
@@ -669,7 +669,7 @@ fn test_unresolved_altitude_observation_prevents_false_absence()
         sensor_masks: &masks,
     };
 
-    let result = reconstruct_geographic_context(&envelope, &inputs, &limits, 1_100_000, None)?;
+    let result = reconstruct_geographic_context(&envelope, &inputs, &limits, 1_300_000, None)?;
 
     // B1' contract: because an observation exists with unknown altitude inside the envelope box/time,
     // we MUST NOT declare ObservedAbsenceWithinCoverage! It must be InconclusiveUnobserved(IncompleteAltitudeCoverage)!
@@ -979,6 +979,303 @@ fn test_n3_mixed_datum_notice_reported_as_vertical_overlap_unknown()
         ..result.notices_with_vertical_overlap_unknown[0].clone()
     };
     assert!(bad_time_notice.validate().is_err());
+
+    Ok(())
+}
+
+/// H1 Contract: Archived windows must evaluate consistently regardless of evaluation age,
+/// future feed updates must be refused, and remote sensors must not spoil coverage reasons.
+#[test]
+fn test_h1_archived_window_staleness_and_future_feed_refusal()
+-> Result<(), Box<dyn std::error::Error>> {
+    let limits = ContextLimits::default();
+    let bbox = GeoBoundingBoxWgs84::new(10.0, 12.0, 20.0, 22.0)?;
+    let time_window = TimeWindow::new(1_700_000_000_000, 1_700_000_001_000)?;
+    let alt_band = AltitudeBand::new(
+        Altitude::new(0.0, AltitudeReference::OrthometricMsl)?,
+        Altitude::new(20_000.0, AltitudeReference::OrthometricMsl)?,
+    )?;
+    let envelope = SpatioTemporalEnvelope::new(bbox, Some(alt_band), time_window);
+
+    let sensor = SensorCoverageMask {
+        sensor_id: OpaqueId::new("sensor:synth-archived-01")?,
+        source_id: OpaqueId::new("synth:source:provider-01")?,
+        coverage_bounds: GeoBoundingBoxWgs84::new(9.0, 13.0, 19.0, 23.0)?,
+        altitude_band: Some(AltitudeBand::new(
+            Altitude::new(0.0, AltitudeReference::OrthometricMsl)?,
+            Altitude::new(25_000.0, AltitudeReference::OrthometricMsl)?,
+        )?),
+        operational_window: TimeWindow::new(1_699_000_000_000, 1_701_000_000_000)?,
+        sensor_type: PositionSource::PrimaryRadar,
+        is_operational: true,
+        // Feed reported through window end (1_700_000_001_000)
+        last_feed_update_utc_ms: 1_700_000_001_000,
+    };
+    let masks = [sensor];
+    let inputs = ContextReconstructionInputs {
+        weather_records: &[],
+        aircraft_tracks: &[],
+        vessel_tracks: &[],
+        notices: &[],
+        sensor_masks: &masks,
+    };
+
+    // Evaluated at window end: ObservedAbsenceWithinCoverage
+    let res_at_end =
+        reconstruct_geographic_context(&envelope, &inputs, &limits, 1_700_000_001_000, None)?;
+    assert!(matches!(
+        res_at_end.traffic_assessment,
+        SceneTrafficAssessment::ObservedAbsenceWithinCoverage { .. }
+    ));
+
+    // Evaluated 4 minutes later: ObservedAbsenceWithinCoverage
+    let res_4m_later =
+        reconstruct_geographic_context(&envelope, &inputs, &limits, 1_700_000_241_000, None)?;
+    assert!(matches!(
+        res_4m_later.traffic_assessment,
+        SceneTrafficAssessment::ObservedAbsenceWithinCoverage { .. }
+    ));
+
+    // Evaluated 1 year later (archived evidence): still ObservedAbsenceWithinCoverage!
+    let one_year_ms = 365 * 24 * 3600 * 1000;
+    let res_1yr_later = reconstruct_geographic_context(
+        &envelope,
+        &inputs,
+        &limits,
+        1_700_000_001_000 + one_year_ms,
+        None,
+    )?;
+    assert!(matches!(
+        res_1yr_later.traffic_assessment,
+        SceneTrafficAssessment::ObservedAbsenceWithinCoverage { .. }
+    ));
+
+    // Future feed update relative to evaluation instant must be rejected
+    let res_future = reconstruct_geographic_context(
+        &envelope,
+        &inputs,
+        &limits,
+        1_700_000_000_500, // Before last_feed_update_utc_ms (1_700_000_001_000)
+        None,
+    );
+    assert!(matches!(
+        res_future,
+        Err(GeoContextError::InvalidTemporalOrdering(_))
+    ));
+
+    // Remote offline sensor on the other side of the world does not cause false SensorFeedDownOrStale
+    let remote_offline_sensor = SensorCoverageMask {
+        sensor_id: OpaqueId::new("sensor:synth-remote-01")?,
+        source_id: OpaqueId::new("synth:source:provider-01")?,
+        coverage_bounds: GeoBoundingBoxWgs84::new(-80.0, -70.0, -170.0, -160.0)?, // Far away!
+        altitude_band: None,
+        operational_window: TimeWindow::new(1_699_000_000_000, 1_701_000_000_000)?,
+        sensor_type: PositionSource::PrimaryRadar,
+        is_operational: false,
+        last_feed_update_utc_ms: 1_700_000_001_000,
+    };
+    let remote_masks = [remote_offline_sensor];
+    let inputs_remote = ContextReconstructionInputs {
+        weather_records: &[],
+        aircraft_tracks: &[],
+        vessel_tracks: &[],
+        notices: &[],
+        sensor_masks: &remote_masks,
+    };
+    let res_remote = reconstruct_geographic_context(
+        &envelope,
+        &inputs_remote,
+        &limits,
+        1_700_000_001_000,
+        None,
+    )?;
+    assert_eq!(
+        res_remote.traffic_assessment,
+        SceneTrafficAssessment::InconclusiveUnobserved {
+            reason: UnobservedReason::NoSensorsCoveringRegion,
+        }
+    );
+
+    Ok(())
+}
+
+/// S1 Contract: Aircraft altitude datum validation refuses barometric altitudes not in
+/// BarometricUnadjusted, and geometric altitudes not in Wgs84Ellipsoid or OrthometricMsl.
+#[test]
+fn test_s1_aircraft_altitude_datum_validation() -> Result<(), Box<dyn std::error::Error>> {
+    let limits = ContextLimits::default();
+
+    // Barometric altitude labeled as OrthometricMsl must be rejected
+    let bad_baro_pt = AircraftTrackPoint {
+        transmit_instant_utc_ms: Some(1_000_000),
+        receiver_instant_utc_ms: Some(1_000_000),
+        retrieval_instant_utc_ms: Some(1_000_100),
+        target_interpolation_instant_utc_ms: None,
+        position: GeoPointWgs84::new(10.0, 20.0)?,
+        barometric_altitude: Some(Altitude::new(5000.0, AltitudeReference::OrthometricMsl)?),
+        geometric_altitude: None,
+        ground_speed_mps: None,
+        track_angle_deg: None,
+        vertical_rate_mps: None,
+        squawk_octal: None,
+        observation_source: ObservationSource::DirectObservation,
+        raw_source_hash: None,
+    };
+    assert!(bad_baro_pt.validate().is_err());
+    assert!(matches!(
+        bad_baro_pt.validate(),
+        Err(GeoContextError::IncompatibleAltitudeReferences {
+            actual: AltitudeReference::OrthometricMsl,
+            expected: AltitudeReference::BarometricUnadjusted,
+        })
+    ));
+
+    // Geometric altitude labeled as BarometricUnadjusted must be rejected
+    let bad_geom_pt = AircraftTrackPoint {
+        barometric_altitude: None,
+        geometric_altitude: Some(Altitude::new(
+            5000.0,
+            AltitudeReference::BarometricUnadjusted,
+        )?),
+        ..bad_baro_pt.clone()
+    };
+    assert!(bad_geom_pt.validate().is_err());
+    assert!(matches!(
+        bad_geom_pt.validate(),
+        Err(GeoContextError::IncompatibleAltitudeReferences {
+            actual: AltitudeReference::BarometricUnadjusted,
+            expected: AltitudeReference::Wgs84Ellipsoid,
+        })
+    ));
+
+    // Geometric altitude labeled as Unknown must be rejected
+    let bad_geom_unknown = AircraftTrackPoint {
+        barometric_altitude: None,
+        geometric_altitude: Some(Altitude::new(5000.0, AltitudeReference::Unknown)?),
+        ..bad_baro_pt.clone()
+    };
+    assert!(bad_geom_unknown.validate().is_err());
+
+    // Valid baro + geometric altitude is accepted
+    let valid_pt = AircraftTrackPoint {
+        barometric_altitude: Some(Altitude::new(
+            5000.0,
+            AltitudeReference::BarometricUnadjusted,
+        )?),
+        geometric_altitude: Some(Altitude::new(5050.0, AltitudeReference::Wgs84Ellipsoid)?),
+        ..bad_baro_pt
+    };
+    assert!(valid_pt.validate().is_ok());
+
+    let track = AircraftTrack::new(
+        "AABBCC",
+        Some("TEST".to_string()),
+        None,
+        PositionSource::Adsb,
+        OpaqueId::new("synth:src")?,
+        vec![valid_pt],
+        &limits,
+    )?;
+    assert!(track.validate(&limits).is_ok());
+
+    Ok(())
+}
+
+/// S2 Contract: StopReason is the unified re-export from multilingual supporting Superseded.
+#[test]
+fn test_s2_stop_reason_reexport_and_superseded() {
+    let r1 = StopReason::Cancelled;
+    let r2 = StopReason::DeadlineExceeded;
+    let r3 = StopReason::Superseded;
+    assert_ne!(r1, r2);
+    assert_ne!(r2, r3);
+    assert_eq!(r3, oia_analysis::multilingual::StopReason::Superseded);
+}
+
+/// N3' Contract: Unknown datum comparison in notice position intersection fails closed.
+#[test]
+fn test_n3_prime_unknown_datum_comparison_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+    let unknown_notice = NavigationNotice {
+        notice_id: OpaqueId::new("notice:notam-unknown-01")?,
+        issuing_authority: "SIMULATED-CAA".to_string(),
+        notice_kind: NoticeKind::AirspaceRestriction,
+        issuance_instant_utc_ms: 950_000,
+        retrieval_instant_utc_ms: 960_000,
+        effective_window: TimeWindow::new(990_000, 1_300_000)?,
+        spatial_boundary: NoticeSpatialBoundary::BoundingBox(GeoBoundingBoxWgs84::new(
+            9.0, 13.0, 19.0, 23.0,
+        )?),
+        lower_altitude: Some(Altitude::new(0.0, AltitudeReference::Unknown)?),
+        upper_altitude: Some(Altitude::new(1000.0, AltitudeReference::Unknown)?),
+        summary: "Unknown datum airspace notice".to_string(),
+        raw_content_sha256: [0x55; 32],
+    };
+    unknown_notice.validate()?;
+
+    // An Unknown altitude position must return VerticalOverlapUnknown, NOT Intersects or DoesNotIntersect!
+    let unknown_pos = GeoPosition::new(
+        GeoPointWgs84::new(10.0, 20.0)?,
+        Some(Altitude::new(500.0, AltitudeReference::Unknown)?),
+    );
+    assert_eq!(
+        unknown_notice.intersects_position(&unknown_pos, 1_000_000),
+        NoticePositionIntersection::VerticalOverlapUnknown
+    );
+
+    let high_unknown_pos = GeoPosition::new(
+        GeoPointWgs84::new(10.0, 20.0)?,
+        Some(Altitude::new(2000.0, AltitudeReference::Unknown)?),
+    );
+    assert_eq!(
+        unknown_notice.intersects_position(&high_unknown_pos, 1_000_000),
+        NoticePositionIntersection::VerticalOverlapUnknown
+    );
+
+    Ok(())
+}
+
+/// NB3 Contract: Kinematic speed checks at track construction and validation.
+#[test]
+fn test_nb3_speed_bounds_at_construction_and_validate() -> Result<(), Box<dyn std::error::Error>> {
+    let limits = ContextLimits::default(); // max_aircraft_speed_mps: 1000.0, max_vessel_speed_mps: 50.0
+
+    // 19,900 km jump in 1 second (~Mach 58,000!) must be rejected at AircraftTrack::new
+    let p1 = AircraftTrackPoint {
+        transmit_instant_utc_ms: Some(1_000_000),
+        receiver_instant_utc_ms: Some(1_000_000),
+        retrieval_instant_utc_ms: Some(1_000_100),
+        target_interpolation_instant_utc_ms: None,
+        position: GeoPointWgs84::new(0.0, 0.0)?,
+        barometric_altitude: None,
+        geometric_altitude: None,
+        ground_speed_mps: None,
+        track_angle_deg: None,
+        vertical_rate_mps: None,
+        squawk_octal: None,
+        observation_source: ObservationSource::DirectObservation,
+        raw_source_hash: None,
+    };
+    let p2_impossible = AircraftTrackPoint {
+        transmit_instant_utc_ms: Some(1_001_000), // +1 second
+        receiver_instant_utc_ms: Some(1_001_000),
+        retrieval_instant_utc_ms: Some(1_001_100),
+        position: GeoPointWgs84::new(0.0, 179.0)?, // ~19,900 km away!
+        ..p1.clone()
+    };
+    let bad_track = AircraftTrack::new(
+        "AABBCC",
+        None,
+        None,
+        PositionSource::Adsb,
+        OpaqueId::new("synth:src")?,
+        vec![p1, p2_impossible],
+        &limits,
+    );
+    assert!(bad_track.is_err());
+    assert!(matches!(
+        bad_track,
+        Err(GeoContextError::ImpliedSpeedExceedsLimit { .. })
+    ));
 
     Ok(())
 }

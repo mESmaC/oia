@@ -1,6 +1,6 @@
 //! Aviation and maritime kinematic tracking with bounded spherical great-circle interpolation (`GEO-05`, `INTEL-03`).
 
-use crate::geo_context::provisional::{Altitude, GeoPointWgs84};
+use crate::geo_context::provisional::{Altitude, AltitudeReference, GeoPointWgs84};
 use crate::geo_context::{
     ContextLimits, GeoContextError, INTERPOLATION_METHOD_ID, spherical_slerp,
 };
@@ -119,6 +119,27 @@ impl AircraftTrackPoint {
             }
         }
 
+        if let Some(ref alt) = self.barometric_altitude {
+            alt.validate()?;
+            if alt.reference() != AltitudeReference::BarometricUnadjusted {
+                return Err(GeoContextError::IncompatibleAltitudeReferences {
+                    actual: alt.reference(),
+                    expected: AltitudeReference::BarometricUnadjusted,
+                });
+            }
+        }
+        if let Some(ref alt) = self.geometric_altitude {
+            alt.validate()?;
+            if alt.reference() != AltitudeReference::Wgs84Ellipsoid
+                && alt.reference() != AltitudeReference::OrthometricMsl
+            {
+                return Err(GeoContextError::IncompatibleAltitudeReferences {
+                    actual: alt.reference(),
+                    expected: AltitudeReference::Wgs84Ellipsoid,
+                });
+            }
+        }
+
         if let Some(ref sq) = self.squawk_octal {
             // Standard transponder squawk: 4 octal digits [0-7]
             if sq.len() != 4 || !sq.chars().all(|c| ('0'..='7').contains(&c)) {
@@ -126,15 +147,27 @@ impl AircraftTrackPoint {
             }
         }
 
-        if let Some(spd) = self.ground_speed_mps
-            && (!spd.is_finite() || spd < 0.0)
-        {
-            return Err(GeoContextError::NonFiniteValue("ground_speed_mps"));
+        if let Some(spd) = self.ground_speed_mps {
+            if !spd.is_finite() {
+                return Err(GeoContextError::NonFiniteValue("ground_speed_mps"));
+            }
+            if spd < 0.0 {
+                return Err(GeoContextError::InvalidLimitValue {
+                    field: "AircraftTrackPoint.ground_speed_mps",
+                    reason: "must be non-negative",
+                });
+            }
         }
-        if let Some(trk) = self.track_angle_deg
-            && (!trk.is_finite() || !(0.0..=360.0).contains(&trk))
-        {
-            return Err(GeoContextError::NonFiniteValue("track_angle_deg"));
+        if let Some(trk) = self.track_angle_deg {
+            if !trk.is_finite() {
+                return Err(GeoContextError::NonFiniteValue("track_angle_deg"));
+            }
+            if !(0.0..=360.0).contains(&trk) {
+                return Err(GeoContextError::InvalidLimitValue {
+                    field: "AircraftTrackPoint.track_angle_deg",
+                    reason: "must be in [0.0, 360.0]",
+                });
+            }
         }
         if let Some(vr) = self.vertical_rate_mps
             && !vr.is_finite()
@@ -210,6 +243,17 @@ impl AircraftTrack {
                 if t_p == t_prev {
                     return Err(GeoContextError::DuplicateTimestamp(t_p));
                 }
+                let dt_s = (t_p - t_prev) as f64 / 1000.0;
+                if dt_s > 0.0 {
+                    let dist_m = p.position.great_circle_distance_m(prev.position);
+                    let speed_mps = dist_m / dt_s;
+                    if speed_mps > limits.max_aircraft_speed_mps {
+                        return Err(GeoContextError::ImpliedSpeedExceedsLimit {
+                            speed_mps,
+                            max_speed_mps: limits.max_aircraft_speed_mps,
+                        });
+                    }
+                }
             }
         }
 
@@ -280,13 +324,30 @@ impl AircraftTrack {
                         "track point missing effective timestamp",
                     ))?;
             if i > 0 {
-                let t_prev = self.points[i - 1].effective_instant_utc_ms().ok_or(
+                let prev = &self.points[i - 1];
+                let t_prev = prev.effective_instant_utc_ms().ok_or(
                     GeoContextError::InvalidTemporalOrdering(
                         "track point missing effective timestamp",
                     ),
                 )?;
-                if t_p <= t_prev {
+                if t_p < t_prev {
+                    return Err(GeoContextError::InvalidTemporalOrdering(
+                        "track points must be monotonically ordered by timestamp",
+                    ));
+                }
+                if t_p == t_prev {
                     return Err(GeoContextError::DuplicateTimestamp(t_p));
+                }
+                let dt_s = (t_p - t_prev) as f64 / 1000.0;
+                if dt_s > 0.0 {
+                    let dist_m = p.position.great_circle_distance_m(prev.position);
+                    let speed_mps = dist_m / dt_s;
+                    if speed_mps > limits.max_aircraft_speed_mps {
+                        return Err(GeoContextError::ImpliedSpeedExceedsLimit {
+                            speed_mps,
+                            max_speed_mps: limits.max_aircraft_speed_mps,
+                        });
+                    }
                 }
             }
         }
@@ -304,8 +365,8 @@ impl AircraftTrack {
             return Err(GeoContextError::EmptyTrack);
         }
 
-        let first = &self.points[0];
-        let last = &self.points[self.points.len() - 1];
+        let first = self.points.first().ok_or(GeoContextError::EmptyTrack)?;
+        let last = self.points.last().ok_or(GeoContextError::EmptyTrack)?;
         let min_t =
             first
                 .effective_instant_utc_ms()
@@ -331,7 +392,11 @@ impl AircraftTrack {
             .points
             .binary_search_by_key(&Some(target_utc_ms), |p| p.effective_instant_utc_ms())
         {
-            return Ok(self.points[idx].clone());
+            return Ok(self
+                .points
+                .get(idx)
+                .ok_or(GeoContextError::EmptyTrack)?
+                .clone());
         }
 
         // Find surrounding points
@@ -343,8 +408,25 @@ impl AircraftTrack {
             Err(i) => i,
         };
 
-        let p1 = &self.points[idx2 - 1];
-        let p2 = &self.points[idx2];
+        let prev_idx = idx2
+            .checked_sub(1)
+            .ok_or(GeoContextError::OutOfTrackRange {
+                target_utc_ms,
+                min_utc_ms: min_t,
+                max_utc_ms: max_t,
+            })?;
+        let p1 = self
+            .points
+            .get(prev_idx)
+            .ok_or(GeoContextError::EmptyTrack)?;
+        let p2 = self
+            .points
+            .get(idx2)
+            .ok_or(GeoContextError::OutOfTrackRange {
+                target_utc_ms,
+                min_utc_ms: min_t,
+                max_utc_ms: max_t,
+            })?;
 
         let t1 = p1
             .effective_instant_utc_ms()
@@ -630,20 +712,38 @@ impl MaritimeTrackPoint {
             }
         }
 
-        if let Some(sog) = self.speed_over_ground_mps
-            && (!sog.is_finite() || sog < 0.0)
-        {
-            return Err(GeoContextError::NonFiniteValue("speed_over_ground_mps"));
+        if let Some(sog) = self.speed_over_ground_mps {
+            if !sog.is_finite() {
+                return Err(GeoContextError::NonFiniteValue("speed_over_ground_mps"));
+            }
+            if sog < 0.0 {
+                return Err(GeoContextError::InvalidLimitValue {
+                    field: "MaritimeTrackPoint.speed_over_ground_mps",
+                    reason: "must be non-negative",
+                });
+            }
         }
-        if let Some(cog) = self.course_over_ground_deg
-            && (!cog.is_finite() || !(0.0..=360.0).contains(&cog))
-        {
-            return Err(GeoContextError::NonFiniteValue("course_over_ground_deg"));
+        if let Some(cog) = self.course_over_ground_deg {
+            if !cog.is_finite() {
+                return Err(GeoContextError::NonFiniteValue("course_over_ground_deg"));
+            }
+            if !(0.0..=360.0).contains(&cog) {
+                return Err(GeoContextError::InvalidLimitValue {
+                    field: "MaritimeTrackPoint.course_over_ground_deg",
+                    reason: "must be in [0.0, 360.0]",
+                });
+            }
         }
-        if let Some(hdg) = self.true_heading_deg
-            && (!hdg.is_finite() || !(0.0..=360.0).contains(&hdg))
-        {
-            return Err(GeoContextError::NonFiniteValue("true_heading_deg"));
+        if let Some(hdg) = self.true_heading_deg {
+            if !hdg.is_finite() {
+                return Err(GeoContextError::NonFiniteValue("true_heading_deg"));
+            }
+            if !(0.0..=360.0).contains(&hdg) {
+                return Err(GeoContextError::InvalidLimitValue {
+                    field: "MaritimeTrackPoint.true_heading_deg",
+                    reason: "must be in [0.0, 360.0]",
+                });
+            }
         }
 
         Ok(())
@@ -703,6 +803,17 @@ impl MaritimeVesselTrack {
                 if t_p == t_prev {
                     return Err(GeoContextError::DuplicateTimestamp(t_p));
                 }
+                let dt_s = (t_p - t_prev) as f64 / 1000.0;
+                if dt_s > 0.0 {
+                    let dist_m = p.position.great_circle_distance_m(prev.position);
+                    let speed_mps = dist_m / dt_s;
+                    if speed_mps > limits.max_vessel_speed_mps {
+                        return Err(GeoContextError::ImpliedSpeedExceedsLimit {
+                            speed_mps,
+                            max_speed_mps: limits.max_vessel_speed_mps,
+                        });
+                    }
+                }
             }
         }
 
@@ -753,13 +864,30 @@ impl MaritimeVesselTrack {
                         "vessel track point missing effective timestamp",
                     ))?;
             if i > 0 {
-                let t_prev = self.points[i - 1].effective_instant_utc_ms().ok_or(
+                let prev = &self.points[i - 1];
+                let t_prev = prev.effective_instant_utc_ms().ok_or(
                     GeoContextError::InvalidTemporalOrdering(
                         "vessel track point missing effective timestamp",
                     ),
                 )?;
-                if t_p <= t_prev {
+                if t_p < t_prev {
+                    return Err(GeoContextError::InvalidTemporalOrdering(
+                        "vessel track points must be monotonically ordered by timestamp",
+                    ));
+                }
+                if t_p == t_prev {
                     return Err(GeoContextError::DuplicateTimestamp(t_p));
+                }
+                let dt_s = (t_p - t_prev) as f64 / 1000.0;
+                if dt_s > 0.0 {
+                    let dist_m = p.position.great_circle_distance_m(prev.position);
+                    let speed_mps = dist_m / dt_s;
+                    if speed_mps > limits.max_vessel_speed_mps {
+                        return Err(GeoContextError::ImpliedSpeedExceedsLimit {
+                            speed_mps,
+                            max_speed_mps: limits.max_vessel_speed_mps,
+                        });
+                    }
                 }
             }
         }
@@ -777,8 +905,8 @@ impl MaritimeVesselTrack {
             return Err(GeoContextError::EmptyTrack);
         }
 
-        let first = &self.points[0];
-        let last = &self.points[self.points.len() - 1];
+        let first = self.points.first().ok_or(GeoContextError::EmptyTrack)?;
+        let last = self.points.last().ok_or(GeoContextError::EmptyTrack)?;
         let min_t =
             first
                 .effective_instant_utc_ms()
@@ -803,7 +931,11 @@ impl MaritimeVesselTrack {
             .points
             .binary_search_by_key(&Some(target_utc_ms), |p| p.effective_instant_utc_ms())
         {
-            return Ok(self.points[idx].clone());
+            return Ok(self
+                .points
+                .get(idx)
+                .ok_or(GeoContextError::EmptyTrack)?
+                .clone());
         }
 
         let idx2 = match self
@@ -814,8 +946,25 @@ impl MaritimeVesselTrack {
             Err(i) => i,
         };
 
-        let p1 = &self.points[idx2 - 1];
-        let p2 = &self.points[idx2];
+        let prev_idx = idx2
+            .checked_sub(1)
+            .ok_or(GeoContextError::OutOfTrackRange {
+                target_utc_ms,
+                min_utc_ms: min_t,
+                max_utc_ms: max_t,
+            })?;
+        let p1 = self
+            .points
+            .get(prev_idx)
+            .ok_or(GeoContextError::EmptyTrack)?;
+        let p2 = self
+            .points
+            .get(idx2)
+            .ok_or(GeoContextError::OutOfTrackRange {
+                target_utc_ms,
+                min_utc_ms: min_t,
+                max_utc_ms: max_t,
+            })?;
 
         let t1 = p1
             .effective_instant_utc_ms()

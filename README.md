@@ -76,6 +76,8 @@ Files and the witness account are held in memory for this session. Persistent in
 
 ## Build and run
 
+For an unsigned local Windows development ZIP, see the [packaging instructions](docs/implementation/windows-package.md). Public release gates, installers, signing and updates remain open under #49.
+
 The workspace provides the `oia` desktop application in [`crates/oia-app`](crates/oia-app/src/main.rs) as well as read-only inspection and cleanup examples in [`crates/oia-documents`](crates/oia-documents/README.md), [`crates/oia-png-privacy`](crates/oia-png-privacy/README.md), and [`crates/oia-jpeg-privacy`](crates/oia-jpeg-privacy/README.md):
 
 - `inspect-text` prints the UTF-8 passages, byte ranges, and coverage of a local file.

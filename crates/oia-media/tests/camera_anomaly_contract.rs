@@ -791,5 +791,111 @@ fn admission_exclusions_generated_evidence_and_cross_camera_refusals() -> Result
     assert_eq!(restricted_eval.missing_coverage_ms, 2_700_100);
     assert_eq!(restricted_eval.active_coverage_ms, 899_900);
 
+    // 10. N1: Candidate detecting a truth event before a partial coverage gap is counted in
+    // `matched_gap_excluded_truth_alerts` rather than as a false alert, and late-arriving
+    // HealthEvent within MAX_LATE_FAULT_LOOKBACK_MS is accepted out-of-order after newer observations.
+    let sky_region = sample_region()?;
+    let mut monitor_gap = CameraAnomalyMonitor::new(
+        sample_source("cam:gap", "feed:gap", "cal:gap:v1")?,
+        sample_detector()?,
+        vec![sky_region.clone()],
+        limits,
+    )?;
+    monitor_gap.record_step(ObservationStepInput::SceneTrigger(Box::new(
+        SceneTriggerInput {
+            observation_id: OpaqueId::new("obs:gap:early").map_err(AnomalyError::InvalidId)?,
+            candidate_id: OpaqueId::new("cand:gap:early").map_err(AnomalyError::InvalidId)?,
+            candidate_version: VersionId::new("ver:cand:gap:early:1")
+                .map_err(AnomalyError::InvalidId)?,
+            region_id: sky_region.region_id.clone(),
+            category: AnomalyCategory::SkyTransient,
+            baseline_at_trigger: SceneBaselineKind::NighttimeLowLight,
+            event_start_ms: 10_000,
+            event_end_ms: 10_500,
+            detection_emitted_ms: 10_600,
+            observed_persistence_frames: 4,
+            raw_score_bps: 7_900,
+            clock_uncertainty_ms: 20,
+            trigger_explanation: "Early trigger later found to overlap delayed exposure fault"
+                .to_owned(),
+            primary_frame: frame_ref(
+                "ver:frame:gap:early",
+                '7',
+                10_200,
+                10_220,
+                FrameArtifactOrigin::OriginalRetainedFrame,
+            )?,
+            context_window: ContextWindowStatus::OmittedByRetentionPolicy {
+                reason: "Live triage only".to_owned(),
+            },
+        },
+    )))?;
+    // Trigger at [50_000, 90_000) before outage at [100_000, 200_000) for truth [50_000, 150_000).
+    monitor_gap.record_step(ObservationStepInput::SceneTrigger(Box::new(
+        SceneTriggerInput {
+            observation_id: OpaqueId::new("obs:gap:preoutage").map_err(AnomalyError::InvalidId)?,
+            candidate_id: OpaqueId::new("cand:gap:preoutage").map_err(AnomalyError::InvalidId)?,
+            candidate_version: VersionId::new("ver:cand:gap:preoutage:1")
+                .map_err(AnomalyError::InvalidId)?,
+            region_id: sky_region.region_id.clone(),
+            category: AnomalyCategory::SkyTransient,
+            baseline_at_trigger: SceneBaselineKind::NighttimeLowLight,
+            event_start_ms: 50_000,
+            event_end_ms: 90_000,
+            detection_emitted_ms: 51_000,
+            observed_persistence_frames: 5,
+            raw_score_bps: 8_800,
+            clock_uncertainty_ms: 20,
+            trigger_explanation: "Detected sky transient before feed drop at 100s".to_owned(),
+            primary_frame: frame_ref(
+                "ver:frame:gap:preoutage",
+                '8',
+                50_500,
+                50_520,
+                FrameArtifactOrigin::OriginalRetainedFrame,
+            )?,
+            context_window: ContextWindowStatus::OmittedByRetentionPolicy {
+                reason: "Live triage only".to_owned(),
+            },
+        },
+    )))?;
+    // Out-of-order late fault report for [10_000, 10_600) arriving after the 50_000 ms trigger.
+    monitor_gap.record_step(ObservationStepInput::HealthEvent(HealthEventInput {
+        observation_id: OpaqueId::new("obs:gap:late-fault").map_err(AnomalyError::InvalidId)?,
+        health_state: CameraHealthState::ExposureShift,
+        start_ms: 10_000,
+        end_ms: 10_600,
+        detail: "Delayed auto-exposure telemetry packet".to_owned(),
+    }))?;
+    assert_eq!(
+        monitor_gap.candidates()[0].quarantined_by_fault(),
+        Some(CameraHealthState::ExposureShift)
+    );
+    monitor_gap.record_step(ObservationStepInput::HealthEvent(HealthEventInput {
+        observation_id: OpaqueId::new("obs:gap:outage").map_err(AnomalyError::InvalidId)?,
+        health_state: CameraHealthState::CoverageGap,
+        start_ms: 100_000,
+        end_ms: 200_000,
+        detail: "Upstream stream dropped mid-event".to_owned(),
+    }))?;
+    let partial_gap_eval = monitor_gap.evaluate_held_out(
+        OpaqueId::new("corpus:partial-gap").map_err(AnomalyError::InvalidId)?,
+        VersionId::new("ver:corpus:partial-gap:v1").map_err(AnomalyError::InvalidId)?,
+        0,
+        300_000,
+        &[LabeledSceneEvent {
+            truth_id: OpaqueId::new("truth:partial-gap").map_err(AnomalyError::InvalidId)?,
+            region_id: sky_region.region_id,
+            category: AnomalyCategory::SkyTransient,
+            start_ms: 50_000,
+            end_ms: 150_000,
+        }],
+    )?;
+    assert_eq!(partial_gap_eval.truth_events_in_coverage_gap_count, 1);
+    assert_eq!(partial_gap_eval.observable_labeled_event_count, 0);
+    assert_eq!(partial_gap_eval.matched_gap_excluded_truth_alerts, 1);
+    assert_eq!(partial_gap_eval.false_alert_count, 0);
+    assert_eq!(partial_gap_eval.false_alerts_per_camera_hour_milli, 0);
+
     Ok(())
 }

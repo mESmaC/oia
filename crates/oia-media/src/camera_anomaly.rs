@@ -17,8 +17,8 @@
 //!   (`SkyTransient`, `UnusualApparentMotion`, `RoadObstruction`,
 //!   `StoppedVehicle`, `WrongWayTravel`, `EnvironmentalChange`) so camera faults
 //!   never publish as scene anomalies (`CAM-03`, `A09`). Late-arriving faults
-//!   retroactively quarantine overlapping candidates and flag any existing reviews
-//!   for reassessment.
+//!   (accepted within `MAX_LATE_FAULT_LOOKBACK_MS`) retroactively quarantine
+//!   overlapping candidates and flag any existing reviews for reassessment.
 //! - Packages candidate scene events with pinned original frame/clip `VersionId`s
 //!   and 64-character lowercase hex SHA-256 digests, bounded pre/post context
 //!   frames (or explicit buffer-expiry/retention-policy omission status),
@@ -26,9 +26,10 @@
 //!   raw uncalibrated detector scores paired with [`UNCALIBRATED_SCORE_CAVEAT`]
 //!   and [`CANDIDATE_EVENT_CAVEAT`] (`CAM-04`, `CAM-05`).
 //! - Deduplicates overlapping or nearby triggers within a configured window by
-//!   retaining every merged trigger segment (`RetainedTriggerSegment`), advancing
-//!   `current_version` to the new trigger's `candidate_version`, and marking any
-//!   prior human reviews `needs_reassessment = true` (`CAM-04`, `AGENTS.md` §2).
+//!   retaining every merged trigger segment (`RetainedTriggerSegment`, bounded per
+//!   candidate by `max_segments_per_candidate`), advancing `current_version` to
+//!   the new trigger's `candidate_version`, and marking any prior human reviews
+//!   `needs_reassessment = true` (`CAM-04`, `AGENTS.md` §2).
 //! - Maintains append-only human review history (`ArtifactOrFault`,
 //!   `LikelyOrdinaryExplanation`, `InsufficientEvidence`,
 //!   `RetainedForInvestigation`) with optimistic concurrency (`expected_current_version`)
@@ -39,10 +40,11 @@
 //!   active unmodified calibration on both cameras (`CAM-05`, `A09`).
 //! - Computes held-out operational benchmark metrics with half-open `[start, end)`
 //!   intervals, pinned evaluation corpus identity/version, active-coverage
-//!   recall (separating truth events outside the evaluation window or inside
-//!   coverage gaps), window-scoped deduplication and fault counters, early
-//!   detection counts, and false alerts per observed camera-hour (`CAM-03`–`CAM-05`,
-//!   `A09`, `AGENTS.md` §8).
+//!   recall (separating truth events outside the evaluation window or overlapping
+//!   coverage gaps, and separating `matched_gap_excluded_truth_alerts` from both
+//!   true-positive and false alerts), window-scoped deduplication and fault
+//!   counters, early detection counts, and false alerts per observed camera-hour
+//!   (`CAM-03`–`CAM-05`, `A09`, `AGENTS.md` §8).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -55,10 +57,21 @@ use crate::is_valid_lowercase_sha256_hex;
 pub const CANDIDATE_EVENT_CAVEAT: &str = "Candidate camera anomaly for human review only; not an identification of a UAP, crime, or emergency.";
 
 /// Mandatory caveat attached to raw detector scores (`CAM-05`, `AGENTS.md` §2).
-pub const UNCALIBRATED_SCORE_CAVEAT: &str = "Raw detector score is an uncalibrated ranking signal, not a calibrated class probability.";
+pub const UNCALIBRATED_SCORE_CAVEAT: &str =
+    "Raw detector score is an uncalibrated ranking signal, not a calibrated class probability.";
 
 /// Mandatory policy notice when a camera source becomes restricted (`CAM-01`, `A09`).
 pub const RESTRICTED_SOURCE_POLICY_NOTICE: &str = "Source is restricted or unavailable; OIA records unavailability and does not probe hidden endpoints, guess credentials, or seek alternate access.";
+
+/// Maximum permitted clock uncertainty in milliseconds (24 hours = `86_400_000` ms).
+pub const MAX_CLOCK_UNCERTAINTY_MS: u64 = 86_400_000;
+
+/// Maximum lookback window in milliseconds (24 hours = `86_400_000` ms) within which a
+/// late-arriving camera fault (`HealthEvent`) is accepted after newer observations.
+pub const MAX_LATE_FAULT_LOOKBACK_MS: u64 = 86_400_000;
+
+/// Default maximum merged trigger segments per candidate when `AnomalyLimits::new` is used.
+pub const DEFAULT_MAX_SEGMENTS_PER_CANDIDATE: usize = 32;
 
 /// Which resource budget was zero or exceeded in the camera anomaly kernel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +79,7 @@ pub enum AnomalyLimitKind {
     Regions,
     Observations,
     Candidates,
+    SegmentsPerCandidate,
     ContextFrames,
     ReviewsPerCandidate,
     CoverageGaps,
@@ -79,6 +93,7 @@ impl fmt::Display for AnomalyLimitKind {
             Self::Regions => f.write_str("max_regions"),
             Self::Observations => f.write_str("max_observations"),
             Self::Candidates => f.write_str("max_candidates"),
+            Self::SegmentsPerCandidate => f.write_str("max_segments_per_candidate"),
             Self::ContextFrames => f.write_str("max_context_frames"),
             Self::ReviewsPerCandidate => f.write_str("max_reviews_per_candidate"),
             Self::CoverageGaps => f.write_str("max_coverage_gaps"),
@@ -94,6 +109,7 @@ pub struct AnomalyLimits {
     max_regions: usize,
     max_observations: usize,
     max_candidates: usize,
+    max_segments_per_candidate: usize,
     max_context_frames: usize,
     max_reviews_per_candidate: usize,
     max_coverage_gaps: usize,
@@ -102,7 +118,8 @@ pub struct AnomalyLimits {
 }
 
 impl AnomalyLimits {
-    /// Validates that every budget is at least `1`.
+    /// Validates that every budget is at least `1`, using [`DEFAULT_MAX_SEGMENTS_PER_CANDIDATE`]
+    /// for per-candidate merged trigger segments.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         max_regions: usize,
@@ -146,12 +163,27 @@ impl AnomalyLimits {
             max_regions,
             max_observations,
             max_candidates,
+            max_segments_per_candidate: DEFAULT_MAX_SEGMENTS_PER_CANDIDATE,
             max_context_frames,
             max_reviews_per_candidate,
             max_coverage_gaps,
             max_labeled_truth_events,
             max_text_bytes,
         })
+    }
+
+    /// Overrides the per-candidate limit on merged trigger segments (`>= 1`).
+    pub fn with_max_segments_per_candidate(
+        mut self,
+        max_segments_per_candidate: usize,
+    ) -> Result<Self, AnomalyError> {
+        if max_segments_per_candidate == 0 {
+            return Err(AnomalyError::ZeroLimit(
+                AnomalyLimitKind::SegmentsPerCandidate,
+            ));
+        }
+        self.max_segments_per_candidate = max_segments_per_candidate;
+        Ok(self)
     }
 
     #[must_use]
@@ -167,6 +199,11 @@ impl AnomalyLimits {
     #[must_use]
     pub const fn max_candidates(self) -> usize {
         self.max_candidates
+    }
+
+    #[must_use]
+    pub const fn max_segments_per_candidate(self) -> usize {
+        self.max_segments_per_candidate
     }
 
     #[must_use]
@@ -516,7 +553,7 @@ impl RecordedHealthEvent {
 
     #[must_use]
     pub const fn duration_ms(&self) -> u64 {
-        self.end_ms.saturating_sub(self.start_ms) as u64
+        self.start_ms.abs_diff(self.end_ms)
     }
 }
 
@@ -766,8 +803,8 @@ impl CandidateAnomalyEvent {
 
     #[must_use]
     pub const fn detection_latency_ms(&self) -> u64 {
-        self.first_detection_emitted_ms
-            .saturating_sub(self.event_start_ms) as u64
+        self.event_start_ms
+            .abs_diff(self.first_detection_emitted_ms)
     }
 
     #[must_use]
@@ -944,6 +981,10 @@ pub struct OperationalEvaluationSummary {
     pub total_candidate_alerts: usize,
     pub quarantined_fault_candidates_in_window: usize,
     pub true_positive_alerts: usize,
+    /// Alerts that matched a ground-truth event that partially overlapped a coverage gap (`N1`).
+    /// Excluded from both `true_positive_alerts` and `false_alert_count` so coverage loss is
+    /// not converted into a false alert.
+    pub matched_gap_excluded_truth_alerts: usize,
     pub false_alert_count: usize,
     /// Operational false alerts per active observed camera-hour scaled by `1_000` (milli-alerts/hour).
     pub false_alerts_per_camera_hour_milli: u64,
@@ -965,7 +1006,9 @@ pub enum TriangulationReadiness {
     },
     /// The cameras are associated temporally and by independent source lineage, but at least
     /// one camera is uncalibrated so geometric triangulation is unavailable (`CAM-05`).
-    UncalibratedAssociationOnly { uncalibrated_camera_ids: Vec<OpaqueId> },
+    UncalibratedAssociationOnly {
+        uncalibrated_camera_ids: Vec<OpaqueId>,
+    },
 }
 
 /// Validated cross-camera association and multi-view triangulation readiness (`CAM-05`).
@@ -1080,6 +1123,10 @@ pub enum AnomalyError {
     },
     InvalidScoreThresholdBps(u16),
     InvalidRawScoreBps(u16),
+    ClockUncertaintyExceedsMax {
+        uncertainty_ms: u64,
+        max_ms: u64,
+    },
     ZeroPersistenceFrames {
         region_id: OpaqueId,
     },
@@ -1237,8 +1284,18 @@ impl fmt::Display for AnomalyError {
             Self::InvalidRawScoreBps(bps) => {
                 write!(f, "raw score {bps} bps must be within 0..=10000")
             }
+            Self::ClockUncertaintyExceedsMax {
+                uncertainty_ms,
+                max_ms,
+            } => write!(
+                f,
+                "clock uncertainty {uncertainty_ms} ms exceeds maximum {max_ms} ms"
+            ),
             Self::ZeroPersistenceFrames { region_id } => {
-                write!(f, "region `{region_id}` min_persistence_frames must be >= 1")
+                write!(
+                    f,
+                    "region `{region_id}` min_persistence_frames must be >= 1"
+                )
             }
             Self::DuplicateRegionId(id) => write!(f, "duplicate region_id `{id}`"),
             Self::UnknownRegionId(id) => write!(f, "unknown region_id `{id}`"),
@@ -1573,12 +1630,7 @@ impl CameraAnomalyMonitor {
 
         let mut region_map = BTreeMap::new();
         for region in regions {
-            check_single_line_text(
-                &region.label,
-                "region.label",
-                &mut used_text_bytes,
-                limits,
-            )?;
+            check_single_line_text(&region.label, "region.label", &mut used_text_bytes, limits)?;
             if region.score_threshold_bps == 0 || region.score_threshold_bps > 10_000 {
                 return Err(AnomalyError::InvalidScoreThresholdBps(
                     region.score_threshold_bps,
@@ -1690,8 +1742,10 @@ impl CameraAnomalyMonitor {
                 if end_ms <= start_ms {
                     return Err(AnomalyError::InvalidTimeInterval { start_ms, end_ms });
                 }
+                // Late fault detections may arrive after newer observations within MAX_LATE_FAULT_LOOKBACK_MS.
                 if let Some(prev) = self.last_observation_start_ms
                     && start_ms < prev
+                    && prev.abs_diff(start_ms) > MAX_LATE_FAULT_LOOKBACK_MS
                 {
                     return Err(AnomalyError::OutOfOrderObservation {
                         previous_start_ms: prev,
@@ -1737,7 +1791,7 @@ impl CameraAnomalyMonitor {
                 }
 
                 // Retroactively quarantine any existing candidate whose uncertainty-widened interval
-                // overlaps this late-arriving fault, and flag its reviews for reassessment.
+                // overlaps this fault, and flag its reviews for reassessment.
                 for cand in &mut self.candidates {
                     let (w_start, w_end) = widen_interval(
                         cand.event_start_ms,
@@ -1759,7 +1813,10 @@ impl CameraAnomalyMonitor {
 
                 self.used_text_bytes = staged_text_bytes;
                 self.seen_observation_ids.insert(observation_id.clone());
-                self.last_observation_start_ms = Some(start_ms);
+                self.last_observation_start_ms = Some(
+                    self.last_observation_start_ms
+                        .map_or(start_ms, |prev| prev.max(start_ms)),
+                );
                 self.health_events.push(RecordedHealthEvent {
                     observation_id,
                     health_state,
@@ -1792,6 +1849,12 @@ impl CameraAnomalyMonitor {
                     return Err(AnomalyError::SourceRestricted {
                         camera_id: self.source.camera_id.clone(),
                         policy_notice: RESTRICTED_SOURCE_POLICY_NOTICE,
+                    });
+                }
+                if clock_uncertainty_ms > MAX_CLOCK_UNCERTAINTY_MS {
+                    return Err(AnomalyError::ClockUncertaintyExceedsMax {
+                        uncertainty_ms: clock_uncertainty_ms,
+                        max_ms: MAX_CLOCK_UNCERTAINTY_MS,
                     });
                 }
                 if event_end_ms <= event_start_ms {
@@ -1839,7 +1902,7 @@ impl CameraAnomalyMonitor {
                         threshold_bps: region.score_threshold_bps,
                     });
                 }
-                let observed_ms = event_end_ms.saturating_sub(event_start_ms) as u64;
+                let observed_ms = event_start_ms.abs_diff(event_end_ms);
                 if observed_persistence_frames < region.min_persistence_frames
                     || observed_ms < region.min_persistence_ms
                 {
@@ -1858,6 +1921,17 @@ impl CameraAnomalyMonitor {
                     event_start_ms,
                     region.deduplication_window_ms,
                 ) {
+                    let next_segments = self
+                        .candidates
+                        .get(existing_idx)
+                        .map_or(0, |c| c.trigger_segments.len().saturating_add(1));
+                    if next_segments > self.limits.max_segments_per_candidate {
+                        return Err(AnomalyError::LimitExceeded {
+                            kind: AnomalyLimitKind::SegmentsPerCandidate,
+                            actual: next_segments,
+                            max: self.limits.max_segments_per_candidate,
+                        });
+                    }
                     if self.seen_versions.contains(&candidate_version) {
                         return Err(AnomalyError::ReusedVersionId(candidate_version));
                     }
@@ -2040,7 +2114,7 @@ impl CameraAnomalyMonitor {
             let gap_ms = if event_start_ms <= cand.event_end_ms {
                 0
             } else {
-                event_start_ms.saturating_sub(cand.event_end_ms) as u64
+                cand.event_end_ms.abs_diff(event_start_ms)
             };
             gap_ms <= deduplication_window_ms
         })
@@ -2130,7 +2204,7 @@ impl CameraAnomalyMonitor {
             latest_ms = latest_ms.max(frame.capture_time_ms);
         }
         if let Some(max_window_ms) = self.source.max_retention_window_ms {
-            let span_ms = latest_ms.saturating_sub(earliest_ms) as u64;
+            let span_ms = earliest_ms.abs_diff(latest_ms);
             if span_ms > max_window_ms {
                 return Err(AnomalyError::ContextExceedsRetentionWindow {
                     camera_id: self.source.camera_id.clone(),
@@ -2279,23 +2353,23 @@ impl CameraAnomalyMonitor {
             self.compute_merged_missing_intervals(eval_start_ms, eval_end_ms);
         let missing_coverage_ms: u64 = merged_fault_intervals
             .iter()
-            .map(|&(s, e)| e.saturating_sub(s) as u64)
+            .map(|&(s, e)| s.abs_diff(e))
             .sum();
-        let total_window_ms = eval_end_ms.saturating_sub(eval_start_ms) as u64;
+        let total_window_ms = eval_start_ms.abs_diff(eval_end_ms);
         let active_coverage_ms = total_window_ms.saturating_sub(missing_coverage_ms);
         if active_coverage_ms == 0 {
             return Err(AnomalyError::EmptyEvaluationActiveCoverage);
         }
 
-        let coverage_bps = ((active_coverage_ms as u128 * 10_000) / (total_window_ms as u128))
-            .min(10_000) as u16;
+        let coverage_bps =
+            ((active_coverage_ms as u128 * 10_000) / (total_window_ms as u128)).min(10_000) as u16;
 
         // Classify ground-truth events:
         // 1. Outside `[eval_start_ms, eval_end_ms)`
         // 2. Inside window, but overlapping a coverage gap / fault interval
         // 3. Observable within active coverage
         let mut truth_events_outside_window_count = 0usize;
-        let mut truth_events_in_coverage_gap_count = 0usize;
+        let mut gap_truth_indices = Vec::new();
         let mut observable_truth_indices = Vec::new();
 
         for (idx, truth) in labeled_events.iter().enumerate() {
@@ -2310,15 +2384,16 @@ impl CameraAnomalyMonitor {
                 .iter()
                 .any(|&(gs, ge)| half_open_overlaps(clip_start, clip_end, gs, ge));
             if overlaps_gap {
-                truth_events_in_coverage_gap_count =
-                    truth_events_in_coverage_gap_count.saturating_add(1);
+                gap_truth_indices.push(idx);
             } else {
                 observable_truth_indices.push(idx);
             }
         }
 
+        let truth_events_in_coverage_gap_count = gap_truth_indices.len();
         let mut matched_observable_truths = BTreeSet::new();
         let mut true_positive_alerts = 0usize;
+        let mut matched_gap_excluded_truth_alerts = 0usize;
         let mut window_candidates = 0usize;
         let mut quarantined_fault_candidates_in_window = 0usize;
         let mut deduplicated_repeat_triggers_in_window = 0u32;
@@ -2363,7 +2438,7 @@ impl CameraAnomalyMonitor {
                 cand.event_end_ms,
                 cand.clock_uncertainty_ms,
             );
-            let mut matched_any = false;
+            let mut matched_observable = false;
             for &truth_idx in &observable_truth_indices {
                 let Some(truth) = labeled_events.get(truth_idx) else {
                     continue;
@@ -2372,24 +2447,41 @@ impl CameraAnomalyMonitor {
                     && cand.category == truth.category
                     && half_open_overlaps(cand_start, cand_end, truth.start_ms, truth.end_ms)
                 {
-                    matched_any = true;
+                    matched_observable = true;
                     if matched_observable_truths.insert(truth_idx) {
                         if cand.first_detection_emitted_ms < truth.start_ms {
                             early_detection_count = early_detection_count.saturating_add(1);
                         } else {
-                            let latency =
-                                (cand.first_detection_emitted_ms - truth.start_ms) as u64;
+                            let latency = truth.start_ms.abs_diff(cand.first_detection_emitted_ms);
                             latencies_ms.push(latency);
                         }
                     }
                 }
             }
-            if matched_any {
+            if matched_observable {
                 true_positive_alerts = true_positive_alerts.saturating_add(1);
+                continue;
+            }
+
+            // N1: If the candidate did not match a fully-observable truth, check whether it
+            // matched a truth event that partially overlapped a coverage gap so a valid
+            // pre-outage detection is not penalized as a false alert.
+            let matched_gap_truth = gap_truth_indices.iter().any(|&truth_idx| {
+                labeled_events.get(truth_idx).is_some_and(|truth| {
+                    cand.region_id == truth.region_id
+                        && cand.category == truth.category
+                        && half_open_overlaps(cand_start, cand_end, truth.start_ms, truth.end_ms)
+                })
+            });
+            if matched_gap_truth {
+                matched_gap_excluded_truth_alerts =
+                    matched_gap_excluded_truth_alerts.saturating_add(1);
             }
         }
 
-        let false_alert_count = window_candidates.saturating_sub(true_positive_alerts);
+        let false_alert_count = window_candidates
+            .saturating_sub(true_positive_alerts)
+            .saturating_sub(matched_gap_excluded_truth_alerts);
 
         // False alerts per active camera-hour in milli-alerts/hour:
         // (false_alert_count * 3_600_000 ms/hr * 1_000) / active_coverage_ms
@@ -2469,6 +2561,7 @@ impl CameraAnomalyMonitor {
             total_candidate_alerts: window_candidates,
             quarantined_fault_candidates_in_window,
             true_positive_alerts,
+            matched_gap_excluded_truth_alerts,
             false_alert_count,
             false_alerts_per_camera_hour_milli,
             early_detection_count,
@@ -2688,13 +2781,9 @@ pub fn validate_cross_camera_association(
     }
 
     let temporal_skew_ms = if first_cand.event_end_ms < second_cand.event_start_ms {
-        second_cand
-            .event_start_ms
-            .saturating_sub(first_cand.event_end_ms) as u64
+        first_cand.event_end_ms.abs_diff(second_cand.event_start_ms)
     } else if second_cand.event_end_ms < first_cand.event_start_ms {
-        first_cand
-            .event_start_ms
-            .saturating_sub(second_cand.event_end_ms) as u64
+        second_cand.event_end_ms.abs_diff(first_cand.event_start_ms)
     } else {
         0
     };

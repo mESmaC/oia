@@ -4,7 +4,9 @@
 //!   append-only review history, cross-camera association checks, and operational held-out evaluation (`CAM-01`–`CAM-05`, `A09`).
 //! - [`recreation`]: portable recreation-prompt export and imported-recreation labeling (`MEDIA-04`, `A10`).
 //!
-//! Forensic workbench inspection (`#30`) and predictive restoration (`MEDIA-03` in `#31`) remain open.
+//! The separate `oia-image-forensics` codec worker implements bounded offline still-image
+//! diagnostics; its integration here and the full forensic workbench (`#30`) remain open,
+//! as does predictive restoration (`MEDIA-03` in `#31`).
 
 #![forbid(unsafe_code)]
 #![deny(clippy::indexing_slicing, clippy::unwrap_used, clippy::expect_used)]

@@ -12,7 +12,7 @@ Lean runtime linkage, Mathlib dependency, or hosted workflow. See
 | --- | --- | --- |
 | [FrameSelection](OiaProofs/FrameSelection.lean) | Selected timestamp belongs to the input, satisfies the half-open window and staleness bounds, and is latest among valid candidates. Empty catalogs and coverage gaps remain distinct; gap characterization is complete. | **Model only.** The historical Rust selector is not on `main`; #12 owns the future bridge. |
 | [CutoffAdmissibility](OiaProofs/CutoffAdmissibility.lean) | Strict acceptance requires known public availability, ingestion, and model knowledge at or before cutoff for **every** source. Empty source lists fail. Strict acceptance implies retrospective acceptance; successful strict results never carry the retrospective model disclaimer, and admitted unknown/future model knowledge always does. | **Rust behavior tested against the model** on the 24 cases below; not a formal implementation proof. |
-| [DependencyInvalidation](OiaProofs/DependencyInvalidation.lean) | Propagation preserves flags and marks only reachable nodes; every finitely reachable node appears with sufficient fuel (`invalidateClosure_reachable_iff`). | **Model only.** The historical graph APIs are not on `main`; #10/#14 own the future bridge. Finite arbitrary fuel is not claimed to compute a complete transitive closure. |
+| [DependencyInvalidation](OiaProofs/DependencyInvalidation.lean) and [DependencyBounds](OiaProofs/DependencyBounds.lean) | Propagation preserves flags and marks only reachable nodes. Membership at a given fuel is exactly reachability along a seed-origin path of at most that many edges. Membership is monotone in fuel, seeds, and edges; a membership fixed point is complete. | **Model only.** The historical graph APIs are not on `main`; #10/#14 own the future bridge. Finite arbitrary fuel is not claimed to compute a complete transitive closure. |
 
 The theorem statements in those files are the specifications. Frame timestamps
 are unbounded integers; validity uses exact subtraction. Dependency nodes are
@@ -20,6 +20,43 @@ natural numbers and edges are `(dependent, upstream)` pairs. Seeds are included,
 duplicates are permitted, and the model does not prove version immutability,
 storage behavior, termination of a production traversal, or a resource bound.
 Neither timestamps alone nor membership in a list establish source authenticity.
+
+## Bounded dependency coverage
+
+The model-only follow-up in #142 adds `DependencyPath edges origin node hops`,
+an inductive path specification independent of the list-propagation function.
+Zero edges reach the origin; every path extension follows a stored
+`(dependent, upstream)` edge from upstream to dependent and increases the edge
+count by one. Node IDs and hop counts are unbounded natural numbers. Edges and
+seeds are finite lists; cycles, self-loops, repeated nodes, duplicate edges, and
+duplicate seeds are allowed. No acyclicity assumption is required.
+
+The kernel checks these results in `OiaProofs/DependencyBounds.lean`:
+
+| Theorem | Guarantee |
+| --- | --- |
+| `stepInvalidation_mem_iff` | One round retains a flagged node or follows exactly one edge from a flagged upstream. |
+| `DependencyPath.mem_closure` | A seed-origin path of exactly `hops` edges is included after `hops` rounds. |
+| `invalidateClosure_mem_iff_bounded_path` | A node is included after `fuel` rounds iff a seed-origin path exists with at most `fuel` edges. |
+| `invalidateClosure_not_mem_iff_long_paths` | A node is excluded at this budget iff every seed-origin path to it is longer than the budget, including the vacuous case of no path. Exclusion alone does not establish unreachability. |
+| `invalidateClosure_fuel_mono` | Increasing fuel cannot remove membership. |
+| `invalidateClosure_mono` | Adding seeds or edges cannot remove membership at the same fuel. |
+| `invalidateClosure_membership_congr` | Equal seed/edge membership gives equal result membership; reordering and duplication do not affect the flagged set. |
+| `invalidateClosure_append_seeds` | Propagation from combined seed lists has the union of their separately propagated memberships. |
+| `stepInvalidation_closed_iff` | A round adds no new membership iff the flagged set is closed under direct dependency edges. |
+| `invalidateClosure_closed_mem_iff` | A closed flagged set retains exactly its membership for every further fuel budget. |
+| `invalidateClosure_fixed_point_complete` | If a bounded result is closed under one further round, its membership is exactly all nodes reachable from the original seeds. |
+
+The fixed-point hypotheses concern **membership**, not equality of lists. The
+existing algorithm retains duplicates, so list length can continue to grow after
+membership stabilizes. These results do not give a universal sufficient fuel
+bound, bound allocations or execution time, prove a production traversal, or
+establish Rust correspondence. They support inspectable conditional reasoning
+under REASON-01 and ADR 0004, not complete A07/A16 integration. Two compact
+kernel-checked examples retain the concrete insufficient-fuel counterexample
+and exercise zero fuel, a cycle, duplicate edges/seeds, a disconnected self-loop,
+and empty seeds. See the [validation record](DEPENDENCY-BOUNDS-VALIDATION.md)
+for the checked model revision, commands, and remaining limitations.
 
 ## Reproduce
 
@@ -129,3 +166,5 @@ copied. Historical claims about those missing Rust APIs are withdrawn.
 Track the eventual frame/dependency runtime bridges on #12 and #10/#14 with #15
 as context. Each needs its own immutable Rust revision, numeric/precondition
 review, shared fixture and verification record before a correspondence label.
+The additional bounded-coverage and stability proofs are tracked separately in
+#142; they do not implement those runtime bridges or change the original model.

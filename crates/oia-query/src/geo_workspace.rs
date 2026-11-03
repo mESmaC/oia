@@ -7,8 +7,8 @@
 //! - **Implemented (narrowed per PR #102 scope review):**
 //!   - [`EventClusterLedger`] providing editable, append-only, reversible event
 //!     clustering (`register_item_with_initial_cluster`, `merge_clusters`,
-//!     `split_cluster`, `revert_decision`, `revise_item`) with immutable
-//!     [`VersionId`]s and preserved [`ClusterDecisionRecord`] audit history.
+//!     `split_cluster`, `revert_decision`, `revise_item`, `reassess_cluster`) with
+//!     immutable [`VersionId`]s and preserved [`ClusterDecisionRecord`] audit history.
 //!   - Reuses [`oia_news_claims::LineageRelationKind`] (`Quotes`, `Republishes`,
 //!     `Supersedes`, `Supports`) and [`oia_news_claims::ClaimAssessmentState`]
 //!     together with [`oia_domain::witness::AccountOrigin`] (`Reported` vs
@@ -28,7 +28,7 @@
 //!     midnight UTC timestamps: temporal gap comparison between a `CalendarDateOnly`
 //!     record and an instant/interval yields
 //!     [`TemporalComparisonOutcome::CalendarDateOnlyCannotResolveSubDayGap`]
-//!     with a timezone-safe lower bound (`raw_utc_day_diff.saturating_sub(2)`)
+//!     with a timezone-safe lower bound (`raw_diff.saturating_sub(2)`)
 //!     rather than fabricating a millisecond offset (`docs/architecture.md` §3.1).
 //!   - Propagates reassessment across direct and transitive lineage dependents
 //!     into side-table annotations (`cluster_reassessment_reasons` /
@@ -42,7 +42,8 @@
 //!   - Weather, aircraft/maritime track interpolation, and sensor coverage
 //!     envelopes belong to `#24`.
 //!   - Shared workspace shell state, active surface selection, local view filter
-//!     bars, and route-back navigation belong to `oia-app` (`#16` and `#14`).
+//!     bars, and route-back navigation are deferred to `oia-app` (`#16`) and
+//!     shared application services (`#14`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -57,12 +58,14 @@ pub const DEFAULT_MAX_TEXT_BYTES: usize = 4_096;
 pub const DEFAULT_MAX_EVIDENCE_ITEMS: usize = 1_024;
 /// Default maximum active clusters in a single [`EventClusterLedger`].
 pub const DEFAULT_MAX_CLUSTERS: usize = 512;
-/// Default maximum retained split/merge/revert decision history entries.
+/// Default maximum retained split/merge/revert/reassess decision history entries.
 pub const DEFAULT_MAX_DECISION_HISTORY: usize = 512;
-/// Default maximum properties per evidence item.
+/// Default maximum properties and lineage links per evidence item.
 pub const DEFAULT_MAX_PROPERTIES_PER_ITEM: usize = 64;
-/// Default maximum retained revisions per evidence item and reassessment reasons per cluster.
+/// Default maximum retained revisions per evidence item.
 pub const DEFAULT_MAX_REVISIONS_PER_ITEM: usize = 64;
+/// Default maximum retained reassessment reasons per cluster version.
+pub const DEFAULT_MAX_REASSESSMENT_REASONS_PER_CLUSTER: usize = 256;
 /// Maximum allowed pre-computed pairwise distance or uncertainty in meters (`20,000` km).
 pub const MAX_DISTANCE_M: f64 = 20_000_000.0;
 
@@ -74,6 +77,7 @@ pub enum ClusterLimitKind {
     Clusters,
     DecisionHistory,
     PropertiesPerItem,
+    LineageLinksPerItem,
     RevisionsPerItem,
     ReassessmentReasonsPerCluster,
 }
@@ -86,6 +90,7 @@ impl fmt::Display for ClusterLimitKind {
             Self::Clusters => f.write_str("max_clusters"),
             Self::DecisionHistory => f.write_str("max_decision_history"),
             Self::PropertiesPerItem => f.write_str("max_properties_per_item"),
+            Self::LineageLinksPerItem => f.write_str("max_lineage_links_per_item"),
             Self::RevisionsPerItem => f.write_str("max_revisions_per_item"),
             Self::ReassessmentReasonsPerCluster => {
                 f.write_str("max_reassessment_reasons_per_cluster")
@@ -103,6 +108,7 @@ pub struct ClusterLimits {
     max_decision_history: usize,
     max_properties_per_item: usize,
     max_revisions_per_item: usize,
+    max_reassessment_reasons_per_cluster: usize,
 }
 
 impl ClusterLimits {
@@ -114,18 +120,19 @@ impl ClusterLimits {
         max_decision_history: usize,
         max_properties_per_item: usize,
     ) -> Result<Self, GeoClusteringError> {
-        Self::with_revision_limit(
+        Self::with_reassessment_limits(
             max_text_bytes,
             max_evidence_items,
             max_clusters,
             max_decision_history,
             max_properties_per_item,
             DEFAULT_MAX_REVISIONS_PER_ITEM,
+            DEFAULT_MAX_REASSESSMENT_REASONS_PER_CLUSTER,
         )
     }
 
-    /// Creates validated resource budgets including explicit per-item revision and
-    /// per-cluster reassessment-reason caps.
+    /// Creates validated resource budgets with an explicit per-item revision limit
+    /// and a matching default reassessment-reason limit (`max_revisions_per_item * 4`).
     pub fn with_revision_limit(
         max_text_bytes: usize,
         max_evidence_items: usize,
@@ -133,6 +140,28 @@ impl ClusterLimits {
         max_decision_history: usize,
         max_properties_per_item: usize,
         max_revisions_per_item: usize,
+    ) -> Result<Self, GeoClusteringError> {
+        Self::with_reassessment_limits(
+            max_text_bytes,
+            max_evidence_items,
+            max_clusters,
+            max_decision_history,
+            max_properties_per_item,
+            max_revisions_per_item,
+            max_revisions_per_item.saturating_mul(4),
+        )
+    }
+
+    /// Creates validated resource budgets including explicit per-item revision and
+    /// per-cluster reassessment-reason caps.
+    pub fn with_reassessment_limits(
+        max_text_bytes: usize,
+        max_evidence_items: usize,
+        max_clusters: usize,
+        max_decision_history: usize,
+        max_properties_per_item: usize,
+        max_revisions_per_item: usize,
+        max_reassessment_reasons_per_cluster: usize,
     ) -> Result<Self, GeoClusteringError> {
         if max_text_bytes == 0 {
             return Err(GeoClusteringError::ZeroLimit(ClusterLimitKind::TextBytes));
@@ -160,6 +189,11 @@ impl ClusterLimits {
                 ClusterLimitKind::RevisionsPerItem,
             ));
         }
+        if max_reassessment_reasons_per_cluster == 0 {
+            return Err(GeoClusteringError::ZeroLimit(
+                ClusterLimitKind::ReassessmentReasonsPerCluster,
+            ));
+        }
         Ok(Self {
             max_text_bytes,
             max_evidence_items,
@@ -167,6 +201,7 @@ impl ClusterLimits {
             max_decision_history,
             max_properties_per_item,
             max_revisions_per_item,
+            max_reassessment_reasons_per_cluster,
         })
     }
 
@@ -199,6 +234,11 @@ impl ClusterLimits {
     pub const fn max_revisions_per_item(self) -> usize {
         self.max_revisions_per_item
     }
+
+    #[must_use]
+    pub const fn max_reassessment_reasons_per_cluster(self) -> usize {
+        self.max_reassessment_reasons_per_cluster
+    }
 }
 
 impl Default for ClusterLimits {
@@ -210,6 +250,7 @@ impl Default for ClusterLimits {
             max_decision_history: DEFAULT_MAX_DECISION_HISTORY,
             max_properties_per_item: DEFAULT_MAX_PROPERTIES_PER_ITEM,
             max_revisions_per_item: DEFAULT_MAX_REVISIONS_PER_ITEM,
+            max_reassessment_reasons_per_cluster: DEFAULT_MAX_REASSESSMENT_REASONS_PER_CLUSTER,
         }
     }
 }
@@ -259,6 +300,11 @@ pub enum GeoClusteringError {
     RevertDestinationClusterInUse {
         decision_id: OpaqueId,
         conflicting_cluster_id: OpaqueId,
+    },
+    InvalidRevertVersionCount {
+        decision_id: OpaqueId,
+        expected: usize,
+        supplied: usize,
     },
     InvalidClusterSplitPartition {
         cluster_id: OpaqueId,
@@ -327,6 +373,14 @@ impl fmt::Display for GeoClusteringError {
             } => write!(
                 f,
                 "decision {decision_id} cannot be reverted because destination cluster ID {conflicting_cluster_id} is currently active"
+            ),
+            Self::InvalidRevertVersionCount {
+                decision_id,
+                expected,
+                supplied,
+            } => write!(
+                f,
+                "reverting decision {decision_id} requires {expected} new VersionId(s), got {supplied}"
             ),
             Self::InvalidClusterSplitPartition { cluster_id, reason } => {
                 write!(
@@ -484,7 +538,7 @@ pub enum TemporalComparisonOutcome {
     CalendarDateSeparationDays(u64),
     /// One item is `CalendarDateOnly` and the other is a sub-day timestamp or interval;
     /// sub-day separation cannot be computed without fabricating midnight UTC.
-    /// `minimum_whole_day_separation` is a timezone-safe lower bound (`raw_utc_day_diff.saturating_sub(2)`).
+    /// `minimum_whole_day_separation` is a timezone-safe lower bound (`raw_diff.saturating_sub(2)`).
     CalendarDateOnlyCannotResolveSubDayGap { minimum_whole_day_separation: u64 },
 }
 
@@ -696,7 +750,7 @@ impl ReportedClusteringTime {
                 // Because local timezone offset may shift the UTC date by up to +14/-12 hours
                 // (1 day) and a calendar date spans an entire 24-hour day (1 day), a valid
                 // lower bound on whole-day separation requires subtracting 2 from the raw
-                // UTC-day difference.
+                // UTC-day difference (`raw_diff.saturating_sub(2)`).
                 let raw_diff = cal_day.abs_diff(instant_utc_day);
                 TemporalComparisonOutcome::CalendarDateOnlyCannotResolveSubDayGap {
                     minimum_whole_day_separation: raw_diff.saturating_sub(2),
@@ -1020,6 +1074,13 @@ impl GeoEvidenceItem {
                 max: limits.max_properties_per_item,
             });
         }
+        if self.lineage_links.len() > limits.max_properties_per_item {
+            return Err(GeoClusteringError::BudgetExceeded {
+                limit: ClusterLimitKind::LineageLinksPerItem,
+                actual: self.lineage_links.len(),
+                max: limits.max_properties_per_item,
+            });
+        }
         for link in &self.lineage_links {
             if link.upstream_item_id == self.item_id {
                 return Err(GeoClusteringError::SelfLineageReference(
@@ -1263,7 +1324,8 @@ pub struct DistinctEvidenceCounts {
 /// Once created under a [`VersionId`], a `ProposedEventCluster` snapshot is never
 /// mutated in place. Subsequent upstream item revisions or lineage updates are
 /// recorded in [`EventClusterLedger::cluster_reassessment_reasons`] and carried
-/// forward into successor cluster versions on merge, split, or revert (`AGENTS.md` §4).
+/// forward into successor cluster versions on merge, split, or revert until
+/// resolved via [`EventClusterLedger::reassess_cluster`] (`AGENTS.md` §4).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProposedEventCluster {
     cluster_id: OpaqueId,
@@ -1274,8 +1336,8 @@ pub struct ProposedEventCluster {
     criteria: ClusterMatchCriteria,
     conflicts: Vec<ClusterConflict>,
     counts: DistinctEvidenceCounts,
-    needs_reassessment: bool,
-    reassessment_reasons: Vec<String>,
+    needs_reassessment_at_issue: bool,
+    reassessment_reasons_at_issue: Vec<String>,
     rationale: String,
 }
 
@@ -1321,19 +1383,19 @@ impl ProposedEventCluster {
     }
 
     /// Returns `true` if this cluster version already had unresolved reassessment
-    /// reasons carried forward from a predecessor version when the snapshot was built.
-    /// For live post-snapshot reassessment status, also check
+    /// reasons carried forward from a predecessor version when the snapshot was issued.
+    /// For live post-snapshot reassessment status, use
     /// [`EventClusterLedger::cluster_needs_reassessment`].
     #[must_use]
-    pub const fn needs_reassessment(&self) -> bool {
-        self.needs_reassessment
+    pub const fn needs_reassessment_at_issue(&self) -> bool {
+        self.needs_reassessment_at_issue
     }
 
-    /// Returns the reassessment reasons carried on this frozen snapshot at creation time.
-    /// For live post-snapshot reasons, see [`EventClusterLedger::cluster_reassessment_reasons`].
+    /// Returns the reassessment reasons carried on this frozen snapshot at issue time.
+    /// For live post-snapshot reasons, use [`EventClusterLedger::cluster_reassessment_reasons`].
     #[must_use]
-    pub fn reassessment_reasons(&self) -> &[String] {
-        &self.reassessment_reasons
+    pub fn reassessment_reasons_at_issue(&self) -> &[String] {
+        &self.reassessment_reasons_at_issue
     }
 
     #[must_use]
@@ -1357,6 +1419,11 @@ pub enum ClusterDecisionKind {
         left_version_id: VersionId,
         right_cluster_id: OpaqueId,
         right_version_id: VersionId,
+    },
+    Reassess {
+        prior_cluster: Box<ProposedEventCluster>,
+        reassessed_version_id: VersionId,
+        acknowledged_reasons: Vec<String>,
     },
     Revert {
         reverted_decision_id: OpaqueId,
@@ -1477,7 +1544,7 @@ impl EventClusterLedger {
 
     /// Returns `true` if the active or archived cluster at `version_id` requires
     /// reassessment (either carried at snapshot creation or flagged after creation
-    /// by a direct or transitive upstream item update).
+    /// by a direct or transitive upstream item or distance update).
     #[must_use]
     pub fn cluster_version_needs_reassessment(&self, version_id: &VersionId) -> bool {
         self.reassessment_by_cluster_version
@@ -1486,7 +1553,7 @@ impl EventClusterLedger {
             || self
                 .archived_cluster_versions
                 .get(version_id)
-                .is_some_and(ProposedEventCluster::needs_reassessment)
+                .is_some_and(ProposedEventCluster::needs_reassessment_at_issue)
     }
 
     /// Returns `true` if the active cluster `cluster_id` requires reassessment.
@@ -1505,7 +1572,7 @@ impl EventClusterLedger {
         };
         self.reassessment_by_cluster_version
             .get(&cluster.version_id)
-            .map_or(cluster.reassessment_reasons(), Vec::as_slice)
+            .map_or(cluster.reassessment_reasons_at_issue(), Vec::as_slice)
     }
 
     #[must_use]
@@ -1514,6 +1581,9 @@ impl EventClusterLedger {
     }
 
     /// Records a pre-computed pairwise distance in meters between two registered evidence items.
+    ///
+    /// If an active cluster already contains both `item_a` and `item_b`, recording or updating
+    /// their pairwise distance flags that cluster for reassessment (`AGENTS.md` §4).
     pub fn record_pairwise_distance_m(
         &mut self,
         item_a: &OpaqueId,
@@ -1532,10 +1602,50 @@ impl EventClusterLedger {
                 value: distance_m,
             });
         }
-        if item_a != item_b {
-            let normalized = if distance_m == 0.0 { 0.0 } else { distance_m };
-            self.pairwise_distances_m
-                .insert(canonical_pair(item_a, item_b), normalized);
+        if item_a == item_b {
+            return Ok(());
+        }
+        let normalized = if distance_m == 0.0 { 0.0 } else { distance_m };
+        let pair = canonical_pair(item_a, item_b);
+        let prior = self.pairwise_distances_m.get(&pair).copied();
+        if prior == Some(normalized) {
+            return Ok(());
+        }
+
+        // Check reassessment-reason budgets on any active cluster containing both items.
+        let mut affected_versions = Vec::new();
+        for cluster in self.active_clusters.values() {
+            if cluster.member_item_ids.contains(item_a) && cluster.member_item_ids.contains(item_b)
+            {
+                let len = self
+                    .reassessment_by_cluster_version
+                    .get(&cluster.version_id)
+                    .map_or(0, Vec::len);
+                if len >= self.limits.max_reassessment_reasons_per_cluster {
+                    return Err(GeoClusteringError::BudgetExceeded {
+                        limit: ClusterLimitKind::ReassessmentReasonsPerCluster,
+                        actual: len + 1,
+                        max: self.limits.max_reassessment_reasons_per_cluster,
+                    });
+                }
+                affected_versions.push(cluster.version_id.clone());
+            }
+        }
+
+        self.pairwise_distances_m.insert(pair, normalized);
+        for ver_id in affected_versions {
+            let reason = match prior {
+                Some(old_d) => format!(
+                    "pairwise distance between {item_a} and {item_b} updated from {old_d}m to {normalized}m"
+                ),
+                None => format!(
+                    "pairwise distance between {item_a} and {item_b} recorded as {normalized}m"
+                ),
+            };
+            self.reassessment_by_cluster_version
+                .entry(ver_id)
+                .or_default()
+                .push(reason);
         }
         Ok(())
     }
@@ -1598,11 +1708,11 @@ impl EventClusterLedger {
                 .reassessment_by_cluster_version
                 .get(ver_id)
                 .map_or(0, Vec::len);
-            if existing_len >= self.limits.max_revisions_per_item {
+            if existing_len >= self.limits.max_reassessment_reasons_per_cluster {
                 return Err(GeoClusteringError::BudgetExceeded {
                     limit: ClusterLimitKind::ReassessmentReasonsPerCluster,
                     actual: existing_len + 1,
-                    max: self.limits.max_revisions_per_item,
+                    max: self.limits.max_reassessment_reasons_per_cluster,
                 });
             }
         }
@@ -1648,7 +1758,8 @@ impl EventClusterLedger {
     /// Existing [`ProposedEventCluster`] snapshots (both active and archived) are never
     /// mutated in place; reassessment reasons are stored in side-table annotations
     /// (`cluster_needs_reassessment`, `cluster_reassessment_reasons`) and carried
-    /// forward into successor cluster versions on merge, split, or revert.
+    /// forward into successor cluster versions on merge, split, or revert until
+    /// acknowledged via [`EventClusterLedger::reassess_cluster`].
     pub fn revise_item(
         &mut self,
         expected_predecessor_version: &VersionId,
@@ -1711,11 +1822,11 @@ impl EventClusterLedger {
                 .reassessment_by_cluster_version
                 .get(ver_id)
                 .map_or(0, Vec::len);
-            if existing_len >= self.limits.max_revisions_per_item {
+            if existing_len >= self.limits.max_reassessment_reasons_per_cluster {
                 return Err(GeoClusteringError::BudgetExceeded {
                     limit: ClusterLimitKind::ReassessmentReasonsPerCluster,
                     actual: existing_len + 1,
-                    max: self.limits.max_revisions_per_item,
+                    max: self.limits.max_reassessment_reasons_per_cluster,
                 });
             }
         }
@@ -1750,6 +1861,80 @@ impl EventClusterLedger {
             flagged_clusters.push(cid);
         }
         Ok(flagged_clusters)
+    }
+
+    /// Reassesses an active cluster against the latest ledger item versions and pairwise
+    /// distances, minting a new [`VersionId`] with `needs_reassessment == false` while
+    /// preserving the prior cluster snapshot in `archived_cluster_versions` and recording
+    /// the acknowledged reassessment reasons in [`ClusterDecisionKind::Reassess`] (`AGENTS.md` §4).
+    pub fn reassess_cluster(
+        &mut self,
+        cluster_id: &OpaqueId,
+        new_version_id: VersionId,
+        criteria: ClusterMatchCriteria,
+        decision_id: OpaqueId,
+        actor: ActorId,
+        rationale: impl Into<String>,
+    ) -> Result<&ProposedEventCluster, GeoClusteringError> {
+        if self.decision_history.len() >= self.limits.max_decision_history {
+            return Err(GeoClusteringError::BudgetExceeded {
+                limit: ClusterLimitKind::DecisionHistory,
+                actual: self.decision_history.len() + 1,
+                max: self.limits.max_decision_history,
+            });
+        }
+        criteria.validate_against_limits(self.limits)?;
+        if self.used_versions.contains(&new_version_id) {
+            return Err(GeoClusteringError::DuplicateVersionId(new_version_id));
+        }
+        if self
+            .decision_history
+            .iter()
+            .any(|d| d.decision_id == decision_id)
+        {
+            return Err(GeoClusteringError::DuplicateDecisionId(decision_id));
+        }
+        let rationale = rationale.into();
+        validate_text("rationale", &rationale, self.limits.max_text_bytes)?;
+
+        let Some(prior) = self.active_clusters.get(cluster_id).cloned() else {
+            return Err(GeoClusteringError::UnknownClusterId(cluster_id.clone()));
+        };
+        let acknowledged_reasons = self
+            .reassessment_by_cluster_version
+            .get(&prior.version_id)
+            .cloned()
+            .unwrap_or_else(|| prior.reassessment_reasons_at_issue.clone());
+
+        let reassessed_snapshot = self.build_cluster_snapshot(
+            cluster_id.clone(),
+            new_version_id.clone(),
+            vec![prior.version_id.clone()],
+            prior.member_item_ids.clone(),
+            criteria,
+            Vec::new(),
+            rationale.clone(),
+        )?;
+
+        self.used_versions.insert(new_version_id.clone());
+        self.archived_cluster_versions
+            .insert(new_version_id.clone(), reassessed_snapshot.clone());
+        self.active_clusters
+            .insert(cluster_id.clone(), reassessed_snapshot);
+        self.decision_history.push(ClusterDecisionRecord {
+            decision_id,
+            actor,
+            kind: ClusterDecisionKind::Reassess {
+                prior_cluster: Box::new(prior),
+                reassessed_version_id: new_version_id,
+                acknowledged_reasons,
+            },
+            rationale,
+            reverted_by: None,
+        });
+        self.active_clusters
+            .get(cluster_id)
+            .ok_or_else(|| GeoClusteringError::UnknownClusterId(cluster_id.clone()))
     }
 
     fn active_clusters_reaching_item(
@@ -1802,20 +1987,90 @@ impl EventClusterLedger {
         false
     }
 
-    fn combined_reassessment_reasons_for_versions(&self, versions: &[VersionId]) -> Vec<String> {
+    /// Combines reassessment reasons across `versions` and rejects with
+    /// [`GeoClusteringError::BudgetExceeded`] if the deduplicated total exceeds
+    /// `self.limits.max_reassessment_reasons_per_cluster` (never truncating silently).
+    fn combine_reassessment_reasons_checked(
+        &self,
+        versions: &[VersionId],
+    ) -> Result<Vec<String>, GeoClusteringError> {
         let mut seen = BTreeSet::new();
         let mut combined = Vec::new();
         for ver in versions {
             if let Some(reasons) = self.reassessment_by_cluster_version.get(ver) {
                 for r in reasons {
-                    if seen.insert(r.clone()) && combined.len() < self.limits.max_revisions_per_item
-                    {
+                    if seen.insert(r.clone()) {
                         combined.push(r.clone());
                     }
                 }
             }
         }
-        combined
+        if combined.len() > self.limits.max_reassessment_reasons_per_cluster {
+            return Err(GeoClusteringError::BudgetExceeded {
+                limit: ClusterLimitKind::ReassessmentReasonsPerCluster,
+                actual: combined.len(),
+                max: self.limits.max_reassessment_reasons_per_cluster,
+            });
+        }
+        Ok(combined)
+    }
+
+    /// Computes the reassessment reasons relevant to a restored cluster on revert:
+    /// includes all reasons from `own_version`, plus any reasons added on `later_versions`
+    /// that apply to `member_ids` (avoiding cross-cluster leakage of `member <other> revised`
+    /// reasons from unrelated sibling members).
+    fn relevant_reassessment_reasons_for_members(
+        &self,
+        own_version: &VersionId,
+        later_versions: &[VersionId],
+        member_ids: &BTreeSet<OpaqueId>,
+        pinned_item_versions: &BTreeMap<OpaqueId, VersionId>,
+    ) -> Result<Vec<String>, GeoClusteringError> {
+        let mut seen = BTreeSet::new();
+        let mut combined = Vec::new();
+        if let Some(own_reasons) = self.reassessment_by_cluster_version.get(own_version) {
+            for r in own_reasons {
+                if seen.insert(r.clone()) {
+                    combined.push(r.clone());
+                }
+            }
+        }
+        for ver in later_versions {
+            if let Some(reasons) = self.reassessment_by_cluster_version.get(ver) {
+                for r in reasons {
+                    let keep = if let Some(rest) = r.strip_prefix("member ") {
+                        let member_token = rest.split_whitespace().next().unwrap_or("");
+                        member_ids.iter().any(|m| m.as_str() == member_token)
+                    } else {
+                        true
+                    };
+                    if keep && seen.insert(r.clone()) {
+                        combined.push(r.clone());
+                    }
+                }
+            }
+        }
+        for (item_id, pinned_ver) in pinned_item_versions {
+            if let Some(current_item) = self.items.get(item_id)
+                && &current_item.version_id != pinned_ver
+            {
+                let note = format!(
+                    "member {item_id} pinned at {pinned_ver} has newer ledger version {}",
+                    current_item.version_id
+                );
+                if seen.insert(note.clone()) {
+                    combined.push(note);
+                }
+            }
+        }
+        if combined.len() > self.limits.max_reassessment_reasons_per_cluster {
+            return Err(GeoClusteringError::BudgetExceeded {
+                limit: ClusterLimitKind::ReassessmentReasonsPerCluster,
+                actual: combined.len(),
+                max: self.limits.max_reassessment_reasons_per_cluster,
+            });
+        }
+        Ok(combined)
     }
 
     /// Merges two active clusters into a new cluster version while retaining prior
@@ -1871,10 +2126,10 @@ impl EventClusterLedger {
 
         let mut union_members = cluster_a.member_item_ids.clone();
         union_members.extend(cluster_b.member_item_ids.iter().cloned());
-        let inherited_reasons = self.combined_reassessment_reasons_for_versions(&[
+        let inherited_reasons = self.combine_reassessment_reasons_checked(&[
             cluster_a.version_id.clone(),
             cluster_b.version_id.clone(),
-        ]);
+        ])?;
 
         let merged_snapshot = self.build_cluster_snapshot(
             merged_cluster_id.clone(),
@@ -2004,8 +2259,8 @@ impl EventClusterLedger {
             });
         }
 
-        let inherited_reasons = self
-            .combined_reassessment_reasons_for_versions(std::slice::from_ref(&original.version_id));
+        let inherited_reasons =
+            self.combine_reassessment_reasons_checked(std::slice::from_ref(&original.version_id))?;
 
         let left_snapshot = self.build_cluster_snapshot(
             left_cluster_id.clone(),
@@ -2059,14 +2314,14 @@ impl EventClusterLedger {
         Ok(())
     }
 
-    /// Reverts a prior merge or split decision by restoring the pre-decision cluster
-    /// snapshots under new immutable [`VersionId`]s while keeping `decision_history`
+    /// Reverts a prior merge, split, or reassess decision by restoring the pre-decision
+    /// cluster snapshots under new immutable [`VersionId`]s while keeping `decision_history`
     /// and `archived_cluster_versions` append-only (`GEO-03`, `A04`).
     ///
     /// Preserves the pre-decision `pinned_item_versions` and `rationale` from the
-    /// archived snapshots, carries forward any reassessment reasons accumulated on
-    /// either the pre-decision or reverted cluster versions, and rejects the revert
-    /// with [`GeoClusteringError::RevertDestinationClusterInUse`] if a destination
+    /// archived snapshots, carries forward any reassessment reasons relevant to the
+    /// restored cluster's members, and rejects the revert with
+    /// [`GeoClusteringError::RevertDestinationClusterInUse`] if a destination
     /// `cluster_id` was reused by another active cluster in the meantime.
     pub fn revert_decision(
         &mut self,
@@ -2135,9 +2390,10 @@ impl EventClusterLedger {
                     });
                 }
                 let [ver_a, ver_b] = restored_version_ids else {
-                    return Err(GeoClusteringError::InvalidClusterSplitPartition {
-                        cluster_id: merged_cluster_id,
-                        reason: "reverting a merge requires exactly 2 new VersionIds",
+                    return Err(GeoClusteringError::InvalidRevertVersionCount {
+                        decision_id: target_decision_id.clone(),
+                        expected: 2,
+                        supplied: restored_version_ids.len(),
                     });
                 };
                 let current = self.active_clusters.get(&merged_cluster_id);
@@ -2147,7 +2403,6 @@ impl EventClusterLedger {
                         missing_or_modified_cluster: merged_cluster_id,
                     });
                 }
-                // Ensure neither destination cluster ID is currently occupied by another active cluster.
                 for dest_id in [&source_cluster_a.cluster_id, &source_cluster_b.cluster_id] {
                     if *dest_id != merged_cluster_id && self.active_clusters.contains_key(dest_id) {
                         return Err(GeoClusteringError::RevertDestinationClusterInUse {
@@ -2157,14 +2412,18 @@ impl EventClusterLedger {
                     }
                 }
 
-                let reasons_a = self.combined_reassessment_reasons_for_versions(&[
-                    source_cluster_a.version_id.clone(),
-                    merged_version_id.clone(),
-                ]);
-                let reasons_b = self.combined_reassessment_reasons_for_versions(&[
-                    source_cluster_b.version_id.clone(),
-                    merged_version_id.clone(),
-                ]);
+                let reasons_a = self.relevant_reassessment_reasons_for_members(
+                    &source_cluster_a.version_id,
+                    std::slice::from_ref(&merged_version_id),
+                    &source_cluster_a.member_item_ids,
+                    &source_cluster_a.pinned_item_versions,
+                )?;
+                let reasons_b = self.relevant_reassessment_reasons_for_members(
+                    &source_cluster_b.version_id,
+                    std::slice::from_ref(&merged_version_id),
+                    &source_cluster_b.member_item_ids,
+                    &source_cluster_b.pinned_item_versions,
+                )?;
                 let restored_a = self.restore_archived_snapshot(
                     &source_cluster_a,
                     ver_a.clone(),
@@ -2211,9 +2470,10 @@ impl EventClusterLedger {
                 right_version_id,
             } => {
                 let [ver_orig] = restored_version_ids else {
-                    return Err(GeoClusteringError::InvalidClusterSplitPartition {
-                        cluster_id: original_cluster.cluster_id,
-                        reason: "reverting a split requires exactly 1 new VersionId",
+                    return Err(GeoClusteringError::InvalidRevertVersionCount {
+                        decision_id: target_decision_id.clone(),
+                        expected: 1,
+                        supplied: restored_version_ids.len(),
                     });
                 };
                 if self
@@ -2250,11 +2510,12 @@ impl EventClusterLedger {
                     });
                 }
 
-                let reasons_orig = self.combined_reassessment_reasons_for_versions(&[
-                    original_cluster.version_id.clone(),
-                    left_version_id.clone(),
-                    right_version_id.clone(),
-                ]);
+                let reasons_orig = self.relevant_reassessment_reasons_for_members(
+                    &original_cluster.version_id,
+                    &[left_version_id.clone(), right_version_id.clone()],
+                    &original_cluster.member_item_ids,
+                    &original_cluster.pinned_item_versions,
+                )?;
                 let restored_orig = self.restore_archived_snapshot(
                     &original_cluster,
                     ver_orig.clone(),
@@ -2278,6 +2539,65 @@ impl EventClusterLedger {
                 restored_pairs.push((restored_orig.cluster_id.clone(), ver_orig.clone()));
                 self.active_clusters
                     .insert(restored_orig.cluster_id.clone(), restored_orig);
+            }
+            ClusterDecisionKind::Reassess {
+                prior_cluster,
+                reassessed_version_id,
+                acknowledged_reasons,
+            } => {
+                let [ver_restored] = restored_version_ids else {
+                    return Err(GeoClusteringError::InvalidRevertVersionCount {
+                        decision_id: target_decision_id.clone(),
+                        expected: 1,
+                        supplied: restored_version_ids.len(),
+                    });
+                };
+                if self
+                    .active_clusters
+                    .get(&prior_cluster.cluster_id)
+                    .map(|c| &c.version_id)
+                    != Some(&reassessed_version_id)
+                {
+                    return Err(GeoClusteringError::DecisionNoLongerCurrent {
+                        decision_id: target_decision_id.clone(),
+                        missing_or_modified_cluster: prior_cluster.cluster_id,
+                    });
+                }
+                let mut combined = acknowledged_reasons;
+                let later = self.relevant_reassessment_reasons_for_members(
+                    &prior_cluster.version_id,
+                    std::slice::from_ref(&reassessed_version_id),
+                    &prior_cluster.member_item_ids,
+                    &prior_cluster.pinned_item_versions,
+                )?;
+                for r in later {
+                    if !combined.contains(&r) {
+                        combined.push(r);
+                    }
+                }
+                if combined.len() > self.limits.max_reassessment_reasons_per_cluster {
+                    return Err(GeoClusteringError::BudgetExceeded {
+                        limit: ClusterLimitKind::ReassessmentReasonsPerCluster,
+                        actual: combined.len(),
+                        max: self.limits.max_reassessment_reasons_per_cluster,
+                    });
+                }
+                let restored = self.restore_archived_snapshot(
+                    &prior_cluster,
+                    ver_restored.clone(),
+                    vec![prior_cluster.version_id.clone(), reassessed_version_id],
+                    combined.clone(),
+                );
+                self.used_versions.insert(ver_restored.clone());
+                if !combined.is_empty() {
+                    self.reassessment_by_cluster_version
+                        .insert(ver_restored.clone(), combined);
+                }
+                self.archived_cluster_versions
+                    .insert(ver_restored.clone(), restored.clone());
+                restored_pairs.push((restored.cluster_id.clone(), ver_restored.clone()));
+                self.active_clusters
+                    .insert(restored.cluster_id.clone(), restored);
             }
             ClusterDecisionKind::Revert { .. } => {
                 return Err(GeoClusteringError::CannotRevertRevertDecision(
@@ -2305,25 +2625,9 @@ impl EventClusterLedger {
         archived: &ProposedEventCluster,
         new_version_id: VersionId,
         predecessor_version_ids: Vec<VersionId>,
-        mut reassessment_reasons: Vec<String>,
+        reassessment_reasons: Vec<String>,
     ) -> ProposedEventCluster {
-        // Also detect if any pinned item version in the archived snapshot is now older
-        // than the current item version in the ledger.
-        for (item_id, pinned_ver) in &archived.pinned_item_versions {
-            if let Some(current_item) = self.items.get(item_id)
-                && &current_item.version_id != pinned_ver
-            {
-                let note = format!(
-                    "member {item_id} pinned at {pinned_ver} has newer ledger version {}",
-                    current_item.version_id
-                );
-                if !reassessment_reasons.contains(&note)
-                    && reassessment_reasons.len() < self.limits.max_revisions_per_item
-                {
-                    reassessment_reasons.push(note);
-                }
-            }
-        }
+        let _ = self;
         ProposedEventCluster {
             cluster_id: archived.cluster_id.clone(),
             version_id: new_version_id,
@@ -2333,8 +2637,8 @@ impl EventClusterLedger {
             criteria: archived.criteria.clone(),
             conflicts: archived.conflicts.clone(),
             counts: archived.counts,
-            needs_reassessment: !reassessment_reasons.is_empty(),
-            reassessment_reasons,
+            needs_reassessment_at_issue: !reassessment_reasons.is_empty(),
+            reassessment_reasons_at_issue: reassessment_reasons,
             rationale: archived.rationale.clone(),
         }
     }
@@ -2519,10 +2823,68 @@ impl EventClusterLedger {
             criteria,
             conflicts,
             counts,
-            needs_reassessment: !reassessment_reasons.is_empty(),
-            reassessment_reasons,
+            needs_reassessment_at_issue: !reassessment_reasons.is_empty(),
+            reassessment_reasons_at_issue: reassessment_reasons,
             rationale,
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn traverse_collapsing_lineage(
+        &self,
+        curr: &OpaqueId,
+        active_path: &mut BTreeSet<OpaqueId>,
+        expanded: &mut BTreeSet<OpaqueId>,
+        reached_roots: &mut BTreeSet<OpaqueId>,
+        traversed_sources: &mut BTreeSet<OpaqueId>,
+        hit_cycle: &mut bool,
+        hit_simulated: &mut bool,
+    ) {
+        if active_path.contains(curr) {
+            *hit_cycle = true;
+            return;
+        }
+        if expanded.contains(curr) {
+            return;
+        }
+        let Some(item) = self.items.get(curr) else {
+            reached_roots.insert(curr.clone());
+            return;
+        };
+        if item.kind.is_simulated() {
+            *hit_simulated = true;
+            return;
+        }
+        traversed_sources.insert(item.source_id.clone());
+        let collapsing_upstreams: Vec<OpaqueId> = item
+            .lineage_links
+            .iter()
+            .filter(|l| l.collapses_independent_source())
+            .map(|l| l.upstream_item_id.clone())
+            .collect();
+        if collapsing_upstreams.is_empty() {
+            reached_roots.insert(curr.clone());
+            expanded.insert(curr.clone());
+            return;
+        }
+        active_path.insert(curr.clone());
+        for up in collapsing_upstreams {
+            if self.items.contains_key(&up) {
+                self.traverse_collapsing_lineage(
+                    &up,
+                    active_path,
+                    expanded,
+                    reached_roots,
+                    traversed_sources,
+                    hit_cycle,
+                    hit_simulated,
+                );
+            } else {
+                reached_roots.insert(up);
+            }
+        }
+        active_path.remove(curr);
+        expanded.insert(curr.clone());
     }
 
     fn compute_counts_stances_and_cycles(
@@ -2568,7 +2930,9 @@ impl EventClusterLedger {
         }
 
         // Resolve upstream roots and collect all traversed `source_id`s across
-        // collapsing lineage links (`Republishes`, `Quotes`, `Supersedes`).
+        // collapsing lineage links (`Republishes`, `Quotes`, `Supersedes`), tracking
+        // the current active path so DAG diamonds into simulated nodes are distinguished
+        // from true cycles.
         let mut cycle_members = BTreeSet::new();
         let mut simulated_lineage_only = Vec::new();
         let mut anchored_items = Vec::new();
@@ -2576,45 +2940,22 @@ impl EventClusterLedger {
         let mut source_set_for: BTreeMap<OpaqueId, BTreeSet<OpaqueId>> = BTreeMap::new();
 
         for id in &non_simulated_ids {
-            let mut visited = BTreeSet::new();
-            let mut stack = vec![id.clone()];
+            let mut active_path = BTreeSet::new();
+            let mut expanded = BTreeSet::new();
             let mut reached_roots = BTreeSet::new();
             let mut traversed_sources = BTreeSet::new();
             let mut hit_cycle = false;
             let mut hit_simulated = false;
 
-            while let Some(curr) = stack.pop() {
-                if !visited.insert(curr.clone()) {
-                    hit_cycle = true;
-                    continue;
-                }
-                let Some(item) = self.items.get(&curr) else {
-                    reached_roots.insert(curr);
-                    continue;
-                };
-                if item.kind.is_simulated() {
-                    hit_simulated = true;
-                    continue;
-                }
-                traversed_sources.insert(item.source_id.clone());
-                let collapsing_upstreams: Vec<&OpaqueId> = item
-                    .lineage_links
-                    .iter()
-                    .filter(|l| l.collapses_independent_source())
-                    .map(|l| &l.upstream_item_id)
-                    .collect();
-                if collapsing_upstreams.is_empty() {
-                    reached_roots.insert(curr);
-                } else {
-                    for up in collapsing_upstreams {
-                        if self.items.contains_key(up) {
-                            stack.push(up.clone());
-                        } else {
-                            reached_roots.insert(up.clone());
-                        }
-                    }
-                }
-            }
+            self.traverse_collapsing_lineage(
+                id,
+                &mut active_path,
+                &mut expanded,
+                &mut reached_roots,
+                &mut traversed_sources,
+                &mut hit_cycle,
+                &mut hit_simulated,
+            );
 
             if reached_roots.is_empty() {
                 if hit_cycle {

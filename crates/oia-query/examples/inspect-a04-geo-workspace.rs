@@ -26,13 +26,13 @@ fn run_a04_clustering_inspection() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // 1. Primary witness account on 1 November 2026:
-    //    UTC interval 2026-11-01 09:10:00Z .. 09:25:00Z (`1_761_988_200_000` .. `1_761_989_100_000`),
-    //    which corresponds to 21:10–21:25 local ship time in `Etc/GMT-12` (UTC+12).
+    //    UTC interval 2026-11-01 09:10:00Z .. 09:25:00Z (`1_793_524_200_000` .. `1_793_525_100_000`),
+    //    which corresponds to 21:10-21:25 local ship time in `Etc/GMT-12` (UTC+12).
     let witness_time = ReportedClusteringTime::bounded_interval(
         "approx 21:10-21:25 local ship time (1 Nov 2026)",
         "Etc/GMT-12 (UTC+12)",
-        1_761_988_200_000,
-        1_761_989_100_000,
+        1_793_524_200_000,
+        1_793_525_100_000,
         Some(String::from(
             "Bridge logbook entry; wristwatch unverified against GPS",
         )),

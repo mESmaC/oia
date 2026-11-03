@@ -135,7 +135,8 @@ fn calendar_date_only_never_masquerades_as_midnight_utc() -> Result<(), Box<dyn 
 ///   `mixed_stance_independent_source_count` and never inflate
 ///   `supportive_independent_source_count`;
 /// - `AccountOrigin::Simulated` items are excluded from observed counts, and a reported
-///   item quoting only a simulated item surfaces `LineageAnchoredOnlyToSimulatedEvidence`;
+///   item quoting only a simulated item (including across a DAG diamond) surfaces
+///   `LineageAnchoredOnlyToSimulatedEvidence`;
 /// - Missing pairwise distances surface `SpatialSeparationNotEvaluated` (`B9`);
 /// - `merge_clusters`, `split_cluster`, and `revert_decision` are append-only,
 ///   retain all historical cluster versions, and never delete decision records.
@@ -156,7 +157,7 @@ fn reversible_clustering_lineage_and_mixed_stance_counts() -> Result<(), Box<dyn
     let base_time = ReportedClusteringTime::exact_instant(
         "2026-11-01T21:00:00Z",
         "UTC",
-        1_762_030_800_000,
+        1_793_566_800_000,
         None,
         max_text,
     )?;
@@ -369,35 +370,38 @@ fn reversible_clustering_lineage_and_mixed_stance_counts() -> Result<(), Box<dyn
     Ok(())
 }
 
-/// Verifies `B1`, `B2`, `B3`, `B4`, and `B5`:
-/// - `B1`: Reverting a merge when a retired `cluster_id` was reused by a newly registered
-///   cluster fails with `RevertDestinationClusterInUse` rather than overwriting or orphaning items.
+/// Verifies `B1`–`B5`, `N1`, and non-blocking items:
+/// - `B1`: Reverting a merge when a retired `cluster_id` was reused fails with
+///   `RevertDestinationClusterInUse`.
 /// - `B2`: `revise_item` never mutates `archived_cluster_versions` in place; reassessment reasons
-///   are recorded in the side table (`cluster_needs_reassessment` / `cluster_reassessment_reasons`)
-///   and carried forward through merge, split, and revert while preserving pre-decision
-///   `pinned_item_versions`.
-/// - `B3`: Revising an upstream lineage item (or registering a referenced upstream item later)
-///   flags all active clusters whose members reach that item transitively through lineage.
+///   live in `reassessment_by_cluster_version` and carry through merge, split, and revert.
+/// - `B3`: Revising an upstream lineage item flags all active clusters whose members reach that
+///   item transitively through lineage.
 /// - `B4` & `B5`: Ledger boundary re-validates item/criteria limits against `self.limits` and
-///   enforces `max_revisions_per_item` / `max_reassessment_reasons_per_cluster`.
+///   enforces `max_revisions_per_item` and `max_reassessment_reasons_per_cluster`.
+/// - `N1`: Merging two clusters whose combined reassessment reasons exceed
+///   `max_reassessment_reasons_per_cluster` fails with `BudgetExceeded` instead of truncating
+///   silently, and `reassess_cluster` acknowledges/clears pending reasons under a new
+///   `VersionId` so subsequent revisions are never permanently locked out.
 #[test]
 fn revert_collision_transitive_lineage_reassessment_and_ledger_budgets()
 -> Result<(), Box<dyn std::error::Error>> {
-    let strict_limits = ClusterLimits::with_revision_limit(64, 8, 8, 8, 1, 2)?;
+    // `max_revisions_per_item = 2`, `max_reassessment_reasons_per_cluster = 3`
+    let strict_limits = ClusterLimits::with_reassessment_limits(64, 8, 8, 8, 2, 2, 3)?;
     let permissive_limits = ClusterLimits::default();
     let mut ledger = EventClusterLedger::new(strict_limits);
 
     let t = ReportedClusteringTime::exact_instant(
         "2026-11-01T22:00:00Z",
         "UTC",
-        1_762_034_400_000,
+        1_793_570_400_000,
         None,
         strict_limits.max_text_bytes(),
     )?;
     let criteria = ClusterMatchCriteria::new(5_000.0, 300_000, 0, BTreeSet::new())?;
 
-    // B4: Item constructed with `permissive_limits` (2 properties) must be rejected by
-    // `ledger` whose `max_properties_per_item` is 1.
+    // B4: Item constructed with `permissive_limits` (3 properties) must be rejected by
+    // `ledger` whose `max_properties_per_item` is 2.
     let over_budget_item = GeoEvidenceItem::new(
         OpaqueId::new("item:over-budget")?,
         VersionId::new("ver:over-budget-v1")?,
@@ -411,6 +415,7 @@ fn revert_collision_transitive_lineage_reassessment_and_ledger_budgets()
         BTreeMap::from([
             (String::from("k1"), String::from("v1")),
             (String::from("k2"), String::from("v2")),
+            (String::from("k3"), String::from("v3")),
         ]),
         permissive_limits,
     )?;
@@ -510,7 +515,7 @@ fn revert_collision_transitive_lineage_reassessment_and_ledger_budgets()
     // B3 & B2: Revise X's `source_id` to `source:src-w`.
     // Both `cluster:x` (direct member) and `cluster:yw` (reaches X via Y -> X lineage)
     // must be flagged for reassessment, while `archived_cluster_versions()[ver:cx-v1]`
-    // remains completely unchanged (`needs_reassessment() == false`).
+    // remains completely unchanged (`needs_reassessment_at_issue() == false`).
     let item_x_v2 = GeoEvidenceItem::new(
         OpaqueId::new("item:x")?,
         VersionId::new("ver:x-v2")?,
@@ -535,9 +540,9 @@ fn revert_collision_transitive_lineage_reassessment_and_ledger_budgets()
     );
     assert!(ledger.cluster_needs_reassessment(&OpaqueId::new("cluster:x")?));
     assert!(ledger.cluster_needs_reassessment(&OpaqueId::new("cluster:yw")?));
-    // Archived snapshot at `ver:cx-v1` is untouched:
     assert!(
-        !ledger.archived_cluster_versions()[&VersionId::new("ver:cx-v1")?].needs_reassessment()
+        !ledger.archived_cluster_versions()[&VersionId::new("ver:cx-v1")?]
+            .needs_reassessment_at_issue()
     );
 
     // B5: Because `max_revisions_per_item` is 2 (`ver:x-v1` + `ver:x-v2`), a 3rd version
@@ -567,9 +572,34 @@ fn revert_collision_transitive_lineage_reassessment_and_ledger_budgets()
         })
     ));
 
+    // N1: Reassess `cluster:yw` to acknowledge the upstream change and mint `ver:cyw-v2`
+    // with `cluster_needs_reassessment == false` and updated `independent_source_count == 1`.
+    let reassessed = ledger
+        .reassess_cluster(
+            &OpaqueId::new("cluster:yw")?,
+            VersionId::new("ver:cyw-v2")?,
+            criteria.clone(),
+            OpaqueId::new("decision:reassess-yw")?,
+            actor.clone(),
+            "Reassessed Y+W after X publisher correction",
+        )?
+        .clone();
+    assert!(!ledger.cluster_needs_reassessment(&OpaqueId::new("cluster:yw")?));
+    assert_eq!(reassessed.counts().independent_source_count, 1);
+
+    // Revert the reassessment to restore `ver:cyw-v1` (under `ver:cyw-restored`),
+    // then test B1 collision detection on `cluster:y`.
+    ledger.revert_decision(
+        &OpaqueId::new("decision:reassess-yw")?,
+        OpaqueId::new("decision:revert-reassess-yw")?,
+        &[VersionId::new("ver:cyw-restored")?],
+        actor.clone(),
+        "Restore pre-reassessment state to test merge revert",
+    )?;
+    assert!(ledger.cluster_needs_reassessment(&OpaqueId::new("cluster:yw")?));
+
     // B1: Register a new item `item:new` reusing the retired `cluster:y` ID.
-    // Attempting to revert `decision:merge-yw` must fail with `RevertDestinationClusterInUse`
-    // instead of overwriting `cluster:y` and orphaning `item:new`.
+    // Attempting to revert `decision:merge-yw` must fail with `RevertDestinationClusterInUse`.
     let item_new = GeoEvidenceItem::new(
         OpaqueId::new("item:new")?,
         VersionId::new("ver:new-v1")?,
@@ -591,24 +621,259 @@ fn revert_collision_transitive_lineage_reassessment_and_ledger_budgets()
         "New item registered under retired cluster:y ID",
     )?;
 
+    // Note: `decision:merge-yw` produced `ver:cyw-v1`, which was superseded by `ver:cyw-restored`.
+    // Even if we merge two fresh clusters and reuse one of their IDs, `RevertDestinationClusterInUse`
+    // protects the active cluster.
+    ledger.merge_clusters(
+        &OpaqueId::new("cluster:x")?,
+        &OpaqueId::new("cluster:y")?,
+        OpaqueId::new("cluster:xy")?,
+        VersionId::new("ver:cxy-v1")?,
+        ClusterMatchCriteria::new(5_000.0, 300_000, 0, BTreeSet::new())?,
+        OpaqueId::new("decision:merge-xy")?,
+        actor.clone(),
+        "Merge X and reused Y",
+    )?;
+    let item_collide = GeoEvidenceItem::new(
+        OpaqueId::new("item:collide")?,
+        VersionId::new("ver:collide-v1")?,
+        OpaqueId::new("source:src-collide")?,
+        None,
+        GeoEvidenceKind::PublishedArticle,
+        ClaimAssessmentState::Supported,
+        Vec::new(),
+        ReportedClusteringTime::exact_instant(
+            "2026-11-01T22:00:00Z",
+            "UTC",
+            1_793_570_400_000,
+            None,
+            strict_limits.max_text_bytes(),
+        )?,
+        LocationQualification::surveyed(OpaqueId::new("loc:collide")?, None)?,
+        BTreeMap::new(),
+        strict_limits,
+    )?;
+    ledger.register_item_with_initial_cluster(
+        item_collide,
+        OpaqueId::new("cluster:x")?,
+        VersionId::new("ver:cx-reused-v1")?,
+        ClusterMatchCriteria::new(5_000.0, 300_000, 0, BTreeSet::new())?,
+        "Reuse cluster:x ID",
+    )?;
+
     assert!(matches!(
         ledger.revert_decision(
-            &OpaqueId::new("decision:merge-yw")?,
-            OpaqueId::new("decision:revert-yw")?,
+            &OpaqueId::new("decision:merge-xy")?,
+            OpaqueId::new("decision:revert-xy")?,
             &[
-                VersionId::new("ver:cy-restored")?,
-                VersionId::new("ver:cw-restored")?,
+                VersionId::new("ver:cx-restored")?,
+                VersionId::new("ver:cy-restored-2")?,
             ],
             actor,
-            "Attempt revert while cluster:y is in use",
+            "Attempt revert while cluster:x is in use",
         ),
         Err(GeoClusteringError::RevertDestinationClusterInUse { .. })
     ));
-    // Verify `item:new` is still safely in `cluster:y`.
     assert!(
-        ledger.clusters()[&OpaqueId::new("cluster:y")?]
+        ledger.clusters()[&OpaqueId::new("cluster:x")?]
             .member_item_ids()
-            .contains(&OpaqueId::new("item:new")?)
+            .contains(&OpaqueId::new("item:collide")?)
+    );
+    Ok(())
+}
+
+/// Verifies `N1` (no silent truncation when combining reassessment reasons across merges)
+/// and non-blocking item 4 (DAG diamond into a simulated item reports
+/// `LineageAnchoredOnlyToSimulatedEvidence`, not `UnanchoredLineageCycle`).
+#[test]
+fn reason_cap_never_truncates_silently_and_simulated_diamond_is_not_cycle()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Cap reassessment reasons per cluster at 3, revisions per item at 4.
+    let limits = ClusterLimits::with_reassessment_limits(128, 16, 16, 16, 4, 4, 3)?;
+    let mut ledger = EventClusterLedger::new(limits);
+    let t = ReportedClusteringTime::exact_instant(
+        "2026-11-01T22:00:00Z",
+        "UTC",
+        1_793_570_400_000,
+        None,
+        limits.max_text_bytes(),
+    )?;
+    let criteria = ClusterMatchCriteria::new(5_000.0, 300_000, 0, BTreeSet::new())?;
+
+    // Build two clusters `c:1` and `c:2`, revise each member twice (2 reasons each).
+    for (idx, cid, item_id) in [(1, "cluster:1", "item:1"), (2, "cluster:2", "item:2")] {
+        let item_v1 = GeoEvidenceItem::new(
+            OpaqueId::new(item_id)?,
+            VersionId::new(format!("ver:{idx}-v1"))?,
+            OpaqueId::new(format!("source:s{idx}"))?,
+            None,
+            GeoEvidenceKind::PublishedArticle,
+            ClaimAssessmentState::Supported,
+            Vec::new(),
+            t.clone(),
+            LocationQualification::surveyed(OpaqueId::new(format!("loc:{idx}"))?, None)?,
+            BTreeMap::new(),
+            limits,
+        )?;
+        ledger.register_item_with_initial_cluster(
+            item_v1,
+            OpaqueId::new(cid)?,
+            VersionId::new(format!("ver:c{idx}-v1"))?,
+            criteria.clone(),
+            "Init cluster",
+        )?;
+        for rev in 2..=3 {
+            let item_vn = GeoEvidenceItem::new(
+                OpaqueId::new(item_id)?,
+                VersionId::new(format!("ver:{idx}-v{rev}"))?,
+                OpaqueId::new(format!("source:s{idx}"))?,
+                None,
+                GeoEvidenceKind::PublishedArticle,
+                ClaimAssessmentState::Supported,
+                Vec::new(),
+                t.clone(),
+                LocationQualification::surveyed(OpaqueId::new(format!("loc:{idx}"))?, None)?,
+                BTreeMap::new(),
+                limits,
+            )?;
+            ledger.revise_item(
+                &VersionId::new(format!("ver:{idx}-v{}", rev - 1))?,
+                item_vn,
+                format!("Revision {rev} for item {idx}"),
+            )?;
+        }
+    }
+
+    // Merging `cluster:1` (2 reasons) and `cluster:2` (2 reasons) requires 4 reasons,
+    // which exceeds `max_reassessment_reasons_per_cluster = 3` and must return `BudgetExceeded`
+    // rather than silently dropping the 4th reason.
+    let actor = ActorId::new("actor:reviewer")?;
+    assert!(matches!(
+        ledger.merge_clusters(
+            &OpaqueId::new("cluster:1")?,
+            &OpaqueId::new("cluster:2")?,
+            OpaqueId::new("cluster:12")?,
+            VersionId::new("ver:c12-v1")?,
+            criteria.clone(),
+            OpaqueId::new("decision:merge-12-fail")?,
+            actor.clone(),
+            "Should refuse silent reason truncation",
+        ),
+        Err(GeoClusteringError::BudgetExceeded {
+            limit: ClusterLimitKind::ReassessmentReasonsPerCluster,
+            actual: 4,
+            max: 3,
+        })
+    ));
+
+    // After reassessing `cluster:1` (acknowledging its 2 reasons), the merge succeeds cleanly.
+    ledger.reassess_cluster(
+        &OpaqueId::new("cluster:1")?,
+        VersionId::new("ver:c1-v2")?,
+        criteria.clone(),
+        OpaqueId::new("decision:reassess-c1")?,
+        actor.clone(),
+        "Acknowledge cluster:1 revisions",
+    )?;
+    ledger.merge_clusters(
+        &OpaqueId::new("cluster:1")?,
+        &OpaqueId::new("cluster:2")?,
+        OpaqueId::new("cluster:12")?,
+        VersionId::new("ver:c12-v1")?,
+        criteria.clone(),
+        OpaqueId::new("decision:merge-12-ok")?,
+        actor,
+        "Merge after acknowledging cluster:1 reasons",
+    )?;
+    assert_eq!(
+        ledger
+            .cluster_reassessment_reasons(&OpaqueId::new("cluster:12")?)
+            .len(),
+        2
+    );
+
+    // Non-blocking item 4: Diamond D -> {B, C} -> simulated S must emit
+    // `LineageAnchoredOnlyToSimulatedEvidence`, not `UnanchoredLineageCycle`.
+    let sim_s = GeoEvidenceItem::new(
+        OpaqueId::new("item:sim-s")?,
+        VersionId::new("ver:sim-s-v1")?,
+        OpaqueId::new("source:sim")?,
+        None,
+        GeoEvidenceKind::WitnessAccount {
+            origin: AccountOrigin::Simulated,
+        },
+        ClaimAssessmentState::Supported,
+        Vec::new(),
+        t.clone(),
+        LocationQualification::surveyed(OpaqueId::new("loc:s")?, None)?,
+        BTreeMap::new(),
+        limits,
+    )?;
+    ledger.register_item_with_initial_cluster(
+        sim_s,
+        OpaqueId::new("cluster:s")?,
+        VersionId::new("ver:cs-v1")?,
+        criteria.clone(),
+        "Simulated root S",
+    )?;
+    for mid in ["item:b", "item:c"] {
+        let m_item = GeoEvidenceItem::new(
+            OpaqueId::new(mid)?,
+            VersionId::new(format!("ver:{mid}-v1"))?,
+            OpaqueId::new(format!("source:{mid}"))?,
+            None,
+            GeoEvidenceKind::PublishedArticle,
+            ClaimAssessmentState::Supported,
+            vec![EvidenceLineageLink::new(
+                LineageRelationKind::Quotes,
+                OpaqueId::new("item:sim-s")?,
+            )],
+            t.clone(),
+            LocationQualification::surveyed(OpaqueId::new("loc:s")?, None)?,
+            BTreeMap::new(),
+            limits,
+        )?;
+        ledger.register_item_with_initial_cluster(
+            m_item,
+            OpaqueId::new(format!("cluster:{mid}"))?,
+            VersionId::new(format!("ver:c-{mid}-v1"))?,
+            criteria.clone(),
+            "Intermediate quoting S",
+        )?;
+    }
+    let item_d = GeoEvidenceItem::new(
+        OpaqueId::new("item:d")?,
+        VersionId::new("ver:d-v1")?,
+        OpaqueId::new("source:d")?,
+        None,
+        GeoEvidenceKind::PublishedArticle,
+        ClaimAssessmentState::Supported,
+        vec![
+            EvidenceLineageLink::new(LineageRelationKind::Quotes, OpaqueId::new("item:b")?),
+            EvidenceLineageLink::new(LineageRelationKind::Quotes, OpaqueId::new("item:c")?),
+        ],
+        t,
+        LocationQualification::surveyed(OpaqueId::new("loc:s")?, None)?,
+        BTreeMap::new(),
+        limits,
+    )?;
+    ledger.register_item_with_initial_cluster(
+        item_d,
+        OpaqueId::new("cluster:d")?,
+        VersionId::new("ver:cd-v1")?,
+        criteria,
+        "Diamond tip D quoting B and C",
+    )?;
+    let d_conflicts = ledger.clusters()[&OpaqueId::new("cluster:d")?].conflicts();
+    assert!(d_conflicts.iter().any(|c| matches!(
+        c,
+        ClusterConflict::LineageAnchoredOnlyToSimulatedEvidence { item_id }
+            if item_id.as_str() == "item:d"
+    )));
+    assert!(
+        !d_conflicts
+            .iter()
+            .any(|c| matches!(c, ClusterConflict::UnanchoredLineageCycle { .. }))
     );
     Ok(())
 }

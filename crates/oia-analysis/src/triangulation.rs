@@ -10,7 +10,7 @@ use std::{error::Error, fmt};
 
 use oia_domain::{OpaqueId, VersionId};
 
-pub const METHOD_ID: &str = "oia-two-view-closest-approach-v1";
+pub const METHOD_ID: &str = "oia-two-view-closest-approach-v2";
 /// Coordinate magnitudes, ranges and length-error inputs must not exceed this.
 pub const MAX_LENGTH_M: f64 = 10_000_000.0;
 /// Smaller crossing angles are outside this implementation's numerical domain.
@@ -173,6 +173,10 @@ pub enum TriangulationError {
     },
     ZeroDirection(View),
     CoincidentOrigins,
+    BaselineNotResolved {
+        baseline_m: f64,
+        uncertainty_m: f64,
+    },
     DegenerateGeometry {
         crossing_angle_rad: f64,
     },
@@ -194,7 +198,15 @@ pub enum TriangulationError {
 impl fmt::Display for TriangulationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingPrerequisite(item) => write!(f, "missing {item:?} reference"),
+            Self::MissingPrerequisite(item) => f.write_str(match item {
+                Prerequisite::ClockAlignment => "missing clock-alignment reference",
+                Prerequisite::CorrespondenceReview => {
+                    "missing feature-correspondence review reference"
+                }
+                Prerequisite::IndependenceReview => {
+                    "missing acquisition-independence review reference"
+                }
+            }),
             Self::FrameMismatch => {
                 f.write_str("sightlines use different coordinate frame versions")
             }
@@ -203,29 +215,57 @@ impl fmt::Display for TriangulationError {
             }
             Self::ReusedSource => f.write_str("two distinct acquisition sources are required"),
             Self::InvalidCalibration { view, status } => {
-                write!(f, "{view:?} calibration is {status:?}")
+                let status = match status {
+                    CalibrationStatus::CallerConfirmedValidAtCapture => {
+                        "confirmed valid at capture by the caller"
+                    }
+                    CalibrationStatus::ExpiredAtCapture => "expired at capture",
+                    CalibrationStatus::Unknown => "of unknown validity",
+                };
+                write!(f, "{} calibration is {status}", view_label(*view))
             }
             Self::CameraMoved(view) => {
-                write!(f, "{view:?} capture pose differs from calibrated pose")
+                write!(
+                    f,
+                    "{} capture pose differs from calibrated pose",
+                    view_label(*view)
+                )
             }
             Self::UnknownBound { view, bound } => {
-                write!(f, "{view:?} {bound:?} error bound is unknown")
+                let bound = match bound {
+                    Bound::Origin => "camera-position error",
+                    Bound::Direction => "direction error",
+                    Bound::TimingDisplacement => "timing displacement",
+                };
+                write!(f, "{} {bound} bound is unknown", view_label(*view))
             }
-            Self::InvalidNumber { view, field } => write!(
-                f,
-                "{view:?} {field} is non-finite or outside the supported domain"
-            ),
-            Self::ZeroDirection(view) => write!(f, "{view:?} sightline has no direction"),
+            Self::InvalidNumber { view, field } => {
+                if let Some(view) = view {
+                    write!(f, "{} ", view_label(*view))?;
+                }
+                write!(f, "{field} is non-finite or outside the supported domain")
+            }
+            Self::ZeroDirection(view) => {
+                write!(f, "{} sightline has no direction", view_label(*view))
+            }
             Self::CoincidentOrigins => {
                 f.write_str("co-located views do not provide a triangulation baseline")
             }
+            Self::BaselineNotResolved {
+                baseline_m,
+                uncertainty_m,
+            } => write!(
+                f,
+                "camera baseline {baseline_m} m does not exceed combined origin uncertainty and numerical allowance {uncertainty_m} m"
+            ),
             Self::DegenerateGeometry { crossing_angle_rad } => write!(
                 f,
                 "crossing angle {crossing_angle_rad} rad cannot meet the requested geometry limit"
             ),
             Self::NominalRangeOutsideLimit { view, range_m } => write!(
                 f,
-                "{view:?} nominal range {range_m} m is behind the camera or exceeds the range limit"
+                "{} nominal range {range_m} m is at or behind the camera or exceeds the range limit",
+                view_label(*view)
             ),
             Self::InconsistentSightlines {
                 separation_m,
@@ -246,6 +286,13 @@ impl fmt::Display for TriangulationError {
 }
 
 impl Error for TriangulationError {}
+
+fn view_label(view: View) -> &'static str {
+    match view {
+        View::First => "first view",
+        View::Second => "second view",
+    }
+}
 
 /// Fixed-cost, synchronous calculation on exactly two views; no IO, publication,
 /// queues, iteration to convergence, coordinate conversion or calibration fitting.
@@ -300,8 +347,10 @@ pub fn reconstruct(input: TriangulationInput) -> Result<Reconstruction, Triangul
     if first.source == second.source {
         return Err(TriangulationError::ReusedSource);
     }
-    let (u, first_bound) = validate_view(first, View::First, limits.max_range_m)?;
-    let (v, second_bound) = validate_view(second, View::Second, limits.max_range_m)?;
+    let (u, first_bound, first_origin_error) =
+        validate_view(first, View::First, limits.max_range_m)?;
+    let (v, second_bound, second_origin_error) =
+        validate_view(second, View::Second, limits.max_range_m)?;
     let normal = cross(u, v);
     let sin_angle = norm(normal);
     let abs_cos = dot(u, v).abs().min(1.0);
@@ -313,8 +362,19 @@ pub fn reconstruct(input: TriangulationInput) -> Result<Reconstruction, Triangul
     }
     let sin_squared = dot(normal, normal);
     let baseline = subtract(second.origin_m, first.origin_m);
-    if norm(baseline) == 0.0 {
+    let baseline_m = norm(baseline);
+    if baseline_m == 0.0 {
         return Err(TriangulationError::CoincidentOrigins);
+    }
+    // Worst-case origin balls must be disjoint, allowing the same numerical
+    // margin used by each view's error tube. A nominal intersection alone does
+    // not establish a resolvable baseline, even at a healthy crossing angle.
+    let uncertainty_m = first_origin_error + second_origin_error + 2.0 * NUMERICAL_ALLOWANCE_M;
+    if baseline_m <= uncertainty_m {
+        return Err(TriangulationError::BaselineNotResolved {
+            baseline_m,
+            uncertainty_m,
+        });
     }
     let first_range = dot(cross(baseline, v), normal) / sin_squared;
     let second_range = dot(cross(baseline, u), normal) / sin_squared;
@@ -374,7 +434,7 @@ fn validate_view(
     line: &Sightline,
     view: View,
     max_range_m: f64,
-) -> Result<([f64; 3], f64), TriangulationError> {
+) -> Result<([f64; 3], f64, f64), TriangulationError> {
     if line.calibration_status != CalibrationStatus::CallerConfirmedValidAtCapture {
         return Err(TriangulationError::InvalidCalibration {
             view,
@@ -424,7 +484,7 @@ fn validate_view(
     )?;
     let transverse_bound =
         origin_error + max_range_m * angle_error.sin() + timing_error + NUMERICAL_ALLOWANCE_M;
-    Ok((direction, transverse_bound))
+    Ok((direction, transverse_bound, origin_error))
 }
 
 fn read_bound(

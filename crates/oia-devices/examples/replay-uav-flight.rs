@@ -57,6 +57,7 @@ fn main() -> Result<(), UavError> {
     })?;
 
     session.set_camera_calibration(CameraCalibration {
+        effective_from_device_ms: 0,
         calibration_version: VersionId::new("ver:cam-cal-24mm-v1")?,
         horizontal_fov_deg: 68.0,
         vertical_fov_deg: 42.0,

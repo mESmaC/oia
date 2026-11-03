@@ -184,6 +184,7 @@ fn uav_hud_clock_drift_drops_bookmarks_and_onboard_linking_preserve_evidence()
     // Attach camera calibration: at 100 m AGL and 45 deg depression facing 180 deg (due south),
     // ground distance is 100 m and center_north_offset_m is -100 m.
     session.set_camera_calibration(CameraCalibration {
+        effective_from_device_ms: 0,
         calibration_version: VersionId::new("ver:cam-cal-v1")?,
         horizontal_fov_deg: 60.0,
         vertical_fov_deg: 40.0,
@@ -246,6 +247,7 @@ fn uav_hud_clock_drift_drops_bookmarks_and_onboard_linking_preserve_evidence()
     assert_eq!(
         handoff.camera_calibration_state_at_frame(),
         &oia_devices::uav::CameraCalibrationState::Valid(CameraCalibration {
+            effective_from_device_ms: 0,
             calibration_version: VersionId::new("ver:cam-cal-v1")?,
             horizontal_fov_deg: 60.0,
             vertical_fov_deg: 40.0,
@@ -316,7 +318,7 @@ fn uav_hud_clock_drift_drops_bookmarks_and_onboard_linking_preserve_evidence()
     assert_eq!(
         disconnected_hud.footprint_status,
         FootprintStatus::InsufficientFreshTelemetry {
-            missing_or_stale_field: "heading",
+            missing_or_stale_field: "gimbal",
         }
     );
 
@@ -415,11 +417,12 @@ fn uav_hud_clock_drift_drops_bookmarks_and_onboard_linking_preserve_evidence()
     );
 
     // Camera movement invalidates calibration and flags FootprintStatus::CalibrationInvalidated.
-    session.invalidate_camera_calibration("Hard wind gust shifted gimbal mount stop")?;
+    session.invalidate_camera_calibration(106_001, "Hard wind gust shifted gimbal mount stop")?;
     let invalidated_hud = session.project_hud_snapshot(106_100, 1_762_000_106_120);
     assert_eq!(
         invalidated_hud.footprint_status,
         FootprintStatus::CalibrationInvalidated {
+            effective_from_device_ms: 106_001,
             calibration_version: VersionId::new("ver:cam-cal-v1")?,
             reason: "Hard wind gust shifted gimbal mount stop".to_owned(),
         }
@@ -818,7 +821,7 @@ fn footprint_nadir_geometry_uncertainty_and_historical_handoff_isolation() -> Re
             byte_len: 10_000,
             media_type: "video/mp4".to_owned(),
         },
-        UavSessionLimits::default_bounded().with_max_calibration_updates(4)?,
+        UavSessionLimits::default_bounded().with_max_calibration_updates(5)?,
     )?;
 
     session.set_clock_alignment(ClockAlignmentRecord {
@@ -833,6 +836,7 @@ fn footprint_nadir_geometry_uncertainty_and_historical_handoff_isolation() -> Re
     })?;
 
     session.set_camera_calibration(CameraCalibration {
+        effective_from_device_ms: 0,
         calibration_version: VersionId::new("ver:cal-v1")?,
         horizontal_fov_deg: 45.0,
         vertical_fov_deg: 45.0,
@@ -889,6 +893,7 @@ fn footprint_nadir_geometry_uncertainty_and_historical_handoff_isolation() -> Re
     assert_eq!(
         handoff_f1_before.camera_calibration_state_at_frame(),
         &oia_devices::uav::CameraCalibrationState::Valid(CameraCalibration {
+            effective_from_device_ms: 0,
             calibration_version: VersionId::new("ver:cal-v1")?,
             horizontal_fov_deg: 45.0,
             vertical_fov_deg: 45.0,
@@ -924,7 +929,7 @@ fn footprint_nadir_geometry_uncertainty_and_historical_handoff_isolation() -> Re
         Err(UavError::EmptyTextField {
             field: "invalidation_reason",
         }),
-        session.invalidate_camera_calibration("   ")
+        session.invalidate_camera_calibration(1_001, "   ")
     );
     assert!(matches!(
         session.camera_calibration_state(),
@@ -936,7 +941,7 @@ fn footprint_nadir_geometry_uncertainty_and_historical_handoff_isolation() -> Re
     // Invalidate v1 and immediately install v2 and clock c2 WITHOUT advancing telemetry first.
     // Frame 1 (@1000 ms), `align_device_timestamp(1000)`, and `project_hud_snapshot(1000)` must
     // still resolve to `Valid(ver:cal-v1)` and `ver:clock-c1`, matching `handoff_f1_before`.
-    session.invalidate_camera_calibration("Mount shock after frame 1")?;
+    session.invalidate_camera_calibration(1_001, "Mount shock after frame 1")?;
     let handoff_f1_during_inv =
         session.export_forensic_frame_handoff(OpaqueId::new("handoff:f1-inv")?, 1, None)?;
     assert_eq!(
@@ -945,6 +950,7 @@ fn footprint_nadir_geometry_uncertainty_and_historical_handoff_isolation() -> Re
     );
 
     session.set_camera_calibration(CameraCalibration {
+        effective_from_device_ms: 1_500,
         calibration_version: VersionId::new("ver:cal-v2")?,
         horizontal_fov_deg: 10.0,
         vertical_fov_deg: 4.0,
@@ -957,7 +963,7 @@ fn footprint_nadir_geometry_uncertainty_and_historical_handoff_isolation() -> Re
         uncertainty_ms: 2,
         reference_clock_label: "GNSS".to_owned(),
         method_label: "PPS-recal".to_owned(),
-        valid_from_device_ms: 0,
+        valid_from_device_ms: 1_500,
         valid_until_device_ms: 500_000,
     })?;
 
@@ -1169,19 +1175,9 @@ fn footprint_nadir_geometry_uncertainty_and_historical_handoff_isolation() -> Re
         .ok_or(UavError::InternalInvariant)?;
     assert!((yaw90_marker.world_azimuth_deg - 84.274_895).abs() < 1e-4);
     assert!((yaw90_marker.depression_deg - 29.498_704).abs() < 1e-4);
-    match &yaw90_hud.footprint_status {
-        FootprintStatus::CalibratedDerivedFootprint(fp) => {
-            assert!((fp.center_ground_distance_m - 176.759_5).abs() < 1e-2);
-        }
-        other => {
-            return Err(UavError::InvalidNumericField {
-                field: match other {
-                    FootprintStatus::UncalibratedViewingRayOnly => "expected_yaw90_footprint",
-                    _ => "unexpected_yaw90_status",
-                },
-            });
-        }
-    }
+    assert!(matches!(yaw90_hud.footprint_status,
+        FootprintStatus::NonZeroRollUnsupported { effective_roll_deg }
+            if (effective_roll_deg - 11.508_393_365_822_3).abs() < 1e-6));
 
     // FollowHeading with MagneticNorth, non-zero roll, and opposite airframe/gimbal rolls (+10/-10)
     // are explicitly refused (B3, B4).
@@ -1270,24 +1266,22 @@ fn footprint_nadir_geometry_uncertainty_and_historical_handoff_isolation() -> Re
         recording_state: RecordingState::Recording,
         motion_flags: MotionDynamicsFlags::default(),
     })?;
-    assert_eq!(
-        session
-            .project_hud_snapshot(5_000, 1_762_000_005_500)
-            .footprint_status,
-        FootprintStatus::NonZeroRollUnsupported {
-            effective_roll_deg: 10.0,
-        }
+    assert!(
+        matches!(session.project_hud_snapshot(5_000, 1_762_000_005_500).footprint_status,
+        FootprintStatus::NonZeroRollUnsupported { effective_roll_deg }
+            if (effective_roll_deg - (-10.0)).abs() < 1e-6)
     );
 
-    // 6. Calibration updates are bounded by max_calibration_updates (4) (Codex P2 #3).
-    // Four calibration/clock updates (clock-c1, cal-v1, cal-v2, clock-c2) have been recorded,
-    // so the 5th update hits LimitExceeded.
+    // 6. Calibration updates are bounded by max_calibration_updates (5) (Codex P2 #3).
+    // Five calibration/clock events, including the invalidation, have been recorded;
+    // the sixth event hits LimitExceeded.
     assert_eq!(
         Err(UavError::LimitExceeded {
             kind: UavLimitKind::CalibrationUpdates,
-            limit: 4,
+            limit: 5,
         }),
         session.set_camera_calibration(CameraCalibration {
+            effective_from_device_ms: 6_000,
             calibration_version: VersionId::new("ver:cal-v3")?,
             horizontal_fov_deg: 50.0,
             vertical_fov_deg: 40.0,
@@ -1344,16 +1338,319 @@ fn footprint_nadir_geometry_uncertainty_and_historical_handoff_isolation() -> Re
         10,
         None,
     )?;
-    assert_eq!(
+    assert!(matches!(
         import_handoff.frame().time_alignment(),
-        &TimeAlignment::Synchronized {
-            aligned_utc_ms: 1_762_000_001_000,
-            alignment_version: VersionId::new("ver:import-clock-v1")?,
-            base_offset_ms: 1_762_000_000_000,
-            drift_adjustment_ms: 0,
-            total_uncertainty_ms: 3,
+        TimeAlignment::UnsynchronizedDegraded {
+            reason: UnsynchronizedReason::NoClockAlignmentConfigured,
+            ..
         }
+    ));
+    assert!(import_handoff.needs_reassessment());
+    assert_eq!(
+        import_handoff.current_time_alignment_at_frame(),
+        &import_session.align_device_timestamp(1_000, 1_762_000_001_000)
     );
 
+    Ok(())
+}
+
+fn review_session() -> Result<UavFlightSession, UavError> {
+    UavFlightSession::new(
+        OpaqueId::new("session:review")?,
+        sample_registered_uav()?,
+        OriginalFlightStreamInput {
+            stream_id: OpaqueId::new("stream:review")?,
+            stream_version: VersionId::new("ver:review-stream")?,
+            origin: FlightStreamOrigin::SimulatedFlightFixture,
+            sha256_hex: "a".repeat(64),
+            byte_len: 100,
+            media_type: "video/mp4".into(),
+        },
+        UavSessionLimits::default_bounded(),
+    )
+}
+
+fn review_sample(t: i64) -> Result<TelemetrySampleInput, UavError> {
+    Ok(TelemetrySampleInput {
+        sample_version: VersionId::new(format!("ver:review-sample-{t}"))?,
+        device_clock_ms: t,
+        receipt_utc_ms: t,
+        heading: Some(HeadingSample {
+            degrees: 0.0,
+            reference: HeadingReference::TrueNorth,
+        }),
+        attitude: Some(AttitudeDeg {
+            pitch_deg: 0.0,
+            roll_deg: 0.0,
+            yaw_deg: 0.0,
+        }),
+        position: Some(Wgs84Position {
+            latitude_deg: 0.1,
+            longitude_deg: 0.2,
+            horizontal_uncertainty_m: Some(1.0),
+        }),
+        altitude: Some(AltitudeSample {
+            meters: 100.0,
+            reference: AltitudeReference::AboveGroundLevel,
+            vertical_uncertainty_m: Some(0.5),
+        }),
+        gimbal: Some(GimbalOrientation {
+            pitch_deg: -45.0,
+            yaw_deg: 0.0,
+            roll_deg: 0.0,
+            mode: GimbalMode::FollowHeading,
+        }),
+        navigation_health: Some(NavigationHealth {
+            fix_kind: GnssFixKind::Standard3D,
+            satellite_count: None,
+            hdop: None,
+        }),
+        velocity: None,
+        battery: None,
+        link_health: None,
+        recording_state: RecordingState::Recording,
+        motion_flags: MotionDynamicsFlags::default(),
+    })
+}
+
+/// C3 / DEVICE-03..04: late recorded metadata must resolve by event time without rewriting issued
+/// frame, sample, bookmark, or handoff metadata. Disjoint windows must work in either import order.
+#[test]
+fn recorded_metadata_is_dated_and_flags_pinned_evidence() -> Result<(), UavError> {
+    use oia_devices::uav::CameraCalibrationState;
+    let early = ClockAlignmentRecord {
+        alignment_version: VersionId::new("ver:clock-early")?,
+        device_to_utc_offset_ms: 100,
+        linear_drift_ppm: 0,
+        uncertainty_ms: 1,
+        reference_clock_label: "fixture".into(),
+        method_label: "fixture".into(),
+        valid_from_device_ms: 0,
+        valid_until_device_ms: 5_000,
+    };
+    let late = ClockAlignmentRecord {
+        alignment_version: VersionId::new("ver:clock-late")?,
+        valid_from_device_ms: 5_000,
+        valid_until_device_ms: 10_000,
+        device_to_utc_offset_ms: 200,
+        ..early.clone()
+    };
+    let calibration = CameraCalibration {
+        effective_from_device_ms: 0,
+        calibration_version: VersionId::new("ver:camera-early")?,
+        horizontal_fov_deg: 40.0,
+        vertical_fov_deg: 40.0,
+        angular_uncertainty_deg: 0.5,
+    };
+    let replacement = CameraCalibration {
+        effective_from_device_ms: 7_000,
+        calibration_version: VersionId::new("ver:camera-late")?,
+        ..calibration.clone()
+    };
+    let mut chronological = review_session()?;
+    chronological.set_clock_alignment(early.clone())?;
+    chronological.set_clock_alignment(late.clone())?;
+    chronological.set_camera_calibration(calibration.clone())?;
+    chronological.invalidate_camera_calibration(3_000, "recorded mount shock")?;
+    chronological.set_camera_calibration(replacement.clone())?;
+    let mut recorded = review_session()?;
+    // Camera was known, while clock records and shock information arrive after frame import.
+    recorded.set_camera_calibration(calibration)?;
+    for session in [&mut chronological, &mut recorded] {
+        for t in [1_000, 6_000] {
+            session.ingest_telemetry_sample(review_sample(t)?)?;
+            session.ingest_video_frame(VideoFrameInput {
+                frame_index: t as u64,
+                frame_version: VersionId::new(format!("ver:frame-{t}"))?,
+                device_clock_ms: t,
+                receipt_utc_ms: t,
+                exposure_duration_us: None,
+                sha256_hex: "b".repeat(64),
+            })?;
+        }
+    }
+    let bookmark_id = OpaqueId::new("bookmark:late")?;
+    recorded.record_bookmark(FlightBookmarkInput {
+        bookmark_id: bookmark_id.clone(),
+        case_id: OpaqueId::new("case:review")?,
+        created_by: ActorId::new("actor:review")?,
+        device_clock_ms: 6_000,
+        receipt_utc_ms: 6_000,
+        pinned_frame_index: Some(6_000),
+        label: "fixture".into(),
+        note: None,
+    })?;
+    let issued =
+        recorded.export_forensic_frame_handoff(OpaqueId::new("handoff:issued")?, 6_000, None)?;
+    let issued_text = issued.render_handoff_manifest(32_768)?;
+    recorded.set_clock_alignment(late.clone())?;
+    recorded.set_clock_alignment(early.clone())?;
+    recorded.set_camera_calibration(replacement)?;
+    recorded.invalidate_camera_calibration(3_000, "recorded mount shock")?;
+    for t in [
+        0, 1_000, 2_999, 3_000, 4_999, 5_000, 6_000, 7_000, 9_999, 10_000,
+    ] {
+        assert_eq!(
+            recorded.project_hud_snapshot(t, t),
+            chronological.project_hud_snapshot(t, t)
+        );
+    }
+    assert_eq!(
+        recorded.camera_calibration_history(),
+        chronological.camera_calibration_history()
+    );
+    assert_eq!(issued_text, issued.render_handoff_manifest(32_768)?);
+    let revised =
+        recorded.export_forensic_frame_handoff(OpaqueId::new("handoff:revised")?, 6_000, None)?;
+    assert_eq!(
+        revised.frame().time_alignment(),
+        issued.frame().time_alignment()
+    );
+    assert_eq!(
+        revised.camera_calibration_state_at_frame(),
+        issued.camera_calibration_state_at_frame()
+    );
+    assert!(!issued.needs_reassessment());
+    assert!(revised.needs_reassessment());
+    assert!(revised.hud_snapshot_at_frame().needs_reassessment);
+    assert!(matches!(
+        revised.current_camera_calibration_state_at_frame(),
+        CameraCalibrationState::Invalidated {
+            effective_from_device_ms: 3_000,
+            ..
+        }
+    ));
+    assert!(matches!(revised.current_time_alignment_at_frame(),
+        TimeAlignment::Synchronized { alignment_version, .. } if alignment_version == &late.alignment_version));
+    assert!(
+        recorded
+            .telemetry_samples()
+            .iter()
+            .all(|sample| sample.needs_reassessment())
+    );
+    assert!(
+        recorded
+            .bookmark(&bookmark_id)
+            .is_some_and(|bookmark| bookmark.needs_reassessment())
+    );
+    assert!(
+        revised
+            .render_handoff_manifest(32_768)?
+            .contains("NEEDS_REASSESSMENT")
+    );
+    assert!(matches!(
+        recorded.project_hud_snapshot(6_000, 6_000).footprint_status,
+        FootprintStatus::CalibrationInvalidated {
+            effective_from_device_ms: 3_000,
+            ..
+        }
+    ));
+    let history = recorded.camera_calibration_history();
+    assert_eq!(
+        recorded.invalidate_camera_calibration(7_000, "zero interval"),
+        Err(UavError::DuplicateCameraCalibrationTime {
+            device_clock_ms: 7_000
+        })
+    );
+    assert_eq!(recorded.camera_calibration_history(), history);
+    let ambiguous = ClockAlignmentRecord {
+        alignment_version: VersionId::new("ver:ambiguous-clock")?,
+        ..late
+    };
+    assert_eq!(
+        recorded.set_clock_alignment(ambiguous),
+        Err(UavError::DuplicateClockAlignmentStart {
+            device_clock_ms: 5_000
+        })
+    );
+
+    // First calibration attached after capture is also a correction, not a rewrite of the frame.
+    let mut uncalibrated = review_session()?;
+    uncalibrated.ingest_video_frame(VideoFrameInput {
+        frame_index: 0,
+        frame_version: VersionId::new("ver:uncalibrated-frame")?,
+        device_clock_ms: 100,
+        receipt_utc_ms: 100,
+        exposure_duration_us: None,
+        sha256_hex: "c".repeat(64),
+    })?;
+    uncalibrated.set_camera_calibration(CameraCalibration {
+        effective_from_device_ms: 0,
+        calibration_version: VersionId::new("ver:late-first-camera")?,
+        horizontal_fov_deg: 45.0,
+        vertical_fov_deg: 45.0,
+        angular_uncertainty_deg: 0.5,
+    })?;
+    let frame = uncalibrated
+        .video_frames()
+        .first()
+        .ok_or(UavError::InternalInvariant)?;
+    assert_eq!(
+        frame.camera_calibration_state_at_capture(),
+        &CameraCalibrationState::Uncalibrated
+    );
+    assert!(frame.needs_reassessment());
+    Ok(())
+}
+
+/// C2 / DEVICE-02: camera bases with induced image roll must not emit unrotated footprints,
+/// including the case whose frustum crosses the horizon. Nadir is explicitly azimuth-degenerate.
+#[test]
+fn composed_image_roll_refuses_footprints_and_marks_vertical_rays() -> Result<(), UavError> {
+    let mut session = review_session()?;
+    session.set_camera_calibration(CameraCalibration {
+        calibration_version: VersionId::new("ver:roll-camera")?,
+        effective_from_device_ms: 0,
+        horizontal_fov_deg: 60.0,
+        vertical_fov_deg: 50.0,
+        angular_uncertainty_deg: 0.5,
+    })?;
+    // Reference image rolls from full ZYX camera basis: atan2(right_down, image_down_down).
+    for (t, airframe_pitch, gimbal_pitch, expected_roll) in [
+        (1, 10.0, -30.0, 11.508_393_365_822),
+        (2, 30.0, -45.0, 39.231_520_483_592),
+        (3, 45.0, -45.0, 54.735_610_317_245),
+    ] {
+        let mut sample = review_sample(t)?;
+        sample.attitude = Some(AttitudeDeg {
+            pitch_deg: airframe_pitch,
+            roll_deg: 0.0,
+            yaw_deg: 0.0,
+        });
+        sample.gimbal = Some(GimbalOrientation {
+            pitch_deg: gimbal_pitch,
+            yaw_deg: 90.0,
+            roll_deg: 0.0,
+            mode: GimbalMode::FollowHeading,
+        });
+        session.ingest_telemetry_sample(sample)?;
+        assert!(
+            matches!(session.project_hud_snapshot(t, t).footprint_status,
+            FootprintStatus::NonZeroRollUnsupported { effective_roll_deg }
+                if (effective_roll_deg - expected_roll).abs() < 1e-6)
+        );
+    }
+    let mut sample = review_sample(4)?;
+    sample.gimbal = Some(GimbalOrientation {
+        pitch_deg: -90.0,
+        yaw_deg: 25.0,
+        roll_deg: 0.0,
+        mode: GimbalMode::IndependentWorldLocked,
+    });
+    session.ingest_telemetry_sample(sample)?;
+    let hud = session.project_hud_snapshot(4, 4);
+    let marker = hud
+        .look_direction_marker
+        .ok_or(UavError::InternalInvariant)?;
+    assert!(marker.azimuth_undefined_at_nadir && marker.is_derived_estimate);
+    assert!(!marker.establishes_slant_range);
+    assert!(matches!(
+        hud.footprint_status,
+        FootprintStatus::CalibratedDerivedFootprint(_)
+    ));
+    assert!(
+        hud.render_hud_text(32_768)?
+            .contains("azimuth_undefined_at_nadir=true")
+    );
     Ok(())
 }

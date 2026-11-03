@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OIA workspace v2 — visual language study (synthetic case)</title>
+<style>
+/* Visual language v2. Design study on the synthetic 1994 valley case.
+   Self-contained: no network, no storage, no live data. See docs/design/visual-language-v2.md. */
+:root {
+  --canvas: #000;
+  --glass: rgba(9, 11, 13, .74);
+  --glass-2: rgba(11, 13, 16, .88);
+  --solid: #0b0d10;
+  --line: rgba(255, 255, 255, .10);
+  --line-2: rgba(255, 255, 255, .22);
+  --text: #e9edf0;
+  --text-2: rgba(233, 237, 240, .64);
+  --text-3: rgba(233, 237, 240, .52);
+  --accent: #8ff0a4;          /* single interactive accent: selection, focus, active */
+  --accent-dim: rgba(143, 240, 164, .14);
+  --amber: #f3b64a;           /* caution: stale, partial, disputed, estimate */
+  --red: #ff7b7b;             /* alert: failed, contradicted */
+  --violet: #b9a6ff;          /* generated, predictive, simulated, recreated, fixture */
+  --blur: 16px;
+  --r-ctl: 4px; --r-panel: 8px;
+  --mono: "Cascadia Mono", "JetBrains Mono", "IBM Plex Mono", Consolas, ui-monospace, monospace;
+  --sans: "Segoe UI Variable Text", "Segoe UI", Inter, system-ui, sans-serif;
+  --dur: 120ms;
+}
+@media (prefers-reduced-transparency: reduce) { :root { --glass: var(--solid); --glass-2: var(--solid); --blur: 0px; } }
+@media (prefers-reduced-motion: reduce) { :root { --dur: 0ms; } }
+* { box-sizing: border-box; margin: 0; }
+html, body { height: 100%; }
+body { background: var(--canvas); color: var(--text); font: 13px/1.45 var(--sans); overflow: hidden; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mono { font-family: var(--mono); }
+.k { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-2); }
+.v { font-family: var(--mono); font-size: 13px; color: var(--text); }
+.glass { background: var(--glass); backdrop-filter: blur(var(--blur)); -webkit-backdrop-filter: blur(var(--blur)); border: 1px solid var(--line); border-radius: var(--r-panel); box-shadow: 0 10px 28px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.05); }
+
+/* ---- Stage ---- */
+.stage { position: relative; height: 100vh; display: grid; gap: 12px; padding: 12px;
+  grid-template-columns: 72px minmax(0, 1fr) 352px;
+  grid-template-rows: 48px minmax(0, 1fr) 96px 36px;
+  grid-template-areas: "top top top" "rail canvas inspector" "rail timeline inspector" "rail jobs inspector"; }
+#canvas-bg { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; }
+
+/* ---- Top strip: wordmark, command field, readout cells ---- */
+.top { grid-area: top; z-index: 2; display: grid; grid-template-columns: auto minmax(200px, 340px) minmax(0, 1fr); gap: 12px; align-items: stretch; }
+.wordmark { display: flex; align-items: center; gap: 10px; padding: 0 14px; }
+.wordmark b { font: 600 15px/1 var(--mono); letter-spacing: .22em; color: var(--text); }
+.wordmark small { font-family: var(--mono); font-size: 11px; color: var(--violet); letter-spacing: .04em; }
+.cmd { display: flex; align-items: center; gap: 10px; padding: 0 12px; }
+.cmd .scope { font-family: var(--mono); font-size: 11px; color: var(--accent); border: 1px solid var(--line-2); border-radius: var(--r-ctl); padding: 3px 7px; white-space: nowrap; }
+.cmd input { flex: 1; min-width: 0; background: none; border: 0; color: var(--text); font: 13px var(--sans); }
+.cmd input::placeholder { color: var(--text-3); }
+.cmd kbd { font: 11px var(--mono); color: var(--text-3); border: 1px solid var(--line); border-radius: 3px; padding: 1px 5px; }
+.readout { display: flex; align-items: stretch; overflow: hidden; }
+.readout .cell { display: flex; align-items: center; gap: 10px; padding: 0 14px; border-left: 1px solid var(--line); white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.readout .cell:first-child { border-left: 0; }
+.readout .cell.fill { flex: 1; }
+.readout .cell .v { font-size: 12px; }
+.readout .cell .v.est { color: var(--amber); }
+
+/* ---- Rail ---- */
+.rail { grid-area: rail; z-index: 2; display: flex; flex-direction: column; gap: 2px; padding: 8px 6px; }
+.rail button { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 2px; border-radius: var(--r-ctl); color: var(--text-2); }
+.rail button svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.rail button span { font: 11px var(--mono); letter-spacing: .02em; }
+.rail button:hover { color: var(--text); background: rgba(255,255,255,.04); }
+.rail button[aria-current="page"] { color: var(--accent); background: var(--accent-dim); box-shadow: inset 2px 0 0 var(--accent); }
+.rail button[aria-disabled="true"] { color: var(--text-3); cursor: default; }
+.rail button[aria-disabled="true"] span::after { content: " ·"; }
+.rail hr { border: 0; border-top: 1px solid var(--line); margin: 6px 4px; }
+.rail .spacer { flex: 1; }
+
+/* ---- Evidence canvas ---- */
+.canvas { grid-area: canvas; position: relative; z-index: 1; min-height: 0; }
+.canvas-head { position: absolute; left: 0; top: 0; right: 0; display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; pointer-events: none; }
+.canvas-head > * { pointer-events: auto; }
+.crumb { display: flex; align-items: center; gap: 8px; padding: 8px 12px; }
+.crumb .seg { font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-2); }
+.crumb .seg.cur { color: var(--text); }
+.crumb .sep { color: var(--text-3); }
+.tools { display: flex; gap: 4px; padding: 4px; }
+.tools button { font: 11px var(--mono); letter-spacing: .04em; padding: 6px 10px; border-radius: var(--r-ctl); color: var(--text-2); }
+.tools button:hover { color: var(--text); background: rgba(255,255,255,.05); }
+.tools button[aria-pressed="true"] { color: var(--accent); background: var(--accent-dim); }
+#geometry { position: absolute; inset: 0; width: 100%; height: 100%; }
+#geometry text { font-family: var(--mono); font-size: 11px; fill: var(--text-2); letter-spacing: .06em; }
+#geometry .contour { fill: none; stroke: rgba(255,255,255,.10); stroke-width: 1; }
+#geometry .contour.major { stroke: rgba(255,255,255,.17); }
+#geometry .road { fill: none; stroke: rgba(255,255,255,.32); stroke-width: 1.5; }
+#geometry .ridge-label { fill: var(--text-3); }
+#geometry .leader { fill: none; stroke: rgba(233,237,240,.55); stroke-width: 1; }
+#geometry .leader-dot { fill: var(--text); }
+#geometry .track { fill: none; stroke: var(--text); stroke-width: 1.5; stroke-dasharray: 6 5; }
+#geometry .track-head { fill: var(--text); }
+#geometry .region { fill: url(#dots); stroke: rgba(233,237,240,.5); stroke-width: 1; stroke-dasharray: 3 4; }
+#geometry .bracket { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+#geometry .observer { fill: var(--accent); }
+#geometry .observer-ring { fill: none; stroke: var(--accent); stroke-width: 1; opacity: .6; }
+/* Callout tags. In the canvas they are SVG groups so the leader and the tag share one coordinate space. */
+#geometry .stag rect.box { fill: var(--solid); stroke: var(--line-2); stroke-width: 1; }
+#geometry .stag line.div { stroke: var(--line); stroke-width: 1; }
+#geometry .stag text { fill: var(--text); letter-spacing: .06em; }
+#geometry .stag text.num { fill: var(--accent); }
+#geometry .stag.sel rect.box { stroke: var(--accent); }
+#geometry .stag.region text.num { fill: var(--text-2); }
+.tag { display: inline-flex; align-items: stretch; border: 1px solid var(--line-2); border-radius: 3px; background: var(--glass-2); font: 11px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase; overflow: hidden; white-space: nowrap; }
+.tag i { font-style: normal; padding: 6px 7px; color: var(--accent); border-right: 1px solid var(--line); }
+.tag b { font-weight: 500; padding: 6px 8px; color: var(--text); }
+.tag.unplaced i { color: var(--text-3); }
+.tag.unplaced b { color: var(--text-2); }
+/* Selected-object card over the canvas (the "target card" pattern) */
+.card { position: absolute; width: 260px; padding: 12px 14px; }
+.card .corner { position: absolute; width: 10px; height: 10px; border-color: var(--accent); border-style: solid; border-width: 0; }
+.card .corner.tl { left: -1px; top: -1px; border-left-width: 1.5px; border-top-width: 1.5px; }
+.card .corner.tr { right: -1px; top: -1px; border-right-width: 1.5px; border-top-width: 1.5px; }
+.card .corner.bl { left: -1px; bottom: -1px; border-left-width: 1.5px; border-bottom-width: 1.5px; }
+.card .corner.br { right: -1px; bottom: -1px; border-right-width: 1.5px; border-bottom-width: 1.5px; }
+.card h3 { font: 500 14px/1.2 var(--sans); margin: 4px 0 8px; }
+.card .rows { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; }
+.card .rows dt { color: var(--text-2); font-size: 12px; }
+.card .rows dd { font-family: var(--mono); font-size: 12px; text-align: right; }
+.unplaced-tray { position: absolute; left: 0; bottom: 0; display: flex; align-items: center; gap: 10px; padding: 8px 12px; }
+.unplaced-tray .k { color: var(--text-3); }
+.view-state { position: absolute; right: 0; bottom: 0; display: flex; gap: 14px; padding: 6px 12px; font: 11px var(--mono); color: var(--text-3); letter-spacing: .04em; }
+.view-state b { color: var(--text-2); font-weight: 500; }
+.chip { display: inline-flex; align-items: center; gap: 5px; font: 11px var(--mono); letter-spacing: .04em; border: 1px solid var(--line); border-radius: 3px; padding: 2px 7px; color: var(--text-2); white-space: nowrap; }
+.chip.fx { color: var(--violet); border-style: dashed; }
+.chip.ok { color: var(--accent); }
+.chip.warn { color: var(--amber); }
+.chip.bad { color: var(--red); }
+
+/* ---- Inspector ---- */
+.inspector { grid-area: inspector; z-index: 2; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.inspector .head { padding: 12px 14px 10px; border-bottom: 1px solid var(--line); }
+.inspector .head h2 { font: 500 16px/1.2 var(--sans); margin: 4px 0 8px; }
+.inspector .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.tabs { display: flex; border-bottom: 1px solid var(--line); }
+.tabs button { flex: 1; padding: 9px 4px; font: 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text-2); border-bottom: 2px solid transparent; }
+.tabs button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+.inspector .body { overflow: auto; padding: 4px 0 8px; }
+.sec { padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.sec:last-child { border-bottom: 0; }
+.sec .k { display: block; margin-bottom: 8px; }
+.kv { display: grid; grid-template-columns: 112px 1fr; gap: 6px 10px; }
+.kv dt { color: var(--text-2); font-size: 12px; padding-top: 1px; }
+.kv dd { font-family: var(--mono); font-size: 12px; color: var(--text); }
+.kv dd.none { color: var(--text-3); }
+.kv dd.est { color: var(--amber); }
+.meter { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: center; margin-top: 6px; }
+.meter .label { font-size: 12px; color: var(--text-2); }
+.meter .n { font: 12px var(--mono); color: var(--text); }
+.meter .bar { grid-column: 1 / -1; display: flex; gap: 2px; height: 10px; }
+.meter .bar i { flex: 1; background: rgba(255,255,255,.12); border-radius: 1px; }
+.meter .bar i.on { background: var(--accent); }
+.claim { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; padding: 8px 0; border-top: 1px solid var(--line); }
+.claim:first-of-type { border-top: 0; }
+.claim .id { font: 11px var(--mono); color: var(--text-3); letter-spacing: .04em; white-space: nowrap; padding-top: 2px; }
+.claim q { font-size: 13px; }
+.claim .states { grid-column: 2; display: flex; gap: 6px; flex-wrap: wrap; }
+.inspector .foot { padding: 10px 14px; border-top: 1px solid var(--line); display: flex; gap: 8px; }
+.btn { font: 12px var(--mono); letter-spacing: .04em; padding: 7px 10px; border: 1px solid var(--line-2); border-radius: var(--r-ctl); color: var(--text); }
+.btn.primary { border-color: var(--accent); color: var(--accent); }
+.btn:hover { background: rgba(255,255,255,.05); }
+
+/* ---- Timeline ---- */
+.timeline { grid-area: timeline; z-index: 2; display: grid; grid-template-columns: 236px 1fr; min-height: 0; }
+.timeline .mode { padding: 10px 12px; border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; justify-content: center; }
+.timeline .mode .v { font-size: 18px; }
+.timeline .mode .v small { font-size: 11px; color: var(--amber); margin-left: 4px; }
+.timeline .mode .k { font-size: 11px; white-space: nowrap; }
+.timeline .ruler { position: relative; }
+.timeline .ruler svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.timeline .ruler text { font-family: var(--mono); font-size: 11px; fill: var(--text-2); letter-spacing: .04em; }
+.timeline .ruler .tick { stroke: rgba(255,255,255,.22); stroke-width: 1; }
+.timeline .ruler .tick.major { stroke: rgba(255,255,255,.45); }
+.timeline .ruler .window { fill: rgba(233,237,240,.12); stroke: rgba(233,237,240,.45); stroke-width: 1; }
+.timeline .ruler .clock { stroke: var(--accent); stroke-width: 1.5; }
+.timeline .ruler .clock-label { fill: var(--accent); }
+.timeline .ruler .mark-pub { fill: var(--violet); }
+.timeline .legend { position: absolute; right: 10px; top: 8px; display: flex; gap: 12px; font: 11px var(--mono); color: var(--text-3); letter-spacing: .04em; }
+.timeline .legend b { font-weight: 500; color: var(--text-2); }
+
+/* ---- Jobs ---- */
+.jobs { grid-area: jobs; z-index: 2; display: flex; align-items: center; gap: 16px; padding: 0 14px; }
+.jobs .k { font-size: 11px; }
+.jobs .count { font: 12px var(--mono); color: var(--text-2); }
+.jobs .count b { color: var(--text); font-weight: 500; }
+.jobs .spacer { flex: 1; }
+.jobs .count.none { color: var(--text-3); }
+
+/* ---- Narrow fallback (study only) ---- */
+@media (max-width: 1100px) {
+  body { overflow: auto; }
+  .stage { height: auto; grid-template-columns: 72px minmax(0, 1fr); grid-template-rows: auto 560px 128px 36px auto;
+    grid-template-areas: "top top" "rail canvas" "rail timeline" "rail jobs" "inspector inspector"; }
+  .top { grid-template-columns: auto 1fr; }
+  .readout { grid-column: 1 / -1; }
+  .timeline { grid-template-rows: 1fr auto; }
+  .timeline .legend { position: static; grid-column: 1 / -1; flex-wrap: wrap; padding: 6px 12px; border-top: 1px solid var(--line); }
+}
+@media print {
+  :root { --canvas: #fff; --glass: #fff; --glass-2: #fff; --solid: #fff; --text: #111; --text-2: #333; --text-3: #555; --line: #999; --line-2: #666; --accent: #0a6b2a; --violet: #4c327b; --amber: #8a5a00; }
+  .glass { box-shadow: none; }
+}
+</style>
+</head>
+<body>
+<div class="stage">
+  <svg id="canvas-bg" aria-hidden="true" preserveAspectRatio="none">
+    <defs>
+      <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse"><path d="M48 0H0V48" fill="none" stroke="rgba(255,255,255,.045)" stroke-width="1"/></pattern>
+      <radialGradient id="vignette" cx="50%" cy="50%" r="70%"><stop offset="55%" stop-color="#000" stop-opacity="0"/><stop offset="100%" stop-color="#000" stop-opacity=".85"/></radialGradient>
+    </defs>
+    <rect width="100%" height="100%" fill="url(#grid)"/>
+    <rect width="100%" height="100%" fill="url(#vignette)"/>
+  </svg>
+
+  <!-- A. Top strip -->
+  <header class="top">
+    <div class="wordmark glass"><b>OIA</b><small>◇ synthetic case · design study</small></div>
+    <div class="cmd glass" role="search">
+      <span class="scope">THIS CASE</span>
+      <input type="search" placeholder="Search, id:, near:, t:, in:" aria-label="Command field">
+      <kbd>Ctrl K</kbd>
+    </div>
+    <div class="readout glass" aria-label="View state">
+      <div class="cell"><span class="k">Case</span><span class="v">1994 valley accounts</span></div>
+      <div class="cell"><span class="k">Clock</span><span class="v">21:40 <span class="est">±15 min</span></span></div>
+      <div class="cell"><span class="k">Mode</span><span class="v">Historical</span></div>
+      <div class="cell fill"><span class="k">Selection</span><span class="v">Account A · v2</span></div>
+    </div>
+  </header>
+
+  <!-- B. Rail -->
+  <nav class="rail glass" aria-label="Instruments">
+    <button aria-current="page"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.5"/><path d="M12 4v3M12 17v3M4 12h3M17 12h3"/></svg><span>Case</span></button>
+    <button><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="1"/><path d="M8 9h8M8 13h8M8 17h5"/></svg><span>Library</span></button>
+    <button><svg viewBox="0 0 24 24"><path d="M6 4h9l5 5v11H6z"/><path d="M14 4v6h6M9 13h7M9 17h7"/></svg><span>Report</span></button>
+    <hr>
+    <button aria-disabled="true" title="Not in this build"><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4z"/><path d="M8 10h8M8 14h5"/></svg><span>News</span></button>
+    <button aria-disabled="true" title="Not in this build"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c3 3 3 13 0 16M12 4c-3 3-3 13 0 16"/></svg><span>Globe</span></button>
+    <button aria-disabled="true" title="Not in this build"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="13" height="10" rx="1"/><path d="M16 11l5-2v6l-5-2z"/></svg><span>Cameras</span></button>
+    <button aria-disabled="true" title="Not in this build"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="1"/><path d="M3 9h18M7 5v14M17 5v14"/></svg><span>Media</span></button>
+    <div class="spacer"></div>
+    <hr>
+    <button><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg><span>Jobs</span></button>
+    <button><svg viewBox="0 0 24 24"><path d="M4 8h16M4 16h16"/><circle cx="9" cy="8" r="2"/><circle cx="15" cy="16" r="2"/></svg><span>Settings</span></button>
+  </nav>
+
+  <!-- C. Evidence canvas -->
+  <main class="canvas" aria-label="Evidence canvas">
+    <svg id="geometry" viewBox="0 0 1000 620" preserveAspectRatio="xMidYMid slice" role="img"
+         aria-label="Schematic case geometry. Account A observer on the eastern road with a reported northwest to southeast track. Account C region east of the ridge. Account B not plotted.">
+      <defs>
+        <pattern id="dots" width="7" height="7" patternUnits="userSpaceOnUse"><circle cx="1.5" cy="1.5" r="1" fill="rgba(233,237,240,.45)"/></pattern>
+      </defs>
+      <!-- Synthetic schematic terrain: contour-like curves drawn for this study; not elevation data. -->
+      <g class="terrain">
+        <path class="contour major" d="M690 40 C640 120 650 220 700 300 C750 380 740 470 690 560 L700 640"/>
+        <path class="contour" d="M730 40 C690 120 700 220 745 300 C790 380 780 470 735 560 L745 640"/>
+        <path class="contour" d="M770 40 C740 120 750 220 790 300 C830 380 820 470 780 560 L790 640"/>
+        <path class="contour" d="M650 40 C600 130 605 230 655 310 C705 390 700 470 650 560 L655 640"/>
+        <path class="contour" d="M610 40 C560 140 565 240 610 320 C660 400 655 480 610 560 L615 640"/>
+        <path class="contour" d="M120 120 C200 90 300 130 340 190 C380 250 330 330 240 350 C150 370 80 300 100 220 Z"/>
+        <path class="contour" d="M160 150 C220 130 290 160 320 205 C350 250 310 305 245 320 C180 335 130 290 145 230 Z"/>
+        <path class="contour" d="M200 180 C240 170 280 190 295 220 C310 250 280 285 245 290 C205 295 175 265 185 230 Z"/>
+        <path class="contour" d="M860 460 C900 420 980 440 1000 500 L1000 620 L880 620 C840 580 830 500 860 460 Z"/>
+        <path class="contour" d="M890 490 C920 465 975 480 990 520 L990 600 L900 600 C875 570 870 515 890 490 Z"/>
+        <path class="contour" d="M40 520 C100 480 200 500 240 560 C260 590 230 620 200 620 L40 620 Z"/>
+        <text class="ridge-label" x="722" y="200" transform="rotate(-80 722 200)">RIDGE · SCHEMATIC</text>
+        <!-- Eastern road -->
+        <path class="road" d="M470 0 C490 120 450 240 480 360 C505 460 470 540 490 620"/>
+        <text x="500" y="500">EASTERN ROAD · REPORTED</text>
+      </g>
+
+      <!-- Account C: region only (two lights east of the ridge). Dotted fill = reported area, not a position. -->
+      <path class="region" d="M800 190 C840 160 930 170 960 220 C985 265 950 320 900 330 C850 340 800 310 790 265 C785 240 790 205 800 190 Z"/>
+      <polyline class="leader" points="847,142 847,160 868,176"/>
+      <circle class="leader-dot" cx="868" cy="176" r="2"/>
+      <g class="stag region" transform="translate(760 120)" aria-hidden="true">
+        <rect class="box" width="174" height="22" rx="3"/><line class="div" x1="28" y1="0" x2="28" y2="22"/>
+        <text class="num" x="8" y="15">03</text><text x="36" y="15">ACCOUNT C · REGION</text>
+      </g>
+
+      <!-- Account A: observer on the eastern road; reported track NW -> SE over ~8 min. Schematic, not measured. -->
+      <path class="track" d="M372 212 L584 436"/>
+      <path class="track-head" d="M584 436 L571 429 L577 418 Z"/>
+      <text x="352" y="200">NW</text><text x="592" y="458">SE</text>
+      <circle class="observer-ring" cx="478" cy="372" r="16"/>
+      <circle class="observer" cx="478" cy="372" r="4"/>
+      <!-- Selection brackets: drawn only around the selected object's actual geometry -->
+      <path class="bracket" d="M440 336h12M440 336v12 M516 336h-12M516 336v12 M440 408h12M440 408v-12 M516 408h-12M516 408v-12"/>
+      <polyline class="leader" points="448,309 478,309 478,354"/>
+      <circle class="leader-dot" cx="478" cy="354" r="2"/>
+      <!-- A tag with a leader points only at a recorded position; the leader ends on the object's edge. -->
+      <g class="stag sel" transform="translate(336 298)" aria-hidden="true">
+        <rect class="box" width="112" height="22" rx="3"/><line class="div" x1="28" y1="0" x2="28" y2="22"/>
+        <text class="num" x="8" y="15">01</text><text x="36" y="15">ACCOUNT A</text>
+      </g>
+    </svg>
+
+    <!-- Selected-object card -->
+    <aside class="card glass" style="left: 24px; top: 56%;" aria-label="Selected: Account A">
+      <span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
+      <span class="k">01 · Selected</span>
+      <h3>Account A</h3>
+      <dl class="rows">
+        <dt>Direction</dt><dd>NW → SE · approx.</dd>
+        <dt>Position</dt><dd>Eastern road · reported</dd>
+        <dt>Event time</dt><dd>≈ 21:40 ±15 min</dd>
+        <dt>Duration</dt><dd>≈ 8 min · reported</dd>
+        <dt>Anchor</dt><dd>DOC-0007 · v2 · p3.¶3</dd>
+      </dl>
+    </aside>
+
+    <div class="canvas-head">
+      <div class="crumb glass">
+        <span class="seg">Case</span><span class="sep">›</span><span class="seg">Valley accounts</span><span class="sep">›</span><span class="seg cur">Geometry</span>
+        <span class="chip fx" style="margin-left:8px">◇ Synthetic testimony · 3 accounts · 1 source</span>
+      </div>
+      <div class="tools glass">
+        <button type="button">← Back</button>
+        <button type="button" aria-pressed="false">Clean evidence</button>
+        <button type="button" aria-pressed="false">Focus</button>
+      </div>
+    </div>
+
+    <div class="unplaced-tray glass">
+      <span class="k">Not plotted</span>
+      <div class="tag unplaced"><i>02</i><b>Account B · position not recorded</b></div>
+    </div>
+    <div class="view-state glass">
+      <span><b>CASE</b> valley-1994</span>
+      <span><b>ANCHOR</b> p3.¶3</span>
+      <span><b>PINNED</b> v2</span>
+      <span><b>OVERLAYS</b> on</span>
+      <span><b>SCALE</b> —</span>
+    </div>
+  </main>
+
+  <!-- D. Inspector -->
+  <aside class="inspector glass" aria-label="Inspector">
+    <div class="head">
+      <span class="k">Inspect · account</span>
+      <h2>Account A</h2>
+      <div class="chips"><span class="chip">◉ Account</span><span class="chip fx">◇ Synthetic testimony</span><span class="chip">▮ Source read-only</span></div>
+    </div>
+    <div class="tabs" role="tablist">
+      <button role="tab" aria-selected="true">Source</button>
+      <button role="tab" aria-selected="false">Claims</button>
+      <button role="tab" aria-selected="false">Notes</button>
+      <button role="tab" aria-selected="false">Lineage</button>
+    </div>
+    <div class="body" tabindex="0" aria-label="Inspector contents">
+      <section class="sec">
+        <span class="k">Source record</span>
+        <dl class="kv">
+          <dt>Direction</dt><dd>NW → SE · approximate</dd>
+          <dt>Observer</dt><dd>Eastern road · reported, uncalibrated</dd>
+          <dt>Event time</dt><dd class="est">≈ 21:40 ±15 min · reported local</dd>
+          <dt>Duration</dt><dd class="est">≈ 8 min · reported</dd>
+          <dt>Altitude</dt><dd class="none">— not recorded</dd>
+          <dt>Document</dt><dd>FIXTURE-DOC-0007 · v2</dd>
+          <dt>Anchor</dt><dd>p3.¶3</dd>
+          <dt>Retrieved</dt><dd class="none">— no acquired original</dd>
+        </dl>
+      </section>
+      <section class="sec">
+        <span class="k">Coverage · 3 accounts · 1 source</span>
+        <div class="meter"><span class="label">Event time recorded</span><span class="n">1 / 3</span><div class="bar"><i class="on"></i><i></i><i></i></div></div>
+        <div class="meter"><span class="label">Location recorded (point or region)</span><span class="n">2 / 3</span><div class="bar"><i class="on"></i><i class="on"></i><i></i></div></div>
+        <div class="meter"><span class="label">Independent sources</span><span class="n">0 / 1</span><div class="bar"><i></i></div></div>
+      </section>
+      <section class="sec">
+        <span class="k">Claims anchored here · 2</span>
+        <div class="claim"><span class="id">CL-1</span><q>A light travelled northwest to southeast for about eight minutes.</q><div class="states"><span class="chip">○ Unsupported</span><span class="chip">◻ Unreviewed</span></div></div>
+        <div class="claim"><span class="id">CL-2</span><q>The observer stood on the eastern road.</q><div class="states"><span class="chip">○ Unsupported</span><span class="chip">◼ Reviewed · fixture reviewer</span></div></div>
+      </section>
+    </div>
+    <div class="foot">
+      <button type="button" class="btn primary">Read passage p3.¶3 ↗</button>
+      <button type="button" class="btn">Add note</button>
+    </div>
+  </aside>
+
+  <!-- E. Timeline -->
+  <section class="timeline glass" aria-label="Shared timeline">
+    <div class="mode">
+      <span class="k">Investigation clock</span>
+      <span class="v">21:40<small>±15 min</small></span>
+      <span class="k">Historical · reported local</span>
+      <span class="k">1994-03-14 · America/Denver</span>
+    </div>
+    <div class="ruler">
+      <svg viewBox="0 0 900 96" preserveAspectRatio="none" role="img" aria-label="Case interval 20:00 to 23:00. Account A reports 21:25 to 21:55. Investigation clock 21:40. No publication or retrieval time is recorded for the fixture. Accounts B and C have no event time and are not placed.">
+        <!-- 3 h across 900 units: 5 units per minute -->
+        <g class="ticks">
+          <path class="tick major" d="M0 58v14 M300 58v14 M600 58v14 M900 58v14"/>
+          <path class="tick" d="M50 64v8 M100 64v8 M150 64v8 M200 64v8 M250 64v8 M350 64v8 M400 64v8 M450 64v8 M500 64v8 M550 64v8 M650 64v8 M700 64v8 M750 64v8 M800 64v8 M850 64v8"/>
+          <line x1="0" y1="72" x2="900" y2="72" class="tick"/>
+        </g>
+        <text x="4" y="90">20:00</text><text x="304" y="90">21:00</text><text x="604" y="90">22:00</text><text x="896" y="90" text-anchor="end">23:00</text>
+        <!-- Account A reported window 21:25–21:55 -->
+        <rect class="window" x="425" y="40" width="150" height="16" rx="2"/>
+        <text x="432" y="52">▲ A · REPORTED</text>
+        <!-- Investigation clock 21:40 -->
+        <line class="clock" x1="500" y1="26" x2="500" y2="72"/>
+        <text class="clock-label" x="506" y="36">21:40</text>
+      </svg>
+      <div class="legend"><span><b>▲</b> event</span><span><b>▣</b> publication — none recorded</span><span><b>◆</b> retrieval — none recorded</span><span><b>B, C</b> no event time · not placed</span></div>
+    </div>
+  </section>
+
+  <!-- F. Job tray -->
+  <footer class="jobs glass" aria-label="Jobs">
+    <span class="k">Jobs</span>
+    <span class="count none">No connected worker</span>
+    <span class="count"><b>0</b> running</span>
+    <span class="count"><b>0</b> failed</span>
+    <span class="count"><b>0</b> superseded</span>
+    <span class="spacer"></span>
+    <span class="chip">Progress moves only on reported progress</span>
+  </footer>
+</div>
+</body>
+</html>

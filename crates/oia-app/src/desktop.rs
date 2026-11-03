@@ -1,5 +1,5 @@
 //! Tauri adapter. Rust owns file snapshots, operations, cancellation and publication,
-//! and the globe instrument's state.
+//! plus the globe and witness instruments' state.
 use crate::globe::{
     CameraView, GlobeState, GlobeView,
     imagery::{CivilDate, ImagerySelection},
@@ -8,6 +8,7 @@ use crate::local_tools::{
     self as tools, Control, DocumentView, FileKind, PreparedExport, PrivacyView, Result,
     SearchView, Selection, Snapshot, ToolError,
 };
+use crate::witness::{WitnessFormData, WitnessOrigin, WitnessState, WitnessView};
 use serde::Serialize;
 use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::State;
@@ -270,10 +271,58 @@ fn globe_imagery(
     state.view().map(envelope)
 }
 
+/// Witness capture is independent of file work and globe rendering. Its transitions are
+/// synchronous, bounded by the domain kernel, and never published as durable evidence.
+#[derive(Clone, Debug, Default)]
+struct Witness(Arc<Mutex<WitnessState>>);
+impl Witness {
+    fn lock(&self) -> Result<MutexGuard<'_, WitnessState>> {
+        self.0
+            .lock()
+            .map_err(|_| ToolError::new("internal", "The witness lock failed. Restart OIA."))
+    }
+}
+
+#[tauri::command]
+fn witness_view(witness: State<'_, Witness>) -> Result<Envelope<WitnessView>> {
+    Ok(envelope(witness.lock()?.view()))
+}
+
+#[tauri::command]
+fn witness_capture(
+    witness: State<'_, Witness>,
+    origin: WitnessOrigin,
+    form: WitnessFormData,
+) -> Result<Envelope<WitnessView>> {
+    let view = witness.lock()?.capture_initial(origin, form)?;
+    Ok(envelope(view))
+}
+
+#[tauri::command]
+fn witness_revise(
+    witness: State<'_, Witness>,
+    expected_version: String,
+    form: WitnessFormData,
+    rationale: String,
+) -> Result<Envelope<WitnessView>> {
+    let view = witness.lock()?.revise(&expected_version, form, rationale)?;
+    Ok(envelope(view))
+}
+
+#[tauri::command]
+fn witness_expose_explanations(
+    witness: State<'_, Witness>,
+    expected_version: String,
+) -> Result<Envelope<WitnessView>> {
+    let view = witness.lock()?.expose_explanations(&expected_version)?;
+    Ok(envelope(view))
+}
+
 pub fn run() -> std::result::Result<(), tauri::Error> {
     tauri::Builder::default()
         .manage(Services::default())
         .manage(Globe::default())
+        .manage(Witness::default())
         .invoke_handler(tauri::generate_handler![
             open_document,
             open_image,
@@ -283,7 +332,11 @@ pub fn run() -> std::result::Result<(), tauri::Error> {
             globe_view,
             globe_select,
             globe_camera,
-            globe_imagery
+            globe_imagery,
+            witness_view,
+            witness_capture,
+            witness_revise,
+            witness_expose_explanations
         ])
         .run(tauri::generate_context!())
 }

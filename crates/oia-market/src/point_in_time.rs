@@ -419,7 +419,7 @@ impl<'a> AdjustedQuote<'a> {
     }
 }
 
-fn validate_action(action: &CorporateActionRecord) -> Result<(), MarketError> {
+pub(crate) fn validate_action(action: &CorporateActionRecord) -> Result<(), MarketError> {
     validate_timestamp("action effective_at_utc_ms", action.effective_at_utc_ms)?;
     validate_availability(action.availability)?;
     if action.split_numerator <= 0 || action.split_denominator <= 0 {

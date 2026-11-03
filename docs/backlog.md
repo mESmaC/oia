@@ -81,6 +81,7 @@ The repository was empty on GitHub when this backlog was created, so issue bodie
 - [#41: Integrate point-in-time market data and public disclosures](https://github.com/mESmaC/oia/issues/41)
   - [Point-in-time normalization slice and remaining integration](implementation/market-point-in-time.md)
 - [#42: Build market charts, exposure graphs, and event studies](https://github.com/mESmaC/oia/issues/42)
+  - [Daily event-study slice and remaining integration](implementation/market-event-study.md)
 - [#43: Implement immutable forecasts, scenarios, outcomes, and evaluation](https://github.com/mESmaC/oia/issues/43)
 - [#44: Forecast market effects from news, weather, releases, and scenarios](https://github.com/mESmaC/oia/issues/44)
 - [#45: Forecast general event responses using historical precedents](https://github.com/mESmaC/oia/issues/45)

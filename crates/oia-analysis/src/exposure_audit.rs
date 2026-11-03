@@ -15,20 +15,34 @@
 //!    account or linked domain outside the scope cannot be fetched, expanded, or matched
 //!    further without an explicit `revise_declared_scope` revision recording its basis and
 //!    rationale.
-//! 2. **Strict in-scope profile claiming and dynamic scope re-checking:**
+//!    A scope revision (`revise_declared_scope`) cannot change the [`OwnershipBasis`] variant
+//!    (`OwnershipBasisChangeDisallowed`: start a new `DeclaredAuditScope` instead) and cannot
+//!    extend `valid_until_unix_ms` on an `AuthorizedAssessmentScope` without supplying a new
+//!    `authorization_reference` (`AuthorizationWindowExtensionRequiresNewReference`), preventing
+//!    a time-bounded third-party assessment from escaping its authorization window.
+//!    Declared root domains reject IPv4/IPv6 literals (`InvalidDomainSyntax`) and a fixed list of
+//!    common multi-label public suffixes (`DISALLOWED_PUBLIC_SUFFIX_ROOTS`, returning
+//!    `PublicSuffixRootDisallowed`); a full Mozilla Public Suffix List (PSL) database is not yet
+//!    embedded and remains a follow-up.
+//! 2. **Strict in-scope profile claiming and dynamic scope re-checking (primary and candidate):**
 //!    A [`PublicProfileRecord`] is accepted with `claimed_in_declared_scope: true` **only**
 //!    when its `(service_name, handle)` pair matches a [`DeclaredAccountHandle`] in the active
 //!    [`DeclaredAuditScope`]. Listing a declared domain in `listed_website_domain` is someone
-//!    else's assertion and does **not** make a third-party profile in-scope; instead, a link
-//!    to a declared domain is recorded as a candidate matching signal
-//!    ([`MatchSignalKind::CrossLinkToDeclaredDomain`]). Unclaimed candidate profiles must cite
-//!    an `anchor_primary_profile_id` that is currently in scope so arbitrary third-party
-//!    profiles cannot be stored without a tie to an in-scope primary (`PRIVACY-02`).
-//!    Furthermore, every gate (`propose_account_match`, `review_account_match`) re-checks the
-//!    *current* `DeclaredAuditScope` rather than relying solely on a registration-time flag,
-//!    and narrowing the scope via `revise_declared_scope` marks any previously registered
-//!    profiles, account matches, or infrastructure entries that fell outside the narrowed
-//!    scope with `outside_current_scope == true` and `needs_reassessment == true` while
+//!    else's assertion and does **not** make a third-party profile in-scope; when a caller
+//!    proposes a match with [`MatchSignalKind::CrossLinkToDeclaredDomain`], `propose_account_match`
+//!    verifies that either the primary or the candidate profile's `listed_website_domain` is
+//!    covered by `current_scope` (`CrossLinkSignalRequiresInScopeListedDomain`).
+//!    Unclaimed candidate profiles must cite an `anchor_primary_profile_id` that is currently in
+//!    scope so arbitrary third-party profiles cannot be stored without a tie to an in-scope
+//!    primary (`PRIVACY-02`).
+//!    Every gate (`propose_account_match`, `review_account_match`) re-checks the *current*
+//!    `DeclaredAuditScope` for **both** `primary_profile_id` (`is_profile_currently_in_scope`)
+//!    and `candidate_profile_id` (`is_candidate_profile_currently_eligible`), so a candidate whose
+//!    anchor primary was removed by a scope narrowing (`CandidateProfileOutsideDeclaredScope`)
+//!    cannot be matched or confirmed under a surviving primary. Narrowing the scope via
+//!    `revise_declared_scope` marks any previously registered profiles, account matches (checking
+//!    both primary and candidate eligibility), or infrastructure entries that fell outside the
+//!    narrowed scope with `outside_current_scope == true` and `needs_reassessment == true` while
 //!    retaining their history.
 //! 3. **Candidate account connections retain uncertainty (`AccountMatchCandidate`):**
 //!    Proposed public-profile and account-connection matches must anchor `primary_profile_id`
@@ -48,21 +62,22 @@
 //!    [`oia_domain::collaboration::evaluate_proposed_access_decision`] (`#38`, proposed default
 //!    pending `D10`) rather than introducing a second access-policy table.
 //! 5. **Dated owned-infrastructure history and distinct timestamps (`InfrastructureHistoryEntry`):**
-//!    DNS records, TLS/certificate-transparency observations, and exposed contact findings
-//!    retain four distinct timestamps (`observed_at`, `published_or_issued_at`,
-//!    `retrieved_at`, and `audited_at`), pinned `SourceCitation`, and explicit
-//!    [`SourceQueryCoverage`] (`Complete`, `PartialBudgetReached`, `SourceUnavailable`,
-//!    `ObservedAbsenceInQueriedSource`) so missing source coverage is never conflated with
-//!    absence of exposure.
-//! 6. **Caller-supplied timestamps and in-memory analysis kernel boundaries:**
-//!    Because `oia-analysis` is a pure deterministic kernel without wall-clock I/O, all
-//!    timestamps (`declared_at_unix_ms`, `revised_at_unix_ms`, `requested_at_unix_ms`, and
-//!    [`ObservationTimeEnvelope`] fields) are supplied by the caller; monotonicity is enforced
-//!    across revisions and retrieval/audit ordering, while wall-clock attestation belongs to
-//!    the outer service layer (`#13`, `#14`). Live network queries (`#13`), link-analysis graph
-//!    service integration (`#36`), SQLite persistence (`#11`, `#14`), and workspace UI (`#16`)
-//!    remain open on `#47`. No Lean theorem or formal Rust-to-Lean correspondence claim is made
-//!    for this slice.
+//!    DNS records, TLS/certificate-transparency observations (including wildcard `*.` certificates
+//!    whose base domain is covered by `current_scope`), and exposed contact findings retain four
+//!    distinct timestamps (`observed_at`, `published_or_issued_at`, `retrieved_at`, and
+//!    `audited_at`), pinned `SourceCitation`, and explicit [`SourceQueryCoverage`] (`Complete`,
+//!    `PartialBudgetReached`, `SourceUnavailable`, `ObservedAbsenceInQueriedSource`) so missing
+//!    source coverage is never conflated with absence of exposure.
+//! 6. **Caller-supplied timestamps, actor consistency, and in-memory analysis kernel boundaries:**
+//!    Because `oia-analysis` is a pure deterministic kernel without wall-clock or authentication
+//!    I/O, all timestamps (`declared_at_unix_ms`, `revised_at_unix_ms`, `requested_at_unix_ms`,
+//!    and [`ObservationTimeEnvelope`] fields) and `ActorId` values are supplied by the caller;
+//!    the kernel enforces timestamp monotonicity and checks that `reviewer` / revising actors
+//!    match `current_scope.ownership_basis.actor()`, while cryptographic actor authentication and
+//!    wall-clock attestation belong to the outer service layer (`#13`, `#14`, `#38`). Live network
+//!    queries (`#13`), link-analysis graph service integration (`#36`), SQLite persistence (`#11`,
+//!    `#14`), and workspace UI (`#16`) remain open on `#47`. No Lean theorem or formal
+//!    Rust-to-Lean correspondence claim is made for this slice.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -81,7 +96,8 @@ pub const ACCOUNT_MATCH_UNCERTAINTY_NOTICE: &str = "UNCALIBRATED HEURISTIC RANKI
 /// Mandatory notice attached to local exposure audit sessions (`PRIVACY-02`, `A18`).
 pub const LOCAL_ASSESSMENT_PRIVACY_NOTICE: &str = "LOCAL-ONLY PERSONAL EXPOSURE AUDIT: Scope declarations, private notes, and unreviewed account-match hypotheses remain local and must not be transmitted when querying public sources.";
 
-/// Default maximum UTF-8 bytes per text field, rationale, or evidence excerpt.
+/// Default maximum UTF-8 bytes per text field, rationale, or evidence excerpt, and cumulative
+/// text-byte budget per profile, match candidate, or infrastructure entry.
 pub const DEFAULT_MAX_TEXT_BYTES: usize = 4_096;
 /// Default maximum declared domains or `(service_name, handle)` roots in a single [`DeclaredAuditScope`].
 pub const DEFAULT_MAX_SCOPE_TARGETS: usize = 64;
@@ -91,21 +107,77 @@ pub const DEFAULT_MAX_SCOPE_REVISIONS: usize = 32;
 pub const DEFAULT_MAX_PROFILES: usize = 256;
 /// Default maximum candidate account matches retained per [`PersonalExposureAudit`].
 pub const DEFAULT_MAX_ACCOUNT_MATCHES: usize = 256;
-/// Default maximum review history entries retained per [`AccountMatchCandidate`].
+/// Default maximum review history entries retained per [`AccountMatchCandidate`], and maximum
+/// nested items (`exposed_contact_values`, `matching_signals`, `contradicting_signals`, or
+/// `subject_alt_names`) per record.
 pub const DEFAULT_MAX_REVIEWS_PER_MATCH: usize = 64;
 /// Default maximum owned-infrastructure history entries retained per [`PersonalExposureAudit`].
 pub const DEFAULT_MAX_INFRASTRUCTURE_ENTRIES: usize = 512;
 /// Default maximum source-coverage records retained per [`PersonalExposureAudit`].
 pub const DEFAULT_MAX_COVERAGE_RECORDS: usize = 256;
 
-/// Common multi-label public suffixes rejected as bare declared roots so a user cannot
-/// declare a public suffix like `co.uk` and match unrelated third-party domains.
+/// Fixed list of common multi-label public suffixes rejected as bare declared roots so a user
+/// cannot declare a shared suffix like `co.uk` or `github.io` and match unrelated third-party
+/// domains. Note: this is a curated guard list rather than the full Mozilla Public Suffix List
+/// (PSL); embedding a complete PSL table is a follow-up.
 const DISALLOWED_PUBLIC_SUFFIX_ROOTS: &[&str] = &[
-    "co.uk", "org.uk", "gov.uk", "ac.uk", "net.uk", "me.uk", "com.au", "net.au", "org.au",
-    "edu.au", "gov.au", "co.nz", "org.nz", "net.nz", "co.jp", "ne.jp", "or.jp", "ac.jp", "go.jp",
-    "com.br", "org.br", "net.br", "co.in", "org.in", "net.in", "gov.in", "ac.in", "co.za",
-    "org.za", "net.za", "com.mx", "org.mx", "com.sg", "org.sg", "com.hk", "org.hk", "co.kr",
-    "or.kr", "com.cn", "org.cn", "net.cn", "com.tw", "org.tw", "eu.org",
+    "co.uk",
+    "org.uk",
+    "gov.uk",
+    "ac.uk",
+    "net.uk",
+    "me.uk",
+    "ltd.uk",
+    "plc.uk",
+    "com.au",
+    "net.au",
+    "org.au",
+    "edu.au",
+    "gov.au",
+    "co.nz",
+    "org.nz",
+    "net.nz",
+    "co.jp",
+    "ne.jp",
+    "or.jp",
+    "ac.jp",
+    "go.jp",
+    "com.br",
+    "org.br",
+    "net.br",
+    "co.in",
+    "org.in",
+    "net.in",
+    "gov.in",
+    "ac.in",
+    "co.za",
+    "org.za",
+    "net.za",
+    "com.mx",
+    "org.mx",
+    "com.sg",
+    "org.sg",
+    "com.hk",
+    "org.hk",
+    "co.kr",
+    "or.kr",
+    "com.cn",
+    "org.cn",
+    "net.cn",
+    "com.tw",
+    "org.tw",
+    "com.tr",
+    "org.tr",
+    "co.at",
+    "or.at",
+    "eu.org",
+    "github.io",
+    "gitlab.io",
+    "blogspot.com",
+    "wordpress.com",
+    "pages.dev",
+    "vercel.app",
+    "netlify.app",
 ];
 
 /// Which resource limit was zero or exceeded during an exposure audit operation.
@@ -119,6 +191,7 @@ pub enum AuditLimitKind {
     ReviewsPerMatch,
     InfrastructureEntries,
     CoverageRecords,
+    NestedCollectionItems,
 }
 
 impl fmt::Display for AuditLimitKind {
@@ -132,6 +205,7 @@ impl fmt::Display for AuditLimitKind {
             Self::ReviewsPerMatch => f.write_str("max_reviews_per_match"),
             Self::InfrastructureEntries => f.write_str("max_infrastructure_entries"),
             Self::CoverageRecords => f.write_str("max_coverage_records"),
+            Self::NestedCollectionItems => f.write_str("max_nested_collection_items"),
         }
     }
 }
@@ -238,6 +312,13 @@ impl ExposureAuditLimits {
         self.max_reviews_per_match
     }
 
+    /// Maximum number of nested items (`exposed_contact_values`, `matching_signals`,
+    /// `contradicting_signals`, or `subject_alt_names`) retained on a single record.
+    #[must_use]
+    pub const fn max_nested_items_per_record(self) -> usize {
+        self.max_reviews_per_match
+    }
+
     #[must_use]
     pub const fn max_infrastructure_entries(self) -> usize {
         self.max_infrastructure_entries
@@ -292,6 +373,8 @@ pub enum ExposureAuditError {
         valid_from_unix_ms: i64,
         valid_until_unix_ms: i64,
     },
+    OwnershipBasisChangeDisallowed,
+    AuthorizationWindowExtensionRequiresNewReference,
     UnauthorizedActor {
         expected: ActorId,
         actual: ActorId,
@@ -303,7 +386,11 @@ pub enum ExposureAuditError {
     PrimaryProfileMustBeInDeclaredScope {
         profile_id: OpaqueId,
     },
+    CandidateProfileOutsideDeclaredScope {
+        profile_id: OpaqueId,
+    },
     UnclaimedProfileRequiresInScopePrimaryAnchor,
+    CrossLinkSignalRequiresInScopeListedDomain,
     InvalidHeuristicScore,
     EmptyMatchingSignals,
     SameProfileAccountMatch,
@@ -373,6 +460,12 @@ impl fmt::Display for ExposureAuditError {
                 f,
                 "timestamp {action_unix_ms} is outside authorized assessment window [{valid_from_unix_ms}, {valid_until_unix_ms}]"
             ),
+            Self::OwnershipBasisChangeDisallowed => f.write_str(
+                "scope revision cannot change OwnershipBasis kind between SelfOwnedPersonalScope and AuthorizedAssessmentScope; start a new DeclaredAuditScope instead",
+            ),
+            Self::AuthorizationWindowExtensionRequiresNewReference => f.write_str(
+                "extending valid_until_unix_ms on an AuthorizedAssessmentScope requires a new authorization_reference",
+            ),
             Self::UnauthorizedActor { expected, actual } => write!(
                 f,
                 "actor `{actual}` is not the declared audit actor `{expected}`"
@@ -388,8 +481,15 @@ impl fmt::Display for ExposureAuditError {
                 f,
                 "primary profile `{profile_id}` must be claimed and currently covered within the declared audit scope; pivoting from an unconfirmed or out-of-scope profile is refused"
             ),
+            Self::CandidateProfileOutsideDeclaredScope { profile_id } => write!(
+                f,
+                "candidate profile `{profile_id}` (or its anchor primary profile) is outside the current declared audit scope"
+            ),
             Self::UnclaimedProfileRequiresInScopePrimaryAnchor => f.write_str(
                 "unclaimed candidate profile must reference an in-scope anchor_primary_profile_id to prevent storing unanchored third-party profiles"
+            ),
+            Self::CrossLinkSignalRequiresInScopeListedDomain => f.write_str(
+                "CrossLinkToDeclaredDomain signal requires either the primary or the candidate profile to list a website domain covered by the current declared audit scope"
             ),
             Self::InvalidHeuristicScore => f.write_str(
                 "uncalibrated heuristic ranking score must be finite and within [0.0, 1.0]",
@@ -448,13 +548,15 @@ impl std::error::Error for ExposureAuditError {}
 
 /// Owned citation anchor referencing an exact byte range, extracted passage, or structured record field (`docs/architecture.md` §2.1).
 ///
-/// Note on relationship to `oia_export::CitationAnchor`: `oia-export` defines a borrowed
-/// `CitationAnchor<'input>` over in-memory report slices (`ByteRange`, `Passage`, `Region`,
-/// `TimestampRange`) and sits above `oia-analysis` in the workspace dependency graph.
-/// `ExposureCitationAnchor` is the owned equivalent for retained audit state:
-/// `Utf8ByteRange` maps to `CitationAnchor::ByteRange`, `ExtractedPassage` maps to
-/// `CitationAnchor::Passage`, and `StructuredRecordField` addresses structured DNS/CT/WHOIS/profile
-/// fields before report serialization.
+/// Note on relationship to `oia_export::CitationAnchor`: `oia-export` sits above `oia-analysis`
+/// in the workspace dependency graph and defines a borrowed `CitationAnchor<'input>` over
+/// in-memory report slices with variants `Utf8ByteRange`, `ExtractedPassage`, `PageRegion`, and
+/// `UnsupportedAnchor`. `ExposureCitationAnchor` is the owned equivalent for retained audit state:
+/// - `ExposureCitationAnchor::Utf8ByteRange` maps to `oia_export::CitationAnchor::Utf8ByteRange`,
+/// - `ExposureCitationAnchor::ExtractedPassage` maps to `oia_export::CitationAnchor::ExtractedPassage`, and
+/// - `ExposureCitationAnchor::StructuredRecordField` addresses structured DNS/CT/WHOIS/profile
+///   fields before report serialization (and maps to `CitationAnchor::UnsupportedAnchor` if
+///   exported without a byte-span projection).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExposureCitationAnchor {
     /// Half-open UTF-8 byte range `start..end` within the retained source artifact.
@@ -510,6 +612,16 @@ impl ExposureCitationAnchor {
             }
         }
     }
+
+    fn text_byte_len(&self) -> usize {
+        match self {
+            Self::Utf8ByteRange(_) | Self::ExtractedPassage { .. } => 0,
+            Self::StructuredRecordField {
+                record_locator,
+                field_name,
+            } => record_locator.len().saturating_add(field_name.len()),
+        }
+    }
 }
 
 /// Pinned source record reference (`source_id`, `source_version`, and [`ExposureCitationAnchor`]).
@@ -523,6 +635,10 @@ pub struct SourceCitation {
 impl SourceCitation {
     fn validate(&self, limits: ExposureAuditLimits) -> Result<(), ExposureAuditError> {
         self.anchor.validate(limits)
+    }
+
+    fn text_byte_len(&self) -> usize {
+        self.anchor.text_byte_len()
     }
 }
 
@@ -656,6 +772,32 @@ impl OwnershipBasis {
             });
         }
         Ok(())
+    }
+
+    fn check_revision_transition(&self, next: &Self) -> Result<(), ExposureAuditError> {
+        match (self, next) {
+            (Self::SelfOwnedPersonalScope { .. }, Self::SelfOwnedPersonalScope { .. }) => Ok(()),
+            (
+                Self::AuthorizedAssessmentScope {
+                    authorization_reference: prev_ref,
+                    valid_until_unix_ms: prev_until,
+                    ..
+                },
+                Self::AuthorizedAssessmentScope {
+                    authorization_reference: next_ref,
+                    valid_until_unix_ms: next_until,
+                    ..
+                },
+            ) => {
+                if *next_until > *prev_until && next_ref.trim() == prev_ref.trim() {
+                    return Err(
+                        ExposureAuditError::AuthorizationWindowExtensionRequiresNewReference,
+                    );
+                }
+                Ok(())
+            }
+            _ => Err(ExposureAuditError::OwnershipBasisChangeDisallowed),
+        }
     }
 }
 
@@ -838,10 +980,15 @@ impl DeclaredAuditScope {
     }
 
     /// Returns `true` if `candidate_domain` equals a declared root domain or is a subdomain of one
-    /// on a strict dot boundary (`sub.example.com` matches `example.com`, whereas `badexample.com` does not).
+    /// on a strict dot boundary (`sub.example.com` and wildcard `*.example.com` match `example.com`,
+    /// whereas `badexample.com` does not).
     #[must_use]
     pub fn covers_domain(&self, candidate_domain: &str) -> bool {
-        let Ok(norm) = normalize_domain_str(candidate_domain) else {
+        let stripped = candidate_domain
+            .trim()
+            .strip_prefix("*.")
+            .unwrap_or(candidate_domain);
+        let Ok(norm) = normalize_domain_str(stripped) else {
             return false;
         };
         self.declared_root_domains.iter().any(|root| {
@@ -1308,7 +1455,7 @@ impl AccountMatchCandidate {
     }
 
     /// Returns `true` if a subsequent `revise_declared_scope` narrowed the scope so the
-    /// primary profile is no longer covered by `current_scope`.
+    /// primary profile or candidate profile is no longer eligible under `current_scope`.
     #[must_use]
     pub const fn outside_current_scope(&self) -> bool {
         self.outside_current_scope
@@ -1660,6 +1807,29 @@ impl PersonalExposureAudit {
         })
     }
 
+    /// Returns `true` if `profile_id` is currently eligible to participate as the candidate side
+    /// of an account match:
+    /// - If `profile.claimed_in_declared_scope` is `true`, it must currently be in scope (`is_profile_currently_in_scope`).
+    /// - If `profile.claimed_in_declared_scope` is `false`, `profile.outside_current_scope` must be `false`
+    ///   and its `anchor_primary_profile_id` must currently be in scope (`is_profile_currently_in_scope`).
+    #[must_use]
+    pub fn is_candidate_profile_currently_eligible(&self, profile_id: &OpaqueId) -> bool {
+        let Some(profile) = self.profiles.get(profile_id) else {
+            return false;
+        };
+        if profile.outside_current_scope {
+            return false;
+        }
+        if profile.claimed_in_declared_scope {
+            self.is_profile_currently_in_scope(profile_id)
+        } else {
+            profile
+                .anchor_primary_profile_id
+                .as_ref()
+                .is_some_and(|anchor_id| self.is_profile_currently_in_scope(anchor_id))
+        }
+    }
+
     /// Evaluates whether accessing local exposure-audit state on `surface` is permitted under
     /// [`oia_domain::collaboration::evaluate_proposed_access_decision`] (`#38`, `D10` proposed default).
     ///
@@ -1688,12 +1858,16 @@ impl PersonalExposureAudit {
     /// basis and a required non-empty rationale, preserving prior scope versions (`PRIVACY-02`).
     ///
     /// - The revising actor (`input.ownership_basis.actor()`) must match `current_scope.ownership_basis.actor()`.
+    /// - The revision cannot change [`OwnershipBasis`] kind between `SelfOwnedPersonalScope` and
+    ///   `AuthorizedAssessmentScope` (`OwnershipBasisChangeDisallowed`), and cannot extend
+    ///   `valid_until_unix_ms` on an `AuthorizedAssessmentScope` without a new `authorization_reference`
+    ///   (`AuthorizationWindowExtensionRequiresNewReference`).
     /// - If `current_scope` is an `AuthorizedAssessmentScope`, `revised_at_unix_ms` must fall within the
-    ///   current authorization window (`AuthorizationExpiredOrNotYetValid`) before any revision or basis
-    ///   transition is accepted.
+    ///   current authorization window (`AuthorizationExpiredOrNotYetValid`).
     /// - When a revision narrows `declared_root_domains` or `declared_handles`, any existing profiles,
-    ///   candidate account matches, or infrastructure entries that are no longer covered by `current_scope`
-    ///   are retained with `outside_current_scope = true` and `needs_reassessment = true`.
+    ///   candidate account matches (checking both primary and candidate anchor eligibility), or
+    ///   infrastructure entries that are no longer covered by `current_scope` are retained with
+    ///   `outside_current_scope = true` and `needs_reassessment = true`.
     pub fn revise_declared_scope(
         &mut self,
         input: ScopeRevisionInput,
@@ -1722,8 +1896,8 @@ impl PersonalExposureAudit {
             ));
         }
 
-        // Enforce that the revision happens within the active scope's authorization window
-        // and by the same actor.
+        // Enforce that the revision happens within the active scope's authorization window,
+        // by the same actor, and does not change basis kind or extend the window without a new reference.
         self.current_scope
             .ownership_basis
             .check_timestamp_within_authorization(input.revised_at_unix_ms)?;
@@ -1733,6 +1907,9 @@ impl PersonalExposureAudit {
                 actual: input.ownership_basis.actor().clone(),
             });
         }
+        self.current_scope
+            .ownership_basis
+            .check_revision_transition(&input.ownership_basis)?;
 
         let new_scope = DeclaredAuditScope::build(
             self.current_scope.scope_id.clone(),
@@ -1779,6 +1956,7 @@ impl PersonalExposureAudit {
             }
         }
 
+        let mut eligible_candidate_ids = in_scope_primary_ids.clone();
         for profile in self.profiles.values_mut() {
             if !profile.claimed_in_declared_scope {
                 let anchor_covered = profile
@@ -1787,6 +1965,7 @@ impl PersonalExposureAudit {
                     .is_some_and(|anchor_id| in_scope_primary_ids.contains(anchor_id));
                 if anchor_covered {
                     profile.outside_current_scope = false;
+                    eligible_candidate_ids.insert(profile.profile_id.clone());
                 } else {
                     profile.outside_current_scope = true;
                     profile.needs_reassessment = true;
@@ -1796,7 +1975,9 @@ impl PersonalExposureAudit {
         }
 
         for candidate in self.account_matches.values_mut() {
-            if in_scope_primary_ids.contains(&candidate.primary_profile_id) {
+            let primary_ok = in_scope_primary_ids.contains(&candidate.primary_profile_id);
+            let candidate_ok = eligible_candidate_ids.contains(&candidate.candidate_profile_id);
+            if primary_ok && candidate_ok {
                 candidate.outside_current_scope = false;
             } else {
                 candidate.outside_current_scope = true;
@@ -1839,6 +2020,8 @@ impl PersonalExposureAudit {
     /// - If `claimed_in_declared_scope` is `false`, `anchor_primary_profile_id` must reference an
     ///   existing profile that is currently claimed and in scope (`UnclaimedProfileRequiresInScopePrimaryAnchor`
     ///   or `PrimaryProfileMustBeInDeclaredScope`), preventing storage of unanchored third-party profiles.
+    /// - Enforces both nested item cardinality (`max_nested_items_per_record`) on `exposed_contact_values`
+    ///   and cumulative text-byte bounds (`max_text_bytes`) across the profile record.
     pub fn register_public_profile(
         &mut self,
         input: PublicProfileInput,
@@ -1848,6 +2031,13 @@ impl PersonalExposureAudit {
                 limit: AuditLimitKind::Profiles,
                 actual: self.profiles.len().saturating_add(1),
                 max: self.limits.max_profiles,
+            });
+        }
+        if input.exposed_contact_values.len() > self.limits.max_nested_items_per_record() {
+            return Err(ExposureAuditError::LimitExceeded {
+                limit: AuditLimitKind::NestedCollectionItems,
+                actual: input.exposed_contact_values.len(),
+                max: self.limits.max_nested_items_per_record(),
             });
         }
         if self.profiles.contains_key(&input.profile_id) {
@@ -1867,21 +2057,46 @@ impl PersonalExposureAudit {
         let normalized_service = normalize_service_name(&input.service_name, self.limits)?;
         let normalized_handle = normalize_handle(&input.handle, self.limits)?;
         input.citation.validate(self.limits)?;
+
+        let mut cumulative_bytes = normalized_service
+            .len()
+            .saturating_add(normalized_handle.len())
+            .saturating_add(input.citation.text_byte_len());
+
         if let Some(display_name) = &input.display_name {
             validate_text("display_name", display_name, self.limits)?;
+            cumulative_bytes = cumulative_bytes.saturating_add(display_name.len());
         }
         if let Some(bio) = &input.bio_excerpt {
             validate_text("bio_excerpt", bio, self.limits)?;
+            cumulative_bytes = cumulative_bytes.saturating_add(bio.len());
         }
 
         let normalized_domain = if let Some(domain) = &input.listed_website_domain {
-            Some(normalize_and_validate_domain(domain, self.limits)?)
+            let norm = normalize_and_validate_domain(domain, self.limits)?;
+            cumulative_bytes = cumulative_bytes.saturating_add(norm.len());
+            Some(norm)
         } else {
             None
         };
 
         for contact in &input.exposed_contact_values {
             validate_text("exposed_contact_value", contact, self.limits)?;
+            cumulative_bytes = cumulative_bytes.saturating_add(contact.len());
+            if cumulative_bytes > self.limits.max_text_bytes {
+                return Err(ExposureAuditError::LimitExceeded {
+                    limit: AuditLimitKind::TextBytes,
+                    actual: cumulative_bytes,
+                    max: self.limits.max_text_bytes,
+                });
+            }
+        }
+        if cumulative_bytes > self.limits.max_text_bytes {
+            return Err(ExposureAuditError::LimitExceeded {
+                limit: AuditLimitKind::TextBytes,
+                actual: cumulative_bytes,
+                max: self.limits.max_text_bytes,
+            });
         }
         input.timestamps.validate(self.limits)?;
 
@@ -1938,11 +2153,20 @@ impl PersonalExposureAudit {
     /// Proposes a candidate connection between an in-scope profile (`primary_profile_id`) and another
     /// public profile (`candidate_profile_id`) (`PRIVACY-02`, `A18`).
     ///
-    /// `primary_profile_id` must be both claimed and *currently* covered by `self.current_scope`
-    /// (`is_profile_currently_in_scope`), preventing transitive expansion from an external candidate
-    /// profile or a profile removed by a scope-narrowing revision.
-    /// Regardless of `uncalibrated_heuristic_score`, the candidate starts in
-    /// [`MatchAssessmentState::ProposedCandidate`] and never auto-promotes to established identity.
+    /// - `primary_profile_id` must be both claimed and *currently* covered by `self.current_scope`
+    ///   (`is_profile_currently_in_scope`), preventing transitive expansion from an external candidate
+    ///   profile or a profile removed by a scope-narrowing revision.
+    /// - `candidate_profile_id` must also currently be eligible under `self.current_scope`
+    ///   (`is_candidate_profile_currently_eligible`), so an unclaimed candidate whose `anchor_primary_profile_id`
+    ///   was removed by a scope narrowing (`CandidateProfileOutsideDeclaredScope`) cannot be matched
+    ///   from a surviving primary.
+    /// - If `matching_signals` includes [`MatchSignalKind::CrossLinkToDeclaredDomain`], either the
+    ///   primary or the candidate profile must carry a `listed_website_domain` covered by `current_scope`
+    ///   (`CrossLinkSignalRequiresInScopeListedDomain`).
+    /// - Enforces nested item cardinality (`max_nested_items_per_record`) and cumulative text-byte
+    ///   bounds (`max_text_bytes`) across `matching_signals`, `contradicting_signals`, and `ambiguity_explanation`.
+    /// - Regardless of `uncalibrated_heuristic_score`, the candidate starts in
+    ///   [`MatchAssessmentState::ProposedCandidate`] and never auto-promotes to established identity.
     pub fn propose_account_match(
         &mut self,
         input: AccountMatchInput,
@@ -1952,6 +2176,21 @@ impl PersonalExposureAudit {
                 limit: AuditLimitKind::AccountMatches,
                 actual: self.account_matches.len().saturating_add(1),
                 max: self.limits.max_account_matches,
+            });
+        }
+        let max_nested = self.limits.max_nested_items_per_record();
+        if input.matching_signals.len() > max_nested {
+            return Err(ExposureAuditError::LimitExceeded {
+                limit: AuditLimitKind::NestedCollectionItems,
+                actual: input.matching_signals.len(),
+                max: max_nested,
+            });
+        }
+        if input.contradicting_signals.len() > max_nested {
+            return Err(ExposureAuditError::LimitExceeded {
+                limit: AuditLimitKind::NestedCollectionItems,
+                actual: input.contradicting_signals.len(),
+                max: max_nested,
             });
         }
         if self.account_matches.contains_key(&input.match_id) {
@@ -1989,6 +2228,11 @@ impl PersonalExposureAudit {
                 profile_id: input.primary_profile_id,
             });
         }
+        if !self.is_candidate_profile_currently_eligible(&input.candidate_profile_id) {
+            return Err(ExposureAuditError::CandidateProfileOutsideDeclaredScope {
+                profile_id: input.candidate_profile_id,
+            });
+        }
 
         if !input.uncalibrated_heuristic_score.is_finite()
             || !(0.0..=1.0).contains(&input.uncalibrated_heuristic_score)
@@ -1999,18 +2243,57 @@ impl PersonalExposureAudit {
             return Err(ExposureAuditError::EmptyMatchingSignals);
         }
 
-        for signal in &input.matching_signals {
-            validate_text("signal.description", &signal.description, self.limits)?;
-            signal.citation.validate(self.limits)?;
-        }
-        for contra in &input.contradicting_signals {
-            validate_text("contradicting_signal", contra, self.limits)?;
-        }
         validate_text(
             "ambiguity_explanation",
             &input.ambiguity_explanation,
             self.limits,
         )?;
+        let mut cumulative_bytes = input.ambiguity_explanation.len();
+
+        let mut has_cross_link_signal = false;
+        for signal in &input.matching_signals {
+            if signal.kind == MatchSignalKind::CrossLinkToDeclaredDomain {
+                has_cross_link_signal = true;
+            }
+            validate_text("signal.description", &signal.description, self.limits)?;
+            signal.citation.validate(self.limits)?;
+            cumulative_bytes = cumulative_bytes
+                .saturating_add(signal.description.len())
+                .saturating_add(signal.citation.text_byte_len());
+            if cumulative_bytes > self.limits.max_text_bytes {
+                return Err(ExposureAuditError::LimitExceeded {
+                    limit: AuditLimitKind::TextBytes,
+                    actual: cumulative_bytes,
+                    max: self.limits.max_text_bytes,
+                });
+            }
+        }
+        for contra in &input.contradicting_signals {
+            validate_text("contradicting_signal", contra, self.limits)?;
+            cumulative_bytes = cumulative_bytes.saturating_add(contra.len());
+            if cumulative_bytes > self.limits.max_text_bytes {
+                return Err(ExposureAuditError::LimitExceeded {
+                    limit: AuditLimitKind::TextBytes,
+                    actual: cumulative_bytes,
+                    max: self.limits.max_text_bytes,
+                });
+            }
+        }
+
+        if has_cross_link_signal {
+            let primary_domain_in_scope = primary
+                .listed_website_domain
+                .as_deref()
+                .is_some_and(|d| self.current_scope.covers_domain(d));
+            let candidate_domain_in_scope = candidate
+                .listed_website_domain
+                .as_deref()
+                .is_some_and(|d| self.current_scope.covers_domain(d));
+            if !primary_domain_in_scope && !candidate_domain_in_scope {
+                return Err(ExposureAuditError::CrossLinkSignalRequiresInScopeListedDomain);
+            }
+        }
+
         input.proposed_at.validate("proposed_at", self.limits)?;
 
         self.used_versions.insert(input.version_id.clone());
@@ -2044,7 +2327,8 @@ impl PersonalExposureAudit {
     ///
     /// - Re-checks that `input.reviewer` matches `current_scope.ownership_basis.actor()` (`UnauthorizedActor`).
     /// - Re-checks that the candidate's `primary_profile_id` is still covered by `current_scope`
-    ///   (`PrimaryProfileMustBeInDeclaredScope`).
+    ///   (`PrimaryProfileMustBeInDeclaredScope`) and that `candidate_profile_id` is still eligible
+    ///   under `current_scope` (`CandidateProfileOutsideDeclaredScope`).
     /// - Transitioning to [`MatchAssessmentState::UserRejectedDifferentEntity`] retains the candidate,
     ///   its signals, and its review history in `account_matches()` so later reviewers can inspect it.
     pub fn review_account_match(
@@ -2077,18 +2361,36 @@ impl PersonalExposureAudit {
             return Err(ExposureAuditError::DuplicateVersion(input.new_version));
         }
 
-        let primary_profile_id = self
-            .account_matches
-            .get(&input.match_id)
-            .ok_or_else(|| ExposureAuditError::UnknownAccountMatchId(input.match_id.clone()))?
-            .primary_profile_id
-            .clone();
+        let (primary_profile_id, candidate_profile_id) = {
+            let existing = self
+                .account_matches
+                .get(&input.match_id)
+                .ok_or_else(|| ExposureAuditError::UnknownAccountMatchId(input.match_id.clone()))?;
+            (
+                existing.primary_profile_id.clone(),
+                existing.candidate_profile_id.clone(),
+            )
+        };
 
         if !self.is_profile_currently_in_scope(&primary_profile_id) {
             return Err(ExposureAuditError::PrimaryProfileMustBeInDeclaredScope {
                 profile_id: primary_profile_id,
             });
         }
+        if !self.is_candidate_profile_currently_eligible(&candidate_profile_id) {
+            return Err(ExposureAuditError::CandidateProfileOutsideDeclaredScope {
+                profile_id: candidate_profile_id,
+            });
+        }
+
+        let profile_still_needs_reassessment = self
+            .profiles
+            .get(&primary_profile_id)
+            .is_some_and(|p| p.needs_reassessment)
+            || self
+                .profiles
+                .get(&candidate_profile_id)
+                .is_some_and(|p| p.needs_reassessment);
 
         let match_id = input.match_id;
         let candidate = self
@@ -2126,8 +2428,11 @@ impl PersonalExposureAudit {
         });
         candidate.current_version = input.new_version.clone();
         candidate.assessment_state = input.new_state;
-        candidate.needs_reassessment = false;
-        candidate.reassessment_reason = None;
+        // Preserve needs_reassessment if a referenced profile still has an unresolved upstream source change.
+        if !profile_still_needs_reassessment && !candidate.outside_current_scope {
+            candidate.needs_reassessment = false;
+            candidate.reassessment_reason = None;
+        }
         self.used_versions.insert(input.new_version);
 
         Ok(&*candidate)
@@ -2169,6 +2474,10 @@ impl PersonalExposureAudit {
         input.citation.validate(self.limits)?;
         input.timestamps.validate(self.limits)?;
 
+        let mut cumulative_bytes = norm_domain
+            .len()
+            .saturating_add(input.citation.text_byte_len());
+
         let validated_artifact = match input.artifact {
             InfrastructureArtifactKind::DnsRecord {
                 record_type,
@@ -2176,6 +2485,14 @@ impl PersonalExposureAudit {
                 ttl_seconds,
             } => {
                 validate_text("record_value", &record_value, self.limits)?;
+                cumulative_bytes = cumulative_bytes.saturating_add(record_value.len());
+                if cumulative_bytes > self.limits.max_text_bytes {
+                    return Err(ExposureAuditError::LimitExceeded {
+                        limit: AuditLimitKind::TextBytes,
+                        actual: cumulative_bytes,
+                        max: self.limits.max_text_bytes,
+                    });
+                }
                 InfrastructureArtifactKind::DnsRecord {
                     record_type,
                     record_value,
@@ -2191,13 +2508,20 @@ impl PersonalExposureAudit {
                 not_before_unix_ms,
                 not_after_unix_ms,
             } => {
+                if subject_alt_names.len() > self.limits.max_nested_items_per_record() {
+                    return Err(ExposureAuditError::LimitExceeded {
+                        limit: AuditLimitKind::NestedCollectionItems,
+                        actual: subject_alt_names.len(),
+                        max: self.limits.max_nested_items_per_record(),
+                    });
+                }
                 let norm_fp = normalize_and_validate_sha256_hex(
                     &certificate_sha256_fingerprint,
                     self.limits,
                 )?;
                 validate_text("serial_number", &serial_number, self.limits)?;
                 validate_text("issuer_common_name", &issuer_common_name, self.limits)?;
-                let norm_cn = normalize_and_validate_domain(&subject_common_name, self.limits)?;
+                let norm_cn = normalize_and_validate_cert_name(&subject_common_name, self.limits)?;
                 if !self.current_scope.covers_domain(&norm_cn) {
                     return Err(ExposureAuditError::DomainOutsideDeclaredScope {
                         candidate_domain: norm_cn,
@@ -2206,18 +2530,38 @@ impl PersonalExposureAudit {
                 if not_after_unix_ms < not_before_unix_ms {
                     return Err(ExposureAuditError::InvalidValidityInterval);
                 }
+                cumulative_bytes = cumulative_bytes
+                    .saturating_add(norm_fp.len())
+                    .saturating_add(serial_number.len())
+                    .saturating_add(issuer_common_name.len())
+                    .saturating_add(norm_cn.len());
                 let mut norm_sans = Vec::new();
                 norm_sans
                     .try_reserve(subject_alt_names.len())
                     .map_err(|_| ExposureAuditError::AllocationFailed)?;
                 for san in subject_alt_names {
-                    let norm_san = normalize_and_validate_domain(&san, self.limits)?;
+                    let norm_san = normalize_and_validate_cert_name(&san, self.limits)?;
                     if !self.current_scope.covers_domain(&norm_san) {
                         return Err(ExposureAuditError::DomainOutsideDeclaredScope {
                             candidate_domain: norm_san,
                         });
                     }
+                    cumulative_bytes = cumulative_bytes.saturating_add(norm_san.len());
+                    if cumulative_bytes > self.limits.max_text_bytes {
+                        return Err(ExposureAuditError::LimitExceeded {
+                            limit: AuditLimitKind::TextBytes,
+                            actual: cumulative_bytes,
+                            max: self.limits.max_text_bytes,
+                        });
+                    }
                     norm_sans.push(norm_san);
+                }
+                if cumulative_bytes > self.limits.max_text_bytes {
+                    return Err(ExposureAuditError::LimitExceeded {
+                        limit: AuditLimitKind::TextBytes,
+                        actual: cumulative_bytes,
+                        max: self.limits.max_text_bytes,
+                    });
                 }
                 InfrastructureArtifactKind::CertificateHistory {
                     certificate_sha256_fingerprint: norm_fp,
@@ -2238,6 +2582,17 @@ impl PersonalExposureAudit {
                 validate_text("exposed_value", &exposed_value, self.limits)?;
                 validate_text("context_location", &context_location, self.limits)?;
                 validate_text("remediation_note", &remediation_note, self.limits)?;
+                cumulative_bytes = cumulative_bytes
+                    .saturating_add(exposed_value.len())
+                    .saturating_add(context_location.len())
+                    .saturating_add(remediation_note.len());
+                if cumulative_bytes > self.limits.max_text_bytes {
+                    return Err(ExposureAuditError::LimitExceeded {
+                        limit: AuditLimitKind::TextBytes,
+                        actual: cumulative_bytes,
+                        max: self.limits.max_text_bytes,
+                    });
+                }
                 InfrastructureArtifactKind::ExposedContact {
                     contact_kind,
                     exposed_value,
@@ -2614,6 +2969,7 @@ fn normalize_handle(raw: &str, limits: ExposureAuditLimits) -> Result<String, Ex
     validate_text("handle", raw, limits)?;
     let trimmed = raw.trim().to_ascii_lowercase();
     if !trimmed.is_ascii()
+        || trimmed.starts_with('@')
         || trimmed
             .chars()
             .any(|c| c.is_ascii_whitespace() || c.is_ascii_control())
@@ -2640,6 +2996,20 @@ fn normalize_and_validate_domain(
 ) -> Result<String, ExposureAuditError> {
     validate_text("domain", raw, limits)?;
     normalize_domain_str(raw)
+}
+
+fn normalize_and_validate_cert_name(
+    raw: &str,
+    limits: ExposureAuditLimits,
+) -> Result<String, ExposureAuditError> {
+    validate_text("domain", raw, limits)?;
+    let trimmed = raw.trim();
+    if let Some(rest) = trimmed.strip_prefix("*.") {
+        let norm_rest = normalize_domain_str(rest)?;
+        Ok(format!("*.{norm_rest}"))
+    } else {
+        normalize_domain_str(trimmed)
+    }
 }
 
 fn normalize_domain_str(raw: &str) -> Result<String, ExposureAuditError> {
@@ -2683,6 +3053,12 @@ fn normalize_and_validate_sha256_hex(
 fn validate_iso_calendar_date(raw: &str) -> Result<(), ExposureAuditError> {
     let bytes = raw.as_bytes();
     if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return Err(ExposureAuditError::InvalidCalendarDate);
+    }
+    if !bytes[0..4].iter().all(u8::is_ascii_digit)
+        || !bytes[5..7].iter().all(u8::is_ascii_digit)
+        || !bytes[8..10].iter().all(u8::is_ascii_digit)
+    {
         return Err(ExposureAuditError::InvalidCalendarDate);
     }
     let year: u16 = raw[0..4]

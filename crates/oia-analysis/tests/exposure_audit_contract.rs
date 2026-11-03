@@ -29,10 +29,11 @@ fn utc_instant(unix_ms: i64) -> AuditTimestamp {
 }
 
 /// Protects `PRIVACY-02` and `A18` scope boundaries, service-qualified handle claiming,
-/// third-party listed-domain non-pivoting, dynamic scope re-checking across narrowings,
-/// explicit scope revision, and collaboration access-policy integration:
+/// third-party listed-domain non-pivoting, dynamic scope re-checking across narrowings
+/// (both primary and candidate anchor sides), explicit scope revision, nested collection bounds,
+/// and collaboration access-policy integration:
 /// - `DeclaredAuditScope` requires at least one valid domain or `(service_name, handle)` root,
-///   rejects IPv4/IPv6 literals and bare public suffixes (`co.uk`), and normalizes case/trailing dots.
+///   rejects IPv4/IPv6 literals and curated common multi-label public suffixes (`co.uk`), and normalizes case/trailing dots.
 /// - Subdomain matching enforces a strict dot boundary (`telemetry.example.org` is covered by `example.org`,
 ///   whereas lookalike `myexample.org` is rejected with `DomainOutsideDeclaredScope`).
 /// - A profile is accepted with `claimed_in_declared_scope: true` **only** when its `(service_name, handle)`
@@ -40,13 +41,16 @@ fn utc_instant(unix_ms: i64) -> AuditTimestamp {
 ///   `example.org` in `listed_website_domain` is refused as claimed (`HandleOutsideDeclaredScope`), and the
 ///   same handle on a different service is also refused as claimed.
 /// - When `mallory_fict` is registered as an unclaimed candidate (`claimed_in_declared_scope: false`, tied
-///   to an in-scope `anchor_primary_profile_id`), its link to `example.org` can be recorded as a
-///   `CrossLinkToDeclaredDomain` signal from the user's primary profile, but `mallory_fict` cannot be used
+///   to an in-scope `anchor_primary_profile_id`), its link to `example.org` can be cited by a
+///   `CrossLinkToDeclaredDomain` signal from the user's primary profile (and `CrossLinkToDeclaredDomain` is
+///   rejected if neither profile lists an in-scope domain), but `mallory_fict` cannot be used
 ///   as `primary_profile_id` to pivot to another third party (`PrimaryProfileMustBeInDeclaredScope`).
 /// - Narrowing `DeclaredAuditScope` via `revise_declared_scope` re-evaluates existing records, marking
 ///   dropped profiles, matches, and infrastructure entries with `outside_current_scope() == true` and
-///   `needs_reassessment() == true` while retaining their history, and subsequent `propose_account_match`
-///   or `review_account_match` calls using a narrowed-out primary profile are refused.
+///   `needs_reassessment() == true` while retaining their history; subsequent `propose_account_match`
+///   or `review_account_match` calls using a narrowed-out primary profile OR a candidate profile whose
+///   anchor primary was narrowed out are refused (`PrimaryProfileMustBeInDeclaredScope` /
+///   `CandidateProfileOutsideDeclaredScope`).
 #[test]
 fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_to_widen()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -69,7 +73,7 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
         Err(ExposureAuditError::EmptyDeclaredScope)
     );
 
-    // Reject IPv4 literals and bare multi-label public suffixes as declared root domains.
+    // Reject IPv4 literals and curated common multi-label public suffixes as declared root domains.
     assert_eq!(
         DeclaredAuditScope::new(
             OpaqueId::new("scope:ipv4")?,
@@ -112,18 +116,20 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
             verification_note: "SECRET-LOCAL-OWNERSHIP-NOTE".to_owned(),
         },
         vec!["Example.ORG.".to_owned()],
-        vec![DeclaredAccountHandle::new(
-            "SyntheticGit",
-            "Fictional_Handle_1",
-        )],
+        vec![
+            DeclaredAccountHandle::new("SyntheticGit", "Fictional_Handle_1"),
+            DeclaredAccountHandle::new("SyntheticLab", "Fictional_Handle_2"),
+        ],
         limits,
     )?;
 
     assert!(scope.covers_domain("example.org"));
     assert!(scope.covers_domain("telemetry.example.org"));
+    assert!(scope.covers_domain("*.example.org"));
     assert!(!scope.covers_domain("myexample.org"));
     assert!(!scope.covers_domain("example.org.evil.invalid"));
     assert!(scope.covers_handle("syntheticgit", "fictional_handle_1"));
+    assert!(scope.covers_handle("syntheticlab", "fictional_handle_2"));
     assert!(!scope.covers_handle("otherservice", "fictional_handle_1"));
 
     let debug_scope = format!("{scope:?}");
@@ -141,7 +147,7 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
         ),
         Err(ExposureAuditError::LimitExceeded {
             limit: AuditLimitKind::ScopeTargets,
-            actual: 2,
+            actual: 3,
             max: 1,
         })
     );
@@ -173,7 +179,7 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
         Ok(AccessDecision::AllowFull)
     );
 
-    // Register the in-scope primary profile `(SyntheticGit, fictional_handle_1)`.
+    // Register the in-scope primary profiles `(SyntheticGit, fictional_handle_1)` (A) and `(SyntheticLab, fictional_handle_2)` (B).
     audit.register_public_profile(PublicProfileInput {
         profile_id: OpaqueId::new("prof:in-scope")?,
         version_id: VersionId::new("ver:prof-in-1")?,
@@ -182,7 +188,7 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
         handle: "fictional_handle_1".to_owned(),
         display_name: None,
         bio_excerpt: None,
-        listed_website_domain: Some("example.org".to_owned()),
+        listed_website_domain: None,
         exposed_contact_values: Vec::new(),
         claimed_in_declared_scope: true,
         anchor_primary_profile_id: None,
@@ -198,6 +204,70 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
             audited_at: utc_instant(1_700),
         },
     })?;
+
+    audit.register_public_profile(PublicProfileInput {
+        profile_id: OpaqueId::new("prof:in-scope-b")?,
+        version_id: VersionId::new("ver:prof-in-2")?,
+        origin: AccountOrigin::Simulated,
+        service_name: "SyntheticLab".to_owned(),
+        handle: "fictional_handle_2".to_owned(),
+        display_name: None,
+        bio_excerpt: None,
+        listed_website_domain: None,
+        exposed_contact_values: Vec::new(),
+        claimed_in_declared_scope: true,
+        anchor_primary_profile_id: None,
+        citation: SourceCitation {
+            source_id: OpaqueId::new("source:lab")?,
+            source_version: VersionId::new("ver:lab-1")?,
+            anchor: ExposureCitationAnchor::Utf8ByteRange(0..32),
+        },
+        timestamps: ObservationTimeEnvelope {
+            observed_at: Some(utc_instant(1_505)),
+            published_or_issued_at: None,
+            retrieved_at: utc_instant(1_605),
+            audited_at: utc_instant(1_705),
+        },
+    })?;
+
+    // Nested collection cardinality check: `limits.max_nested_items_per_record()` is 4, so 5 contacts must fail.
+    assert_eq!(
+        audit.register_public_profile(PublicProfileInput {
+            profile_id: OpaqueId::new("prof:too-many-contacts")?,
+            version_id: VersionId::new("ver:prof-contacts")?,
+            origin: AccountOrigin::Simulated,
+            service_name: "SyntheticForum".to_owned(),
+            handle: "contact_flood".to_owned(),
+            display_name: None,
+            bio_excerpt: None,
+            listed_website_domain: None,
+            exposed_contact_values: vec![
+                "a@example.org".to_owned(),
+                "b@example.org".to_owned(),
+                "c@example.org".to_owned(),
+                "d@example.org".to_owned(),
+                "e@example.org".to_owned(),
+            ],
+            claimed_in_declared_scope: false,
+            anchor_primary_profile_id: Some(OpaqueId::new("prof:in-scope")?),
+            citation: SourceCitation {
+                source_id: OpaqueId::new("source:forum")?,
+                source_version: VersionId::new("ver:forum-1")?,
+                anchor: ExposureCitationAnchor::Utf8ByteRange(0..32),
+            },
+            timestamps: ObservationTimeEnvelope {
+                observed_at: None,
+                published_or_issued_at: None,
+                retrieved_at: utc_instant(1_608),
+                audited_at: utc_instant(1_708),
+            },
+        }),
+        Err(ExposureAuditError::LimitExceeded {
+            limit: AuditLimitKind::NestedCollectionItems,
+            actual: 5,
+            max: 4,
+        })
+    );
 
     // B1 Repro A: A third-party profile (`mallory_fict`) that lists `example.org` as its website
     // is NOT accepted as `claimed_in_declared_scope: true`.
@@ -288,8 +358,8 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
         Err(ExposureAuditError::UnclaimedProfileRequiresInScopePrimaryAnchor)
     );
 
-    // Register `mallory_fict` (listing `example.org`) and `fictional_handle_1_alt` as unclaimed candidates
-    // anchored to `prof:in-scope`.
+    // Register `mallory_fict` (listing `example.org`) and `unrelated_third_party` (C) as unclaimed candidates
+    // anchored to `prof:in-scope` (A).
     audit.register_public_profile(PublicProfileInput {
         profile_id: OpaqueId::new("prof:mallory-candidate")?,
         version_id: VersionId::new("ver:prof-mallory-cand")?,
@@ -340,9 +410,33 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
         },
     })?;
 
+    // CrossLinkToDeclaredDomain validation: if neither profile lists an in-scope website domain,
+    // citing `CrossLinkToDeclaredDomain` is rejected (`CrossLinkSignalRequiresInScopeListedDomain`).
+    assert_eq!(
+        audit.propose_account_match(AccountMatchInput {
+            match_id: OpaqueId::new("match:fake-crosslink")?,
+            version_id: VersionId::new("ver:match-fake-crosslink")?,
+            primary_profile_id: OpaqueId::new("prof:in-scope")?,
+            candidate_profile_id: OpaqueId::new("prof:third-party-b")?,
+            uncalibrated_heuristic_score: 0.40,
+            matching_signals: vec![AccountMatchSignal {
+                kind: MatchSignalKind::CrossLinkToDeclaredDomain,
+                description: "Neither profile actually lists example.org.".to_owned(),
+                citation: SourceCitation {
+                    source_id: OpaqueId::new("source:other")?,
+                    source_version: VersionId::new("ver:other-1")?,
+                    anchor: ExposureCitationAnchor::Utf8ByteRange(0..16),
+                },
+            }],
+            contradicting_signals: Vec::new(),
+            ambiguity_explanation: "Unbacked cross-link signal test.".to_owned(),
+            proposed_at: utc_instant(1_840),
+        }),
+        Err(ExposureAuditError::CrossLinkSignalRequiresInScopeListedDomain)
+    );
+
     // A profile admitted as an unclaimed candidate listing `example.org` (`prof:mallory-candidate`)
-    // can be the *target* of a `CrossLinkToDeclaredDomain` candidate match from `prof:in-scope`,
-    // but CANNOT be used as `primary_profile_id` to pivot to another profile.
+    // CANNOT be used as `primary_profile_id` to pivot to another profile.
     assert_eq!(
         audit.propose_account_match(AccountMatchInput {
             match_id: OpaqueId::new("match:mallory-pivot")?,
@@ -441,10 +535,10 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
             verification_note: "Verified secondary domain example.net via DNS TXT.".to_owned(),
         },
         declared_root_domains: vec!["example.org".to_owned(), "example.net".to_owned()],
-        declared_handles: vec![DeclaredAccountHandle::new(
-            "SyntheticGit",
-            "fictional_handle_1",
-        )],
+        declared_handles: vec![
+            DeclaredAccountHandle::new("SyntheticGit", "fictional_handle_1"),
+            DeclaredAccountHandle::new("SyntheticLab", "fictional_handle_2"),
+        ],
         revision_rationale:
             "Added secondary personal domain example.net after confirming ownership.".to_owned(),
     })?;
@@ -478,19 +572,24 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
         },
     })?;
 
-    // B2 check: Narrow the scope to drop `(SyntheticGit, fictional_handle_1)` and `example.net`.
-    // Existing records must be retained, marked `outside_current_scope == true` and `needs_reassessment == true`,
-    // and `prof:in-scope` must now be refused as a match primary!
+    // B2 + Codex P2 check: Narrow the scope to drop `(SyntheticGit, fictional_handle_1)` (A) and `example.net`,
+    // while keeping `(SyntheticLab, fictional_handle_2)` (B) and `example.org`.
+    // Both `prof:in-scope` (A) and unclaimed `prof:mallory-candidate` (C, anchored to A) become
+    // `outside_current_scope == true`, and proposing a match from surviving primary B (`prof:in-scope-b`)
+    // to revoked candidate C (`prof:mallory-candidate`) MUST be refused with `CandidateProfileOutsideDeclaredScope`.
     audit.revise_declared_scope(ScopeRevisionInput {
         expected_scope_version: VersionId::new("ver:scope-2")?,
         new_scope_version: VersionId::new("ver:scope-3")?,
         revised_at_unix_ms: 2_700,
         ownership_basis: OwnershipBasis::SelfOwnedPersonalScope {
             owner_actor: owner,
-            verification_note: "Narrowed scope to example.org only.".to_owned(),
+            verification_note: "Narrowed scope to example.org and SyntheticLab only.".to_owned(),
         },
         declared_root_domains: vec!["example.org".to_owned()],
-        declared_handles: Vec::new(),
+        declared_handles: vec![DeclaredAccountHandle::new(
+            "SyntheticLab",
+            "fictional_handle_2",
+        )],
         revision_rationale: "Retired syntheticgit handle and example.net from active scope."
             .to_owned(),
     })?;
@@ -502,6 +601,13 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
     assert!(narrowed_profile.outside_current_scope());
     assert!(narrowed_profile.needs_reassessment());
 
+    let narrowed_candidate = audit
+        .profiles()
+        .get(&OpaqueId::new("prof:mallory-candidate")?)
+        .ok_or("missing prof:mallory-candidate")?;
+    assert!(narrowed_candidate.outside_current_scope());
+    assert!(narrowed_candidate.needs_reassessment());
+
     let narrowed_infra = audit
         .infrastructure_entries()
         .get(&OpaqueId::new("infra:net-dns")?)
@@ -509,12 +615,39 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
     assert!(narrowed_infra.outside_current_scope());
     assert!(narrowed_infra.needs_reassessment());
 
-    // Proposing a match with `prof:in-scope` after narrowing is now refused (`PrimaryProfileMustBeInDeclaredScope`).
+    // Proposing a match with narrowed-out primary `prof:in-scope` (A) is refused (`PrimaryProfileMustBeInDeclaredScope`).
     assert_eq!(
         audit.propose_account_match(AccountMatchInput {
-            match_id: OpaqueId::new("match:after-narrowing")?,
-            version_id: VersionId::new("ver:match-after-narrowing")?,
+            match_id: OpaqueId::new("match:after-narrowing-primary")?,
+            version_id: VersionId::new("ver:match-after-narrowing-primary")?,
             primary_profile_id: OpaqueId::new("prof:in-scope")?,
+            candidate_profile_id: OpaqueId::new("prof:in-scope-b")?,
+            uncalibrated_heuristic_score: 0.50,
+            matching_signals: vec![AccountMatchSignal {
+                kind: MatchSignalKind::SimilarHandlePattern,
+                description: "Handle pattern.".to_owned(),
+                citation: SourceCitation {
+                    source_id: OpaqueId::new("source:lab")?,
+                    source_version: VersionId::new("ver:lab-1")?,
+                    anchor: ExposureCitationAnchor::Utf8ByteRange(0..16),
+                },
+            }],
+            contradicting_signals: Vec::new(),
+            ambiguity_explanation: "Primary handle was removed from scope.".to_owned(),
+            proposed_at: utc_instant(2_800),
+        }),
+        Err(ExposureAuditError::PrimaryProfileMustBeInDeclaredScope {
+            profile_id: OpaqueId::new("prof:in-scope")?,
+        })
+    );
+
+    // Proposing a match from surviving primary B (`prof:in-scope-b`) to candidate C (`prof:mallory-candidate`,
+    // whose anchor A was removed from scope) is also refused (`CandidateProfileOutsideDeclaredScope`).
+    assert_eq!(
+        audit.propose_account_match(AccountMatchInput {
+            match_id: OpaqueId::new("match:surviving-primary-to-revoked-candidate")?,
+            version_id: VersionId::new("ver:match-revoked-cand")?,
+            primary_profile_id: OpaqueId::new("prof:in-scope-b")?,
             candidate_profile_id: OpaqueId::new("prof:mallory-candidate")?,
             uncalibrated_heuristic_score: 0.50,
             matching_signals: vec![AccountMatchSignal {
@@ -527,11 +660,11 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
                 },
             }],
             contradicting_signals: Vec::new(),
-            ambiguity_explanation: "Primary handle was removed from scope.".to_owned(),
-            proposed_at: utc_instant(2_800),
+            ambiguity_explanation: "Candidate's anchor primary was removed from scope.".to_owned(),
+            proposed_at: utc_instant(2_810),
         }),
-        Err(ExposureAuditError::PrimaryProfileMustBeInDeclaredScope {
-            profile_id: OpaqueId::new("prof:in-scope")?,
+        Err(ExposureAuditError::CandidateProfileOutsideDeclaredScope {
+            profile_id: OpaqueId::new("prof:mallory-candidate")?,
         })
     );
 
@@ -551,11 +684,12 @@ fn declared_scope_refuses_out_of_scope_expansion_and_requires_explicit_revision_
     Ok(())
 }
 
-/// Protects `PRIVACY-02`, `A18`, and `AGENTS.md` §2 epistemic, authorization-window, actor-check,
-/// and provenance rules:
+/// Protects `PRIVACY-02`, `A18`, and `AGENTS.md` §2 epistemic, authorization-window, basis-transition,
+/// actor-check, and provenance rules:
 /// - `AuthorizedAssessmentScope` records who authorized it, what they authorized, and `[valid_from_unix_ms, valid_until_unix_ms]`,
-///   and rejects actions (including `revise_declared_scope`) outside that window (`AuthorizationExpiredOrNotYetValid`)
-///   or by an unauthorized actor (`UnauthorizedActor`).
+///   and rejects actions outside that window (`AuthorizationExpiredOrNotYetValid`), by an unauthorized actor
+///   (`UnauthorizedActor`), changing `OwnershipBasis` kind (`OwnershipBasisChangeDisallowed`), or extending
+///   `valid_until_unix_ms` without a new `authorization_reference` (`AuthorizationWindowExtensionRequiresNewReference`).
 /// - Even a `1.0` `uncalibrated_heuristic_score` starts in `MatchAssessmentState::ProposedCandidate`
 ///   and `establishes_automated_identity()` is always `false`.
 /// - Ambiguous account matches can be reviewed as `AmbiguousRetained`, and later rejected as
@@ -618,26 +752,50 @@ fn authorized_window_ambiguous_match_retention_and_source_reassessment()
         })
     );
 
-    // Attempting to revise an expired `AuthorizedAssessmentScope` into a `SelfOwnedPersonalScope`
-    // after `valid_until_unix_ms` is refused (`AuthorizationExpiredOrNotYetValid`).
+    // B4 Repro 1: Attempting to revise an `AuthorizedAssessmentScope` *inside* its active window
+    // (at t = 15_000) into a `SelfOwnedPersonalScope` to escape the time window is refused
+    // (`OwnershipBasisChangeDisallowed`).
     assert_eq!(
         audit.revise_declared_scope(ScopeRevisionInput {
             expected_scope_version: VersionId::new("ver:scope-v1")?,
-            new_scope_version: VersionId::new("ver:scope-expired-escape")?,
-            revised_at_unix_ms: 25_000,
+            new_scope_version: VersionId::new("ver:scope-basis-switch")?,
+            revised_at_unix_ms: 15_000,
             ownership_basis: OwnershipBasis::SelfOwnedPersonalScope {
                 owner_actor: auditor.clone(),
-                verification_note: "Attempted post-expiry switch.".to_owned(),
+                verification_note: "Attempted mid-window switch to self-owned.".to_owned(),
+            },
+            declared_root_domains: vec!["example.com".to_owned(), "example.org".to_owned()],
+            declared_handles: Vec::new(),
+            revision_rationale: "Attempted basis switch to escape time window.".to_owned(),
+        }),
+        Err(ExposureAuditError::OwnershipBasisChangeDisallowed)
+    );
+
+    // B4 Repro 2: Attempting to extend `valid_until_unix_ms` (from 20_000 to 50_000) with the
+    // same `authorization_reference` is refused (`AuthorizationWindowExtensionRequiresNewReference`).
+    assert_eq!(
+        audit.revise_declared_scope(ScopeRevisionInput {
+            expected_scope_version: VersionId::new("ver:scope-v1")?,
+            new_scope_version: VersionId::new("ver:scope-extend-same-ref")?,
+            revised_at_unix_ms: 15_000,
+            ownership_basis: OwnershipBasis::AuthorizedAssessmentScope {
+                auditor_actor: auditor.clone(),
+                authorizing_party: "Synthetic Research Institute".to_owned(),
+                authorization_reference: "AUTH-2026-11-SYNTH".to_owned(),
+                authorized_scope_summary: "Unchanged reference extension attempt.".to_owned(),
+                valid_from_unix_ms: 10_000,
+                valid_until_unix_ms: 50_000,
+                verification_note: "Same reference.".to_owned(),
             },
             declared_root_domains: vec!["example.com".to_owned()],
-            declared_handles: Vec::new(),
-            revision_rationale: "Attempted post-expiry revision.".to_owned(),
+            declared_handles: vec![DeclaredAccountHandle::new(
+                "SyntheticCodeHost",
+                "synth_unit_ops",
+            )],
+            revision_rationale: "Attempted self-extension without new authorization reference."
+                .to_owned(),
         }),
-        Err(ExposureAuditError::AuthorizationExpiredOrNotYetValid {
-            action_unix_ms: 25_000,
-            valid_from_unix_ms: 10_000,
-            valid_until_unix_ms: 20_000,
-        })
+        Err(ExposureAuditError::AuthorizationWindowExtensionRequiresNewReference)
     );
 
     let src_dir_id = OpaqueId::new("source:directory")?;

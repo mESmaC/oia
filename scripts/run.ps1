@@ -8,7 +8,8 @@ pinned Rust toolchain (1.99.0). `proofs` checks Lean and fixture synchronization
 `check` requires both the Rust checks and the complete Lean validation gate.
 Mirrors `scripts/run.sh`.
 
-  fetch             Download the locked dependencies once (the only online step).
+  fetch             Download the locked dependencies and the pinned CesiumJS build once
+                    (the only online step; see scripts\fetch-ui-vendor.ps1).
   build             Build the entire workspace (`--workspace --all-targets`).
   fmt               Check formatting across the workspace (`cargo fmt --all -- --check`).
   lint              Run clippy across the workspace (`--workspace --all-targets -- -D warnings`).
@@ -113,6 +114,8 @@ if ($Arguments.Count -gt 0 -and $Arguments[0] -eq '--') {
 switch ($Command) {
     'fetch' {
         & cargo @ToolchainArg fetch --manifest-path $Manifest --locked
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'fetch-ui-vendor.ps1')
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
     'build' {

@@ -1,0 +1,87 @@
+/* Globe instrument (docs/implementation/globe-instrument.md). Visual language v2 §4 over a
+   CesiumJS canvas: tags with leaders to recorded geometry, one bracket on the selection,
+   a not-plotted tray, an attribution strip, a view-state strip. No inline styles; positions
+   are assigned through the CSSOM from projected coordinates. */
+.globe-wrap { position: absolute; inset: 0; overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-panel); background: #000; }
+.globe-canvas { position: absolute; inset: 0; outline: none; }
+.globe-canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+
+/* The few CesiumJS widget rules OIA needs; the widget stylesheet is not vendored. */
+.cesium-viewer { position: relative; display: block; width: 100%; height: 100%; overflow: hidden; }
+.cesium-viewer-cesiumWidgetContainer, .cesium-widget { position: relative; width: 100%; height: 100%; }
+.cesium-widget canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.cesium-viewer-bottom, .cesium-widget-credits, .cesium-credit-lightbox-overlay { display: none !important; }
+
+/* Leaders: one elbow, 2 px dot on the geometry. */
+.globe-leaders { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.globe-leaders path { fill: none; stroke: var(--accent); stroke-width: 1; }
+.globe-leaders circle { fill: var(--accent); }
+.globe-leaders .region path { stroke: var(--text-2); }
+.globe-leaders .region circle { fill: var(--text-2); }
+.globe-leaders .approx path { stroke: var(--amber); }
+.globe-leaders .approx circle { fill: var(--amber); }
+
+/* Callout tags share the shell's .tag look, positioned in canvas space. */
+.globe-tags { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.gtag { position: absolute; left: 0; top: 0; pointer-events: auto; display: inline-flex; align-items: stretch; border: 1px solid var(--line-2); border-radius: 3px; background: var(--glass-2); font: 11px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; color: var(--text); padding: 0; will-change: transform; }
+.gtag i { font-style: normal; padding: 6px 7px; color: var(--accent); border-right: 1px solid var(--line); }
+.gtag b { font-weight: 500; padding: 6px 8px; letter-spacing: .04em; }
+.gtag:hover { border-color: var(--accent); }
+.gtag[aria-pressed="true"] { border-color: var(--accent); }
+.gtag.region i { color: var(--text-2); }
+.gtag.approx i { color: var(--amber); }
+
+/* One bracket per instrument, around the selected geometry's projected bounds. */
+.gbracket { position: absolute; left: 0; top: 0; pointer-events: none; }
+.gbracket i { position: absolute; width: 12px; height: 12px; border: 1.5px solid var(--accent); }
+.gbracket i:nth-child(1) { left: 0; top: 0; border-right: 0; border-bottom: 0; }
+.gbracket i:nth-child(2) { right: 0; top: 0; border-left: 0; border-bottom: 0; }
+.gbracket i:nth-child(3) { left: 0; bottom: 0; border-right: 0; border-top: 0; }
+.gbracket i:nth-child(4) { right: 0; bottom: 0; border-left: 0; border-top: 0; }
+
+/* Target card for the selected record. */
+.gcard { position: absolute; left: 16px; top: 16px; width: min(300px, calc(100% - 32px)); padding: 10px 12px 12px; }
+.gcard .corner { position: absolute; width: 12px; height: 12px; border: 1.5px solid var(--accent); pointer-events: none; }
+.gcard .corner.tl { left: -1px; top: -1px; border-right: 0; border-bottom: 0; }
+.gcard .corner.tr { right: -1px; top: -1px; border-left: 0; border-bottom: 0; }
+.gcard .corner.bl { left: -1px; bottom: -1px; border-right: 0; border-top: 0; }
+.gcard .corner.br { right: -1px; bottom: -1px; border-left: 0; border-top: 0; }
+.gcard .k { display: block; color: var(--accent); }
+.gcard h3 { font: 500 15px/1.2 var(--sans); margin: 4px 0 8px; }
+.gcard .rows { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; font: 12px var(--mono); }
+.gcard .rows dt { color: var(--text-2); }
+.gcard .rows dd { text-align: right; overflow-wrap: anywhere; }
+.gcard .rows dd.est { color: var(--amber); }
+.gcard .rows dd.none { color: var(--text-3); }
+
+/* Not plotted tray: tags with no leaders. */
+.gtray { position: absolute; left: 16px; right: 16px; bottom: 78px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 6px 10px; }
+.gtray .tag i { color: var(--text-3); }
+.gtray .tag b { text-transform: none; letter-spacing: .02em; }
+.gtray .tag[aria-pressed="true"] { border-color: var(--accent); }
+
+/* Attribution strip (left) and view-state strip (right). */
+.gattrib { position: absolute; left: 16px; right: 16px; bottom: 42px; padding: 4px 8px; font: 11px/1.4 var(--mono); color: var(--text-3); letter-spacing: .02em; }
+.gattrib b { color: var(--text-2); font-weight: 500; }
+.gattrib .warn { color: var(--amber); }
+.gstate { position: absolute; right: 16px; bottom: 12px; display: flex; gap: 14px; padding: 4px 8px; font: 11px var(--mono); color: var(--text-3); letter-spacing: .04em; text-align: right; }
+.gstate b { color: var(--text-2); font-weight: 500; }
+
+/* Renderer unavailable or loading: an honest empty state, never a blank black canvas. */
+.gunavail { z-index: 2; }
+.gunavail pre { font: 12px var(--mono); color: var(--text-2); white-space: pre-wrap; }
+
+/* Inspector additions */
+.gform { display: flex; flex-direction: column; gap: 8px; }
+.gform label.row { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: start; font-size: 13px; }
+.gform label.row input { margin-top: 3px; accent-color: var(--accent); }
+.gform label.row small { display: block; font-size: 11px; color: var(--text-2); margin-top: 2px; }
+.gform .date { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: center; font: 12px var(--mono); color: var(--text-2); }
+.gform .date input { font: 12px var(--mono); color: var(--text); background: none; border: 1px solid var(--line-2); border-radius: var(--r-ctl); padding: 4px 6px; color-scheme: dark; }
+.gform .date input:disabled { color: var(--text-3); border-color: var(--line); }
+.gform .btn { align-self: flex-start; }
+.globe-record-list .tag { justify-content: flex-start; }
+.globe-record-list .tag b { white-space: normal; text-transform: none; letter-spacing: .02em; text-align: left; }
+.globe-record-list .tag[aria-pressed="true"] { border-color: var(--accent); }
+.glog { list-style: none; padding: 0; margin: 6px 0 0; display: flex; flex-direction: column; gap: 4px; font: 11px/1.4 var(--mono); color: var(--text-2); overflow-wrap: anywhere; }
+.glog:empty::before { content: "none"; color: var(--text-3); }

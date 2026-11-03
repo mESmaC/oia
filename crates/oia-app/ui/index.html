@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OIA — Local workbench</title>
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="globe.css">
+<script src="globe.js" defer></script>
 <script src="app.js" defer></script>
 </head>
 <body>
@@ -45,7 +47,7 @@
     <button type="button" data-instrument="privacy"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg><span>Privacy</span></button>
     <hr>
     <button type="button" aria-disabled="true" title="Not in this build"><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4z"/><path d="M8 10h8M8 14h5"/></svg><span>News</span></button>
-    <button type="button" aria-disabled="true" title="Not in this build"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c3 3 3 13 0 16M12 4c-3 3-3 13 0 16"/></svg><span>Globe</span></button>
+    <button type="button" data-instrument="globe" title="Ctrl+G"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c3 3 3 13 0 16M12 4c-3 3-3 13 0 16"/></svg><span>Globe</span></button>
     <button type="button" aria-disabled="true" title="Not in this build"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="13" height="10" rx="1"/><path d="M16 11l5-2v6l-5-2z"/></svg><span>Cameras</span></button>
     <button type="button" aria-disabled="true" title="Not in this build"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="1"/><path d="M3 9h18M7 5v14M17 5v14"/></svg><span>Media</span></button>
     <div class="spacer"></div>
@@ -64,6 +66,9 @@
       <div class="tools glass">
         <button type="button" id="open-document" data-operation title="Ctrl+O">Open document</button>
         <button type="button" id="open-image" data-operation title="Ctrl+I">Inspect image</button>
+        <button type="button" id="globe-home" class="globe-tool" title="Home key, with the globe focused" hidden>Case anchor</button>
+        <button type="button" id="globe-world" class="globe-tool" title="0 key, with the globe focused" hidden>Whole globe</button>
+        <button type="button" id="globe-overlays" class="globe-tool" aria-pressed="false" title="Ctrl+Shift+E · hide tags, leaders, brackets and drawn geometry; values are unchanged" hidden>Clean evidence</button>
         <button type="button" id="exit-focus" class="exit-focus" title="Escape" hidden>Exit focus</button>
       </div>
     </div>
@@ -119,6 +124,22 @@
       </div>
     </section>
 
+    <!-- Globe view -->
+    <section class="view" id="view-globe" hidden>
+      <div class="globe-wrap">
+        <div id="globe-canvas" class="globe-canvas" tabindex="0" role="application" aria-label="Globe. Arrow keys pan, plus and minus zoom, Home returns to the case anchor, 0 shows the whole globe, Escape clears the selection. Drag to orbit, wheel to zoom."></div>
+        <svg class="globe-leaders" id="globe-leaders" aria-hidden="true"></svg>
+        <div class="globe-tags" id="globe-tags"></div>
+        <div class="gbracket" id="globe-bracket" hidden aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+        <aside class="gcard glass" id="globe-card" hidden aria-label="Selected record"></aside>
+        <div class="gtray glass" id="globe-tray" hidden><span class="k">Not plotted</span><div id="globe-tray-items" class="tray"></div></div>
+        <div class="gattrib glass" id="globe-attrib" aria-live="polite"></div>
+        <div class="gstate glass" id="globe-view-state"></div>
+        <div class="empty gunavail" id="globe-unavailable"><span class="k">Globe</span><h2 id="globe-unavail-title">Globe renderer not started</h2><p id="globe-unavail-text"></p></div>
+        <div id="globe-credit-sink" hidden></div>
+      </div>
+    </section>
+
     <div class="view-state glass" id="view-state">
       <span><b>MODE</b> session</span>
       <span><b>STORE</b> none</span>
@@ -168,6 +189,20 @@
           <div class="result" id="export-result" hidden></div>
         </section>
         <section class="sec" data-pane="img-limits" hidden><span class="k">Limits</span><p class="note">Container detection only, not every identifying field. Retained dimensions, density, and image content may still identify a person or place. Unsupported profiles cannot be cleaned. Only the selected categories are removed; rendering data is preserved. The saved copy is reinspected before it is published; an existing destination is never overwritten.</p></section>
+      </div>
+    </div>
+    <!-- Globe inspector -->
+    <div class="ipanel" id="insp-globe" hidden>
+      <div class="head"><span class="k">Inspect · globe</span><h2 id="insp-globe-title">Globe</h2><div class="chips" id="insp-globe-chips"></div></div>
+      <div class="tabs" role="tablist"><button type="button" role="tab" aria-selected="true" data-tab="globe-record">Record</button><button type="button" role="tab" aria-selected="false" data-tab="globe-imagery">Imagery</button><button type="button" role="tab" aria-selected="false" data-tab="globe-limits">Limits</button></div>
+      <div class="body" tabindex="0">
+        <section class="sec" data-pane="globe-record"><span class="k">Selected record</span><dl class="kv" id="globe-record"></dl><p class="note" id="globe-record-note"></p></section>
+        <section class="sec" data-pane="globe-record"><span class="k">Records</span><div class="source-list globe-record-list" id="globe-records"></div></section>
+        <section class="sec" data-pane="globe-record"><span class="k">Case</span><dl class="kv" id="globe-case"></dl></section>
+        <section class="sec" data-pane="globe-imagery" hidden><span class="k">Basemap</span><form class="gform" id="globe-imagery-form"></form></section>
+        <section class="sec" data-pane="globe-imagery" hidden><span class="k">Active layer</span><dl class="kv" id="globe-imagery-active"></dl><p class="note" id="globe-ack"></p></section>
+        <section class="sec" data-pane="globe-imagery" hidden><span class="k">Renderer</span><dl class="kv" id="globe-renderer"></dl><span class="k">Renderer messages · this session</span><ul class="glog" id="globe-log"></ul></section>
+        <section class="sec" data-pane="globe-limits" hidden><span class="k">Limits</span><p class="note">The case is a bundled synthetic fixture; nothing drawn is an observation. Points, rings and regions come only from recorded geometry; a record without geometry is listed, not placed. Uncertainty rings and place radii are the fixture author's bounds. Imagery is a live request to the registered source for the layer and UTC day shown; it never shows the case period, and a missing tile is a coverage gap. Tile counts are what this renderer observed in this session. No terrain, labels, roads or tracks are drawn, because none is registered. Camera position is a view setting, not a measurement. Persistent cases, clustering, footprints and viewing cones are not in this build.</p></section>
       </div>
     </div>
   </aside>

@@ -27,6 +27,12 @@ These provide a catalog of source integrations and reusable patterns for normali
 
 Rust adapters can adopt the useful contracts while checking each provider's current authentication, coverage, historical availability, and reuse conditions. Missing, stale, failed, and genuinely empty responses should remain different outcomes.
 
+### Globe viewer and imagery sources (`src/app/viewer.js`, `src/maps/`)
+
+Inspected for the Globe instrument ([`docs/implementation/globe-instrument.md`](implementation/globe-instrument.md), #23): `applicationViewerOptions` (every Cesium widget off, no base layer, credits in the application's own container), `src/maps/catalog.js` and `imagery.js` (a declared map-stack catalog with per-source credit lines and a keyless default), and `DATA_SOURCES.md` (NASA GIBS used keyless and browser-direct, with the ESDIS acknowledgement and bounded tile requests).
+
+OIA reused the ideas, not the code: the viewer option set and the "catalog with credit per source" pattern are reimplemented as a Rust registry (`crates/oia-app/src/globe/imagery.rs`) that also records licence, capture statement, published date coverage and the capabilities check date, so the page cannot compose a tile URL to an unregistered origin. Deliberate differences: no Google 3D Tiles, Bing, Esri or OSM tile stacks (terms or usage policies not cleared for OIA); no Ion token path; Cesium's own default view, sun, moon, sky box and lighting are off so that nothing on the globe reads as live; a missing or unpublished day is refused as a coverage gap rather than drawn blank.
+
 ### Aircraft and vessel records
 
 Start with `src/layers/flights/records.js`, `records.test.mjs`, `recordPolicy.js`, and the corresponding ingestion and vessel modules.

@@ -109,3 +109,15 @@ Not done: no screen-reader session; no Linux or macOS build; `iced` and `Slint` 
 ## 9. Owner decision recorded
 
 On 2026-11-02 America/New_York, the project owner selected “Tauri desktop app (recommended by the existing ADR)” for the running app. Option C is accepted with the rules and runtime-traffic disclosure condition in §4. The first workbench implements local file tools without claiming persistent cases or complete P1 acceptance. Earlier comparison results above describe the evaluation spikes, not the new application.
+
+## 10. Amendment: registered online imagery in the WebView (2026-11-03)
+
+**Owner decision.** On 2026-11-03, in the globe session (T3 thread `44c6c7f7`, recorded on [#23 (comment 6594215166)](https://github.com/mESmaC/oia/issues/23#issuecomment-6594215166)), the project owner stated that reading §4 rule 3 as a ban on online data "is actually completely in violation of what I decided for the spec", and that online sources are encouraged, satellite APIs included, free sources preferred. The specification already requires them: `GEO-02` queries satellite imagery and other sources for the selected event, `CAM-06` names Overpass and DeFlock, and [`docs/architecture.md` §4](../architecture.md#4-source-adapters-and-ingestion) asks that each source be registered with a bounded query, a budget and recorded coverage.
+
+**What changes.** §4 rule 3 was written for the P1 file tools and read as "no network client in the WebView". For a tile-based globe (§4 rule 6) that reading is impractical: routing every tile through Rust IPC would add latency and code without adding control. Rule 3 is therefore amended:
+
+> The page may load imagery, tiles and the data behind them **only** from origins that are (a) registered in Rust as sources with their licence, attribution, capture statement and the date their capabilities were checked, (b) allow-listed by origin in the CSP, and (c) shown in the instrument with attribution, source status and capture or retrieval time. Everything else in rule 3 stands: `default-src 'self'`, no inline script, no `unsafe-eval`, no plugin beyond core window and event permissions, and source content remains data.
+
+The first registered origin is `https://gibs.earthdata.nasa.gov` (NASA GIBS, public domain, keyless), used by the Globe instrument ([globe-instrument.md](../implementation/globe-instrument.md)). Adding an origin is a change to the Rust registry, the CSP and the notices together, reviewed as such; a page cannot compose a URL to an origin that is not registered. The WebView2 runtime-traffic condition in §4 is unchanged.
+
+**Rule 6 outcome.** Cesium inside the same WebView was evaluated first, as rule 6 asked, and is adopted for the globe: self-hosted at a pinned version, fetched by the one-time `fetch` step, with Cesium Ion disabled and the one load-time patch recorded in the implementation note. The `wgpu` alternative remains the exit path of rule 7.

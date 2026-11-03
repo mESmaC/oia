@@ -6,7 +6,8 @@
 # `check` requires both Rust checks and the complete Lean validation gate.
 #
 # Usage: scripts/run.sh [fetch|build|fmt|lint|test|proofs|check|run|inspect|search] [-- ARGS...]
-#   fetch             Download the locked dependencies once (the only online step).
+#   fetch             Download the locked dependencies and the pinned CesiumJS build once
+#                     (the only online step; see scripts/fetch-ui-vendor.sh).
 #   build             Build the entire workspace (`--workspace --all-targets`).
 #   fmt               Check formatting across the workspace.
 #   lint              Run clippy across the workspace (`-D warnings`).
@@ -81,6 +82,7 @@ action=${1:-run}
 case $action in
     fetch)
         cargo fetch --manifest-path "$MANIFEST" --locked
+        sh "$ROOT/scripts/fetch-ui-vendor.sh"
         ;;
     build)
         ws build --workspace --all-targets

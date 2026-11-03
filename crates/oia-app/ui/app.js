@@ -6,7 +6,7 @@ const $ = id => document.getElementById(id);
 const invoke = (command, args) => window.__TAURI__.core.invoke(command, args);
 const SCHEMA = 'oia-local-tools/1';
 const PAGE_SIZE = 100;
-const INSTRUMENTS = ['session', 'documents', 'privacy'];
+const INSTRUMENTS = ['session', 'documents', 'privacy', 'globe'];
 const TARGETS = {
   text: ['Text metadata', 'PNG text containers'],
   modification_time: ['Modification time', 'PNG tIME container'],
@@ -63,14 +63,16 @@ function showInstrument(name, focus = false) {
     if (button.dataset.instrument === instrument) button.setAttribute('aria-current', 'page');
     else button.removeAttribute('aria-current');
   });
-  if (focus) $('canvas').focus();
+  document.querySelectorAll('.globe-tool').forEach(button => { button.hidden = instrument !== 'globe'; });
+  if (instrument === 'globe') Globe.activate(); else Globe.deactivate();
+  if (focus) (instrument === 'globe' ? $('globe-canvas') : $('canvas')).focus();
   renderShell();
 }
 function currentView() {
   return instrument === 'documents' ? documentView : instrument === 'privacy' ? imageView : null;
 }
 function renderShell() {
-  const names = { session: '', documents: 'Documents', privacy: 'Privacy' };
+  const names = { session: '', documents: 'Documents', privacy: 'Privacy', globe: 'Globe' };
   const view = currentView();
   $('crumb-sep').hidden = $('crumb-instrument').hidden = instrument === 'session';
   $('crumb-instrument').textContent = names[instrument];
@@ -88,6 +90,12 @@ function renderShell() {
     setText('ro-coverage', imageView.complete ? 'profile supported' : 'partial', imageView.complete ? 'v' : 'v est');
     const row = selectedRow === null ? null : imageView.rows[selectedRow];
     setText('ro-selection', row ? `${pad2(selectedRow + 1)} ${row.kind} · b${row.start}–${row.end}` : 'none', row ? 'v' : 'v none');
+  } else if (instrument === 'globe') {
+    const g = Globe.summary();
+    setText('ro-source', g.source, g.loaded ? 'v' : 'v none');
+    setText('ro-hash', '—', 'v none');
+    setText('ro-coverage', g.coverage, g.partial ? 'v est' : g.loaded ? 'v' : 'v none');
+    setText('ro-selection', g.selection, g.selection === 'none' || g.selection === '—' ? 'v none' : 'v');
   } else {
     setText('ro-coverage', '—', 'v none');
     setText('ro-selection', loaded ? `${loaded} loaded` : '—', 'v none');
@@ -365,6 +373,7 @@ function setPresentation(className, on) {
   toggle.setAttribute('aria-pressed', String(on));
   $('vs-overlays').textContent = document.body.classList.contains('reduced') ? 'reduced' : 'on';
   if (className === 'focused') $('exit-focus').hidden = !on;
+  if (className === 'reduced') Globe.setReduced(on);
 }
 $('effects').onclick = () => setPresentation('reduced', !document.body.classList.contains('reduced'));
 $('focus').onclick = () => setPresentation('focused', !document.body.classList.contains('focused'));
@@ -381,10 +390,13 @@ document.addEventListener('keydown', event => {
   if ((event.ctrlKey || event.metaKey) && key === 'f' && documentView) { event.preventDefault(); showInstrument('documents'); $('query').focus(); }
   if ((event.ctrlKey || event.metaKey) && key === 'o') { event.preventDefault(); if (!busy) openDocument(); }
   if ((event.ctrlKey || event.metaKey) && key === 'i') { event.preventDefault(); if (!busy) openImage(); }
+  if ((event.ctrlKey || event.metaKey) && key === 'g') { event.preventDefault(); showInstrument('globe', true); }
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && key === 'e' && instrument === 'globe') { event.preventDefault(); Globe.toggleOverlays(); }
   if (event.key === 'Escape') {
     if (!$('error').hidden) $('error').hidden = true;
     else if (document.body.classList.contains('focused')) { setPresentation('focused', false); $('focus').focus(); }
   }
 });
+Globe.onView(() => { if (instrument === 'globe') renderShell(); });
 if (window.matchMedia('(prefers-reduced-transparency: reduce)').matches) setPresentation('reduced', true);
 showInstrument('session');

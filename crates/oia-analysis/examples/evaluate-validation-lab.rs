@@ -179,11 +179,15 @@ fn main() -> Result<(), Box<dyn Error>> {
             evaluation_run_version: VersionId::new("ver:heldout-run-01")?,
             detector_or_solver_id: OpaqueId::new("solver:oia-combined-v1")?,
             detector_or_solver_version: VersionId::new("ver:solver-v1")?,
-            claims_calibrated_probabilities: true,
+            claims_calibrated_probabilities: false,
             calibration_receipt: Some(CalibrationReceipt {
                 calibration_run_version: VersionId::new("ver:cal-run-01")?,
                 calibration_split_dataset_version: VersionId::new("ver:dataset-v1-20261103")?,
-                evaluated_calibration_sample_count: 1,
+                detector_or_solver_id: OpaqueId::new("solver:oia-combined-v1")?,
+                detector_or_solver_version: VersionId::new("ver:solver-v1")?,
+                calibrated_domain: ValidationDomain::CameraAnomalyAndHealth,
+                score_mapping_version: VersionId::new("ver:score-map-cam-v1")?,
+                evaluated_calibration_record_versions: vec![VersionId::new("ver:cal-real-cam-01")?],
                 empirical_brier_score_milli: 48,
             }),
             items: vec![
@@ -214,7 +218,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     record_version: VersionId::new("ver:heldout-sim-perturbed-uav")?,
                     outcome: HeldOutItemOutcome::Evaluated {
                         decision: SystemDecision::PositiveCandidateOrReconstruction,
-                        raw_score_bps: Some(8_150),
+                        raw_score_bps: None,
                         processing_latency_ms: 68,
                         used_predictive_or_generated_detail_as_measurement: false,
                         output_retained_simulation_label: true,
@@ -333,7 +337,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .false_alerts_per_hour_milli,
     );
     println!(
-        "Held-out simulations ({}): evaluated={}/{}, coverage={} bps, recall={:?} bps, degenerate_abstentions={}",
+        "Held-out simulations ({}): evaluated={}/{}, coverage={} bps, recall={:?} bps, degenerate_abstentions={}, calibrated_prob={}, receipts={}",
         held_out_report.simulation_label,
         held_out_report
             .controlled_simulation_metrics
@@ -350,6 +354,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         held_out_report
             .controlled_simulation_metrics
             .correct_degenerate_abstention_count,
+        held_out_report.is_calibrated_probability(),
+        held_out_report.item_receipts.len(),
     );
     println!(
         "Operational benchmark `{}`: ui_p95={}ms ({:?}), query_p95={}ms ({:?}), provider_p95={:?}ms, model_p95={:?}ms, cancel_ack={}ms ({:?}), coverage={} bps",

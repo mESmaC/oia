@@ -6,13 +6,14 @@
 
 use oia_analysis::validation_lab::{
     BackpressureAndCoverageInput, BenchmarkCacheState, BenchmarkEnvironmentManifest,
-    CancellationAndRecoveryInput, DatasetManifestInput, DatasetRecord, DatasetRecordOrigin,
-    DatasetSplit, GroundTruthLabel, HeldOutEvaluationInput, HeldOutItemEvaluation,
-    HeldOutItemOutcome, HeldOutSkipReason, OperationalBenchmarkInput, PerturbationSpec,
-    ReferenceTargetProfile, SIMULATION_LABEL, StopReason, SystemDecision, TargetComparisonOutcome,
-    TelemetryAndEditResponsiveness, ValidationDomain, ValidationLabError, ValidationLabLimits,
-    VisualQualityParityInput, evaluate_held_out_run, evaluate_operational_benchmark,
-    validate_dataset_manifest,
+    CalibrationReceipt, CancellationAndRecoveryInput, DatasetManifestInput, DatasetRecord,
+    DatasetRecordOrigin, DatasetSplit, GroundTruthLabel, HeldOutEvaluationInput,
+    HeldOutItemEvaluation, HeldOutItemOutcome, HeldOutSkipReason,
+    MAX_DEGENERATE_CROSSING_ANGLE_MRAD, OperationalBenchmarkInput, PerturbationSpec,
+    ReferenceTargetProfile, SIMULATION_LABEL, ScoreCalibrationStatus, StopReason, SystemDecision,
+    TargetComparisonOutcome, TelemetryAndEditResponsiveness, ValidationDomain, ValidationLabError,
+    ValidationLabLimits, VisualQualityParityInput, evaluate_held_out_run,
+    evaluate_operational_benchmark, validate_dataset_manifest,
 };
 use oia_domain::{IdError, OpaqueId, SchemaVersion, VersionId};
 
@@ -271,8 +272,39 @@ fn validation_lab_separates_real_fixtures_and_simulations_and_prevents_cherry_pi
             },
         ],
     };
-    let report = evaluate_held_out_run(&manifest, full_eval, &limits, || Ok(()))?;
-    assert!(!report.is_calibrated_probability);
+    let report = evaluate_held_out_run(&manifest, full_eval.clone(), &limits, || Ok(()))?;
+    assert!(!report.is_calibrated_probability());
+    assert_eq!(
+        report.score_calibration_status,
+        ScoreCalibrationStatus::UncalibratedDiagnosticScores
+    );
+    assert_eq!(report.item_receipts.len(), 4);
+    assert_eq!(
+        report.item_receipts.first().map(|r| r.record_id.as_str()),
+        Some("rec:heldout-real-pos")
+    );
+    assert_eq!(
+        report.item_receipts.get(1).and_then(|r| match &r.outcome {
+            HeldOutItemOutcome::Skipped {
+                reason: HeldOutSkipReason::MissingOrInvalidatedCalibration { detail },
+            } => Some(detail.as_str()),
+            _ => None,
+        }),
+        Some("Camera uncalibrated during exposure fault window")
+    );
+
+    // Per-item receipts preserve skip details and affect HeldOutEvaluationReport equality.
+    let mut alt_skip_eval = full_eval;
+    if let Some(skipped_item) = alt_skip_eval.items.get_mut(1) {
+        skipped_item.outcome = HeldOutItemOutcome::Skipped {
+            reason: HeldOutSkipReason::CoverageGapOrDroppedStream {
+                detail: String::from("Distinct skip reason detail for audit trail equality"),
+            },
+        };
+    }
+    let alt_report = evaluate_held_out_run(&manifest, alt_skip_eval, &limits, || Ok(()))?;
+    assert_ne!(report, alt_report);
+
     assert_eq!(report.labeled_real_fixture_metrics.manifest_record_count, 2);
     assert_eq!(
         report.labeled_real_fixture_metrics.evaluated_record_count,
@@ -312,6 +344,45 @@ fn validation_lab_separates_real_fixtures_and_simulations_and_prevents_cherry_pi
             .controlled_simulation_metrics
             .false_degenerate_resolution_count,
         0
+    );
+
+    // DegenerateSightlineGeometry must be strictly sub-degree (`<= 17 mrad` < 1 deg = 17.453 mrad)
+    // and paired with `GroundTruthLabel::DegenerateRequiresInsufficientEvidence`.
+    assert_eq!(MAX_DEGENERATE_CROSSING_ANGLE_MRAD, 17);
+    let mut non_degenerate_angle_input = manifest_input.clone();
+    if let Some(deg_rec) = non_degenerate_angle_input.records.get_mut(5) {
+        deg_rec.origin = DatasetRecordOrigin::ControlledSimulation {
+            generator_id: OpaqueId::new("gen:geometry-v1")?,
+            generator_version: VersionId::new("ver:gen-geometry-v1")?,
+            base_real_fixture_version: None,
+            seed: 11,
+            perturbations: vec![PerturbationSpec::DegenerateSightlineGeometry {
+                crossing_angle_mrad: 1_000,
+            }],
+            visible_simulation_label: String::from(SIMULATION_LABEL),
+            difference_from_observation: String::from(
+                "Invalid 1000 mrad (~57.3 deg) claimed as degenerate",
+            ),
+        };
+    }
+    assert_eq!(
+        Err(ValidationLabError::InvalidPerturbationParameter {
+            record_id: OpaqueId::new("rec:heldout-sim-degenerate")?,
+            reason: "DegenerateSightlineGeometry crossing_angle_mrad must be <= 17 (< 1 deg / MIN_CROSSING_ANGLE_RAD)",
+        }),
+        validate_dataset_manifest(non_degenerate_angle_input, &limits, || Ok(()))
+    );
+
+    let mut wrong_label_degenerate_input = manifest_input.clone();
+    if let Some(deg_rec) = wrong_label_degenerate_input.records.get_mut(5) {
+        deg_rec.expected_label = GroundTruthLabel::PositiveTargetPresent;
+    }
+    assert_eq!(
+        Err(ValidationLabError::InvalidPerturbationParameter {
+            record_id: OpaqueId::new("rec:heldout-sim-degenerate")?,
+            reason: "DegenerateSightlineGeometry record must have expected_label == DegenerateRequiresInsufficientEvidence",
+        }),
+        validate_dataset_manifest(wrong_label_degenerate_input, &limits, || Ok(()))
     );
 
     // Cross-split lineage leakage: a HeldOutEvaluation simulation derived from a Train fixture must fail.
@@ -366,19 +437,103 @@ fn validation_lab_enforces_evidence_integrity_and_operational_benchmark_guards()
         validate_dataset_manifest(promoted_sim, &limits, || Ok(()))
     );
 
-    // Claiming calibrated probabilities without a CalibrationReceipt is rejected.
+    let valid_receipt = CalibrationReceipt {
+        calibration_run_version: VersionId::new("ver:cal-run-01")?,
+        calibration_split_dataset_version: manifest.dataset_version().clone(),
+        detector_or_solver_id: OpaqueId::new("solver:test")?,
+        detector_or_solver_version: VersionId::new("ver:solver-test")?,
+        calibrated_domain: ValidationDomain::CameraAnomalyAndHealth,
+        score_mapping_version: VersionId::new("ver:platt-cam-01")?,
+        evaluated_calibration_record_versions: vec![VersionId::new("ver:cal-real-01")?],
+        empirical_brier_score_milli: 45,
+    };
+
+    // Claiming calibrated probabilities is rejected even when a CalibrationReceipt is attached (`D09` open).
     let uncalibrated_claim = HeldOutEvaluationInput {
         evaluation_run_id: OpaqueId::new("eval:uncal")?,
         evaluation_run_version: VersionId::new("ver:eval-uncal")?,
         detector_or_solver_id: OpaqueId::new("solver:test")?,
         detector_or_solver_version: VersionId::new("ver:solver-test")?,
         claims_calibrated_probabilities: true,
-        calibration_receipt: None,
+        calibration_receipt: Some(valid_receipt.clone()),
         items: Vec::new(),
     };
     assert_eq!(
         Err(ValidationLabError::UncalibratedScorePresentedAsProbability),
         evaluate_held_out_run(&manifest, uncalibrated_claim, &limits, || Ok(()))
+    );
+
+    // A CalibrationReceipt bound to a different detector/solver is rejected.
+    let mut mismatched_solver_receipt = valid_receipt.clone();
+    mismatched_solver_receipt.detector_or_solver_id = OpaqueId::new("solver:other-model")?;
+    let mismatched_receipt_eval = HeldOutEvaluationInput {
+        evaluation_run_id: OpaqueId::new("eval:mismatch-receipt")?,
+        evaluation_run_version: VersionId::new("ver:eval-mismatch-receipt")?,
+        detector_or_solver_id: OpaqueId::new("solver:test")?,
+        detector_or_solver_version: VersionId::new("ver:solver-test")?,
+        claims_calibrated_probabilities: false,
+        calibration_receipt: Some(mismatched_solver_receipt),
+        items: Vec::new(),
+    };
+    assert_eq!(
+        Err(ValidationLabError::InvalidCalibrationReceipt {
+            reason: "CalibrationReceipt detector_or_solver_id/version does not match the evaluated run",
+        }),
+        evaluate_held_out_run(&manifest, mismatched_receipt_eval, &limits, || Ok(()))
+    );
+
+    // Skipping all held-out records in `calibrated_domain` while attaching a CalibrationReceipt is rejected.
+    let all_skipped_calibrated_domain = HeldOutEvaluationInput {
+        evaluation_run_id: OpaqueId::new("eval:all-skipped-cal")?,
+        evaluation_run_version: VersionId::new("ver:eval-all-skipped-cal")?,
+        detector_or_solver_id: OpaqueId::new("solver:test")?,
+        detector_or_solver_version: VersionId::new("ver:solver-test")?,
+        claims_calibrated_probabilities: false,
+        calibration_receipt: Some(valid_receipt),
+        items: vec![
+            HeldOutItemEvaluation {
+                record_id: OpaqueId::new("rec:heldout-real-pos")?,
+                record_version: VersionId::new("ver:heldout-real-pos")?,
+                outcome: HeldOutItemOutcome::Skipped {
+                    reason: HeldOutSkipReason::UnsupportedInputDomain {
+                        detail: String::from("Skipped media forensics"),
+                    },
+                },
+            },
+            HeldOutItemEvaluation {
+                record_id: OpaqueId::new("rec:heldout-real-neg")?,
+                record_version: VersionId::new("ver:heldout-real-neg")?,
+                outcome: HeldOutItemOutcome::Skipped {
+                    reason: HeldOutSkipReason::CoverageGapOrDroppedStream {
+                        detail: String::from("Skipped camera record in calibrated_domain"),
+                    },
+                },
+            },
+            HeldOutItemEvaluation {
+                record_id: OpaqueId::new("rec:heldout-sim-perturbed")?,
+                record_version: VersionId::new("ver:heldout-sim-perturbed")?,
+                outcome: HeldOutItemOutcome::Skipped {
+                    reason: HeldOutSkipReason::UnsupportedInputDomain {
+                        detail: String::from("Skipped UAV simulation"),
+                    },
+                },
+            },
+            HeldOutItemEvaluation {
+                record_id: OpaqueId::new("rec:heldout-sim-degenerate")?,
+                record_version: VersionId::new("ver:heldout-sim-degenerate")?,
+                outcome: HeldOutItemOutcome::Skipped {
+                    reason: HeldOutSkipReason::UnsupportedInputDomain {
+                        detail: String::from("Skipped triangulation simulation"),
+                    },
+                },
+            },
+        ],
+    };
+    assert_eq!(
+        Err(ValidationLabError::InvalidCalibrationReceipt {
+            reason: "CalibrationReceipt cannot be attached when zero held-out items in calibrated_domain were evaluated",
+        }),
+        evaluate_held_out_run(&manifest, all_skipped_calibrated_domain, &limits, || Ok(()))
     );
 
     // Using predictive/generated detail as a measurement is rejected (`A10`).

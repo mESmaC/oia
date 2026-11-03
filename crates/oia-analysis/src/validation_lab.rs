@@ -3,29 +3,40 @@
 //! `FIELD-04`, `CAM-05`, `MEDIA-02`, `DEVICE-04`, `docs/delivery.md` §4, and deterministic
 //! subsets of `A09`, `A10`, `A12`, `A13`).
 //!
+//! Note on scope: this kernel validates in-memory dataset manifests, caller-declared SHA-256
+//! digest strings, split-disjointness rules, per-item held-out evaluation receipts, and
+//! caller-supplied operational benchmark receipts. It does not read or hash external payload
+//! files, verify physical source or ground-truth authenticity, fit `D09` score-calibration
+//! models, or execute live hardware/camera/UAV benchmarks.
+//!
 //! ### Core Contracts and Integrity Invariants (`AGENTS.md` §§2–5, §8)
 //! 1. **Labeled Real Fixtures vs. Controlled Simulations (`FIELD-04`, `MEDIA-02`, `DEVICE-04`, `A10`, `A13`):**
 //!    Real or reference fixtures (`DatasetRecordOrigin::LabeledRealFixture`) and synthetic or
 //!    perturbed simulations (`DatasetRecordOrigin::ControlledSimulation`) are distinct origin
 //!    classes. Every simulation must carry the mandatory [`SIMULATION_LABEL`], a non-empty
-//!    statement of how it differs from observations, and explicit perturbation parameters when
-//!    derived from a base fixture. Simulations can never be promoted to observation evidence.
-//! 2. **Disjoint Splits and Anti-Cherry-Picking (`FIELD-04`, `CAM-05`, `A09`):**
-//!    Training, calibration/tuning, and held-out evaluation splits must not share payload
-//!    SHA-256 digests, source versions, or base-fixture derivation lineage. Held-out evaluations
-//!    must account for every held-out record in the pinned manifest (either evaluated or
-//!    explicitly skipped with a typed reason) so callers cannot cherry-pick favorable subsets,
-//!    and metrics are reported separately for labeled real fixtures and controlled simulations.
+//!    statement of how it differs from observations, and explicit perturbation parameters.
+//!    Simulations can never be promoted to observation evidence.
+//! 2. **Disjoint Splits, Per-Item Audit Trail, and Anti-Cherry-Picking (`FIELD-04`, `CAM-05`, `A09`):**
+//!    Training, calibration/tuning, and held-out evaluation splits must not share declared
+//!    payload SHA-256 digests, source versions, or base-fixture derivation lineage. Held-out
+//!    evaluations must account for every held-out record in the pinned manifest (either evaluated
+//!    or explicitly skipped with a typed reason), retain per-item outcome receipts in
+//!    [`HeldOutEvaluationReport::item_receipts`] so misses and skip reasons remain inspectable,
+//!    and report aggregate metrics separately for labeled real fixtures and controlled simulations.
 //! 3. **Score Calibration and Generated-Detail Guards (`CAM-05`, `MEDIA-03`, `A09`, `A10`):**
-//!    Detector scores remain uncalibrated diagnostics ([`UNCALIBRATED_SCORE_CAVEAT`]) unless a
-//!    calibration receipt from the `CalibrationOrTuning` split is pinned. Predictive or generated
-//!    detail may never be used as a physical measurement or independent detection input.
+//!    Because `D09` empirical calibration fitting and verification are out of scope for this
+//!    kernel, claiming verified calibrated probabilities (`claims_calibrated_probabilities = true`)
+//!    is always rejected. Caller-supplied [`CalibrationReceipt`]s must be bound to the exact
+//!    detector/solver ID, version, domain, and `CalibrationOrTuning` split records, and are
+//!    recorded as [`ScoreCalibrationStatus::CallerDeclaredReceiptUnverified`] with
+//!    `is_calibrated_probability() == false`. Predictive or generated detail may never be used as
+//!    a physical measurement or independent detection input.
 //! 4. **Operational, Backpressure, Cancellation, and Visual-Parity Benchmarks (`DEVICE-04`, `A12`, `docs/delivery.md` §4):**
 //!    OIA local processing latency is tracked separately from external provider and model-service
 //!    latency. Runs verify that analysis does not block UAV/device telemetry or emit flight-control
 //!    commands, expose backpressure activation and coverage drops honestly, reject late
-//!    publications after cancellation or supersession, and require bitwise-identical numerical
-//!    outputs across `StandardGlass` and `ReducedEffects` visual modes.
+//!    publications after cancellation or supersession, and require matching declared numerical
+//!    output digests across `StandardGlass` and `ReducedEffects` visual modes.
 
 #![deny(clippy::indexing_slicing, clippy::unwrap_used, clippy::expect_used)]
 
@@ -44,11 +55,16 @@ pub const METHOD_ID: &str = "oia-validation-simulation-lab-v1";
 pub const SIMULATION_LABEL: &str =
     "CONTROLLED SIMULATION — SYNTHETIC OR PERTURBED MATERIAL (NOT OBSERVATION EVIDENCE)";
 
-/// Mandatory caveat paired with uncalibrated detector scores (`CAM-05`, `A09`, `AGENTS.md` §2).
-pub const UNCALIBRATED_SCORE_CAVEAT: &str = "Detector score is an uncalibrated diagnostic score; it must not be presented as a calibrated class probability without an evaluated calibration receipt.";
+/// Mandatory caveat paired with detector scores (`CAM-05`, `A09`, `AGENTS.md` §2).
+pub const UNCALIBRATED_SCORE_CAVEAT: &str = "Detector score is an uncalibrated diagnostic score (or caller-declared unverified receipt); it must not be presented as a verified calibrated class probability without an executed D09 calibration verification.";
 
 /// Mandatory caveat distinguishing proposed design targets from executed measurements (`AGENTS.md` §3, `docs/delivery.md` §4).
-pub const TARGET_VS_MEASURED_CAVEAT: &str = "Reference targets in docs/delivery.md §4 are proposed design objectives; benchmark outcomes apply only to the pinned commit, dataset digest, and environment recorded in this run.";
+pub const TARGET_VS_MEASURED_CAVEAT: &str = "Reference targets in docs/delivery.md §4 are proposed design objectives; benchmark outcomes summarize caller-supplied run receipts for the declared commit, dataset digest, and environment.";
+
+/// Maximum crossing angle in milliradians (`17 mrad = 0.017 rad < pi / 180 rad ≈ 17.453 mrad = 1 deg`)
+/// accepted for [`PerturbationSpec::DegenerateSightlineGeometry`], matching the sub-1-degree
+/// near-parallel rejection domain of [`crate::triangulation::MIN_CROSSING_ANGLE_RAD`].
+pub const MAX_DEGENERATE_CROSSING_ANGLE_MRAD: u32 = 17;
 
 /// Default upper bound on dataset records in a single validation manifest.
 pub const DEFAULT_MAX_DATASET_RECORDS: usize = 4_096;
@@ -255,14 +271,15 @@ pub enum PerturbationSpec {
         dropped_frame_count: u32,
         disconnected_duration_ms: u64,
     },
-    /// Degenerate or near-parallel multi-view crossing geometry (`FIELD-03`, `A13`).
+    /// Degenerate or near-parallel multi-view crossing geometry in milliradians
+    /// (`crossing_angle_mrad <= MAX_DEGENERATE_CROSSING_ANGLE_MRAD`, i.e. `<= 17 mrad < 1 deg`) (`FIELD-03`, `A13`).
     DegenerateSightlineGeometry { crossing_angle_mrad: u32 },
 }
 
 /// Origin class distinguishing real labeled fixtures from controlled simulations (`FIELD-04`, `A13`, `AGENTS.md` §2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DatasetRecordOrigin {
-    /// Labeled real observation or reference fixture with documented ground-truth basis.
+    /// Labeled real observation or reference fixture with caller-declared ground-truth basis.
     LabeledRealFixture {
         source_id: OpaqueId,
         source_version: VersionId,
@@ -301,6 +318,7 @@ pub struct DatasetRecord {
     pub record_version: VersionId,
     pub split: DatasetSplit,
     pub domain: ValidationDomain,
+    /// Caller-supplied 64-character lowercase hexadecimal SHA-256 digest of the record payload.
     pub payload_sha256: String,
     pub observed_duration_ms: u64,
     pub expected_label: GroundTruthLabel,
@@ -353,7 +371,7 @@ impl SplitComposition {
     }
 }
 
-/// Verified dataset manifest with proven split disjointness and origin separation.
+/// Verified dataset manifest with validated declared digest metadata, split disjointness, and origin separation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedDatasetManifest {
     dataset_id: OpaqueId,
@@ -424,7 +442,7 @@ pub enum SystemDecision {
     AbstainedInsufficientEvidence,
 }
 
-/// Evaluation record for a single held-out dataset item.
+/// Evaluation submission for a single held-out dataset item.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldOutItemEvaluation {
     pub record_id: OpaqueId,
@@ -450,13 +468,53 @@ pub enum HeldOutItemOutcome {
     },
 }
 
-/// Pinned calibration receipt required before any detector score may be labeled a calibrated probability (`CAM-05`).
+/// Retained per-item audit receipt in [`HeldOutEvaluationReport::item_receipts`] (`#40`, `AGENTS.md` §2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldOutItemReceipt {
+    pub record_id: OpaqueId,
+    pub record_version: VersionId,
+    pub domain: ValidationDomain,
+    pub is_simulation: bool,
+    pub expected_label: GroundTruthLabel,
+    pub observed_duration_ms: u64,
+    pub outcome: HeldOutItemOutcome,
+}
+
+/// Model-, domain-, and split-bound calibration receipt (`CAM-05`).
+///
+/// Because this kernel does not execute or verify `D09` empirical calibration fitting, a validated
+/// `CalibrationReceipt` is recorded as [`ScoreCalibrationStatus::CallerDeclaredReceiptUnverified`]
+/// and never flips `is_calibrated_probability()` to `true`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CalibrationReceipt {
     pub calibration_run_version: VersionId,
     pub calibration_split_dataset_version: VersionId,
-    pub evaluated_calibration_sample_count: usize,
+    pub detector_or_solver_id: OpaqueId,
+    pub detector_or_solver_version: VersionId,
+    pub calibrated_domain: ValidationDomain,
+    pub score_mapping_version: VersionId,
+    /// Exact `CalibrationOrTuning` record versions evaluated to fit this receipt.
+    pub evaluated_calibration_record_versions: Vec<VersionId>,
     pub empirical_brier_score_milli: u32,
+}
+
+/// Explicit calibration verification status of a held-out evaluation report (`CAM-05`, `AGENTS.md` §§2–3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScoreCalibrationStatus {
+    /// Raw diagnostic scores only; no calibration receipt supplied.
+    UncalibratedDiagnosticScores,
+    /// Caller supplied a structurally validated `CalibrationReceipt` bound to the detector/solver,
+    /// domain, and `CalibrationOrTuning` split records, but empirical calibration is not verified
+    /// by this kernel (`D09` remains open).
+    CallerDeclaredReceiptUnverified { receipt: CalibrationReceipt },
+}
+
+impl ScoreCalibrationStatus {
+    /// Returns `false`: caller-supplied receipts are unverified declarations until `D09`
+    /// empirical calibration fitting and verification are implemented.
+    pub const fn is_verified_calibrated_probability(&self) -> bool {
+        false
+    }
 }
 
 /// Input to [`evaluate_held_out_run`].
@@ -466,6 +524,8 @@ pub struct HeldOutEvaluationInput {
     pub evaluation_run_version: VersionId,
     pub detector_or_solver_id: OpaqueId,
     pub detector_or_solver_version: VersionId,
+    /// Must be `false`: claiming verified calibrated probabilities before `D09` calibration
+    /// verification is rejected with [`ValidationLabError::UncalibratedScorePresentedAsProbability`].
     pub claims_calibrated_probabilities: bool,
     pub calibration_receipt: Option<CalibrationReceipt>,
     pub items: Vec<HeldOutItemEvaluation>,
@@ -496,7 +556,8 @@ pub struct PartitionMetrics {
     pub p95_processing_latency_ms: Option<u64>,
 }
 
-/// Verified held-out evaluation report preserving separate real-fixture and simulation metrics (`#40`).
+/// Verified held-out evaluation report preserving per-item outcome receipts and separate
+/// real-fixture vs. simulation metrics (`#40`, `AGENTS.md` §2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldOutEvaluationReport {
     pub method_id: &'static str,
@@ -506,12 +567,23 @@ pub struct HeldOutEvaluationReport {
     pub dataset_version: VersionId,
     pub detector_or_solver_id: OpaqueId,
     pub detector_or_solver_version: VersionId,
-    pub is_calibrated_probability: bool,
-    pub calibration_receipt: Option<CalibrationReceipt>,
+    pub score_calibration_status: ScoreCalibrationStatus,
     pub score_caveat: &'static str,
     pub simulation_label: &'static str,
     pub labeled_real_fixture_metrics: PartitionMetrics,
     pub controlled_simulation_metrics: PartitionMetrics,
+    /// Deterministic per-item audit receipts in manifest order, preserving individual decisions,
+    /// raw scores, latencies, and explicit skip reasons/details (`#40`, `AGENTS.md` §2).
+    pub item_receipts: Vec<HeldOutItemReceipt>,
+}
+
+impl HeldOutEvaluationReport {
+    /// Returns whether detector scores in this report are verified calibrated probabilities
+    /// (`false` until `D09` empirical calibration verification is implemented).
+    pub const fn is_calibrated_probability(&self) -> bool {
+        self.score_calibration_status
+            .is_verified_calibrated_probability()
+    }
 }
 
 /// Cache warmup state for an operational benchmark (`docs/delivery.md` §4).
@@ -602,7 +674,7 @@ pub struct CancellationAndRecoveryInput {
     pub interrupted_import_left_partial_case: bool,
 }
 
-/// Verification that `StandardGlass` and `ReducedEffects` produce identical scientific/numerical outputs (`AGENTS.md` §2, `docs/delivery.md` §4).
+/// Verification that `StandardGlass` and `ReducedEffects` produce identical declared numerical outputs (`AGENTS.md` §2, `docs/delivery.md` §4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VisualQualityParityInput {
     pub marker_count: u32,
@@ -641,14 +713,14 @@ pub struct LatencySummaryMs {
     pub max_ms: u64,
 }
 
-/// Comparison of a measured operational metric against its proposed design target in `docs/delivery.md` §4.
+/// Comparison of a caller-supplied operational metric against its proposed design target in `docs/delivery.md` §4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetComparisonOutcome {
     WithinProposedTarget,
     ExceededProposedTarget,
 }
 
-/// Verified operational, resource, backpressure, and recovery benchmark report (`#40`, `docs/delivery.md` §4).
+/// Validated operational, resource, backpressure, and recovery benchmark report (`#40`, `docs/delivery.md` §4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationalBenchmarkReport {
     pub method_id: &'static str,
@@ -896,7 +968,7 @@ impl fmt::Display for ValidationLabError {
                 record_version.as_str()
             ),
             Self::UncalibratedScorePresentedAsProbability => f.write_str(
-                "detector scores cannot be claimed as calibrated probabilities without a verified CalibrationReceipt",
+                "detector scores cannot be claimed as verified calibrated probabilities before D09 empirical calibration verification",
             ),
             Self::InvalidCalibrationReceipt { reason } => {
                 write!(f, "invalid calibration receipt: {reason}")
@@ -1001,10 +1073,11 @@ fn validate_text_field(
 }
 
 fn validate_perturbation(
-    record_id: &OpaqueId,
+    record: &DatasetRecord,
     perturbation: &PerturbationSpec,
     limits: &ValidationLabLimits,
 ) -> Result<(), ValidationLabError> {
+    let record_id = &record.record_id;
     match perturbation {
         PerturbationSpec::SensorNoise {
             sigma_norm_milli, ..
@@ -1125,10 +1198,16 @@ fn validate_perturbation(
         PerturbationSpec::DegenerateSightlineGeometry {
             crossing_angle_mrad,
         } => {
-            if *crossing_angle_mrad >= 18_000 {
+            if *crossing_angle_mrad > MAX_DEGENERATE_CROSSING_ANGLE_MRAD {
                 return Err(ValidationLabError::InvalidPerturbationParameter {
                     record_id: record_id.clone(),
-                    reason: "DegenerateSightlineGeometry crossing_angle_mrad must be < 18_000 (< ~1.03 deg)",
+                    reason: "DegenerateSightlineGeometry crossing_angle_mrad must be <= 17 (< 1 deg / MIN_CROSSING_ANGLE_RAD)",
+                });
+            }
+            if record.expected_label != GroundTruthLabel::DegenerateRequiresInsufficientEvidence {
+                return Err(ValidationLabError::InvalidPerturbationParameter {
+                    record_id: record_id.clone(),
+                    reason: "DegenerateSightlineGeometry record must have expected_label == DegenerateRequiresInsufficientEvidence",
                 });
             }
         }
@@ -1136,8 +1215,9 @@ fn validate_perturbation(
     Ok(())
 }
 
-/// Validates a dataset manifest, enforcing split disjointness, SHA-256 integrity, and separation
-/// between labeled real fixtures and controlled simulations (`#40`, `FIELD-04`, `A09`, `A13`).
+/// Validates a dataset manifest, enforcing split disjointness, declared SHA-256 digest syntax and
+/// uniqueness across splits, and separation between labeled real fixtures and controlled
+/// simulations (`#40`, `FIELD-04`, `A09`, `A13`).
 pub fn validate_dataset_manifest<F>(
     input: DatasetManifestInput,
     limits: &ValidationLabLimits,
@@ -1272,7 +1352,7 @@ where
                     });
                 }
                 for perturbation in perturbations {
-                    validate_perturbation(&record.record_id, perturbation, limits)?;
+                    validate_perturbation(record, perturbation, limits)?;
                 }
                 split_comp.controlled_simulation_count =
                     split_comp.controlled_simulation_count.saturating_add(1);
@@ -1419,8 +1499,8 @@ fn summarize_latency_slice(samples: &mut [u64]) -> Option<LatencySummaryMs> {
 }
 
 /// Evaluates a held-out run against a validated dataset manifest, enforcing anti-cherry-picking
-/// coverage, score-calibration gating, generated-detail guards, and separate real vs. simulation
-/// metrics (`#40`, `FIELD-04`, `CAM-05`, `A09`, `A10`, `A13`).
+/// coverage, score-calibration gating, generated-detail guards, per-item receipt retention, and
+/// separate real vs. simulation metrics (`#40`, `FIELD-04`, `CAM-05`, `A09`, `A10`, `A13`).
 pub fn evaluate_held_out_run<F>(
     manifest: &ValidatedDatasetManifest,
     input: HeldOutEvaluationInput,
@@ -1440,7 +1520,9 @@ where
         });
     }
 
-    if input.claims_calibrated_probabilities && input.calibration_receipt.is_none() {
+    // Because D09 empirical calibration fitting and verification are not performed by this kernel,
+    // asserting verified calibrated probabilities is always rejected (`CAM-05`, `AGENTS.md` §§2–3).
+    if input.claims_calibrated_probabilities {
         return Err(ValidationLabError::UncalibratedScorePresentedAsProbability);
     }
 
@@ -1450,20 +1532,61 @@ where
                 reason: "calibration_split_dataset_version does not match the validated manifest version",
             });
         }
-        let cal_total = manifest.calibration_composition().total_count();
-        if cal_total == 0 || receipt.evaluated_calibration_sample_count == 0 {
+        if receipt.detector_or_solver_id != input.detector_or_solver_id
+            || receipt.detector_or_solver_version != input.detector_or_solver_version
+        {
             return Err(ValidationLabError::InvalidCalibrationReceipt {
-                reason: "CalibrationOrTuning split must be non-empty and have evaluated_calibration_sample_count > 0",
+                reason: "CalibrationReceipt detector_or_solver_id/version does not match the evaluated run",
             });
         }
-        if receipt.evaluated_calibration_sample_count > cal_total {
+        if receipt.evaluated_calibration_record_versions.is_empty() {
             return Err(ValidationLabError::InvalidCalibrationReceipt {
-                reason: "evaluated_calibration_sample_count exceeds CalibrationOrTuning split size",
+                reason: "evaluated_calibration_record_versions must not be empty",
+            });
+        }
+        if receipt.evaluated_calibration_record_versions.len() > limits.max_evaluated_items {
+            return Err(ValidationLabError::LimitExceeded {
+                kind: ValidationLabLimitKind::EvaluatedItems,
+                limit: limits.max_evaluated_items,
+                actual: receipt.evaluated_calibration_record_versions.len(),
             });
         }
         if receipt.empirical_brier_score_milli > 1_000 {
             return Err(ValidationLabError::InvalidCalibrationReceipt {
                 reason: "empirical_brier_score_milli must be in 0..=1_000",
+            });
+        }
+
+        let mut expected_cal_versions = BTreeSet::new();
+        for record in manifest.records() {
+            if record.split == DatasetSplit::CalibrationOrTuning
+                && record.domain == receipt.calibrated_domain
+            {
+                expected_cal_versions.insert(record.record_version.clone());
+            }
+        }
+        if expected_cal_versions.is_empty() {
+            return Err(ValidationLabError::InvalidCalibrationReceipt {
+                reason: "manifest has no CalibrationOrTuning records for receipt.calibrated_domain",
+            });
+        }
+
+        let mut seen_cal_versions = BTreeSet::new();
+        for ver in &receipt.evaluated_calibration_record_versions {
+            if !seen_cal_versions.insert(ver.clone()) {
+                return Err(ValidationLabError::InvalidCalibrationReceipt {
+                    reason: "duplicate record version in evaluated_calibration_record_versions",
+                });
+            }
+            if !expected_cal_versions.contains(ver) {
+                return Err(ValidationLabError::InvalidCalibrationReceipt {
+                    reason: "evaluated_calibration_record_versions contains a version outside the manifest's CalibrationOrTuning split for calibrated_domain",
+                });
+            }
+        }
+        if seen_cal_versions.len() != expected_cal_versions.len() {
+            return Err(ValidationLabError::InvalidCalibrationReceipt {
+                reason: "evaluated_calibration_record_versions must cover all CalibrationOrTuning records in calibrated_domain without omission",
             });
         }
     }
@@ -1492,28 +1615,29 @@ where
         .try_reserve(sim_acc.manifest_record_count)
         .map_err(|_| ValidationLabError::AllocationFailed)?;
 
-    let mut accounted_versions = BTreeSet::new();
+    let mut outcomes_by_version: BTreeMap<VersionId, HeldOutItemOutcome> = BTreeMap::new();
+    let mut evaluated_in_calibrated_domain_count: usize = 0;
 
-    for (idx, item) in input.items.iter().enumerate() {
+    for (idx, item) in input.items.into_iter().enumerate() {
         if idx % CONTROL_CHECK_INTERVAL == 0 {
             check_stop().map_err(ValidationLabError::Stopped)?;
         }
 
         let Some(&record) = held_out_by_version.get(&item.record_version) else {
             return Err(ValidationLabError::InvalidHeldOutEvaluationTarget {
-                record_id: item.record_id.clone(),
-                record_version: item.record_version.clone(),
+                record_id: item.record_id,
+                record_version: item.record_version,
             });
         };
         if record.record_id != item.record_id {
             return Err(ValidationLabError::InvalidHeldOutEvaluationTarget {
-                record_id: item.record_id.clone(),
-                record_version: item.record_version.clone(),
+                record_id: item.record_id,
+                record_version: item.record_version,
             });
         }
-        if !accounted_versions.insert(item.record_version.clone()) {
+        if outcomes_by_version.contains_key(&item.record_version) {
             return Err(ValidationLabError::DuplicateHeldOutEvaluationItem {
-                record_version: item.record_version.clone(),
+                record_version: item.record_version,
             });
         }
 
@@ -1541,13 +1665,26 @@ where
                         record_id: record.record_id.clone(),
                     });
                 }
-                if let Some(score) = raw_score_bps
-                    && *score > 10_000
+                if let Some(score) = raw_score_bps {
+                    if *score > 10_000 {
+                        return Err(ValidationLabError::InvalidScoreBasisPoints {
+                            record_id: record.record_id.clone(),
+                            raw_score_bps: *score,
+                        });
+                    }
+                    if let Some(receipt) = &input.calibration_receipt
+                        && record.domain != receipt.calibrated_domain
+                    {
+                        return Err(ValidationLabError::InvalidCalibrationReceipt {
+                            reason: "scored held-out record domain does not match CalibrationReceipt calibrated_domain",
+                        });
+                    }
+                }
+                if let Some(receipt) = &input.calibration_receipt
+                    && record.domain == receipt.calibrated_domain
                 {
-                    return Err(ValidationLabError::InvalidScoreBasisPoints {
-                        record_id: record.record_id.clone(),
-                        raw_score_bps: *score,
-                    });
+                    evaluated_in_calibrated_domain_count =
+                        evaluated_in_calibrated_domain_count.saturating_add(1);
                 }
 
                 acc.evaluated_record_count = acc.evaluated_record_count.saturating_add(1);
@@ -1617,19 +1754,46 @@ where
                 acc.skipped_record_count = acc.skipped_record_count.saturating_add(1);
             }
         }
+
+        outcomes_by_version.insert(item.record_version, item.outcome);
     }
 
-    // Anti-cherry-picking check: every HeldOutEvaluation record in the manifest must be accounted for.
+    // Anti-cherry-picking and per-item receipt construction in deterministic manifest order.
+    let mut item_receipts = Vec::new();
+    item_receipts
+        .try_reserve(held_out_by_version.len())
+        .map_err(|_| ValidationLabError::AllocationFailed)?;
+
     for record in manifest.records() {
-        if record.split == DatasetSplit::HeldOutEvaluation
-            && !accounted_versions.contains(&record.record_version)
-        {
-            return Err(ValidationLabError::HeldOutRecordSilentlyOmitted {
+        if record.split == DatasetSplit::HeldOutEvaluation {
+            let Some(outcome) = outcomes_by_version.remove(&record.record_version) else {
+                return Err(ValidationLabError::HeldOutRecordSilentlyOmitted {
+                    record_id: record.record_id.clone(),
+                    record_version: record.record_version.clone(),
+                });
+            };
+            item_receipts.push(HeldOutItemReceipt {
                 record_id: record.record_id.clone(),
                 record_version: record.record_version.clone(),
+                domain: record.domain,
+                is_simulation: record.is_simulation(),
+                expected_label: record.expected_label,
+                observed_duration_ms: record.observed_duration_ms,
+                outcome,
             });
         }
     }
+
+    if input.calibration_receipt.is_some() && evaluated_in_calibrated_domain_count == 0 {
+        return Err(ValidationLabError::InvalidCalibrationReceipt {
+            reason: "CalibrationReceipt cannot be attached when zero held-out items in calibrated_domain were evaluated",
+        });
+    }
+
+    let score_calibration_status = match input.calibration_receipt {
+        Some(receipt) => ScoreCalibrationStatus::CallerDeclaredReceiptUnverified { receipt },
+        None => ScoreCalibrationStatus::UncalibratedDiagnosticScores,
+    };
 
     check_stop().map_err(ValidationLabError::Stopped)?;
     Ok(HeldOutEvaluationReport {
@@ -1640,18 +1804,17 @@ where
         dataset_version: manifest.dataset_version().clone(),
         detector_or_solver_id: input.detector_or_solver_id,
         detector_or_solver_version: input.detector_or_solver_version,
-        is_calibrated_probability: input.claims_calibrated_probabilities
-            && input.calibration_receipt.is_some(),
-        calibration_receipt: input.calibration_receipt,
+        score_calibration_status,
         score_caveat: UNCALIBRATED_SCORE_CAVEAT,
         simulation_label: SIMULATION_LABEL,
         labeled_real_fixture_metrics: real_acc.finalize(),
         controlled_simulation_metrics: sim_acc.finalize(),
+        item_receipts,
     })
 }
 
-/// Evaluates an operational, resource, backpressure, cancellation, and visual-parity benchmark run
-/// against declared design targets (`#40`, `DEVICE-04`, `A09`, `A12`, `docs/delivery.md` §4).
+/// Evaluates a caller-supplied operational, resource, backpressure, cancellation, and visual-parity
+/// benchmark receipt against declared design targets (`#40`, `DEVICE-04`, `A09`, `A12`, `docs/delivery.md` §4).
 pub fn evaluate_operational_benchmark<F>(
     mut input: OperationalBenchmarkInput,
     limits: &ValidationLabLimits,

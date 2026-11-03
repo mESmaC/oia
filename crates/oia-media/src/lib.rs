@@ -15,3 +15,10 @@ pub mod recreation;
 /// Crate boundary marker for `oia-media` (`docs/architecture.md` §1.2, `#9`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MediaBoundary;
+
+pub(crate) fn is_valid_lowercase_sha256_hex(digest: &str) -> bool {
+    digest.len() == 64
+        && digest
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}

@@ -5,48 +5,57 @@
 //! This module implements a dependency-independent in-memory validation and
 //! evaluation kernel for `#29`:
 //! - Enforces `CAM-01`/`CAM-02` camera admission rules before automated anomaly
-//!   processing: home interiors, restricted sources, unpermitted automated
-//!   processing, and non-live substitutes (`StillFallback`, `StreetViewFallback`,
-//!   `SyntheticPlaceholder`) are refused as scene-anomaly event triggers, with
-//!   restricted sources recorded as unavailable rather than triggering alternate
-//!   access attempts.
+//!   processing: home interiors (`HomeInterior` and `ViewIntoHomeInterior`, or
+//!   unmasked private windows), restricted sources, unpermitted or unknown
+//!   automated-processing terms, and non-live substitutes (`StillFallback`,
+//!   `StreetViewFallback`, `SyntheticPlaceholder`) are refused as scene-anomaly
+//!   event triggers, with restricted sources recorded as unavailable rather than
+//!   triggering alternate access attempts.
 //! - Separates camera-health and feed-fault observations (`FrozenFrame`,
 //!   `ExposureShift`, `CameraRepositioned`, `RepeatedRebroadcast`, `TimingDrift`,
 //!   `CoverageGap`, `SourceRestricted`) from candidate scene events
 //!   (`SkyTransient`, `UnusualApparentMotion`, `RoadObstruction`,
 //!   `StoppedVehicle`, `WrongWayTravel`, `EnvironmentalChange`) so camera faults
-//!   never publish as scene anomalies (`CAM-03`, `A09`).
+//!   never publish as scene anomalies (`CAM-03`, `A09`). Late-arriving faults
+//!   retroactively quarantine overlapping candidates and flag any existing reviews
+//!   for reassessment.
 //! - Packages candidate scene events with pinned original frame/clip `VersionId`s
 //!   and 64-character lowercase hex SHA-256 digests, bounded pre/post context
 //!   frames (or explicit buffer-expiry/retention-policy omission status),
 //!   trigger explanation, detector model/version/configuration identity, and
 //!   raw uncalibrated detector scores paired with [`UNCALIBRATED_SCORE_CAVEAT`]
 //!   and [`CANDIDATE_EVENT_CAVEAT`] (`CAM-04`, `CAM-05`).
-//! - Deduplicates repeated notifications for persistent candidates within a
-//!   configured window while preserving merged observation counts and explicit
-//!   coverage-loss spans (`CAM-04`, `A09`).
+//! - Deduplicates overlapping or nearby triggers within a configured window by
+//!   retaining every merged trigger segment (`RetainedTriggerSegment`), advancing
+//!   `current_version` to the new trigger's `candidate_version`, and marking any
+//!   prior human reviews `needs_reassessment = true` (`CAM-04`, `AGENTS.md` §2).
 //! - Maintains append-only human review history (`ArtifactOrFault`,
 //!   `LikelyOrdinaryExplanation`, `InsufficientEvidence`,
 //!   `RetainedForInvestigation`) with optimistic concurrency (`expected_current_version`)
 //!   and non-reusable `VersionId`s (`CAM-05`).
-//! - Validates cross-camera association and multi-view triangulation readiness,
-//!   refusing shared upstream feeds, unsynchronized clocks, uncalibrated views,
-//!   or calibrations invalidated by camera movement (`CAM-05`, `A09`).
-//! - Computes held-out operational benchmark metrics: false alerts per observed
-//!   camera-hour, labeled-event recall, detection latency summary, coverage
-//!   fraction, and fault-rejection count (`CAM-03`–`CAM-05`, `A09`, `AGENTS.md` §8).
+//! - Validates cross-camera association separately from multi-view triangulation
+//!   readiness: uncalibrated independent views may be associated with
+//!   `eligible_for_triangulation() == false`, whereas triangulation requires
+//!   active unmodified calibration on both cameras (`CAM-05`, `A09`).
+//! - Computes held-out operational benchmark metrics with half-open `[start, end)`
+//!   intervals, pinned evaluation corpus identity/version, active-coverage
+//!   recall (separating truth events outside the evaluation window or inside
+//!   coverage gaps), window-scoped deduplication and fault counters, early
+//!   detection counts, and false alerts per observed camera-hour (`CAM-03`–`CAM-05`,
+//!   `A09`, `AGENTS.md` §8).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use oia_domain::{ActorId, IdError, OpaqueId, SchemaVersion, VersionId};
 
+use crate::is_valid_lowercase_sha256_hex;
+
 /// Mandatory caveat attached to every candidate camera anomaly event (`CAM-04`).
 pub const CANDIDATE_EVENT_CAVEAT: &str = "Candidate camera anomaly for human review only; not an identification of a UAP, crime, or emergency.";
 
 /// Mandatory caveat attached to raw detector scores (`CAM-05`, `AGENTS.md` §2).
-pub const UNCALIBRATED_SCORE_CAVEAT: &str =
-    "Raw detector score is an uncalibrated ranking signal, not a calibrated class probability.";
+pub const UNCALIBRATED_SCORE_CAVEAT: &str = "Raw detector score is an uncalibrated ranking signal, not a calibrated class probability.";
 
 /// Mandatory policy notice when a camera source becomes restricted (`CAM-01`, `A09`).
 pub const RESTRICTED_SOURCE_POLICY_NOTICE: &str = "Source is restricted or unavailable; OIA records unavailability and does not probe hidden endpoints, guess credentials, or seek alternate access.";
@@ -202,8 +211,31 @@ pub enum CameraViewKind {
     SkyOrObservatory,
     WeatherOrEnvironment,
     CommercialExterior,
-    /// Strictly excluded by `CAM-01`/`CAM-02`.
-    HomeInteriorOrPrivateResidence,
+    /// Public street or outdoor view that includes residential building exteriors (`CAM-01` permits
+    /// ordinary exterior street views when private windows/interiors are masked where needed).
+    ResidentialExteriorStreetView,
+    /// Camera placed inside a home (`CAM-01` unconditionally excludes).
+    HomeInterior,
+    /// Camera view directed into a private home interior (`CAM-01` unconditionally excludes).
+    ViewIntoHomeInterior,
+}
+
+/// Explicit permission status for source data-use conditions (`CAM-02`, `AGENTS.md` §2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceUsePermission {
+    Permitted,
+    Prohibited,
+    Unknown,
+}
+
+impl fmt::Display for SourceUsePermission {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Permitted => f.write_str("permitted"),
+            Self::Prohibited => f.write_str("prohibited"),
+            Self::Unknown => f.write_str("unknown"),
+        }
+    }
 }
 
 /// Origin kind of imagery supplied for a camera source (`CAM-02`, `A09`).
@@ -257,8 +289,9 @@ pub struct CameraSourceProfile {
     pub access_status: CameraAccessStatus,
     pub view_kind: CameraViewKind,
     pub feed_kind: FeedObservationKind,
-    pub automated_processing_permitted: bool,
-    pub clip_retention_permitted: bool,
+    pub automated_processing: SourceUsePermission,
+    pub clip_retention: SourceUsePermission,
+    pub redistribution: SourceUsePermission,
     pub max_retention_window_ms: Option<u64>,
     pub calibration: CameraCalibrationState,
 }
@@ -297,7 +330,9 @@ pub struct DetectionRegionConfig {
     pub min_persistence_ms: u64,
     /// Window in milliseconds within which repeated triggers of the same kind/region deduplicate.
     pub deduplication_window_ms: u64,
-    /// Whether the region includes a privacy mask excluding private windows/areas (`CAM-02`).
+    /// Whether the region includes private windows or areas that require an active privacy mask (`CAM-02`).
+    pub requires_privacy_mask: bool,
+    /// Whether a privacy mask excluding private windows/areas is applied (`CAM-02`).
     pub privacy_mask_applied: bool,
 }
 
@@ -378,12 +413,12 @@ pub struct RetainedFrameRef {
 /// Availability of pre-event and post-event context frames (`CAM-04`, `A09`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextWindowStatus {
-    /// Both pre-event and post-event context frames were retained within policy bounds.
+    /// Both pre-event and post-event context frames were retained within policy bounds (at least one frame).
     Complete {
         pre_frames: Vec<RetainedFrameRef>,
         post_frames: Vec<RetainedFrameRef>,
     },
-    /// Some context frames expired from the bounded ring buffer before capture completed.
+    /// Some context frames expired from the bounded ring buffer before capture completed (`expired_frame_count >= 1`).
     PartialBufferExpired {
         pre_frames: Vec<RetainedFrameRef>,
         post_frames: Vec<RetainedFrameRef>,
@@ -402,35 +437,45 @@ pub struct DetectorRunMetadata {
     pub config_digest_sha256: String,
 }
 
+/// Input payload for a candidate scene detection emitted by a scoped detector (`CAM-03`, `CAM-04`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneTriggerInput {
+    pub observation_id: OpaqueId,
+    pub candidate_id: OpaqueId,
+    pub candidate_version: VersionId,
+    pub region_id: OpaqueId,
+    pub category: AnomalyCategory,
+    pub baseline_at_trigger: SceneBaselineKind,
+    /// Half-open `[event_start_ms, event_end_ms)` scene event interval.
+    pub event_start_ms: i64,
+    pub event_end_ms: i64,
+    pub detection_emitted_ms: i64,
+    pub observed_persistence_frames: u32,
+    pub raw_score_bps: u16,
+    pub clock_uncertainty_ms: u64,
+    pub trigger_explanation: String,
+    pub primary_frame: RetainedFrameRef,
+    pub context_window: ContextWindowStatus,
+}
+
+/// Input payload for a camera-health fault or coverage interruption (`CAM-03`, `A09`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HealthEventInput {
+    pub observation_id: OpaqueId,
+    pub health_state: CameraHealthState,
+    /// Half-open `[start_ms, end_ms)` fault interval (`end_ms > start_ms`).
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub detail: String,
+}
+
 /// Observation step submitted to the camera anomaly monitor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ObservationStepInput {
     /// A candidate scene detection emitted by a scoped detector on an upstream frame.
-    SceneTrigger {
-        observation_id: OpaqueId,
-        candidate_id: OpaqueId,
-        candidate_version: VersionId,
-        region_id: OpaqueId,
-        category: AnomalyCategory,
-        baseline_at_trigger: SceneBaselineKind,
-        event_start_ms: i64,
-        event_end_ms: i64,
-        detection_emitted_ms: i64,
-        observed_persistence_frames: u32,
-        raw_score_bps: u16,
-        clock_uncertainty_ms: u64,
-        trigger_explanation: String,
-        primary_frame: RetainedFrameRef,
-        context_window: ContextWindowStatus,
-    },
+    SceneTrigger(Box<SceneTriggerInput>),
     /// A camera-health fault or coverage interruption observed on the feed (`CAM-03`, `A09`).
-    HealthEvent {
-        observation_id: OpaqueId,
-        health_state: CameraHealthState,
-        start_ms: i64,
-        end_ms: i64,
-        detail: String,
-    },
+    HealthEvent(HealthEventInput),
 }
 
 /// Recorded camera-health or coverage-loss event (`CAM-03`, `CAM-04`, `A09`).
@@ -475,6 +520,85 @@ impl RecordedHealthEvent {
     }
 }
 
+/// Retained trigger segment preserved when triggers are recorded or deduplicated (`CAM-04`, `AGENTS.md` §2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetainedTriggerSegment {
+    observation_id: OpaqueId,
+    segment_version: VersionId,
+    baseline_at_trigger: SceneBaselineKind,
+    event_start_ms: i64,
+    event_end_ms: i64,
+    detection_emitted_ms: i64,
+    observed_persistence_frames: u32,
+    raw_score_bps: u16,
+    clock_uncertainty_ms: u64,
+    trigger_explanation: String,
+    primary_frame: RetainedFrameRef,
+    context_window: ContextWindowStatus,
+}
+
+impl RetainedTriggerSegment {
+    #[must_use]
+    pub fn observation_id(&self) -> &OpaqueId {
+        &self.observation_id
+    }
+
+    #[must_use]
+    pub fn segment_version(&self) -> &VersionId {
+        &self.segment_version
+    }
+
+    #[must_use]
+    pub const fn baseline_at_trigger(&self) -> SceneBaselineKind {
+        self.baseline_at_trigger
+    }
+
+    #[must_use]
+    pub const fn event_start_ms(&self) -> i64 {
+        self.event_start_ms
+    }
+
+    #[must_use]
+    pub const fn event_end_ms(&self) -> i64 {
+        self.event_end_ms
+    }
+
+    #[must_use]
+    pub const fn detection_emitted_ms(&self) -> i64 {
+        self.detection_emitted_ms
+    }
+
+    #[must_use]
+    pub const fn observed_persistence_frames(&self) -> u32 {
+        self.observed_persistence_frames
+    }
+
+    #[must_use]
+    pub const fn raw_score_bps(&self) -> u16 {
+        self.raw_score_bps
+    }
+
+    #[must_use]
+    pub const fn clock_uncertainty_ms(&self) -> u64 {
+        self.clock_uncertainty_ms
+    }
+
+    #[must_use]
+    pub fn trigger_explanation(&self) -> &str {
+        &self.trigger_explanation
+    }
+
+    #[must_use]
+    pub fn primary_frame(&self) -> &RetainedFrameRef {
+        &self.primary_frame
+    }
+
+    #[must_use]
+    pub fn context_window(&self) -> &ContextWindowStatus {
+        &self.context_window
+    }
+}
+
 /// Human review disposition for a candidate camera anomaly (`CAM-05`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnomalyReviewDisposition {
@@ -509,6 +633,7 @@ pub struct AnomalyReviewEntry {
     disposition: AnomalyReviewDisposition,
     rationale: String,
     cited_frame_versions: Vec<VersionId>,
+    needs_reassessment: bool,
 }
 
 impl AnomalyReviewEntry {
@@ -546,9 +671,16 @@ impl AnomalyReviewEntry {
     pub fn cited_frame_versions(&self) -> &[VersionId] {
         &self.cited_frame_versions
     }
+
+    /// True if a subsequent deduplicated trigger merge or late-arriving camera fault
+    /// altered the candidate after this review was recorded (`AGENTS.md` §2).
+    #[must_use]
+    pub const fn needs_reassessment(&self) -> bool {
+        self.needs_reassessment
+    }
 }
 
-/// Validated candidate camera anomaly event with original context and review history (`CAM-04`, `CAM-05`).
+/// Validated candidate camera anomaly event with retained trigger segments and review history (`CAM-04`, `CAM-05`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidateAnomalyEvent {
     candidate_id: OpaqueId,
@@ -570,7 +702,10 @@ pub struct CandidateAnomalyEvent {
     detector: DetectorRunMetadata,
     primary_frame: RetainedFrameRef,
     context_window: ContextWindowStatus,
+    trigger_segments: Vec<RetainedTriggerSegment>,
     reviews: Vec<AnomalyReviewEntry>,
+    quarantined_by_fault: Option<CameraHealthState>,
+    needs_reassessment: bool,
 }
 
 impl CandidateAnomalyEvent {
@@ -690,6 +825,12 @@ impl CandidateAnomalyEvent {
         &self.context_window
     }
 
+    /// Returns all retained trigger segments (initial trigger plus any deduplicated follow-up segments).
+    #[must_use]
+    pub fn trigger_segments(&self) -> &[RetainedTriggerSegment] {
+        &self.trigger_segments
+    }
+
     #[must_use]
     pub fn reviews(&self) -> &[AnomalyReviewEntry] {
         &self.reviews
@@ -699,17 +840,37 @@ impl CandidateAnomalyEvent {
     pub fn current_disposition(&self) -> Option<AnomalyReviewDisposition> {
         self.reviews.last().map(AnomalyReviewEntry::disposition)
     }
+
+    /// If a late-arriving camera fault overlapped this candidate's uncertainty-widened interval,
+    /// returns the fault that quarantined it (`CAM-03`, `A09`).
+    #[must_use]
+    pub const fn quarantined_by_fault(&self) -> Option<CameraHealthState> {
+        self.quarantined_by_fault
+    }
+
+    /// True if a deduplicated trigger merge or late-arriving camera fault occurred after a human
+    /// review was recorded, requiring reassessment (`AGENTS.md` §2).
+    #[must_use]
+    pub const fn needs_reassessment(&self) -> bool {
+        self.needs_reassessment
+    }
 }
 
 /// Outcome of processing a scene trigger step (`CAM-04`, `A09`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TriggerOutcome {
-    /// Emitted a new candidate notification with its assigned `candidate_id`.
-    PublishedNewCandidate { candidate_id: OpaqueId },
-    /// Merged into an existing active candidate within the region's deduplication window.
+    /// Emitted a new candidate notification with its assigned `candidate_id` and `candidate_version`.
+    PublishedNewCandidate {
+        candidate_id: OpaqueId,
+        candidate_version: VersionId,
+    },
+    /// Merged into an existing active candidate within the region's deduplication window,
+    /// advancing the candidate's `current_version` and retaining all segment frames/metadata.
     DeduplicatedIntoExisting {
         candidate_id: OpaqueId,
+        new_candidate_version: VersionId,
         merged_trigger_count: u32,
+        flagged_reviews_for_reassessment: bool,
     },
 }
 
@@ -732,58 +893,141 @@ pub struct LabeledSceneEvent {
     pub truth_id: OpaqueId,
     pub region_id: OpaqueId,
     pub category: AnomalyCategory,
+    /// Half-open `[start_ms, end_ms)` ground-truth interval (`end_ms > start_ms`).
     pub start_ms: i64,
     pub end_ms: i64,
 }
 
+/// Snapshot of a region's configured threshold and persistence parameters included in
+/// an operational benchmark summary (`CAM-03`, `A09`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegionBenchmarkConfig {
+    pub region_id: OpaqueId,
+    pub baseline: SceneBaselineKind,
+    pub score_threshold_bps: u16,
+    pub min_persistence_frames: u32,
+    pub min_persistence_ms: u64,
+    pub deduplication_window_ms: u64,
+}
+
 /// Operational evaluation metrics on held-out camera data (`CAM-03`–`CAM-05`, `A09`, `AGENTS.md` §8).
 ///
-/// Reports operational false alerts per observed camera-hour, labeled-event recall,
-/// detection latency, and coverage loss rather than substituting raw frame-level
-/// classifier accuracy.
+/// Reports operational false alerts per observed camera-hour, labeled-event recall on
+/// active coverage, detection latency, and coverage loss rather than substituting raw
+/// frame-level classifier accuracy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationalEvaluationSummary {
     pub camera_id: OpaqueId,
     pub detector_id: OpaqueId,
     pub detector_version: VersionId,
+    pub detector_config_digest_sha256: String,
+    pub evaluation_corpus_id: OpaqueId,
+    pub evaluation_corpus_version: VersionId,
+    pub eval_start_ms: i64,
+    pub eval_end_ms: i64,
+    pub region_configs: Vec<RegionBenchmarkConfig>,
     pub total_window_ms: u64,
     pub missing_coverage_ms: u64,
     pub active_coverage_ms: u64,
     pub coverage_bps: u16,
-    pub labeled_event_count: usize,
+    /// Total ground-truth events supplied by the caller.
+    pub total_supplied_truth_events: usize,
+    /// Ground-truth events completely outside `[eval_start_ms, eval_end_ms)`.
+    pub truth_events_outside_window_count: usize,
+    /// Ground-truth events inside `[eval_start_ms, eval_end_ms)` that overlapped a coverage gap or fault.
+    pub truth_events_in_coverage_gap_count: usize,
+    /// Observable ground-truth events within active coverage.
+    pub observable_labeled_event_count: usize,
     pub matched_labeled_event_count: usize,
-    /// Recall in basis points (`0..=10_000`), or `None` when `labeled_event_count == 0`.
+    /// Recall in basis points (`0..=10_000`) over `observable_labeled_event_count`, or `None` when `0`.
     pub event_recall_bps: Option<u16>,
     pub total_candidate_alerts: usize,
+    pub quarantined_fault_candidates_in_window: usize,
     pub true_positive_alerts: usize,
     pub false_alert_count: usize,
     /// Operational false alerts per active observed camera-hour scaled by `1_000` (milli-alerts/hour).
     pub false_alerts_per_camera_hour_milli: u64,
+    pub early_detection_count: usize,
     pub min_detection_latency_ms: Option<u64>,
     pub mean_detection_latency_ms: Option<u64>,
     pub max_detection_latency_ms: Option<u64>,
-    pub deduplicated_repeat_triggers: u32,
-    pub fault_events_excluded_from_alerts: usize,
+    pub deduplicated_repeat_triggers_in_window: u32,
+    pub health_events_overlapping_window: usize,
+}
+
+/// Readiness of an associated cross-camera pair for multi-view geometric triangulation (`CAM-05`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TriangulationReadiness {
+    /// Both cameras have active, unmodified calibration versions.
+    Eligible {
+        first_calibration_version: VersionId,
+        second_calibration_version: VersionId,
+    },
+    /// The cameras are associated temporally and by independent source lineage, but at least
+    /// one camera is uncalibrated so geometric triangulation is unavailable (`CAM-05`).
+    UncalibratedAssociationOnly { uncalibrated_camera_ids: Vec<OpaqueId> },
 }
 
 /// Validated cross-camera association and multi-view triangulation readiness (`CAM-05`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CrossCameraAssociation {
-    pub first_candidate_id: OpaqueId,
-    pub second_candidate_id: OpaqueId,
-    pub first_camera_id: OpaqueId,
-    pub second_camera_id: OpaqueId,
-    pub first_calibration_version: VersionId,
-    pub second_calibration_version: VersionId,
-    pub temporal_skew_ms: u64,
-    pub combined_clock_uncertainty_ms: u64,
-    pub correspondence_rationale: String,
+    first_candidate_id: OpaqueId,
+    second_candidate_id: OpaqueId,
+    first_camera_id: OpaqueId,
+    second_camera_id: OpaqueId,
+    triangulation_readiness: TriangulationReadiness,
+    temporal_skew_ms: u64,
+    combined_clock_uncertainty_ms: u64,
+    correspondence_rationale: String,
 }
 
 impl CrossCameraAssociation {
     #[must_use]
+    pub fn first_candidate_id(&self) -> &OpaqueId {
+        &self.first_candidate_id
+    }
+
+    #[must_use]
+    pub fn second_candidate_id(&self) -> &OpaqueId {
+        &self.second_candidate_id
+    }
+
+    #[must_use]
+    pub fn first_camera_id(&self) -> &OpaqueId {
+        &self.first_camera_id
+    }
+
+    #[must_use]
+    pub fn second_camera_id(&self) -> &OpaqueId {
+        &self.second_camera_id
+    }
+
+    #[must_use]
+    pub fn triangulation_readiness(&self) -> &TriangulationReadiness {
+        &self.triangulation_readiness
+    }
+
+    #[must_use]
     pub const fn eligible_for_triangulation(&self) -> bool {
-        true
+        matches!(
+            self.triangulation_readiness,
+            TriangulationReadiness::Eligible { .. }
+        )
+    }
+
+    #[must_use]
+    pub const fn temporal_skew_ms(&self) -> u64 {
+        self.temporal_skew_ms
+    }
+
+    #[must_use]
+    pub const fn combined_clock_uncertainty_ms(&self) -> u64 {
+        self.combined_clock_uncertainty_ms
+    }
+
+    #[must_use]
+    pub fn correspondence_rationale(&self) -> &str {
+        &self.correspondence_rationale
     }
 }
 
@@ -805,6 +1049,7 @@ pub enum AnomalyError {
     },
     HomeInteriorExcluded {
         camera_id: OpaqueId,
+        view_kind: CameraViewKind,
     },
     SourceRestricted {
         camera_id: OpaqueId,
@@ -812,6 +1057,11 @@ pub enum AnomalyError {
     },
     AutomatedProcessingNotPermitted {
         camera_id: OpaqueId,
+        status: SourceUsePermission,
+    },
+    PrivacyMaskRequiredForRegion {
+        camera_id: OpaqueId,
+        region_id: OpaqueId,
     },
     NonObservationFeedSubstitute {
         camera_id: OpaqueId,
@@ -819,7 +1069,10 @@ pub enum AnomalyError {
     },
     RetentionPolicyForbidsClips {
         camera_id: OpaqueId,
+        status: SourceUsePermission,
     },
+    EmptyCompleteContextFrames,
+    ZeroExpiredFrameCountInPartialContext,
     ContextExceedsRetentionWindow {
         camera_id: OpaqueId,
         span_ms: u64,
@@ -849,6 +1102,16 @@ pub enum AnomalyError {
     DetectionBeforeEventStart {
         event_start_ms: i64,
         detection_emitted_ms: i64,
+    },
+    ReviewTimestampBeforeCandidateStart {
+        candidate_id: OpaqueId,
+        event_start_ms: i64,
+        reviewed_at_ms: i64,
+    },
+    ReviewTimestampRegression {
+        candidate_id: OpaqueId,
+        previous_reviewed_at_ms: i64,
+        reviewed_at_ms: i64,
     },
     OutOfOrderObservation {
         previous_start_ms: i64,
@@ -919,17 +1182,27 @@ impl fmt::Display for AnomalyError {
                 f,
                 "field `{field}` contains disallowed control, line-break, bidi, or zero-width characters"
             ),
-            Self::HomeInteriorExcluded { camera_id } => write!(
+            Self::HomeInteriorExcluded {
+                camera_id,
+                view_kind,
+            } => write!(
                 f,
-                "camera `{camera_id}` views a home interior or private residence and is excluded by CAM-01/CAM-02"
+                "camera `{camera_id}` has excluded view `{view_kind:?}` under CAM-01/CAM-02"
             ),
             Self::SourceRestricted {
                 camera_id,
                 policy_notice,
             } => write!(f, "camera `{camera_id}` restricted: {policy_notice}"),
-            Self::AutomatedProcessingNotPermitted { camera_id } => write!(
+            Self::AutomatedProcessingNotPermitted { camera_id, status } => write!(
                 f,
-                "camera `{camera_id}` source terms do not permit automated anomaly processing"
+                "camera `{camera_id}` automated processing permission is `{status}`, must be `permitted`"
+            ),
+            Self::PrivacyMaskRequiredForRegion {
+                camera_id,
+                region_id,
+            } => write!(
+                f,
+                "camera `{camera_id}` region `{region_id}` requires an active privacy mask before monitoring"
             ),
             Self::NonObservationFeedSubstitute {
                 camera_id,
@@ -938,9 +1211,17 @@ impl fmt::Display for AnomalyError {
                 f,
                 "camera `{camera_id}` supplies `{feed_kind}`, which cannot serve as scene-anomaly observation evidence"
             ),
-            Self::RetentionPolicyForbidsClips { camera_id } => write!(
+            Self::RetentionPolicyForbidsClips { camera_id, status } => write!(
                 f,
-                "camera `{camera_id}` retention policy forbids retaining pre/post context frames"
+                "camera `{camera_id}` clip retention status is `{status}`; pre/post context frames cannot be retained"
+            ),
+            Self::EmptyCompleteContextFrames => write!(
+                f,
+                "ContextWindowStatus::Complete requires at least one pre_frame or post_frame"
+            ),
+            Self::ZeroExpiredFrameCountInPartialContext => write!(
+                f,
+                "ContextWindowStatus::PartialBufferExpired requires expired_frame_count >= 1"
             ),
             Self::ContextExceedsRetentionWindow {
                 camera_id,
@@ -956,10 +1237,9 @@ impl fmt::Display for AnomalyError {
             Self::InvalidRawScoreBps(bps) => {
                 write!(f, "raw score {bps} bps must be within 0..=10000")
             }
-            Self::ZeroPersistenceFrames { region_id } => write!(
-                f,
-                "region `{region_id}` min_persistence_frames must be >= 1"
-            ),
+            Self::ZeroPersistenceFrames { region_id } => {
+                write!(f, "region `{region_id}` min_persistence_frames must be >= 1")
+            }
             Self::DuplicateRegionId(id) => write!(f, "duplicate region_id `{id}`"),
             Self::UnknownRegionId(id) => write!(f, "unknown region_id `{id}`"),
             Self::DuplicateObservationId(id) => write!(f, "duplicate observation_id `{id}`"),
@@ -979,7 +1259,7 @@ impl fmt::Display for AnomalyError {
             ),
             Self::InvalidTimeInterval { start_ms, end_ms } => write!(
                 f,
-                "invalid time interval [{start_ms}, {end_ms}): end_ms must be >= start_ms"
+                "invalid half-open time interval [{start_ms}, {end_ms}): end_ms must be > start_ms"
             ),
             Self::DetectionBeforeEventStart {
                 event_start_ms,
@@ -987,6 +1267,22 @@ impl fmt::Display for AnomalyError {
             } => write!(
                 f,
                 "detection timestamp {detection_emitted_ms} precedes event start {event_start_ms}"
+            ),
+            Self::ReviewTimestampBeforeCandidateStart {
+                candidate_id,
+                event_start_ms,
+                reviewed_at_ms,
+            } => write!(
+                f,
+                "review for candidate `{candidate_id}` at {reviewed_at_ms} precedes candidate start {event_start_ms}"
+            ),
+            Self::ReviewTimestampRegression {
+                candidate_id,
+                previous_reviewed_at_ms,
+                reviewed_at_ms,
+            } => write!(
+                f,
+                "review for candidate `{candidate_id}` at {reviewed_at_ms} precedes prior review at {previous_reviewed_at_ms}"
             ),
             Self::OutOfOrderObservation {
                 previous_start_ms,
@@ -1067,8 +1363,7 @@ impl fmt::Display for AnomalyError {
                 max_allowed_skew_ms,
             } => write!(
                 f,
-                "temporal skew {skew_ms} ms + combined clock uncertainty {combined_clock_uncertainty_ms} ms exceeds tolerance {max_allowed_skew_ms} ms",
-                combined_clock_uncertainty_ms = combined_uncertainty_ms
+                "temporal skew {skew_ms} ms + combined clock uncertainty {combined_uncertainty_ms} ms exceeds tolerance {max_allowed_skew_ms} ms"
             ),
             Self::EmptyEvaluationActiveCoverage => write!(
                 f,
@@ -1094,10 +1389,10 @@ fn is_disallowed_single_line_char(ch: char) -> bool {
         )
 }
 
-fn validate_single_line_text(
+fn check_single_line_text(
     value: &str,
     field: &'static str,
-    used_text_bytes: &mut usize,
+    staged_text_bytes: &mut usize,
     limits: AnomalyLimits,
 ) -> Result<(), AnomalyError> {
     if value.trim().is_empty() {
@@ -1106,7 +1401,7 @@ fn validate_single_line_text(
     if value.chars().any(is_disallowed_single_line_char) {
         return Err(AnomalyError::ControlCharacterInField { field });
     }
-    let next = used_text_bytes.saturating_add(value.len());
+    let next = staged_text_bytes.saturating_add(value.len());
     if next > limits.max_text_bytes {
         return Err(AnomalyError::LimitExceeded {
             kind: AnomalyLimitKind::TextBytes,
@@ -1114,16 +1409,12 @@ fn validate_single_line_text(
             max: limits.max_text_bytes,
         });
     }
-    *used_text_bytes = next;
+    *staged_text_bytes = next;
     Ok(())
 }
 
 fn validate_sha256_hex(digest: &str, field: &'static str) -> Result<(), AnomalyError> {
-    if digest.len() != 64
-        || !digest
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
+    if !is_valid_lowercase_sha256_hex(digest) {
         return Err(AnomalyError::InvalidSha256Hex { field });
     }
     Ok(())
@@ -1151,6 +1442,21 @@ fn validate_frame_ref(
     Ok(())
 }
 
+/// Checks whether two half-open intervals `[a_start, a_end)` and `[b_start, b_end)` overlap.
+const fn half_open_overlaps(a_start: i64, a_end: i64, b_start: i64, b_end: i64) -> bool {
+    a_start < b_end && b_start < a_end
+}
+
+/// Widens a half-open interval `[start_ms, end_ms)` by `uncertainty_ms` on both sides.
+const fn widen_interval(start_ms: i64, end_ms: i64, uncertainty_ms: u64) -> (i64, i64) {
+    let delta = if uncertainty_ms > i64::MAX as u64 {
+        i64::MAX
+    } else {
+        uncertainty_ms as i64
+    };
+    (start_ms.saturating_sub(delta), end_ms.saturating_add(delta))
+}
+
 /// Bounded in-memory monitor for a single camera source, tracking health states,
 /// candidate scene anomalies, deduplication, and append-only human reviews (`CAM-01`–`CAM-05`).
 #[derive(Debug, Clone)]
@@ -1162,6 +1468,7 @@ pub struct CameraAnomalyMonitor {
     candidates: Vec<CandidateAnomalyEvent>,
     candidate_index: BTreeMap<OpaqueId, usize>,
     health_events: Vec<RecordedHealthEvent>,
+    restricted_since_ms: Option<i64>,
     seen_observation_ids: BTreeSet<OpaqueId>,
     seen_versions: BTreeSet<VersionId>,
     last_observation_start_ms: Option<i64>,
@@ -1178,9 +1485,13 @@ impl CameraAnomalyMonitor {
         regions: Vec<DetectionRegionConfig>,
         limits: AnomalyLimits,
     ) -> Result<Self, AnomalyError> {
-        if source.view_kind == CameraViewKind::HomeInteriorOrPrivateResidence {
+        if matches!(
+            source.view_kind,
+            CameraViewKind::HomeInterior | CameraViewKind::ViewIntoHomeInterior
+        ) {
             return Err(AnomalyError::HomeInteriorExcluded {
                 camera_id: source.camera_id,
+                view_kind: source.view_kind,
             });
         }
         if source.access_status == CameraAccessStatus::RestrictedOrUnavailable {
@@ -1189,9 +1500,10 @@ impl CameraAnomalyMonitor {
                 policy_notice: RESTRICTED_SOURCE_POLICY_NOTICE,
             });
         }
-        if !source.automated_processing_permitted {
+        if source.automated_processing != SourceUsePermission::Permitted {
             return Err(AnomalyError::AutomatedProcessingNotPermitted {
                 camera_id: source.camera_id,
+                status: source.automated_processing,
             });
         }
         if source.feed_kind != FeedObservationKind::UpstreamCameraFeed {
@@ -1212,19 +1524,19 @@ impl CameraAnomalyMonitor {
         }
 
         let mut used_text_bytes = 0usize;
-        validate_single_line_text(
+        check_single_line_text(
             &source.provider_attribution,
             "source.provider_attribution",
             &mut used_text_bytes,
             limits,
         )?;
-        validate_single_line_text(
+        check_single_line_text(
             &source.listing_reference,
             "source.listing_reference",
             &mut used_text_bytes,
             limits,
         )?;
-        validate_single_line_text(
+        check_single_line_text(
             &detector.method_description,
             "detector.method_description",
             &mut used_text_bytes,
@@ -1261,7 +1573,12 @@ impl CameraAnomalyMonitor {
 
         let mut region_map = BTreeMap::new();
         for region in regions {
-            validate_single_line_text(&region.label, "region.label", &mut used_text_bytes, limits)?;
+            check_single_line_text(
+                &region.label,
+                "region.label",
+                &mut used_text_bytes,
+                limits,
+            )?;
             if region.score_threshold_bps == 0 || region.score_threshold_bps > 10_000 {
                 return Err(AnomalyError::InvalidScoreThresholdBps(
                     region.score_threshold_bps,
@@ -1272,13 +1589,18 @@ impl CameraAnomalyMonitor {
                     region_id: region.region_id,
                 });
             }
-            if region_map
-                .insert(region.region_id.clone(), region)
-                .is_some()
+            if (region.requires_privacy_mask
+                || source.view_kind == CameraViewKind::ResidentialExteriorStreetView)
+                && !region.privacy_mask_applied
             {
-                if let Some((dup_id, _)) = region_map.iter().next_back() {
-                    return Err(AnomalyError::DuplicateRegionId(dup_id.clone()));
-                }
+                return Err(AnomalyError::PrivacyMaskRequiredForRegion {
+                    camera_id: source.camera_id,
+                    region_id: region.region_id,
+                });
+            }
+            let region_id = region.region_id.clone();
+            if region_map.insert(region_id.clone(), region).is_some() {
+                return Err(AnomalyError::DuplicateRegionId(region_id));
             }
         }
 
@@ -1290,6 +1612,7 @@ impl CameraAnomalyMonitor {
             candidates: Vec::new(),
             candidate_index: BTreeMap::new(),
             health_events: Vec::new(),
+            restricted_since_ms: None,
             seen_observation_ids: BTreeSet::new(),
             seen_versions,
             last_observation_start_ms: None,
@@ -1323,16 +1646,19 @@ impl CameraAnomalyMonitor {
         self.total_deduplicated_repeats
     }
 
-    /// Returns the active camera-health fault at `[start_ms, end_ms]`, if any.
+    /// Returns the active camera-health fault overlapping the uncertainty-widened half-open
+    /// interval `[start_ms - clock_uncertainty_ms, end_ms + clock_uncertainty_ms)`, if any.
     #[must_use]
     pub fn active_fault_overlapping(
         &self,
         start_ms: i64,
         end_ms: i64,
+        clock_uncertainty_ms: u64,
     ) -> Option<CameraHealthState> {
+        let (widened_start, widened_end) = widen_interval(start_ms, end_ms, clock_uncertainty_ms);
         self.health_events
             .iter()
-            .find(|ev| ev.start_ms <= end_ms && start_ms <= ev.end_ms)
+            .find(|ev| half_open_overlaps(widened_start, widened_end, ev.start_ms, ev.end_ms))
             .map(RecordedHealthEvent::health_state)
     }
 
@@ -1351,26 +1677,26 @@ impl CameraAnomalyMonitor {
         }
 
         match step {
-            ObservationStepInput::HealthEvent {
+            ObservationStepInput::HealthEvent(HealthEventInput {
                 observation_id,
                 health_state,
                 start_ms,
                 end_ms,
                 detail,
-            } => {
+            }) => {
                 if health_state == CameraHealthState::Nominal {
                     return Err(AnomalyError::NominalHealthEventForbidden { observation_id });
                 }
-                if end_ms < start_ms {
+                if end_ms <= start_ms {
                     return Err(AnomalyError::InvalidTimeInterval { start_ms, end_ms });
                 }
-                if let Some(prev) = self.last_observation_start_ms {
-                    if start_ms < prev {
-                        return Err(AnomalyError::OutOfOrderObservation {
-                            previous_start_ms: prev,
-                            current_start_ms: start_ms,
-                        });
-                    }
+                if let Some(prev) = self.last_observation_start_ms
+                    && start_ms < prev
+                {
+                    return Err(AnomalyError::OutOfOrderObservation {
+                        previous_start_ms: prev,
+                        current_start_ms: start_ms,
+                    });
                 }
                 if self.seen_observation_ids.contains(&observation_id) {
                     return Err(AnomalyError::DuplicateObservationId(observation_id));
@@ -1383,29 +1709,55 @@ impl CameraAnomalyMonitor {
                         max: self.limits.max_coverage_gaps,
                     });
                 }
-                validate_single_line_text(
+                let mut staged_text_bytes = self.used_text_bytes;
+                check_single_line_text(
                     &detail,
                     "health_event.detail",
-                    &mut self.used_text_bytes,
+                    &mut staged_text_bytes,
                     self.limits,
                 )?;
 
-                if health_state == CameraHealthState::CameraRepositioned {
-                    if let CameraCalibrationState::Valid {
+                if health_state == CameraHealthState::CameraRepositioned
+                    && let CameraCalibrationState::Valid {
                         calibration_version,
                         ..
                     } = &self.source.calibration
-                    {
-                        self.source.calibration = CameraCalibrationState::InvalidatedByMovement {
-                            prior_calibration_version: calibration_version.clone(),
-                            detected_at_ms: start_ms,
-                        };
-                    }
+                {
+                    self.source.calibration = CameraCalibrationState::InvalidatedByMovement {
+                        prior_calibration_version: calibration_version.clone(),
+                        detected_at_ms: start_ms,
+                    };
                 }
                 if health_state == CameraHealthState::SourceRestricted {
                     self.source.access_status = CameraAccessStatus::RestrictedOrUnavailable;
+                    self.restricted_since_ms = Some(
+                        self.restricted_since_ms
+                            .map_or(start_ms, |prev| prev.min(start_ms)),
+                    );
                 }
 
+                // Retroactively quarantine any existing candidate whose uncertainty-widened interval
+                // overlaps this late-arriving fault, and flag its reviews for reassessment.
+                for cand in &mut self.candidates {
+                    let (w_start, w_end) = widen_interval(
+                        cand.event_start_ms,
+                        cand.event_end_ms,
+                        cand.clock_uncertainty_ms,
+                    );
+                    if half_open_overlaps(w_start, w_end, start_ms, end_ms) {
+                        if cand.quarantined_by_fault.is_none() {
+                            cand.quarantined_by_fault = Some(health_state);
+                        }
+                        if !cand.reviews.is_empty() {
+                            cand.needs_reassessment = true;
+                            for rev in &mut cand.reviews {
+                                rev.needs_reassessment = true;
+                            }
+                        }
+                    }
+                }
+
+                self.used_text_bytes = staged_text_bytes;
                 self.seen_observation_ids.insert(observation_id.clone());
                 self.last_observation_start_ms = Some(start_ms);
                 self.health_events.push(RecordedHealthEvent {
@@ -1417,30 +1769,32 @@ impl CameraAnomalyMonitor {
                 });
                 Ok(None)
             }
-            ObservationStepInput::SceneTrigger {
-                observation_id,
-                candidate_id,
-                candidate_version,
-                region_id,
-                category,
-                baseline_at_trigger,
-                event_start_ms,
-                event_end_ms,
-                detection_emitted_ms,
-                observed_persistence_frames,
-                raw_score_bps,
-                clock_uncertainty_ms,
-                trigger_explanation,
-                primary_frame,
-                context_window,
-            } => {
+            ObservationStepInput::SceneTrigger(trigger) => {
+                let SceneTriggerInput {
+                    observation_id,
+                    candidate_id,
+                    candidate_version,
+                    region_id,
+                    category,
+                    baseline_at_trigger,
+                    event_start_ms,
+                    event_end_ms,
+                    detection_emitted_ms,
+                    observed_persistence_frames,
+                    raw_score_bps,
+                    clock_uncertainty_ms,
+                    trigger_explanation,
+                    primary_frame,
+                    context_window,
+                } = *trigger;
+
                 if self.source.access_status == CameraAccessStatus::RestrictedOrUnavailable {
                     return Err(AnomalyError::SourceRestricted {
                         camera_id: self.source.camera_id.clone(),
                         policy_notice: RESTRICTED_SOURCE_POLICY_NOTICE,
                     });
                 }
-                if event_end_ms < event_start_ms {
+                if event_end_ms <= event_start_ms {
                     return Err(AnomalyError::InvalidTimeInterval {
                         start_ms: event_start_ms,
                         end_ms: event_end_ms,
@@ -1452,20 +1806,22 @@ impl CameraAnomalyMonitor {
                         detection_emitted_ms,
                     });
                 }
-                if let Some(prev) = self.last_observation_start_ms {
-                    if event_start_ms < prev {
-                        return Err(AnomalyError::OutOfOrderObservation {
-                            previous_start_ms: prev,
-                            current_start_ms: event_start_ms,
-                        });
-                    }
+                if let Some(prev) = self.last_observation_start_ms
+                    && event_start_ms < prev
+                {
+                    return Err(AnomalyError::OutOfOrderObservation {
+                        previous_start_ms: prev,
+                        current_start_ms: event_start_ms,
+                    });
                 }
                 if self.seen_observation_ids.contains(&observation_id) {
                     return Err(AnomalyError::DuplicateObservationId(observation_id));
                 }
-                if let Some(active_fault) =
-                    self.active_fault_overlapping(event_start_ms, event_end_ms)
-                {
+                if let Some(active_fault) = self.active_fault_overlapping(
+                    event_start_ms,
+                    event_end_ms,
+                    clock_uncertainty_ms,
+                ) {
                     return Err(AnomalyError::CameraFaultBlocksSceneTrigger {
                         camera_id: self.source.camera_id.clone(),
                         active_health: active_fault,
@@ -1507,22 +1863,26 @@ impl CameraAnomalyMonitor {
                     }
                     let mut temp_versions = self.seen_versions.clone();
                     temp_versions.insert(candidate_version.clone());
+                    let mut staged_text_bytes = self.used_text_bytes;
+
                     validate_frame_ref(&primary_frame, &mut temp_versions)?;
                     self.validate_context_window(
                         &context_window,
                         event_start_ms,
                         event_end_ms,
                         &mut temp_versions,
+                        &mut staged_text_bytes,
                     )?;
-                    validate_single_line_text(
+                    check_single_line_text(
                         &trigger_explanation,
                         "scene_trigger.trigger_explanation",
-                        &mut self.used_text_bytes,
+                        &mut staged_text_bytes,
                         self.limits,
                     )?;
 
                     self.seen_versions = temp_versions;
-                    self.seen_observation_ids.insert(observation_id);
+                    self.used_text_bytes = staged_text_bytes;
+                    self.seen_observation_ids.insert(observation_id.clone());
                     self.last_observation_start_ms = Some(event_start_ms);
                     self.total_deduplicated_repeats =
                         self.total_deduplicated_repeats.saturating_add(1);
@@ -1539,9 +1899,36 @@ impl CameraAnomalyMonitor {
                         existing.clock_uncertainty_ms.max(clock_uncertainty_ms);
                     existing.deduplicated_trigger_count =
                         existing.deduplicated_trigger_count.saturating_add(1);
+                    existing.current_version = candidate_version.clone();
+
+                    let flagged_reviews = !existing.reviews.is_empty();
+                    if flagged_reviews {
+                        existing.needs_reassessment = true;
+                        for rev in &mut existing.reviews {
+                            rev.needs_reassessment = true;
+                        }
+                    }
+
+                    existing.trigger_segments.push(RetainedTriggerSegment {
+                        observation_id,
+                        segment_version: candidate_version.clone(),
+                        baseline_at_trigger,
+                        event_start_ms,
+                        event_end_ms,
+                        detection_emitted_ms,
+                        observed_persistence_frames,
+                        raw_score_bps,
+                        clock_uncertainty_ms,
+                        trigger_explanation,
+                        primary_frame,
+                        context_window,
+                    });
+
                     return Ok(Some(TriggerOutcome::DeduplicatedIntoExisting {
                         candidate_id: existing.candidate_id.clone(),
+                        new_candidate_version: candidate_version,
                         merged_trigger_count: existing.deduplicated_trigger_count,
+                        flagged_reviews_for_reassessment: flagged_reviews,
                     }));
                 }
 
@@ -1562,30 +1949,49 @@ impl CameraAnomalyMonitor {
 
                 let mut temp_versions = self.seen_versions.clone();
                 temp_versions.insert(candidate_version.clone());
+                let mut staged_text_bytes = self.used_text_bytes;
+
                 validate_frame_ref(&primary_frame, &mut temp_versions)?;
                 self.validate_context_window(
                     &context_window,
                     event_start_ms,
                     event_end_ms,
                     &mut temp_versions,
+                    &mut staged_text_bytes,
                 )?;
-                validate_single_line_text(
+                check_single_line_text(
                     &trigger_explanation,
                     "scene_trigger.trigger_explanation",
-                    &mut self.used_text_bytes,
+                    &mut staged_text_bytes,
                     self.limits,
                 )?;
 
                 self.seen_versions = temp_versions;
-                self.seen_observation_ids.insert(observation_id);
+                self.used_text_bytes = staged_text_bytes;
+                self.seen_observation_ids.insert(observation_id.clone());
                 self.last_observation_start_ms = Some(event_start_ms);
+
+                let initial_segment = RetainedTriggerSegment {
+                    observation_id,
+                    segment_version: candidate_version.clone(),
+                    baseline_at_trigger,
+                    event_start_ms,
+                    event_end_ms,
+                    detection_emitted_ms,
+                    observed_persistence_frames,
+                    raw_score_bps,
+                    clock_uncertainty_ms,
+                    trigger_explanation: trigger_explanation.clone(),
+                    primary_frame: primary_frame.clone(),
+                    context_window: context_window.clone(),
+                };
 
                 let idx = self.candidates.len();
                 self.candidate_index.insert(candidate_id.clone(), idx);
                 self.candidates.push(CandidateAnomalyEvent {
                     candidate_id: candidate_id.clone(),
                     initial_version: candidate_version.clone(),
-                    current_version: candidate_version,
+                    current_version: candidate_version.clone(),
                     schema_version: SchemaVersion::V1,
                     camera_id: self.source.camera_id.clone(),
                     region_id,
@@ -1602,10 +2008,16 @@ impl CameraAnomalyMonitor {
                     detector: self.detector.clone(),
                     primary_frame,
                     context_window,
+                    trigger_segments: vec![initial_segment],
                     reviews: Vec::new(),
+                    quarantined_by_fault: None,
+                    needs_reassessment: false,
                 });
 
-                Ok(Some(TriggerOutcome::PublishedNewCandidate { candidate_id }))
+                Ok(Some(TriggerOutcome::PublishedNewCandidate {
+                    candidate_id,
+                    candidate_version,
+                }))
             }
         }
     }
@@ -1618,71 +2030,113 @@ impl CameraAnomalyMonitor {
         deduplication_window_ms: u64,
     ) -> Option<usize> {
         self.candidates.iter().rposition(|cand| {
-            cand.region_id == *region_id
-                && cand.category == category
-                && event_start_ms >= cand.event_start_ms
-                && (event_start_ms.saturating_sub(cand.event_end_ms) as u64)
-                    <= deduplication_window_ms
+            if cand.quarantined_by_fault.is_some()
+                || cand.region_id != *region_id
+                || cand.category != category
+                || event_start_ms < cand.event_start_ms
+            {
+                return false;
+            }
+            let gap_ms = if event_start_ms <= cand.event_end_ms {
+                0
+            } else {
+                event_start_ms.saturating_sub(cand.event_end_ms) as u64
+            };
+            gap_ms <= deduplication_window_ms
         })
     }
 
     fn validate_context_window(
-        &mut self,
+        &self,
         context_window: &ContextWindowStatus,
         event_start_ms: i64,
         event_end_ms: i64,
         seen_versions: &mut BTreeSet<VersionId>,
+        staged_text_bytes: &mut usize,
     ) -> Result<(), AnomalyError> {
         match context_window {
             ContextWindowStatus::Complete {
                 pre_frames,
                 post_frames,
+            } => {
+                if pre_frames.is_empty() && post_frames.is_empty() {
+                    return Err(AnomalyError::EmptyCompleteContextFrames);
+                }
+                self.validate_retained_context_frames(
+                    pre_frames,
+                    post_frames,
+                    event_start_ms,
+                    event_end_ms,
+                    seen_versions,
+                )?;
             }
-            | ContextWindowStatus::PartialBufferExpired {
+            ContextWindowStatus::PartialBufferExpired {
                 pre_frames,
                 post_frames,
-                ..
+                expired_frame_count,
             } => {
-                if !self.source.clip_retention_permitted
-                    && (!pre_frames.is_empty() || !post_frames.is_empty())
-                {
-                    return Err(AnomalyError::RetentionPolicyForbidsClips {
-                        camera_id: self.source.camera_id.clone(),
-                    });
+                if *expired_frame_count == 0 {
+                    return Err(AnomalyError::ZeroExpiredFrameCountInPartialContext);
                 }
-                let total_ctx = pre_frames.len().saturating_add(post_frames.len());
-                if total_ctx > self.limits.max_context_frames {
-                    return Err(AnomalyError::LimitExceeded {
-                        kind: AnomalyLimitKind::ContextFrames,
-                        actual: total_ctx,
-                        max: self.limits.max_context_frames,
-                    });
-                }
-                let mut earliest_ms = event_start_ms;
-                let mut latest_ms = event_end_ms;
-                for frame in pre_frames.iter().chain(post_frames.iter()) {
-                    validate_frame_ref(frame, seen_versions)?;
-                    earliest_ms = earliest_ms.min(frame.capture_time_ms);
-                    latest_ms = latest_ms.max(frame.capture_time_ms);
-                }
-                if let Some(max_window_ms) = self.source.max_retention_window_ms {
-                    let span_ms = latest_ms.saturating_sub(earliest_ms) as u64;
-                    if span_ms > max_window_ms {
-                        return Err(AnomalyError::ContextExceedsRetentionWindow {
-                            camera_id: self.source.camera_id.clone(),
-                            span_ms,
-                            max_window_ms,
-                        });
-                    }
+                if !pre_frames.is_empty() || !post_frames.is_empty() {
+                    self.validate_retained_context_frames(
+                        pre_frames,
+                        post_frames,
+                        event_start_ms,
+                        event_end_ms,
+                        seen_versions,
+                    )?;
                 }
             }
             ContextWindowStatus::OmittedByRetentionPolicy { reason } => {
-                validate_single_line_text(
+                check_single_line_text(
                     reason,
                     "context_window.reason",
-                    &mut self.used_text_bytes,
+                    staged_text_bytes,
                     self.limits,
                 )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_retained_context_frames(
+        &self,
+        pre_frames: &[RetainedFrameRef],
+        post_frames: &[RetainedFrameRef],
+        event_start_ms: i64,
+        event_end_ms: i64,
+        seen_versions: &mut BTreeSet<VersionId>,
+    ) -> Result<(), AnomalyError> {
+        if self.source.clip_retention != SourceUsePermission::Permitted {
+            return Err(AnomalyError::RetentionPolicyForbidsClips {
+                camera_id: self.source.camera_id.clone(),
+                status: self.source.clip_retention,
+            });
+        }
+        let total_ctx = pre_frames.len().saturating_add(post_frames.len());
+        if total_ctx > self.limits.max_context_frames {
+            return Err(AnomalyError::LimitExceeded {
+                kind: AnomalyLimitKind::ContextFrames,
+                actual: total_ctx,
+                max: self.limits.max_context_frames,
+            });
+        }
+        let mut earliest_ms = event_start_ms;
+        let mut latest_ms = event_end_ms;
+        for frame in pre_frames.iter().chain(post_frames.iter()) {
+            validate_frame_ref(frame, seen_versions)?;
+            earliest_ms = earliest_ms.min(frame.capture_time_ms);
+            latest_ms = latest_ms.max(frame.capture_time_ms);
+        }
+        if let Some(max_window_ms) = self.source.max_retention_window_ms {
+            let span_ms = latest_ms.saturating_sub(earliest_ms) as u64;
+            if span_ms > max_window_ms {
+                return Err(AnomalyError::ContextExceedsRetentionWindow {
+                    camera_id: self.source.camera_id.clone(),
+                    span_ms,
+                    max_window_ms,
+                });
             }
         }
         Ok(())
@@ -1706,23 +2160,34 @@ impl CameraAnomalyMonitor {
             });
         }
 
-        let current_version = self
-            .candidates
-            .get(idx)
-            .map(|c| c.current_version.clone())
-            .ok_or_else(|| AnomalyError::UnknownCandidateId(input.candidate_id.clone()))?;
-        if input.expected_current_version != current_version {
+        let Some(existing_cand) = self.candidates.get(idx) else {
+            return Err(AnomalyError::UnknownCandidateId(input.candidate_id));
+        };
+        if input.expected_current_version != existing_cand.current_version {
             return Err(AnomalyError::StaleCandidateVersion {
                 candidate_id: input.candidate_id,
                 expected: input.expected_current_version,
-                actual: current_version,
+                actual: existing_cand.current_version.clone(),
+            });
+        }
+        if input.reviewed_at_ms < existing_cand.event_start_ms {
+            return Err(AnomalyError::ReviewTimestampBeforeCandidateStart {
+                candidate_id: input.candidate_id,
+                event_start_ms: existing_cand.event_start_ms,
+                reviewed_at_ms: input.reviewed_at_ms,
+            });
+        }
+        if let Some(last_review) = existing_cand.reviews.last()
+            && input.reviewed_at_ms < last_review.reviewed_at_ms
+        {
+            return Err(AnomalyError::ReviewTimestampRegression {
+                candidate_id: input.candidate_id,
+                previous_reviewed_at_ms: last_review.reviewed_at_ms,
+                reviewed_at_ms: input.reviewed_at_ms,
             });
         }
 
-        let next_reviews = self
-            .candidates
-            .get(idx)
-            .map_or(0, |c| c.reviews.len().saturating_add(1));
+        let next_reviews = existing_cand.reviews.len().saturating_add(1);
         if next_reviews > self.limits.max_reviews_per_candidate {
             return Err(AnomalyError::LimitExceeded {
                 kind: AnomalyLimitKind::ReviewsPerCandidate,
@@ -1731,11 +2196,7 @@ impl CameraAnomalyMonitor {
             });
         }
 
-        let known_frames = self
-            .candidates
-            .get(idx)
-            .map(collect_candidate_frame_versions)
-            .unwrap_or_default();
+        let known_frames = collect_candidate_frame_versions(existing_cand);
         for cited in &input.cited_frame_versions {
             if !known_frames.contains(cited) {
                 return Err(AnomalyError::UnknownCitedFrameVersion {
@@ -1745,13 +2206,15 @@ impl CameraAnomalyMonitor {
             }
         }
 
-        validate_single_line_text(
+        let mut staged_text_bytes = self.used_text_bytes;
+        check_single_line_text(
             &input.rationale,
             "review.rationale",
-            &mut self.used_text_bytes,
+            &mut staged_text_bytes,
             self.limits,
         )?;
 
+        self.used_text_bytes = staged_text_bytes;
         self.seen_versions.insert(input.new_review_version.clone());
         let Some(candidate) = self.candidates.get_mut(idx) else {
             return Err(AnomalyError::UnknownCandidateId(input.candidate_id));
@@ -1764,16 +2227,20 @@ impl CameraAnomalyMonitor {
             disposition: input.disposition,
             rationale: input.rationale,
             cited_frame_versions: input.cited_frame_versions,
+            needs_reassessment: false,
         };
         candidate.current_version = input.new_review_version;
+        candidate.needs_reassessment = false;
         candidate.reviews.push(entry);
         Ok(candidate)
     }
 
     /// Computes operational performance metrics against held-out labeled scene events
-    /// over `[eval_start_ms, eval_end_ms)` (`CAM-03`–`CAM-05`, `A09`, `AGENTS.md` §8).
+    /// over the half-open window `[eval_start_ms, eval_end_ms)` (`CAM-03`–`CAM-05`, `A09`, `AGENTS.md` §8).
     pub fn evaluate_held_out(
         &self,
+        evaluation_corpus_id: OpaqueId,
+        evaluation_corpus_version: VersionId,
         eval_start_ms: i64,
         eval_end_ms: i64,
         labeled_events: &[LabeledSceneEvent],
@@ -1794,7 +2261,7 @@ impl CameraAnomalyMonitor {
 
         let mut seen_truth_ids = BTreeSet::new();
         for truth in labeled_events {
-            if truth.end_ms < truth.start_ms {
+            if truth.end_ms <= truth.start_ms {
                 return Err(AnomalyError::InvalidTimeInterval {
                     start_ms: truth.start_ms,
                     end_ms: truth.end_ms,
@@ -1808,38 +2275,112 @@ impl CameraAnomalyMonitor {
             }
         }
 
+        let merged_fault_intervals =
+            self.compute_merged_missing_intervals(eval_start_ms, eval_end_ms);
+        let missing_coverage_ms: u64 = merged_fault_intervals
+            .iter()
+            .map(|&(s, e)| e.saturating_sub(s) as u64)
+            .sum();
         let total_window_ms = eval_end_ms.saturating_sub(eval_start_ms) as u64;
-        let missing_coverage_ms = self.compute_missing_coverage_ms(eval_start_ms, eval_end_ms);
         let active_coverage_ms = total_window_ms.saturating_sub(missing_coverage_ms);
         if active_coverage_ms == 0 {
             return Err(AnomalyError::EmptyEvaluationActiveCoverage);
         }
 
-        let coverage_bps =
-            ((active_coverage_ms as u128 * 10_000) / (total_window_ms as u128)).min(10_000) as u16;
+        let coverage_bps = ((active_coverage_ms as u128 * 10_000) / (total_window_ms as u128))
+            .min(10_000) as u16;
 
-        let mut matched_truth_indices = BTreeSet::new();
+        // Classify ground-truth events:
+        // 1. Outside `[eval_start_ms, eval_end_ms)`
+        // 2. Inside window, but overlapping a coverage gap / fault interval
+        // 3. Observable within active coverage
+        let mut truth_events_outside_window_count = 0usize;
+        let mut truth_events_in_coverage_gap_count = 0usize;
+        let mut observable_truth_indices = Vec::new();
+
+        for (idx, truth) in labeled_events.iter().enumerate() {
+            if !half_open_overlaps(truth.start_ms, truth.end_ms, eval_start_ms, eval_end_ms) {
+                truth_events_outside_window_count =
+                    truth_events_outside_window_count.saturating_add(1);
+                continue;
+            }
+            let clip_start = truth.start_ms.max(eval_start_ms);
+            let clip_end = truth.end_ms.min(eval_end_ms);
+            let overlaps_gap = merged_fault_intervals
+                .iter()
+                .any(|&(gs, ge)| half_open_overlaps(clip_start, clip_end, gs, ge));
+            if overlaps_gap {
+                truth_events_in_coverage_gap_count =
+                    truth_events_in_coverage_gap_count.saturating_add(1);
+            } else {
+                observable_truth_indices.push(idx);
+            }
+        }
+
+        let mut matched_observable_truths = BTreeSet::new();
         let mut true_positive_alerts = 0usize;
+        let mut window_candidates = 0usize;
+        let mut quarantined_fault_candidates_in_window = 0usize;
+        let mut deduplicated_repeat_triggers_in_window = 0u32;
+        let mut early_detection_count = 0usize;
         let mut latencies_ms = Vec::new();
 
         for cand in &self.candidates {
-            if cand.event_end_ms < eval_start_ms || cand.event_start_ms >= eval_end_ms {
+            if !half_open_overlaps(
+                cand.event_start_ms,
+                cand.event_end_ms,
+                eval_start_ms,
+                eval_end_ms,
+            ) {
                 continue;
             }
+            if cand.quarantined_by_fault.is_some() {
+                quarantined_fault_candidates_in_window =
+                    quarantined_fault_candidates_in_window.saturating_add(1);
+                continue;
+            }
+            window_candidates = window_candidates.saturating_add(1);
+
+            // Count repeat trigger segments that fell within `[eval_start_ms, eval_end_ms)`.
+            let repeats_in_win = cand
+                .trigger_segments
+                .iter()
+                .skip(1)
+                .filter(|seg| {
+                    half_open_overlaps(
+                        seg.event_start_ms,
+                        seg.event_end_ms,
+                        eval_start_ms,
+                        eval_end_ms,
+                    )
+                })
+                .count() as u32;
+            deduplicated_repeat_triggers_in_window =
+                deduplicated_repeat_triggers_in_window.saturating_add(repeats_in_win);
+
+            let (cand_start, cand_end) = widen_interval(
+                cand.event_start_ms,
+                cand.event_end_ms,
+                cand.clock_uncertainty_ms,
+            );
             let mut matched_any = false;
-            for (idx, truth) in labeled_events.iter().enumerate() {
+            for &truth_idx in &observable_truth_indices {
+                let Some(truth) = labeled_events.get(truth_idx) else {
+                    continue;
+                };
                 if cand.region_id == truth.region_id
                     && cand.category == truth.category
-                    && cand.event_start_ms <= truth.end_ms
-                    && truth.start_ms <= cand.event_end_ms
+                    && half_open_overlaps(cand_start, cand_end, truth.start_ms, truth.end_ms)
                 {
                     matched_any = true;
-                    if matched_truth_indices.insert(idx) {
-                        let latency = cand
-                            .first_detection_emitted_ms
-                            .saturating_sub(truth.start_ms)
-                            .max(0) as u64;
-                        latencies_ms.push(latency);
+                    if matched_observable_truths.insert(truth_idx) {
+                        if cand.first_detection_emitted_ms < truth.start_ms {
+                            early_detection_count = early_detection_count.saturating_add(1);
+                        } else {
+                            let latency =
+                                (cand.first_detection_emitted_ms - truth.start_ms) as u64;
+                            latencies_ms.push(latency);
+                        }
                     }
                 }
             }
@@ -1848,11 +2389,6 @@ impl CameraAnomalyMonitor {
             }
         }
 
-        let window_candidates = self
-            .candidates
-            .iter()
-            .filter(|c| c.event_end_ms >= eval_start_ms && c.event_start_ms < eval_end_ms)
-            .count();
         let false_alert_count = window_candidates.saturating_sub(true_positive_alerts);
 
         // False alerts per active camera-hour in milli-alerts/hour:
@@ -1861,12 +2397,14 @@ impl CameraAnomalyMonitor {
             .saturating_mul(3_600_000_000u128)
             / (active_coverage_ms as u128)) as u64;
 
-        let matched_labeled_event_count = matched_truth_indices.len();
-        let event_recall_bps = if labeled_events.is_empty() {
+        let observable_labeled_event_count = observable_truth_indices.len();
+        let matched_labeled_event_count = matched_observable_truths.len();
+        let event_recall_bps = if observable_labeled_event_count == 0 {
             None
         } else {
             Some(
-                ((matched_labeled_event_count as u128 * 10_000) / (labeled_events.len() as u128))
+                ((matched_labeled_event_count as u128 * 10_000)
+                    / (observable_labeled_event_count as u128))
                     .min(10_000) as u16,
             )
         };
@@ -1882,30 +2420,71 @@ impl CameraAnomalyMonitor {
                 (min_lat, mean_lat, max_lat)
             };
 
+        let health_events_overlapping_window = self
+            .health_events
+            .iter()
+            .filter(|ev| {
+                let effective_end = if ev.health_state == CameraHealthState::SourceRestricted {
+                    ev.end_ms.max(eval_end_ms)
+                } else {
+                    ev.end_ms
+                };
+                half_open_overlaps(ev.start_ms, effective_end, eval_start_ms, eval_end_ms)
+            })
+            .count();
+
+        let region_configs = self
+            .regions
+            .values()
+            .map(|r| RegionBenchmarkConfig {
+                region_id: r.region_id.clone(),
+                baseline: r.baseline,
+                score_threshold_bps: r.score_threshold_bps,
+                min_persistence_frames: r.min_persistence_frames,
+                min_persistence_ms: r.min_persistence_ms,
+                deduplication_window_ms: r.deduplication_window_ms,
+            })
+            .collect();
+
         Ok(OperationalEvaluationSummary {
             camera_id: self.source.camera_id.clone(),
             detector_id: self.detector.detector_id.clone(),
             detector_version: self.detector.detector_version.clone(),
+            detector_config_digest_sha256: self.detector.config_digest_sha256.clone(),
+            evaluation_corpus_id,
+            evaluation_corpus_version,
+            eval_start_ms,
+            eval_end_ms,
+            region_configs,
             total_window_ms,
             missing_coverage_ms,
             active_coverage_ms,
             coverage_bps,
-            labeled_event_count: labeled_events.len(),
+            total_supplied_truth_events: labeled_events.len(),
+            truth_events_outside_window_count,
+            truth_events_in_coverage_gap_count,
+            observable_labeled_event_count,
             matched_labeled_event_count,
             event_recall_bps,
             total_candidate_alerts: window_candidates,
+            quarantined_fault_candidates_in_window,
             true_positive_alerts,
             false_alert_count,
             false_alerts_per_camera_hour_milli,
+            early_detection_count,
             min_detection_latency_ms,
             mean_detection_latency_ms,
             max_detection_latency_ms,
-            deduplicated_repeat_triggers: self.total_deduplicated_repeats,
-            fault_events_excluded_from_alerts: self.health_events.len(),
+            deduplicated_repeat_triggers_in_window,
+            health_events_overlapping_window,
         })
     }
 
-    fn compute_missing_coverage_ms(&self, eval_start_ms: i64, eval_end_ms: i64) -> u64 {
+    fn compute_merged_missing_intervals(
+        &self,
+        eval_start_ms: i64,
+        eval_end_ms: i64,
+    ) -> Vec<(i64, i64)> {
         let mut intervals: Vec<(i64, i64)> = self
             .health_events
             .iter()
@@ -1915,44 +2494,53 @@ impl CameraAnomalyMonitor {
                 (e > s).then_some((s, e))
             })
             .collect();
+        if let Some(restricted_at) = self.restricted_since_ms {
+            let s = restricted_at.max(eval_start_ms);
+            if eval_end_ms > s {
+                intervals.push((s, eval_end_ms));
+            }
+        }
         if intervals.is_empty() {
-            return 0;
+            return Vec::new();
         }
         intervals.sort_by_key(|&(s, e)| (s, e));
-        let mut merged_ms = 0u64;
+        let mut merged = Vec::with_capacity(intervals.len());
         let mut cur_start = intervals.first().map_or(eval_start_ms, |&(s, _)| s);
         let mut cur_end = intervals.first().map_or(eval_start_ms, |&(_, e)| e);
         for &(s, e) in intervals.iter().skip(1) {
             if s <= cur_end {
                 cur_end = cur_end.max(e);
             } else {
-                merged_ms = merged_ms.saturating_add(cur_end.saturating_sub(cur_start) as u64);
+                merged.push((cur_start, cur_end));
                 cur_start = s;
                 cur_end = e;
             }
         }
-        merged_ms.saturating_add(cur_end.saturating_sub(cur_start) as u64)
+        merged.push((cur_start, cur_end));
+        merged
     }
 }
 
 fn collect_candidate_frame_versions(candidate: &CandidateAnomalyEvent) -> BTreeSet<VersionId> {
     let mut set = BTreeSet::new();
-    set.insert(candidate.primary_frame.frame_version.clone());
-    match &candidate.context_window {
-        ContextWindowStatus::Complete {
-            pre_frames,
-            post_frames,
-        }
-        | ContextWindowStatus::PartialBufferExpired {
-            pre_frames,
-            post_frames,
-            ..
-        } => {
-            for f in pre_frames.iter().chain(post_frames.iter()) {
-                set.insert(f.frame_version.clone());
+    for seg in &candidate.trigger_segments {
+        set.insert(seg.primary_frame.frame_version.clone());
+        match &seg.context_window {
+            ContextWindowStatus::Complete {
+                pre_frames,
+                post_frames,
             }
+            | ContextWindowStatus::PartialBufferExpired {
+                pre_frames,
+                post_frames,
+                ..
+            } => {
+                for f in pre_frames.iter().chain(post_frames.iter()) {
+                    set.insert(f.frame_version.clone());
+                }
+            }
+            ContextWindowStatus::OmittedByRetentionPolicy { .. } => {}
         }
-        ContextWindowStatus::OmittedByRetentionPolicy { .. } => {}
     }
     set
 }
@@ -1961,19 +2549,26 @@ fn collect_candidate_frame_versions(candidate: &CandidateAnomalyEvent) -> BTreeS
 /// two candidate anomaly events (`CAM-05`, `A09`).
 ///
 /// Requires distinct cameras, independent upstream feeds (`first_monitor.source.upstream_feed_id != second_monitor.source.upstream_feed_id`),
-/// active unmodified calibration on both cameras, and temporal alignment within
-/// `max_allowed_skew_ms` after accounting for both cameras' clock uncertainties.
+/// non-quarantined candidates, and temporal alignment within `max_allowed_skew_ms`
+/// after accounting for both cameras' clock uncertainties.
+///
+/// If `require_triangulation` is `true`, both cameras must have `CameraCalibrationState::Valid`.
+/// If `require_triangulation` is `false`, uncalibrated cameras may still be associated with
+/// `TriangulationReadiness::UncalibratedAssociationOnly` (`eligible_for_triangulation() == false`),
+/// while movement-invalidated calibrations are always rejected (`CAM-05`, `A09`).
+#[allow(clippy::too_many_arguments)]
 pub fn validate_cross_camera_association(
     first_monitor: &CameraAnomalyMonitor,
     first_candidate_id: &OpaqueId,
     second_monitor: &CameraAnomalyMonitor,
     second_candidate_id: &OpaqueId,
+    require_triangulation: bool,
     max_allowed_skew_ms: u64,
     correspondence_rationale: String,
     limits: AnomalyLimits,
 ) -> Result<CrossCameraAssociation, AnomalyError> {
     let mut used_text_bytes = 0usize;
-    validate_single_line_text(
+    check_single_line_text(
         &correspondence_rationale,
         "correspondence_rationale",
         &mut used_text_bytes,
@@ -1991,12 +2586,7 @@ pub fn validate_cross_camera_association(
         });
     }
 
-    let first_cal_version = match &first_monitor.source.calibration {
-        CameraCalibrationState::Uncalibrated => {
-            return Err(AnomalyError::CalibrationRequiredForTriangulation {
-                camera_id: first_monitor.source.camera_id.clone(),
-            });
-        }
+    let first_cal = match &first_monitor.source.calibration {
         CameraCalibrationState::InvalidatedByMovement {
             prior_calibration_version,
             detected_at_ms,
@@ -2007,18 +2597,21 @@ pub fn validate_cross_camera_association(
                 detected_at_ms: *detected_at_ms,
             });
         }
+        CameraCalibrationState::Uncalibrated => {
+            if require_triangulation {
+                return Err(AnomalyError::CalibrationRequiredForTriangulation {
+                    camera_id: first_monitor.source.camera_id.clone(),
+                });
+            }
+            None
+        }
         CameraCalibrationState::Valid {
             calibration_version,
             ..
-        } => calibration_version.clone(),
+        } => Some(calibration_version.clone()),
     };
 
-    let second_cal_version = match &second_monitor.source.calibration {
-        CameraCalibrationState::Uncalibrated => {
-            return Err(AnomalyError::CalibrationRequiredForTriangulation {
-                camera_id: second_monitor.source.camera_id.clone(),
-            });
-        }
+    let second_cal = match &second_monitor.source.calibration {
         CameraCalibrationState::InvalidatedByMovement {
             prior_calibration_version,
             detected_at_ms,
@@ -2029,10 +2622,39 @@ pub fn validate_cross_camera_association(
                 detected_at_ms: *detected_at_ms,
             });
         }
+        CameraCalibrationState::Uncalibrated => {
+            if require_triangulation {
+                return Err(AnomalyError::CalibrationRequiredForTriangulation {
+                    camera_id: second_monitor.source.camera_id.clone(),
+                });
+            }
+            None
+        }
         CameraCalibrationState::Valid {
             calibration_version,
             ..
-        } => calibration_version.clone(),
+        } => Some(calibration_version.clone()),
+    };
+
+    let triangulation_readiness = match (first_cal, second_cal) {
+        (Some(first_calibration_version), Some(second_calibration_version)) => {
+            TriangulationReadiness::Eligible {
+                first_calibration_version,
+                second_calibration_version,
+            }
+        }
+        (first_opt, second_opt) => {
+            let mut uncalibrated_camera_ids = Vec::new();
+            if first_opt.is_none() {
+                uncalibrated_camera_ids.push(first_monitor.source.camera_id.clone());
+            }
+            if second_opt.is_none() {
+                uncalibrated_camera_ids.push(second_monitor.source.camera_id.clone());
+            }
+            TriangulationReadiness::UncalibratedAssociationOnly {
+                uncalibrated_camera_ids,
+            }
+        }
     };
 
     let Some(&first_idx) = first_monitor.candidate_index.get(first_candidate_id) else {
@@ -2041,6 +2663,12 @@ pub fn validate_cross_camera_association(
     let Some(first_cand) = first_monitor.candidates.get(first_idx) else {
         return Err(AnomalyError::UnknownCandidateId(first_candidate_id.clone()));
     };
+    if let Some(fault) = first_cand.quarantined_by_fault {
+        return Err(AnomalyError::CameraFaultBlocksSceneTrigger {
+            camera_id: first_monitor.source.camera_id.clone(),
+            active_health: fault,
+        });
+    }
 
     let Some(&second_idx) = second_monitor.candidate_index.get(second_candidate_id) else {
         return Err(AnomalyError::UnknownCandidateId(
@@ -2052,6 +2680,12 @@ pub fn validate_cross_camera_association(
             second_candidate_id.clone(),
         ));
     };
+    if let Some(fault) = second_cand.quarantined_by_fault {
+        return Err(AnomalyError::CameraFaultBlocksSceneTrigger {
+            camera_id: second_monitor.source.camera_id.clone(),
+            active_health: fault,
+        });
+    }
 
     let temporal_skew_ms = if first_cand.event_end_ms < second_cand.event_start_ms {
         second_cand
@@ -2080,8 +2714,7 @@ pub fn validate_cross_camera_association(
         second_candidate_id: second_cand.candidate_id.clone(),
         first_camera_id: first_monitor.source.camera_id.clone(),
         second_camera_id: second_monitor.source.camera_id.clone(),
-        first_calibration_version: first_cal_version,
-        second_calibration_version: second_cal_version,
+        triangulation_readiness,
         temporal_skew_ms,
         combined_clock_uncertainty_ms,
         correspondence_rationale,

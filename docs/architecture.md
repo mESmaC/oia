@@ -38,6 +38,7 @@ These names describe intended boundaries; creating crates is outside this docume
 | `oia-media` | Original/derivative media handling, transforms, calibration, clip records |
 | `oia-devices` | Explicit hardware sessions, capability negotiation, video/telemetry/audio |
 | `oia-forecast` | Forecast vintages, scenarios, outcome resolution, evaluation |
+| `oia-market` | Stable instruments, calendars, quotes, corporate actions, point-in-time release vintages |
 | `oia-export` | Reports, recreation prompts, manifests, bundle validation/import |
 | `oia-app` | Composition, commands/queries, UI boundary, optional API/CLI/MCP adapters |
 | `proofs/` | Lean specifications, proof sources, correspondence notes, reference fixtures |

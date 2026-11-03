@@ -49,7 +49,7 @@
     <button type="button" aria-disabled="true" title="Not in this build"><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4z"/><path d="M8 10h8M8 14h5"/></svg><span>News</span></button>
     <button type="button" data-instrument="globe" title="Ctrl+G"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c3 3 3 13 0 16M12 4c-3 3-3 13 0 16"/></svg><span>Globe</span></button>
     <button type="button" aria-disabled="true" title="Not in this build"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="13" height="10" rx="1"/><path d="M16 11l5-2v6l-5-2z"/></svg><span>Cameras</span></button>
-    <button type="button" aria-disabled="true" title="Not in this build"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="1"/><path d="M3 9h18M7 5v14M17 5v14"/></svg><span>Media</span></button>
+    <button type="button" data-instrument="media" title="Ctrl+M"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="1"/><path d="M3 15l5-5 4 4 3-3 6 6"/><circle cx="16" cy="9" r="1.5"/></svg><span>Media</span></button>
     <div class="spacer"></div>
     <hr>
     <button type="button" id="effects" aria-pressed="false" title="Opaque panels, no blur or grid"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/></svg><span>Effects</span></button>
@@ -68,7 +68,9 @@
         <button type="button" id="open-image" data-operation title="Ctrl+I">Inspect image</button>
         <button type="button" id="globe-home" class="globe-tool" title="Home key, with the globe focused" hidden>Case anchor</button>
         <button type="button" id="globe-world" class="globe-tool" title="0 key, with the globe focused" hidden>Whole globe</button>
+        <button type="button" id="globe-layers-toggle" class="globe-tool" aria-pressed="true" aria-controls="globe-layers" title="Show or hide the layers panel" hidden>Layers</button>
         <button type="button" id="globe-overlays" class="globe-tool" aria-pressed="false" title="Ctrl+Shift+E · hide tags, leaders, brackets and drawn geometry; values are unchanged" hidden>Clean evidence</button>
+        <button type="button" id="media-run" class="media-tool" data-operation title="Run the forensic cue profile on the open image" hidden>Run cues</button>
         <button type="button" id="exit-focus" class="exit-focus" title="Escape" hidden>Exit focus</button>
       </div>
     </div>
@@ -132,11 +134,32 @@
         <div class="globe-tags" id="globe-tags"></div>
         <div class="gbracket" id="globe-bracket" hidden aria-hidden="true"><i></i><i></i><i></i><i></i></div>
         <aside class="gcard glass" id="globe-card" hidden aria-label="Selected record"></aside>
+        <aside class="glayers glass" id="globe-layers" aria-label="Layers">
+          <div class="head"><span class="k">Layers</span><span class="chip fx" id="globe-layers-chip">◇ synthetic</span></div>
+          <div id="globe-layer-list" class="glayer-list"></div>
+        </aside>
         <div class="gtray glass" id="globe-tray" hidden><span class="k">Not plotted</span><div id="globe-tray-items" class="tray"></div></div>
         <div class="gattrib glass" id="globe-attrib" aria-live="polite"></div>
         <div class="gstate glass" id="globe-view-state"></div>
         <div class="empty gunavail" id="globe-unavailable"><span class="k">Globe</span><h2 id="globe-unavail-title">Globe renderer not started</h2><p id="globe-unavail-text"></p></div>
         <div id="globe-credit-sink" hidden></div>
+      </div>
+    </section>
+
+    <!-- Media view: the image is the canvas; forensic cues float over it -->
+    <section class="view" id="view-media" hidden>
+      <div class="empty" id="media-empty">
+        <span class="k">Media forensics</span>
+        <h2 id="media-empty-title">No image open</h2>
+        <p id="media-empty-text">Inspect a PNG or JPEG (Ctrl+I), then run the forensic cue profile on the same retained bytes. Cues are diagnostics with stated coverage, not a verdict that an image is real, edited or generated.</p>
+        <button type="button" id="media-empty-action" class="btn primary" data-operation>Inspect image</button>
+      </div>
+      <div class="media-wrap" id="media-loaded" hidden>
+        <div class="media-stage" id="media-stage"><img id="media-image" alt="" draggable="false"></div>
+        <div class="media-frame" id="media-frame"></div>
+        <aside class="mcard glass" id="media-card" hidden aria-label="Selected candidate"></aside>
+        <aside class="mhist glass" id="media-hist" hidden aria-label="RGB histograms of the decoded samples"></aside>
+        <div class="mstate glass" id="media-state"></div>
       </div>
     </section>
 
@@ -155,10 +178,10 @@
       <div class="head"><span class="k">Inspect · session</span><h2>Local session</h2><div class="chips"><span class="chip">▮ Memory only</span><span class="chip">No case store</span></div></div>
       <div class="body" tabindex="0">
         <section class="sec"><span class="k">Session record</span>
-          <dl class="kv"><dt>Storage</dt><dd>Memory · discarded on exit</dd><dt>Acquisition</dt><dd>User-selected local files</dd><dt>Publication</dt><dd class="none">— none</dd><dt>Network</dt><dd>No requests from this interface</dd></dl>
+          <dl class="kv"><dt>Storage</dt><dd>Memory · discarded on exit</dd><dt>Acquisition</dt><dd>User-selected local files</dd><dt>Publication</dt><dd class="none">— none</dd><dt>Network</dt><dd>Only the registered imagery source, from the Globe</dd></dl>
         </section>
         <section class="sec"><span class="k">Loaded sources</span><div id="session-sources" class="source-list"></div></section>
-        <section class="sec"><span class="k">Not in this build</span><p class="note">Persistent cases, PDF and OCR, remote sources, AI summaries, and reports. Windows WebView2 may contact Microsoft on its own; this interface does not.</p></section>
+        <section class="sec"><span class="k">Not in this build</span><p class="note">Persistent cases, PDF and OCR, remote document sources, AI summaries, and reports. Windows WebView2 may contact Microsoft on its own; this interface contacts only the imagery origin shown in the Globe inspector.</p></section>
       </div>
     </div>
     <!-- Document inspector -->
@@ -194,15 +217,36 @@
     <!-- Globe inspector -->
     <div class="ipanel" id="insp-globe" hidden>
       <div class="head"><span class="k">Inspect · globe</span><h2 id="insp-globe-title">Globe</h2><div class="chips" id="insp-globe-chips"></div></div>
-      <div class="tabs" role="tablist"><button type="button" role="tab" aria-selected="true" data-tab="globe-record">Record</button><button type="button" role="tab" aria-selected="false" data-tab="globe-imagery">Imagery</button><button type="button" role="tab" aria-selected="false" data-tab="globe-limits">Limits</button></div>
+      <div class="tabs" role="tablist"><button type="button" role="tab" aria-selected="true" data-tab="globe-record">Record</button><button type="button" role="tab" aria-selected="false" data-tab="globe-layers">Layers</button><button type="button" role="tab" aria-selected="false" data-tab="globe-imagery">Imagery</button><button type="button" role="tab" aria-selected="false" data-tab="globe-limits">Limits</button></div>
       <div class="body" tabindex="0">
         <section class="sec" data-pane="globe-record"><span class="k">Selected record</span><dl class="kv" id="globe-record"></dl><p class="note" id="globe-record-note"></p></section>
         <section class="sec" data-pane="globe-record"><span class="k">Records</span><div class="source-list globe-record-list" id="globe-records"></div></section>
         <section class="sec" data-pane="globe-record"><span class="k">Case</span><dl class="kv" id="globe-case"></dl></section>
+        <section class="sec" data-pane="globe-layers" hidden><span class="k">Registered layers</span><div id="globe-layer-details" class="glayer-details"></div></section>
+        <section class="sec" data-pane="globe-layers" hidden><span class="k">ALPR camera directory · CAM-06</span>
+          <div id="globe-alpr-filters" class="gform"></div>
+          <div id="globe-alpr-breakdown"></div>
+          <dl class="kv" id="globe-alpr-details"></dl>
+          <p class="note" id="globe-alpr-statement"></p>
+        </section>
         <section class="sec" data-pane="globe-imagery" hidden><span class="k">Basemap</span><form class="gform" id="globe-imagery-form"></form></section>
         <section class="sec" data-pane="globe-imagery" hidden><span class="k">Active layer</span><dl class="kv" id="globe-imagery-active"></dl><p class="note" id="globe-ack"></p></section>
         <section class="sec" data-pane="globe-imagery" hidden><span class="k">Renderer</span><dl class="kv" id="globe-renderer"></dl><span class="k">Renderer messages · this session</span><ul class="glog" id="globe-log"></ul></section>
-        <section class="sec" data-pane="globe-limits" hidden><span class="k">Limits</span><p class="note">The case is a bundled synthetic fixture; nothing drawn is an observation. Points, rings and regions come only from recorded geometry; a record without geometry is listed, not placed. Uncertainty rings and place radii are the fixture author's bounds. Imagery is a live request to the registered source for the layer and UTC day shown; it never shows the case period, and a missing tile is a coverage gap. Tile counts are what this renderer observed in this session. No terrain, labels, roads or tracks are drawn, because none is registered. Camera position is a view setting, not a measurement. Persistent cases, clustering, footprints and viewing cones are not in this build.</p></section>
+        <section class="sec" data-pane="globe-limits" hidden><span class="k">Limits</span><p class="note">The case and the camera directory are bundled synthetic fixtures; nothing drawn is an observation. Points, rings and regions come only from recorded geometry; a record without geometry is listed, not placed. A camera wedge is an illustrative bearing from a numeric tag, never a calibrated field of view, and a camera without a tag has no wedge. Imagery is a live request to the registered source for the layer and UTC day shown; it never shows the case period, and a missing tile is a coverage gap. Tile counts are what this renderer observed in this session. No terrain, labels, roads or tracks are drawn, because none is registered. Camera position is a view setting, not a measurement. Persistent cases, clustering, footprints and live directory queries are not in this build.</p></section>
+      </div>
+    </div>
+    <!-- Media inspector -->
+    <div class="ipanel" id="insp-media" hidden>
+      <div class="head"><span class="k">Inspect · media forensics</span><h2 id="insp-media-name">No image</h2><div class="chips" id="insp-media-chips"></div></div>
+      <div class="tabs" role="tablist"><button type="button" role="tab" aria-selected="true" data-tab="media-report">Report</button><button type="button" role="tab" aria-selected="false" data-tab="media-methods">Methods</button><button type="button" role="tab" aria-selected="false" data-tab="media-limits">Limits</button></div>
+      <div class="body" tabindex="0">
+        <section class="sec" data-pane="media-report"><span class="k">Source record</span><dl class="kv" id="media-source"></dl><p class="note" id="media-run-note"></p><button type="button" id="run-forensics" class="btn primary" data-operation disabled>Run forensic cues</button></section>
+        <section class="sec" data-pane="media-report" id="media-report-sec" hidden><span class="k">Analysis record</span><dl class="kv" id="media-report"></dl></section>
+        <section class="sec" data-pane="media-report" id="media-cues-sec" hidden><span class="k">Metadata cues</span><div class="mlist" id="media-cues"></div></section>
+        <section class="sec" data-pane="media-report" id="media-blocks-sec" hidden><span class="k">Repeated-block candidates</span><div class="mlist" id="media-blocks"></div></section>
+        <section class="sec" data-pane="media-methods" hidden><span class="k">Methods and coverage</span><div id="media-methods"></div></section>
+        <section class="sec" data-pane="media-limits" hidden><span class="k">Kernel limitations</span><ul class="glog" id="media-limitations"></ul></section>
+        <section class="sec" data-pane="media-limits" hidden><span class="k">Limits</span><p class="note">Cues are investigative diagnostics from the retained bytes: no cue proves camera origin, and no absence of cues proves an image is unedited or not generated. The assessment is always inconclusive and unreviewed. Learned AI detection and credential or watermark verification are not implemented. Decoded samples are derivatives (encoded raster coordinates, 8-bit RGBA, no colour management). Every JPEG report is partial: entropy completeness is unverified and decoder recovery is possible. Block candidates are exact grid-aligned repeats, which ordinary flat regions also produce. The original is never modified; no residual map is written by this instrument.</p></section>
       </div>
     </div>
   </aside>

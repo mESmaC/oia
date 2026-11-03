@@ -27,6 +27,8 @@ rfd = { version = "=0.15.4", optional = true }
 oia-documents = { path = "../oia-documents" }
 oia-png-privacy = { path = "../oia-png-privacy" }
 oia-jpeg-privacy = { path = "../oia-jpeg-privacy" }
+oia-image-forensics = { path = "../oia-image-forensics" }
+oia-alpr-map = { path = "../oia-alpr-map" }
 oia-domain = { path = "../oia-domain" }
 oia-time-geo = { path = "../oia-time-geo" }
 oia-store = { path = "../oia-store" }

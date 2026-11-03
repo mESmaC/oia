@@ -7,9 +7,11 @@
 //! reaches the renderer, and a record without recorded geometry is never given a position.
 
 pub mod imagery;
+pub mod layers;
 
 use crate::local_tools::{Result, ToolError};
 use imagery::{CivilDate, ImagerySelection, ImageryView};
+use layers::{AlprFilterId, CameraLayerView, LayerState, LayerView};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -488,6 +490,11 @@ pub struct GlobeView {
     pub camera: CameraView,
     pub home: CameraView,
     pub imagery: ImageryView,
+    /// Registered context layers, in registry order; the case layer is first.
+    pub layers: Vec<LayerView>,
+    /// The ALPR camera layer's features and kernel evaluation, present whenever the
+    /// fixture parsed; drawn by the page only while its layer is visible.
+    pub cameras: Option<CameraLayerView>,
     pub renderer: RendererInfo,
     pub limits: GlobeLimits,
 }
@@ -496,8 +503,10 @@ pub struct GlobeView {
 #[derive(Clone, Debug)]
 pub struct GlobeState {
     fixture: std::result::Result<GlobeCaseFixture, ToolError>,
+    /// A case record id or a camera feature id (`alpr:<osm id>`).
     selection: Option<String>,
     camera: CameraView,
+    layers: LayerState,
     /// Resolved once, when selected, against the date given then. Viewing never re-validates,
     /// so a clock that moves cannot turn an accepted selection into a failing view. `None`
     /// only if the registry's default basemap cannot be resolved, which is a build defect.
@@ -529,6 +538,7 @@ impl GlobeState {
             fixture,
             selection: None,
             camera,
+            layers: LayerState::default(),
             imagery,
         }
     }
@@ -562,15 +572,48 @@ impl GlobeState {
                 .fixture
                 .as_ref()
                 .map(|f| f.records.iter().any(|r| &r.id == id))
-                .unwrap_or(false);
+                .unwrap_or(false)
+                || self.layers.has_camera(id);
             if !known {
                 return Err(ToolError::new(
                     "unknown_record",
-                    format!("{id:?} is not a record of the open case."),
+                    format!(
+                        "{id:?} is not a record of the open case or a feature of a registered layer."
+                    ),
                 ));
             }
         }
         self.selection = record_id;
+        Ok(())
+    }
+
+    /// Shows or hides a registered layer. Hiding a layer clears a selection inside it,
+    /// so a target card never describes something that is not drawn.
+    pub fn set_layer_visible(&mut self, layer_id: &str, visible: bool) -> Result<()> {
+        self.layers.set_visible(layer_id, visible)?;
+        if !visible
+            && self
+                .selection
+                .as_deref()
+                .is_some_and(|id| self.layers.has_camera(id))
+        {
+            self.selection = None;
+        }
+        Ok(())
+    }
+
+    /// Applies the ALPR local filter. A selected camera that the filter omits is deselected.
+    pub fn set_alpr_filter(&mut self, filter: AlprFilterId) -> Result<()> {
+        self.layers.set_alpr_filter(filter);
+        let (_, cameras) = self.layers.views(None, 0);
+        if let Some(id) = self.selection.as_deref()
+            && self.layers.has_camera(id)
+            && !cameras
+                .as_ref()
+                .is_some_and(|c| c.cameras.iter().any(|f| f.id == id))
+        {
+            self.selection = None;
+        }
         Ok(())
     }
 
@@ -602,6 +645,8 @@ impl GlobeState {
             camera: self.camera,
             home: Self::home_for(&self.fixture),
             imagery,
+            layers: Vec::new(),
+            cameras: None,
             renderer: RendererInfo {
                 name: "CesiumJS",
                 pinned_version: RENDERER_VERSION,
@@ -619,6 +664,9 @@ impl GlobeState {
             Ok(fixture) => fixture,
             Err(error) => {
                 view.fixture_error = Some(format!("{FIXTURE_PATH}: {}", error.message));
+                let (layers, cameras) = self.layers.views(None, 0);
+                view.layers = layers;
+                view.cameras = cameras;
                 return Ok(view);
             }
         };
@@ -674,6 +722,11 @@ impl GlobeState {
             plotted_count: view.plotted.len(),
             not_plotted_count: view.not_plotted.len(),
         });
+        let (layers, cameras) = self
+            .layers
+            .views(Some(&fixture.case.label), fixture.records.len());
+        view.layers = layers;
+        view.cameras = cameras;
         Ok(view)
     }
 }
@@ -757,5 +810,30 @@ mod tests {
             Some("unknown_record")
         );
         assert!(state.select(Some("acct-b".to_owned())).is_ok());
+    }
+
+    // #23 layers: a camera feature is selectable only through the registry, and hiding
+    // its layer or filtering it out clears that selection rather than leaving a card
+    // for geometry that is no longer drawn.
+    #[test]
+    fn layer_visibility_and_filter_govern_camera_selection() -> Result<()> {
+        let mut state = GlobeState::default();
+        state.set_layer_visible(layers::LAYER_ALPR, true)?;
+        state.select(Some("alpr:900000000101".to_owned()))?;
+        assert!(
+            state
+                .view()?
+                .layers
+                .iter()
+                .any(|l| l.id == layers::LAYER_ALPR && l.visible)
+        );
+        state.set_alpr_filter(AlprFilterId::Unspecified)?;
+        assert_eq!(state.view()?.selection, None);
+        state.set_alpr_filter(AlprFilterId::All)?;
+        state.select(Some("alpr:900000000101".to_owned()))?;
+        state.set_layer_visible(layers::LAYER_ALPR, false)?;
+        assert_eq!(state.view()?.selection, None);
+        assert!(state.set_layer_visible(layers::LAYER_CASE, false).is_err());
+        Ok(())
     }
 }

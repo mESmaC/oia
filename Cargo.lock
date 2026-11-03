@@ -2423,12 +2423,14 @@ dependencies = [
 name = "oia-app"
 version = "0.1.0"
 dependencies = [
+ "oia-alpr-map",
  "oia-analysis",
  "oia-devices",
  "oia-documents",
  "oia-domain",
  "oia-export",
  "oia-forecast",
+ "oia-image-forensics",
  "oia-ingest",
  "oia-jpeg-privacy",
  "oia-media",

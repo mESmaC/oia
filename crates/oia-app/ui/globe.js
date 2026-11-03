@@ -21,6 +21,8 @@ const Globe = (() => {
   let plottedKey = '';
   let cameraTimer = null;
   let suppressCameraReport = false;
+  let layerVisibility = {};   // layer id -> visible, as last drawn; a layer turning on flies to its extent
+  let layersPanel = true;     // presentation only: the floating layers panel
   const tiles = { loaded: 0, failed: 0, cancelled: 0, pending: 0 };
   const FLIGHT_MS = 320; // visual language v2 §5.5 coordinated selection; immediate under reduced motion
   const prefersReducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -145,6 +147,7 @@ const Globe = (() => {
       setCamera(view.camera, false);
       applyView(view);
     }
+    renderLayers();
     notify();
   }
 
@@ -206,6 +209,19 @@ const Globe = (() => {
   function world() {
     if (!view) return;
     setCamera({ lat_deg: view.home.lat_deg, lon_deg: view.home.lon_deg, height_m: WORLD_HEIGHT_M, heading_deg: 0, pitch_deg: -90 }, true);
+  }
+  function flyToExtent(extent) {
+    // Camera motion only: the extent is the layer's recorded bounds from Rust.
+    if (!viewer || !extent) return;
+    const Cesium = window.Cesium;
+    suppressCameraReport = true;
+    viewer.camera.cancelFlight();
+    const release = () => { suppressCameraReport = false; reportCamera(); };
+    const destination = Cesium.Rectangle.fromDegrees(extent.west, extent.south, extent.east, extent.north);
+    const fly = !reduced && !prefersReducedMotion();
+    viewer.camera.flyTo({ destination, duration: fly ? FLIGHT_MS / 1000 : 0, complete: release, cancel: release });
+    if (!fly) release();
+    viewer.scene.requestRender();
   }
 
   // ---- Imagery ----
@@ -269,7 +285,12 @@ const Globe = (() => {
     }
     return points;
   }
-  function buildGeometry(plotted) {
+  function visibleCameras() {
+    // Camera features are drawn only while their layer is visible in the Rust registry.
+    const layer = view?.layers.find(l => l.id === view.cameras?.layer_id);
+    return layer && layer.visible && view.cameras ? view.cameras.cameras : [];
+  }
+  function buildGeometry(plotted, cameras) {
     const Cesium = window.Cesium;
     viewer.entities.removeAll();
     drawn.clear();
@@ -277,6 +298,22 @@ const Globe = (() => {
     const AMBER = Cesium.Color.fromCssColorString('#f3b64a');
     const TEXT = Cesium.Color.fromCssColorString('#e9edf0');
     const NONE = Cesium.Color.TRANSPARENT;
+    for (const cam of cameras) {
+      // A camera is a mapped assertion: a small neutral square. A wedge is drawn only from
+      // the kernel's illustrative bearing geometry, never derived here.
+      const anchor = Cesium.Cartesian3.fromDegrees(cam.lon_deg, cam.lat_deg, 0);
+      viewer.entities.add({ id: cam.id, position: anchor, point: { pixelSize: 6, color: TEXT.withAlpha(0.9), outlineColor: Cesium.Color.BLACK, outlineWidth: 1.5, disableDepthTestDistance: Number.POSITIVE_INFINITY } });
+      let points = [anchor];
+      if (cam.wedge) {
+        const w = cam.wedge;
+        const left = Cesium.Cartesian3.fromDegrees(w.left_lon_deg, w.left_lat_deg, 0);
+        const right = Cesium.Cartesian3.fromDegrees(w.right_lon_deg, w.right_lat_deg, 0);
+        points = [anchor, left, right];
+        viewer.entities.add({ id: `${cam.id}:wedge`, polygon: { hierarchy: points, height: 0, material: TEXT.withAlpha(0.14), outline: false } });
+        viewer.entities.add({ id: `${cam.id}:wedge-outline`, polyline: { positions: [anchor, left, right, anchor], width: 1, material: TEXT.withAlpha(0.55) } });
+      }
+      drawn.set(cam.id, { anchor, points, kind: 'camera', cls: 'cam' });
+    }
     for (const record of plotted) {
       const g = record.geometry;
       if (g.kind === 'point') {
@@ -310,15 +347,26 @@ const Globe = (() => {
     if (!viewer || !view) return;
     const picked = viewer.scene.pick(movement.position);
     const id = picked?.id?.id;
-    const recordId = typeof id === 'string' ? id.split(':')[0] : null;
+    // Entity ids are the feature id plus an optional part suffix; camera ids themselves contain a colon.
+    const recordId = typeof id === 'string' ? id.replace(/:(uncertainty|radius|outline|wedge|wedge-outline)$/, '') : null;
     if (recordId && drawn.has(recordId)) select(recordId === view.selection ? null : recordId);
   }
 
   // ---- Overlays: tags, leaders, bracket ----
-  function buildTags(plotted) {
+  function buildTags(plotted, cameras) {
     const host = $('globe-tags');
     host.replaceChildren();
     tagEls.clear();
+    for (const cam of cameras) {
+      const tag = node('button', undefined, 'gtag cam');
+      tag.type = 'button';
+      tag.hidden = true;
+      tag.append(node('i', 'CAM'), node('b', `${cam.display_id} · ${cam.manufacturer_label}`));
+      tag.setAttribute('aria-label', `${cam.display_id}, mapped ALPR camera, ${cam.manufacturer_label}${cam.synthetic ? ', synthetic fixture' : ''}`);
+      tag.onclick = () => select(view.selection === cam.id ? null : cam.id);
+      host.append(tag);
+      tagEls.set(cam.id, tag);
+    }
     for (const record of plotted) {
       const d = drawn.get(record.id);
       const tag = node('button', undefined, `gtag ${d ? d.cls : ''}`.trim());
@@ -398,6 +446,26 @@ const Globe = (() => {
     if (!view || !view.selection) return null;
     return view.plotted.find(r => r.id === view.selection) || view.not_plotted.find(r => r.id === view.selection) || null;
   }
+  function selectedCamera() {
+    if (!view || !view.selection || !view.cameras) return null;
+    return view.cameras.cameras.find(c => c.id === view.selection) || null;
+  }
+  function cameraRows(cam) {
+    const w = cam.wedge;
+    return [
+      ['Position', `${deg(cam.lat_deg)}, ${deg(cam.lon_deg)}`],
+      ['Bearing', cam.direction_deg === null || cam.direction_deg === undefined ? null : `${Math.round(cam.direction_deg)}° (tagged)`],
+      ['Wedge', w ? `illustrative · ${fmt(w.radius_m)} m · ±${w.half_angle_deg}°` : 'none: bearing not recorded', w ? 'est' : 'none'],
+      ['Vendor', cam.manufacturer_label],
+      ['Operator', cam.operator],
+      ['Type', cam.camera_type],
+      ['Zone', cam.zone],
+      ['Reference', cam.reference],
+      ['Verified', cam.last_verified ? `${cam.last_verified} (mapper check date)` : null],
+      ['OSM edit', cam.osm_timestamp],
+      ['Source', `${view.cameras.source_name}${cam.source_tag ? ` · ${cam.source_tag}` : ''}`, cam.synthetic ? 'fx' : '']
+    ];
+  }
   function geometryRows(record) {
     if (!record) return [];
     const g = record.geometry;
@@ -414,15 +482,94 @@ const Globe = (() => {
   function renderCard() {
     const card = $('globe-card');
     const record = selectedRecord();
-    if (!record || !record.geometry || !overlays) { card.hidden = true; return; }
+    const cam = selectedCamera();
+    if ((!record || !record.geometry) && !cam || !overlays) { card.hidden = true; return; }
     card.hidden = false;
     card.replaceChildren(node('span', undefined, 'corner tl'), node('span', undefined, 'corner tr'), node('span', undefined, 'corner bl'), node('span', undefined, 'corner br'));
-    card.append(node('span', `${pad2(record.order)} · selected`, 'k'), node('h3', record.label));
     const rows = node('dl', undefined, 'rows');
-    for (const [key, value, cls] of [['Kind', record.kind], ...geometryRows(record).filter(r => r[0] !== 'Basis'), ...timeRows(record), ['Source', record.source_label]]) {
+    let list;
+    if (cam) {
+      card.append(node('span', 'CAM · selected', 'k'), node('h3', cam.display_id));
+      const chips = node('div', undefined, 'chips');
+      if (cam.synthetic) chips.append(node('span', '◇ synthetic fixture', 'chip fx'));
+      chips.append(node('span', '▣ mapped assertion', 'chip'));
+      card.append(chips);
+      list = cameraRows(cam);
+    } else {
+      card.append(node('span', `${pad2(record.order)} · selected`, 'k'), node('h3', record.label));
+      list = [['Kind', record.kind], ...geometryRows(record).filter(r => r[0] !== 'Basis'), ...timeRows(record), ['Source', record.source_label]];
+    }
+    for (const [key, value, cls] of list) {
       rows.append(node('dt', key), node('dd', value === null || value === undefined ? '— not recorded' : value, value === null || value === undefined ? 'none' : (cls || '')));
     }
     card.append(rows);
+  }
+  function renderLayers() {
+    const list = $('globe-layer-list');
+    list.replaceChildren();
+    if (!view) return;
+    for (const layer of view.layers) {
+      const row = node('label', undefined, 'glayer');
+      const input = node('input');
+      input.type = 'checkbox';
+      input.checked = layer.visible;
+      input.disabled = layer.kind === 'case' || !!layer.error;
+      input.setAttribute('aria-label', `${layer.label}, ${layer.visible ? 'shown' : 'hidden'}`);
+      input.onchange = () => call('globe_layer', { layerId: layer.id, visible: input.checked });
+      const name = node('span', undefined, 'name');
+      name.append(node('span', layer.label));
+      const small = layer.error ? node('small', `fixture error`, 'bad')
+        : node('small', `${fmt(layer.shown)} / ${fmt(layer.total)} · ${layer.coverage.split(/[:\s]/)[0]}`, layer.coverage.startsWith('complete') || layer.coverage.startsWith('all') ? '' : 'warn');
+      name.append(small);
+      row.append(input, name);
+      if (layer.extent) {
+        const fly = node('button', 'Fly to', 'fly');
+        fly.type = 'button';
+        fly.disabled = rendererState !== 'ready';
+        fly.title = `Fly the camera to this layer's recorded extent`;
+        fly.onclick = event => { event.preventDefault(); flyToExtent(layer.extent); };
+        row.append(fly);
+      } else row.append(node('span'));
+      list.append(row);
+    }
+  }
+  function renderLayerInspector() {
+    const details = $('globe-layer-details');
+    details.replaceChildren();
+    if (!view) return;
+    for (const layer of view.layers) {
+      const entry = node('div', undefined, 'entry');
+      const row = node('div', undefined, 'row');
+      row.append(node('b', layer.label), node('span', layer.error ? '✕ fixture error' : layer.visible ? '▮ shown' : '○ hidden', `chip${layer.error ? ' bad' : ''}`));
+      entry.append(row);
+      const dl = node('dl', undefined, 'kv');
+      kv(dl, [['Source', layer.source_label], ['Origin', layer.origin_class, 'fx'], ['Requirement', layer.requirement], ['Features', `${fmt(layer.shown)} shown / ${fmt(layer.total)} in extent`], ['Coverage', layer.coverage, layer.coverage.startsWith('complete') || layer.coverage.startsWith('all') ? '' : 'est'], ['Extent', layer.extent ? `${deg(layer.extent.south, 3)}..${deg(layer.extent.north, 3)} N · ${deg(layer.extent.west, 3)}..${deg(layer.extent.east, 3)} E` : null], ['Attribution', layer.attribution], ['Licence', layer.license], ['Fixture', layer.fixture_path]]);
+      entry.append(dl, node('p', layer.error || layer.statement, `note${layer.error ? ' bad' : ''}`));
+      details.append(entry);
+    }
+    const c = view.cameras;
+    const filters = $('globe-alpr-filters'), breakdown = $('globe-alpr-breakdown');
+    filters.replaceChildren(); breakdown.replaceChildren();
+    if (!c) { kv($('globe-alpr-details'), [['Layer', 'not evaluated']]); $('globe-alpr-statement').textContent = ''; return; }
+    for (const f of c.filters) {
+      const label = node('label', undefined, 'row'), input = node('input');
+      input.type = 'radio'; input.name = 'alpr-filter'; input.value = f.id; input.checked = f.active;
+      input.onchange = () => call('globe_alpr_filter', { filter: f.id });
+      label.append(input, node('span', f.label));
+      filters.append(label);
+    }
+    const b = c.breakdown;
+    for (const [label, n] of [['Flock Safety', b.flock_safety], ['Other named vendor', b.other_named], ['Vendor unspecified', b.unspecified], ['Bearing recorded', b.with_bearing], ['Mapper check date', b.verified_date_present]]) {
+      const m = node('div', undefined, 'meter');
+      const bar = node('div', undefined, 'bar');
+      const segments = Math.max(1, Math.min(b.total_in_viewport, 20));
+      const lit = b.total_in_viewport ? Math.round(n / b.total_in_viewport * segments) : 0;
+      for (let i = 0; i < segments; i++) { const seg = node('i'); if (i < lit) seg.className = 'on'; bar.append(seg); }
+      m.append(node('span', label, 'label'), node('span', `${fmt(n)} / ${fmt(b.total_in_viewport)}`, 'n'), bar);
+      breakdown.append(m);
+    }
+    kv($('globe-alpr-details'), [['Coverage', c.coverage_status, c.coverage_status.startsWith('complete') ? '' : 'est'], ['Shown', `${fmt(c.cameras.length)} after filter · ${fmt(c.omitted_by_filter)} omitted by filter`], ['Query limit', `${fmt(c.query_limit)} records`], ['Detail zoom', c.detail_zoom === null ? null : `z${c.detail_zoom}`], ['Wedge', `illustrative · ${fmt(c.wedge_radius_m)} m · ±${c.wedge_half_angle_deg}° · only where a bearing is tagged`, 'est'], ['Source', c.source_name, 'fx'], ['Description', c.description]]);
+    $('globe-alpr-statement').textContent = view.layers.find(l => l.id === c.layer_id)?.statement || '';
   }
   function renderTray() {
     const tray = $('globe-tray'), host = $('globe-tray-items');
@@ -465,6 +612,7 @@ const Globe = (() => {
       ['CASE', view.case ? view.case.id : 'none'],
       ['CLOCK', view.case ? `${view.case.clock.local.slice(11)} ±${view.case.clock.uncertainty_min} min · reported local` : '—'],
       ['IMAGERY', view.imagery.active.source.id],
+      ['LAYERS', `${view.layers.filter(l => l.visible && !l.error).length} / ${view.layers.length}`],
       ['OVERLAYS', overlays ? 'on' : 'hidden'],
       ['ALT', `${fmt(Math.round(view.camera.height_m / 1000))} km`]
     ];
@@ -473,16 +621,18 @@ const Globe = (() => {
   function renderInspector() {
     if (!view) return;
     const record = selectedRecord();
-    $('insp-globe-title').textContent = record ? record.label : (view.case ? view.case.label : 'Globe');
+    const cam = selectedCamera();
+    $('insp-globe-title').textContent = cam ? cam.display_id : record ? record.label : (view.case ? view.case.label : 'Globe');
     const chips = $('insp-globe-chips');
     chips.replaceChildren();
     const chip = (text, cls) => { const c = node('span', text, `chip${cls ? ` ${cls}` : ''}`); chips.append(c); };
-    if (view.case) chip(`◇ ${view.case.origin_class} case`, 'fx');
+    if (cam) { if (cam.synthetic) chip('◇ synthetic fixture', 'fx'); chip('▣ Mapped ALPR camera'); }
+    else if (view.case) chip(`◇ ${view.case.origin_class} case`, 'fx');
     if (record) chip(record.geometry ? (record.geometry.kind === 'region' ? '▦ Region' : record.geometry.kind === 'approximate_centroid' ? '◌ Approximate' : '◉ Point') : '○ Not plotted');
     if (rendererState === 'ready' && tiles.loaded > 0) chip('▮ Imagery live from source');
     else chip(`○ Imagery not loaded · renderer ${rendererState}`, 'warn');
-    kv($('globe-record'), record ? [['Record', record.label], ['Kind', record.kind], ...geometryRows(record), ...timeRows(record), ['Source', record.source_label]] : [['Record', 'none selected']]);
-    $('globe-record-note').textContent = record ? record.notes : 'Select a tag on the globe, a record below, or an entry in the not-plotted tray.';
+    kv($('globe-record'), cam ? [['Camera', cam.display_id], ['Layer', 'ALPR camera directory'], ...cameraRows(cam)] : record ? [['Record', record.label], ['Kind', record.kind], ...geometryRows(record), ...timeRows(record), ['Source', record.source_label]] : [['Record', 'none selected']]);
+    $('globe-record-note').textContent = cam ? (cam.details.join(' · ') + (cam.note ? ` · ${cam.note}` : '')) : record ? record.notes : 'Select a tag on the globe, a record below, a camera from a visible layer, or an entry in the not-plotted tray.';
     const list = $('globe-records');
     list.replaceChildren();
     const all = [...view.plotted.map(r => ({ r, plotted: true })), ...view.not_plotted.map(r => ({ r, plotted: false }))].sort((a, b) => a.r.order - b.r.order);
@@ -499,6 +649,7 @@ const Globe = (() => {
     } else {
       kv($('globe-case'), [['Case', 'none'], ['Fixture', view.fixture_error || 'not loaded']]);
     }
+    renderLayerInspector();
     renderImageryForm();
     const a = view.imagery.active;
     kv($('globe-imagery-active'), [['Layer', a.source.layer], ['Provider', a.source.provider], ['Origin', a.source.origin], ['Date', a.date ? `${a.date} (UTC day)` : 'composite · none'], ['Capture', a.source.capture_statement], ['Tiles', `${fmt(tiles.loaded)} loaded · ${fmt(tiles.failed)} failed · ${fmt(tiles.pending)} pending · ${fmt(tiles.cancelled)} cancelled by navigation`, tiles.failed ? 'est' : ''], ['Overlay', view.imagery.coastlines ? `${view.imagery.coastlines.source.layer} · ${view.imagery.coastlines.source.license} · ${view.imagery.coastlines.source.attribution}` : 'none'], ['Coverage note', a.coverage_note || null], ['Licence', a.source.license], ['Attribution', a.source.attribution], ['Checked', `capabilities ${a.source.capabilities_checked_on}`]]);
@@ -556,9 +707,14 @@ const Globe = (() => {
     view = next;
     if (viewer && rendererState === 'ready') {
       setImagery(view.imagery);
-      const key = JSON.stringify(view.plotted);
-      if (key !== plottedKey) { plottedKey = key; buildGeometry(view.plotted); buildTags(view.plotted); }
+      const cameras = visibleCameras();
+      const key = JSON.stringify([view.plotted, cameras]);
+      if (key !== plottedKey) { plottedKey = key; buildGeometry(view.plotted, cameras); buildTags(view.plotted, cameras); }
       if (first) setCamera(view.camera, false);
+      // A layer the user just turned on is brought into view once; later moves are theirs.
+      for (const layer of view.layers) {
+        if (layer.visible && layerVisibility[layer.id] === false && layer.extent) flyToExtent(layer.extent);
+      }
       if (view.selection && view.selection !== previousSelection) {
         const d = drawn.get(view.selection);
         if (d) {
@@ -574,17 +730,19 @@ const Globe = (() => {
       }
       viewer.scene.requestRender();
     }
-    renderCard(); renderTray(); renderAttribution(); renderState(); renderInspector();
+    layerVisibility = Object.fromEntries(view.layers.map(l => [l.id, l.visible]));
+    renderCard(); renderTray(); renderLayers(); renderAttribution(); renderState(); renderInspector();
     if (onViewListener) onViewListener(summary());
   }
   function summary() {
     if (!view) return { source: '—', coverage: '—', selection: '—', loaded: false };
     const record = selectedRecord();
+    const cam = selectedCamera();
     return {
       source: view.case ? `${view.case.label}` : 'no case',
       coverage: rendererState === 'ready' ? `tiles ${fmt(tiles.loaded)} ok · ${fmt(tiles.failed)} failed` : `renderer ${rendererState}`,
       partial: tiles.failed > 0 || rendererState !== 'ready',
-      selection: record ? `${pad2(record.order)} ${record.label}` : 'none',
+      selection: cam ? `CAM ${cam.display_id}` : record ? `${pad2(record.order)} ${record.label}` : 'none',
       loaded: true
     };
   }
@@ -628,6 +786,11 @@ const Globe = (() => {
     $('globe-home').onclick = home;
     $('globe-world').onclick = world;
     $('globe-overlays').onclick = () => toggleOverlays();
+    $('globe-layers-toggle').onclick = () => {
+      layersPanel = !layersPanel;
+      $('globe-layers').hidden = !layersPanel;
+      $('globe-layers-toggle').setAttribute('aria-pressed', String(layersPanel));
+    };
     $('globe-canvas').addEventListener('keydown', event => {
       if (event.key === 'Escape' && view?.selection) { event.preventDefault(); select(null); return; }
       onKey(event);

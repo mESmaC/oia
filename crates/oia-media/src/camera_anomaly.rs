@@ -280,6 +280,15 @@ impl fmt::Display for SourceUsePermission {
 pub enum FeedObservationKind {
     /// Live or sequentially captured upstream camera frames/clips eligible for observation evidence.
     UpstreamCameraFeed,
+    /// Periodic upstream camera still snapshot eligible for observation evidence when fresh
+    /// relative to a declared staleness threshold (`CAM-02`).
+    PeriodicUpstreamStill,
+    /// Repeated or stale upstream still whose content digest or capture timestamp did not
+    /// advance within the declared staleness threshold; must not serve as event evidence.
+    StaleStillHold,
+    /// Historical camera frame retrieved from a verified archive window; eligible for historical
+    /// evidence reconstruction, distinct from live scene monitoring.
+    HistoricalArchiveFrame,
     /// Static stale fallback image; must not masquerade as live observation.
     StillFallback,
     /// Street-level archival imagery substitute; must not serve as live event evidence.
@@ -288,10 +297,32 @@ pub enum FeedObservationKind {
     SyntheticPlaceholder,
 }
 
+impl FeedObservationKind {
+    /// True when a frame of this kind is an authentic camera observation (`UpstreamCameraFeed`,
+    /// fresh `PeriodicUpstreamStill`, or `HistoricalArchiveFrame`) rather than a stale hold or
+    /// non-observation substitute (`CAM-02`, `AGENTS.md` §2).
+    #[must_use]
+    pub const fn eligible_as_event_evidence(self) -> bool {
+        matches!(
+            self,
+            Self::UpstreamCameraFeed | Self::PeriodicUpstreamStill | Self::HistoricalArchiveFrame
+        )
+    }
+
+    /// True when this source feed kind can drive live scene-anomaly monitoring (`CAM-02`, `CAM-03`).
+    #[must_use]
+    pub const fn eligible_for_live_anomaly_monitoring(self) -> bool {
+        matches!(self, Self::UpstreamCameraFeed | Self::PeriodicUpstreamStill)
+    }
+}
+
 impl fmt::Display for FeedObservationKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UpstreamCameraFeed => f.write_str("upstream_camera_feed"),
+            Self::PeriodicUpstreamStill => f.write_str("periodic_upstream_still"),
+            Self::StaleStillHold => f.write_str("stale_still_hold"),
+            Self::HistoricalArchiveFrame => f.write_str("historical_archive_frame"),
             Self::StillFallback => f.write_str("still_fallback"),
             Self::StreetViewFallback => f.write_str("street_view_fallback"),
             Self::SyntheticPlaceholder => f.write_str("synthetic_placeholder"),
@@ -1432,7 +1463,7 @@ impl fmt::Display for AnomalyError {
 
 impl std::error::Error for AnomalyError {}
 
-fn is_disallowed_single_line_char(ch: char) -> bool {
+pub(crate) fn is_disallowed_single_line_char(ch: char) -> bool {
     ch.is_control()
         || matches!(
             ch,
@@ -1563,7 +1594,7 @@ impl CameraAnomalyMonitor {
                 status: source.automated_processing,
             });
         }
-        if source.feed_kind != FeedObservationKind::UpstreamCameraFeed {
+        if !source.feed_kind.eligible_for_live_anomaly_monitoring() {
             return Err(AnomalyError::NonObservationFeedSubstitute {
                 camera_id: source.camera_id,
                 feed_kind: source.feed_kind,

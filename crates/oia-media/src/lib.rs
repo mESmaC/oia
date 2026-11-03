@@ -1,7 +1,9 @@
-//! `oia-media` — Media forensics, camera anomaly review, and illustrative recreation-prompt kernels (`#9`, `#29`, `#31`).
+//! `oia-media` — Media forensics, camera directory/feed retention, camera anomaly review, and illustrative recreation-prompt kernels (`#9`, `#28`, `#29`, `#31`).
 //!
 //! - [`camera_anomaly`]: camera-health vs. scene-anomaly separation, deduplicated candidate packaging,
 //!   append-only review history, cross-camera association checks, and operational held-out evaluation (`CAM-01`–`CAM-05`, `A09`).
+//! - [`camera_directory`]: camera directory registration, viewing-cone geometry, feed/still/fallback/synthetic/archive
+//!   classification, freshness tracking, and bounded retention ring-buffer / clip-manifest export (`CAM-01`, `CAM-02`, `CAM-04`, `A09`).
 //! - [`camera_frame_diff`]: bounded diagnostic measurements between decoded 8-bit luma frames
 //!   (`CAM-03`); does not classify anomalies or camera faults.
 //! - [`recreation`]: portable recreation-prompt export and imported-recreation labeling (`MEDIA-04`, `A10`).
@@ -14,6 +16,7 @@
 #![deny(clippy::indexing_slicing, clippy::unwrap_used, clippy::expect_used)]
 
 pub mod camera_anomaly;
+pub mod camera_directory;
 pub mod camera_frame_diff;
 pub mod recreation;
 

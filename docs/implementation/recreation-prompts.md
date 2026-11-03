@@ -66,7 +66,7 @@ Original evidence bytes are unchanged.
 - `AttemptedArtifactClass` is a local crate guard to be consolidated with the shared `oia-domain` origin-class vocabulary in `#10`.
 - Predictive restoration, frame interpolation, denoising, deblurring, multi-frame reconstruction, and learned super-resolution (`MEDIA-03`) are not implemented in this slice.
 - `D09` (restoration and detection model/corpus/threshold selection) remains open.
-- Integration with the forensic media workbench (`#30`), portable bundle/report packaging (`#22`), and full end-to-end `A10` acceptance across decoded imagery remain open on `#31`.
+- The desktop workbench builds and saves a prompt from one session-only witness version through this kernel (see [desktop workbench](desktop-workbench.md), workflow 3); it uses a single witness, no reference assets, no conflicting variants and no imported-recreation validation. Integration with the forensic media workbench (`#30`), portable bundle/report packaging (`#22`), and full end-to-end `A10` acceptance across decoded imagery remain open on `#31`.
 - No Lean theorem or formal Rust-to-Lean correspondence claim is made for this slice.
 
 ## Local verification

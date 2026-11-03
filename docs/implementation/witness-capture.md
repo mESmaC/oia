@@ -54,6 +54,13 @@ exposure records the transition before the page reveals a static, unassessed
 checklist. The checklist is not generated, ranked, evaluated, or presented as an
 evidence-backed finding. Exposure markers cover this workflow only.
 
+After capture, a Recreation panel in the same instrument can build an
+illustrative recreation prompt from any retained version through the
+`oia-media` recreation kernel (`MEDIA-04`); the mapping, limits and the
+`.txt` export are described in the
+[desktop workbench note](desktop-workbench.md#available-workflows). Building a
+prompt reads the held account and changes nothing in it.
+
 The interface uses **Capture**, not **Save**, and repeatedly labels the account
 memory-only and discarded on exit. It is a workflow demonstration, not durable
 evidence capture: the domain host requirement to retain the original durably

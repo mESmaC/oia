@@ -15,16 +15,26 @@
 //!    search, blob reads, subscriptions, model input, offline preparation, and report export
 //!    are not access-controlled until `#14` (application services), `#22` (`oia-export`), and
 //!    `#16` (workspace UI) wire this policy into their execution paths.
+//!    - On [`AccessSurface::CollaboratorShare`], the caller (`#14`/`#22`) must pass the
+//!      intersection ([`ClearanceGrant::intersect`]) across the sharer and all target recipients
+//!      (least privilege), not the sharer's personal clearance alone.
+//!    - [`AccessDenialReason`] omits item and version identifiers; however, returning
+//!      `SensitiveArtifactRestricted` or `UnpublishedDraftRestricted` on a direct request for a
+//!      known item ID still reveals that a restricted item exists. Hiding existence on
+//!      search, list, subscription, and export surfaces requires `#14` and `#22` to omit
+//!      denied items from collection results (`docs/contracts/report-export.md`).
 //! 3. **Offline field synchronization and conflict kernel (`FIELD-04`, `A13`, `A16`):**
 //!    [`OfflineSyncItem`] tracks versioned offline captures for a single case item, reusing
 //!    [`crate::witness::AccountOrigin`] (`Reported` vs `Simulated`), retaining separate device
 //!    capture, host receipt, and sync timestamps with their clock uncertainties, evaluating
-//!    offline package expiry conservatively across clock offset and uncertainty bounds, and
+//!    offline package freshness conservatively across clock offset and uncertainty bounds, and
 //!    preserving concurrent edits as explicit conflicts without overwriting or dropping newer
-//!    head versions. Report snapshot rendering, redaction disclosures, and reassessment walks
-//!    remain in `oia-export` (`#22`) and `oia-documents` (`#19`).
+//!    head versions. [`SensitivityFlags::union`] is monotonic (`unpublished_draft` can only
+//!    accumulate here; the draft→published transition is out of scope until `D10` and `#22`).
+//!    Report snapshot rendering, redaction disclosures, and reassessment walks remain in
+//!    `oia-export` (`#22`) and `oia-documents` (`#19`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::witness::AccountOrigin;
@@ -43,8 +53,10 @@ pub const DEFAULT_MAX_TEXT_BYTES: usize = 8_192;
 pub const DEFAULT_MAX_VERSIONS_PER_ITEM: usize = 128;
 /// Default maximum prepared offline packages retained per [`OfflineSyncItem`].
 pub const DEFAULT_MAX_PREPARED_PACKAGES: usize = 64;
-/// Default maximum conflict records retained per [`OfflineSyncItem`].
+/// Default maximum unresolved conflict records retained per [`OfflineSyncItem`].
 pub const DEFAULT_MAX_CONFLICTS: usize = 64;
+/// Maximum accepted clock uncertainty or drift offset magnitude (`366` days in milliseconds).
+pub const MAX_CLOCK_UNCERTAINTY_MS: u64 = 366 * 86_400_000;
 
 /// Which resource limit was zero or exceeded during an offline sync operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +196,8 @@ pub enum AccessSurface {
     /// Adding/editing case material, synchronizing offline captures, or resolving conflicts (`Owner`, `Editor`).
     EvidenceMutation,
     /// Sharing a case or report with collaborators (`Owner` only; `docs/architecture.md` §9).
+    /// Callers must pass the intersection (`ClearanceGrant::intersect`) of the sharer's and
+    /// all target recipients' clearances.
     CollaboratorShare,
     /// Issuing a public report snapshot (`Owner` only; forces standard public clearance).
     PublicPublication,
@@ -319,6 +333,10 @@ impl ClearanceGrant {
     }
 
     /// Computes the intersection (least privilege) of two clearances.
+    ///
+    /// When evaluating [`AccessSurface::CollaboratorShare`], callers should fold
+    /// `intersect` across the sharer and all recipients so no recipient receives material
+    /// above their clearance.
     #[must_use]
     pub const fn intersect(self, other: Self) -> Self {
         Self {
@@ -352,6 +370,9 @@ impl SensitivityFlags {
     }
 
     /// Monotonic union of two sensitivity markings so a stricter flag is never lost on update or deduplication.
+    ///
+    /// Clearing `unpublished_draft` (the draft→published lifecycle transition) is outside this
+    /// kernel and remains open under `D10` and `#22`.
     #[must_use]
     pub const fn union(self, other: Self) -> Self {
         Self {
@@ -364,8 +385,10 @@ impl SensitivityFlags {
 
 /// Reason [`evaluate_proposed_access_decision`] denied access to an item on a surface.
 ///
-/// Carries no item identifier, version identifier, or secret content so denial reasons
-/// cannot leak existence-sensitive metadata (`docs/contracts/report-export.md`).
+/// Carries no item or version identifiers. Note that returning a restriction reason on a
+/// direct request for a known item ID still reveals that the item is restricted; hiding
+/// restricted items on search, list, subscription, and export surfaces requires `#14` and
+/// `#22` to exclude denied items from collection results (`docs/contracts/report-export.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessDenialReason {
     RoleNotPermittedForSurface {
@@ -374,6 +397,7 @@ pub enum AccessDenialReason {
     },
     UnpublishedDraftRestricted,
     SensitiveArtifactRestricted,
+    SensitiveLocationRestricted,
 }
 
 impl fmt::Display for AccessDenialReason {
@@ -384,6 +408,7 @@ impl fmt::Display for AccessDenialReason {
             }
             Self::UnpublishedDraftRestricted => f.write_str("unpublished draft is restricted"),
             Self::SensitiveArtifactRestricted => f.write_str("sensitive artifact is restricted"),
+            Self::SensitiveLocationRestricted => f.write_str("sensitive location is restricted"),
         }
     }
 }
@@ -440,11 +465,18 @@ pub const fn evaluate_proposed_access_decision(
 }
 
 /// Clock quality associated with a recorded timestamp (`FIELD-04`, `AGENTS.md` §2, `docs/architecture.md` §3.1).
+///
+/// Both `uncertainty_ms` and `|estimated_offset_ms|` must be `<= MAX_CLOCK_UNCERTAINTY_MS`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceClockQuality {
     /// Clock synchronized to UTC with a symmetric uncertainty bound `±uncertainty_ms`.
     SynchronizedUtc { uncertainty_ms: u64 },
     /// Drifting local clock with an estimated offset (`estimated_offset_ms`) and uncertainty (`uncertainty_ms`).
+    ///
+    /// Sign convention: `estimated_utc_ms = recorded_unix_ms + estimated_offset_ms`.
+    /// [`TimestampWithClock::conservative_utc_bounds`] spans both `recorded_unix_ms` and
+    /// `recorded_unix_ms ± estimated_offset_ms` widened by `±uncertainty_ms` so an unverified
+    /// drift estimate never falsely narrows the expiry check.
     DriftingLocalClock {
         estimated_offset_ms: i64,
         uncertainty_ms: u64,
@@ -497,9 +529,11 @@ impl TimestampWithClock {
 pub enum OfflineReferenceFreshness {
     /// Every point in the capture clock's conservative UTC uncertainty interval falls within `[prepared_at_ms, expires_at_ms]`.
     FreshWithinWindow,
+    /// Even at the latest bound of the capture clock's uncertainty interval, the capture occurred before `prepared_at_ms`.
+    BeforePreparationWindow { min_premature_by_ms: u64 },
     /// Even at the earliest bound of the capture clock's uncertainty interval, the package was expired by at least `min_expired_by_ms`.
     CachedExpired { min_expired_by_ms: u64 },
-    /// The capture clock is unreferenced, or its offset/uncertainty interval straddles the package validity boundary.
+    /// The capture clock is unreferenced, or its offset/uncertainty interval straddles `prepared_at_ms` or `expires_at_ms`.
     ExpiryUncertain {
         earliest_possible_utc_ms: Option<i64>,
         latest_possible_utc_ms: Option<i64>,
@@ -542,8 +576,8 @@ impl PreparedOfflineWindow {
         self.expires_at_unix_ms
     }
 
-    /// Evaluates whether this offline reference window was fresh, definitely expired, or
-    /// expiry-uncertain at `capture_time`, accounting for both clock offset and uncertainty (`FIELD-04`).
+    /// Evaluates whether this offline reference window was fresh, premature, definitely expired,
+    /// or expiry-uncertain at `capture_time`, accounting for both clock offset and uncertainty (`FIELD-04`).
     #[must_use]
     pub fn evaluate_freshness(
         &self,
@@ -555,6 +589,12 @@ impl PreparedOfflineWindow {
                 latest_possible_utc_ms: None,
             };
         };
+        if latest_utc_ms < self.prepared_at_unix_ms {
+            let min_premature_by_ms = self.prepared_at_unix_ms.saturating_sub(latest_utc_ms) as u64;
+            return OfflineReferenceFreshness::BeforePreparationWindow {
+                min_premature_by_ms,
+            };
+        }
         if earliest_utc_ms > self.expires_at_unix_ms {
             let min_expired_by_ms = earliest_utc_ms.saturating_sub(self.expires_at_unix_ms) as u64;
             return OfflineReferenceFreshness::CachedExpired { min_expired_by_ms };
@@ -771,8 +811,9 @@ pub enum SyncOutcome {
         retained_head_version: VersionId,
         recorded_duplicate_version: VersionId,
     },
-    /// Base version diverged with different content; both versions are preserved in history and
-    /// a [`SyncConflictRecord`] is opened without overwriting the current head (`A13`, `A16`).
+    /// Base version diverged with different content (or the caller lacked location clearance on an
+    /// item with a hidden location); both versions are preserved in history and a
+    /// [`SyncConflictRecord`] is opened without overwriting the current head (`A13`, `A16`).
     ConflictPreserved {
         conflict_id: OpaqueId,
         preserved_head_version: VersionId,
@@ -795,6 +836,9 @@ pub enum SyncError {
     InvalidTimeWindow {
         start_ms: i64,
         end_ms: i64,
+    },
+    ClockUncertaintyOutOfRange {
+        max_allowed_ms: u64,
     },
     MissingSimulationParameters,
     UnexpectedSimulationParameters,
@@ -845,6 +889,10 @@ impl fmt::Display for SyncError {
                     "invalid time window [{start_ms}, {end_ms}): start must be < end"
                 )
             }
+            Self::ClockUncertaintyOutOfRange { max_allowed_ms } => write!(
+                f,
+                "clock offset or uncertainty exceeds maximum {max_allowed_ms} ms"
+            ),
             Self::MissingSimulationParameters => f.write_str(
                 "simulated captures must declare non-empty simulation_parameters (FIELD-04)",
             ),
@@ -878,7 +926,7 @@ impl fmt::Display for SyncError {
             }
             Self::ConflictParentMismatch { conflict_id } => write!(
                 f,
-                "resolution for conflict {conflict_id} must reference both conflicting versions"
+                "resolution for conflict {conflict_id} must reference current head and incoming conflicting version"
             ),
             Self::StaleConflictHeadMoved {
                 conflict_id,
@@ -886,7 +934,7 @@ impl fmt::Display for SyncError {
                 current_head,
             } => write!(
                 f,
-                "cannot resolve conflict {conflict_id} recorded at head {conflict_head} because current head moved to {current_head}"
+                "conflict {conflict_id} was recorded at head {conflict_head}, which has moved to {current_head}; resolve against ({current_head}, incoming) instead"
             ),
         }
     }
@@ -894,7 +942,7 @@ impl fmt::Display for SyncError {
 
 impl std::error::Error for SyncError {}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct StoredItemVersion {
     version: VersionId,
     author: ActorId,
@@ -907,6 +955,29 @@ struct StoredItemVersion {
     receipt_time: TimestampWithClock,
     sync_time: TimestampWithClock,
     reference_freshness: Option<OfflineReferenceFreshness>,
+}
+
+impl fmt::Debug for StoredItemVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let redacted_loc = if self.sensitive_location_detail.is_some() {
+            Some("<redacted>")
+        } else {
+            None
+        };
+        f.debug_struct("StoredItemVersion")
+            .field("version", &self.version)
+            .field("author", &self.author)
+            .field("parent_versions", &self.parent_versions)
+            .field("summary_text", &self.summary_text)
+            .field("sensitive_location_detail", &redacted_loc)
+            .field("declared_content_sha256", &self.declared_content_sha256)
+            .field("simulation_parameters", &self.simulation_parameters)
+            .field("capture_time", &self.capture_time)
+            .field("receipt_time", &self.receipt_time)
+            .field("sync_time", &self.sync_time)
+            .field("reference_freshness", &self.reference_freshness)
+            .finish()
+    }
 }
 
 fn validate_text(name: &'static str, value: &str, max_bytes: usize) -> Result<(), SyncError> {
@@ -940,9 +1011,29 @@ fn validate_sha256_hex(digest: &str) -> Result<(), SyncError> {
 }
 
 fn validate_clock(clock: &TimestampWithClock, max_bytes: usize) -> Result<(), SyncError> {
-    if let DeviceClockQuality::UnreferencedLocalClock { uncertainty_reason } = &clock.clock_quality
-    {
-        validate_text("uncertainty_reason", uncertainty_reason, max_bytes)?;
+    match &clock.clock_quality {
+        DeviceClockQuality::SynchronizedUtc { uncertainty_ms } => {
+            if *uncertainty_ms > MAX_CLOCK_UNCERTAINTY_MS {
+                return Err(SyncError::ClockUncertaintyOutOfRange {
+                    max_allowed_ms: MAX_CLOCK_UNCERTAINTY_MS,
+                });
+            }
+        }
+        DeviceClockQuality::DriftingLocalClock {
+            estimated_offset_ms,
+            uncertainty_ms,
+        } => {
+            if *uncertainty_ms > MAX_CLOCK_UNCERTAINTY_MS
+                || estimated_offset_ms.unsigned_abs() > MAX_CLOCK_UNCERTAINTY_MS
+            {
+                return Err(SyncError::ClockUncertaintyOutOfRange {
+                    max_allowed_ms: MAX_CLOCK_UNCERTAINTY_MS,
+                });
+            }
+        }
+        DeviceClockQuality::UnreferencedLocalClock { uncertainty_reason } => {
+            validate_text("uncertainty_reason", uncertainty_reason, max_bytes)?;
+        }
     }
     Ok(())
 }
@@ -964,9 +1055,10 @@ fn validate_origin_params(
 
 /// Version-aware offline field synchronization log for a single case item (`FIELD-04`, `A13`, `A16`).
 ///
-/// All read and write access goes through [`evaluate_proposed_access_decision`] so raw
-/// `sensitive_location_detail` is never exposed without `allow_sensitive_locations`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// All read and write access goes through [`evaluate_proposed_access_decision`], and `fmt::Debug`
+/// redacts `sensitive_location_detail` so raw location strings are never exposed without
+/// `allow_sensitive_locations`.
+#[derive(Clone, PartialEq, Eq)]
 pub struct OfflineSyncItem {
     item_id: OpaqueId,
     schema_version: SchemaVersion,
@@ -979,6 +1071,22 @@ pub struct OfflineSyncItem {
     conflicts: BTreeMap<OpaqueId, SyncConflictRecord>,
 }
 
+impl fmt::Debug for OfflineSyncItem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OfflineSyncItem")
+            .field("item_id", &self.item_id)
+            .field("schema_version", &self.schema_version)
+            .field("origin", &self.origin)
+            .field("sensitivity", &self.sensitivity)
+            .field("limits", &self.limits)
+            .field("head_version", &self.head_version)
+            .field("versions", &self.versions)
+            .field("prepared_packages", &self.prepared_packages)
+            .field("conflicts", &self.conflicts)
+            .finish()
+    }
+}
+
 impl OfflineSyncItem {
     /// Creates a versioned item for offline/field synchronization after checking
     /// [`AccessSurface::EvidenceMutation`] via [`evaluate_proposed_access_decision`].
@@ -988,13 +1096,26 @@ impl OfflineSyncItem {
         input: InitialSyncItemInput,
         limits: SyncLimits,
     ) -> Result<Self, SyncError> {
-        if let AccessDecision::Deny(reason) = evaluate_proposed_access_decision(
+        let sensitivity = SensitivityFlags {
+            sensitive_location: input.sensitivity.sensitive_location
+                || input.sensitive_location_detail.is_some(),
+            ..input.sensitivity
+        };
+        match evaluate_proposed_access_decision(
             creator_role,
             creator_clearance,
             AccessSurface::EvidenceMutation,
-            input.sensitivity,
+            sensitivity,
         ) {
-            return Err(SyncError::AccessDenied(reason));
+            AccessDecision::AllowFull => {}
+            AccessDecision::AllowWithStrippedLocation => {
+                if input.sensitive_location_detail.is_some() || sensitivity.sensitive_location {
+                    return Err(SyncError::AccessDenied(
+                        AccessDenialReason::SensitiveLocationRestricted,
+                    ));
+                }
+            }
+            AccessDecision::Deny(reason) => return Err(SyncError::AccessDenied(reason)),
         }
         validate_text("summary_text", &input.summary_text, limits.max_text_bytes)?;
         if let Some(loc) = &input.sensitive_location_detail {
@@ -1010,11 +1131,6 @@ impl OfflineSyncItem {
         validate_clock(&input.receipt_time, limits.max_text_bytes)?;
         validate_clock(&input.sync_time, limits.max_text_bytes)?;
 
-        let sensitivity = SensitivityFlags {
-            sensitive_location: input.sensitivity.sensitive_location
-                || input.sensitive_location_detail.is_some(),
-            ..input.sensitivity
-        };
         let head_version = input.initial_version.clone();
         let initial = StoredItemVersion {
             version: input.initial_version,
@@ -1176,13 +1292,15 @@ impl OfflineSyncItem {
     /// Synchronizes an offline field capture (`FIELD-04`, `A13`, `A16`).
     ///
     /// - Enforces [`AccessSurface::EvidenceMutation`] via [`evaluate_proposed_access_decision`].
+    /// - Prevents un-cleared editors (`AllowWithStrippedLocation`) from submitting location
+    ///   strings (`SensitiveLocationRestricted`), erasing an existing hidden location, or using
+    ///   `DeduplicatedByDeclaredDigest` as an oracle to guess a hidden location.
     /// - Refuses origin changes (`Reported` vs `Simulated`).
     /// - Retains separate `capture_time`, `receipt_time`, and `sync_time` with their clock qualities.
     /// - Evaluates offline package freshness conservatively using clock offset and uncertainty.
     /// - Unions [`SensitivityFlags`] even on exact declared-digest deduplication so stricter
     ///   sensitivity flags are never dropped.
-    /// - Opens a [`SyncConflictRecord`] and preserves both versions when `expected_base_version`
-    ///   diverges from `head_version`.
+    /// - Counts only unresolved conflicts against `limits.max_conflicts`.
     pub fn synchronize_offline_capture(
         &mut self,
         role: CaseRole,
@@ -1194,14 +1312,25 @@ impl OfflineSyncItem {
                 || capture.sensitive_location_detail.is_some(),
             ..capture.sensitivity
         });
-        if let AccessDecision::Deny(reason) = evaluate_proposed_access_decision(
+        let caller_stripped = match evaluate_proposed_access_decision(
             role,
             clearance,
             AccessSurface::EvidenceMutation,
             combined_sensitivity,
         ) {
-            return Err(SyncError::AccessDenied(reason));
-        }
+            AccessDecision::AllowFull => false,
+            AccessDecision::AllowWithStrippedLocation => {
+                if capture.sensitive_location_detail.is_some()
+                    || capture.sensitivity.sensitive_location
+                {
+                    return Err(SyncError::AccessDenied(
+                        AccessDenialReason::SensitiveLocationRestricted,
+                    ));
+                }
+                true
+            }
+            AccessDecision::Deny(reason) => return Err(SyncError::AccessDenied(reason)),
+        };
         if capture.origin != self.origin {
             return Err(SyncError::OriginMismatch {
                 expected: self.origin,
@@ -1264,12 +1393,27 @@ impl OfflineSyncItem {
         };
 
         let current_head = self.head_version.clone();
+        let head_record = self
+            .versions
+            .iter()
+            .find(|v| v.version == current_head)
+            .ok_or_else(|| SyncError::UnknownBaseVersion(current_head.clone()))?
+            .clone();
+
+        // If the caller's view is location-stripped, preserve the existing hidden location on clean
+        // advance rather than erasing it, and never compare hidden locations for deduplication.
+        let effective_location = if caller_stripped {
+            head_record.sensitive_location_detail.clone()
+        } else {
+            capture.sensitive_location_detail
+        };
+
         let incoming_stored = StoredItemVersion {
             version: capture.new_version.clone(),
             author: capture.author.clone(),
             parent_versions: vec![capture.expected_base_version.clone()],
             summary_text: capture.summary_text,
-            sensitive_location_detail: capture.sensitive_location_detail,
+            sensitive_location_detail: effective_location,
             declared_content_sha256: capture.declared_content_sha256,
             simulation_parameters: capture.simulation_parameters,
             capture_time: capture.capture_time,
@@ -1288,18 +1432,15 @@ impl OfflineSyncItem {
             });
         }
 
-        let head_record = self
-            .versions
-            .iter()
-            .find(|v| v.version == current_head)
-            .ok_or_else(|| SyncError::UnknownBaseVersion(current_head.clone()))?;
+        let can_deduplicate_without_oracle =
+            !caller_stripped || head_record.sensitive_location_detail.is_none();
 
-        if head_record.declared_content_sha256 == incoming_stored.declared_content_sha256
+        if can_deduplicate_without_oracle
+            && head_record.declared_content_sha256 == incoming_stored.declared_content_sha256
             && head_record.summary_text == incoming_stored.summary_text
             && head_record.sensitive_location_detail == incoming_stored.sensitive_location_detail
             && head_record.simulation_parameters == incoming_stored.simulation_parameters
         {
-            // Never drop a stricter sensitivity flag on deduplication.
             self.sensitivity = combined_sensitivity;
             self.versions.push(incoming_stored);
             return Ok(SyncOutcome::DeduplicatedByDeclaredDigest {
@@ -1311,7 +1452,12 @@ impl OfflineSyncItem {
         if self.conflicts.contains_key(&capture.capture_id) {
             return Err(SyncError::DuplicateConflictId(capture.capture_id));
         }
-        if self.conflicts.len() >= self.limits.max_conflicts {
+        let unresolved_count = self
+            .conflicts
+            .values()
+            .filter(|c| matches!(c.resolution, ConflictResolutionState::Unresolved))
+            .count();
+        if unresolved_count >= self.limits.max_conflicts {
             return Err(SyncError::LimitExceeded {
                 kind: SyncLimitKind::Conflicts,
                 limit: self.limits.max_conflicts,
@@ -1340,11 +1486,15 @@ impl OfflineSyncItem {
     }
 
     /// Resolves an open [`SyncConflictRecord`] by appending a merged version linking both
-    /// conflicting parent versions (`FIELD-04`, `A13`, `A16`).
+    /// the current head and the incoming offline version (`FIELD-04`, `A13`, `A16`).
     ///
-    /// Refuses resolution with [`SyncError::StaleConflictHeadMoved`] if `self.head_version`
-    /// has moved since `conflict.head_version_at_conflict`, preventing a later edit from
-    /// dropping out of the head's lineage.
+    /// - When `self.head_version` equals `conflict.head_version_at_conflict` (or descends from it
+    ///   after an earlier conflict resolution or edit), resolving with `parent_versions` equal to
+    ///   `(self.head_version, conflict.incoming_offline_version)` (in either order) succeeds so
+    ///   multiple concurrent observer conflicts can all be resolved in sequence.
+    /// - If the caller instead supplies the stale `(conflict.head_version_at_conflict,
+    ///   conflict.incoming_offline_version)` after `self.head_version` has moved, returns
+    ///   [`SyncError::StaleConflictHeadMoved`] so the newer head cannot drop out of lineage.
     #[allow(clippy::too_many_arguments)]
     pub fn resolve_sync_conflict(
         &mut self,
@@ -1368,14 +1518,23 @@ impl OfflineSyncItem {
                 || merged_sensitive_location.is_some(),
             ..self.sensitivity
         });
-        if let AccessDecision::Deny(reason) = evaluate_proposed_access_decision(
+        let caller_stripped = match evaluate_proposed_access_decision(
             role,
             clearance,
             AccessSurface::EvidenceMutation,
             combined_sensitivity,
         ) {
-            return Err(SyncError::AccessDenied(reason));
-        }
+            AccessDecision::AllowFull => false,
+            AccessDecision::AllowWithStrippedLocation => {
+                if merged_sensitive_location.is_some() {
+                    return Err(SyncError::AccessDenied(
+                        AccessDenialReason::SensitiveLocationRestricted,
+                    ));
+                }
+                true
+            }
+            AccessDecision::Deny(reason) => return Err(SyncError::AccessDenied(reason)),
+        };
         if self
             .versions
             .iter()
@@ -1418,22 +1577,47 @@ impl OfflineSyncItem {
         ) {
             return Err(SyncError::ConflictAlreadyResolved(conflict_id.clone()));
         }
-        if conflict.head_version_at_conflict != self.head_version {
+
+        let matches_current_head = (parent_versions.0 == self.head_version
+            && parent_versions.1 == conflict.incoming_offline_version)
+            || (parent_versions.1 == self.head_version
+                && parent_versions.0 == conflict.incoming_offline_version);
+
+        if !matches_current_head {
+            let matches_stale_conflict_head = (parent_versions.0
+                == conflict.head_version_at_conflict
+                && parent_versions.1 == conflict.incoming_offline_version)
+                || (parent_versions.1 == conflict.head_version_at_conflict
+                    && parent_versions.0 == conflict.incoming_offline_version);
+            if matches_stale_conflict_head && conflict.head_version_at_conflict != self.head_version
+            {
+                return Err(SyncError::StaleConflictHeadMoved {
+                    conflict_id: conflict_id.clone(),
+                    conflict_head: conflict.head_version_at_conflict.clone(),
+                    current_head: self.head_version.clone(),
+                });
+            }
+            return Err(SyncError::ConflictParentMismatch {
+                conflict_id: conflict_id.clone(),
+            });
+        }
+
+        if !self.version_descends_from(&self.head_version, &conflict.head_version_at_conflict) {
             return Err(SyncError::StaleConflictHeadMoved {
                 conflict_id: conflict_id.clone(),
                 conflict_head: conflict.head_version_at_conflict.clone(),
                 current_head: self.head_version.clone(),
             });
         }
-        let matches_parents = (parent_versions.0 == conflict.head_version_at_conflict
-            && parent_versions.1 == conflict.incoming_offline_version)
-            || (parent_versions.1 == conflict.head_version_at_conflict
-                && parent_versions.0 == conflict.incoming_offline_version);
-        if !matches_parents {
-            return Err(SyncError::ConflictParentMismatch {
-                conflict_id: conflict_id.clone(),
-            });
-        }
+
+        let effective_location = if caller_stripped {
+            self.versions
+                .iter()
+                .find(|v| v.version == self.head_version)
+                .and_then(|v| v.sensitive_location_detail.clone())
+        } else {
+            merged_sensitive_location
+        };
 
         self.sensitivity = combined_sensitivity;
         self.head_version = resolution_version.clone();
@@ -1442,7 +1626,7 @@ impl OfflineSyncItem {
             author: resolver.clone(),
             parent_versions: vec![parent_versions.0, parent_versions.1],
             summary_text: merged_summary_text,
-            sensitive_location_detail: merged_sensitive_location,
+            sensitive_location_detail: effective_location,
             declared_content_sha256: merged_declared_sha256,
             simulation_parameters,
             capture_time,
@@ -1459,6 +1643,28 @@ impl OfflineSyncItem {
             };
         }
         Ok(())
+    }
+
+    fn version_descends_from(&self, candidate: &VersionId, ancestor: &VersionId) -> bool {
+        if candidate == ancestor {
+            return true;
+        }
+        let mut visited = BTreeSet::new();
+        let mut stack = vec![candidate.clone()];
+        while let Some(curr) = stack.pop() {
+            if &curr == ancestor {
+                return true;
+            }
+            if !visited.insert(curr.clone()) {
+                continue;
+            }
+            if let Some(stored) = self.versions.iter().find(|v| v.version == curr) {
+                for parent in &stored.parent_versions {
+                    stack.push(parent.clone());
+                }
+            }
+        }
+        false
     }
 
     fn project_version(

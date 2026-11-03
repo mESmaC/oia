@@ -33,11 +33,11 @@ Verification claims will be limited to the properties and implementation connect
 The repository currently includes the **#9 Rust workspace bootstrap**, platform decision records, and standalone document/privacy kernels:
 
 - **Rust workspace** (`Cargo.toml`, `rustc 1.99.0`, `edition = "2024"`, `#![forbid(unsafe_code)]`, dual-licensed `MIT OR Apache-2.0`):
-  - Implemented packages: `oia-documents` (bounded UTF-8 extraction and exact-text passage search), `oia-png-privacy` (bounded PNG metadata inspection and cleanup), `oia-jpeg-privacy` (bounded JPEG container metadata inspection and cleanup), `oia-domain` (validated identifiers and schema version primitives), and `oia-app` (bootstrap application CLI and crate boundary; shell state and service wiring follow in `#16` and `#14`).
+  - Implemented packages: `oia-documents` (bounded UTF-8 extraction and exact-text passage search), `oia-png-privacy` (bounded PNG metadata inspection and cleanup), `oia-jpeg-privacy` (bounded JPEG container metadata inspection and cleanup), `oia-domain` (validated identifiers and schema version primitives), and `oia-app` (Tauri desktop workbench for real local text and image privacy operations; persistent case services remain in `#14`/`#16`).
   - `oia-forecast` provides a standalone [binary scoring kernel](docs/implementation/forecast-scoring.md); forecast issuance, chronological validation, persistence, calibration, and application integration remain open in `#43`.
   - Workspace boundary stubs awaiting split P0–P6 implementation PRs (`#10`–`#15` and subsequent phases): `oia-time-geo`, `oia-store`, `oia-ingest`, `oia-query`, `oia-analysis`, `oia-models`, `oia-media`, `oia-devices`, and `oia-export`.
 - **Architecture Decision Records (`docs/adr/`)**:
-  - [ADR 0001 (D01): Deployment and UI boundary (Proposed)](docs/adr/0001-d01-deployment-and-ui-boundary.md)
+  - [ADR 0001 (D01): Deployment and UI boundary (Accepted)](docs/adr/0001-d01-deployment-and-ui-boundary.md)
   - [ADR 0002 (D02): Storage and indexing (Accepted: embedded SQLite + managed blobs)](docs/adr/0002-d02-storage-and-indexing.md)
   - [ADR 0003 (D14): Project licensing and distribution notices (Accepted: `MIT OR Apache-2.0`)](docs/adr/0003-d14-licensing-and-distribution.md)
   - [ADR 0005 (D03): Seed corpus and news sources](docs/adr/0005-d03-seed-corpus-and-news-sources.md)
@@ -57,9 +57,19 @@ The [earlier exploration draft](docs/spec-draft.md) is retained as design histor
 
 Coding agents should read [AGENTS.md](AGENTS.md) before making changes.
 
+## Run the desktop app
+
+From the repository root, run `cargo run -p oia-app --locked` or `.\scripts\run.ps1 run` on Windows (`scripts/run.sh run` on POSIX shells). With no arguments, `oia` opens the Tauri desktop workbench.
+
+- Open a UTF-8 document, read passages, search exact text, and jump to the matching source line/byte range.
+- Inspect a PNG/JPEG, select supported metadata categories, and save a reinspected cleaned copy without overwriting the original or any existing destination.
+- Use keyboard navigation (Ctrl+O document, Ctrl+I image, Ctrl+F search, F6 regions), the Focus and Effects toggles, and the [visual language v2](docs/design/visual-language-v2.md) shell. Coverage, unsupported profiles and failures remain visible in the readout strip, inspector, and jobs strip.
+
+Files are held in memory for this session. Persistent investigations, PDF/OCR, live sources, AI summaries and report integration are not yet implemented. Windows WebView2 may make its own background connections; the bundled UI and local tools do not fetch remote content. See the [workbench contract, limits and validation](docs/implementation/desktop-workbench.md).
+
 ## Build and run
 
-The workspace provides the bootstrap `oia` CLI in [`crates/oia-app`](crates/oia-app/src/main.rs) as well as read-only inspection and cleanup examples in [`crates/oia-documents`](crates/oia-documents/README.md), [`crates/oia-png-privacy`](crates/oia-png-privacy/README.md), and [`crates/oia-jpeg-privacy`](crates/oia-jpeg-privacy/README.md):
+The workspace provides the `oia` desktop application in [`crates/oia-app`](crates/oia-app/src/main.rs) as well as read-only inspection and cleanup examples in [`crates/oia-documents`](crates/oia-documents/README.md), [`crates/oia-png-privacy`](crates/oia-png-privacy/README.md), and [`crates/oia-jpeg-privacy`](crates/oia-jpeg-privacy/README.md):
 
 - `inspect-text` prints the UTF-8 passages, byte ranges, and coverage of a local file.
 - `find-text` searches a local UTF-8 file for an exact query and prints each match's byte range, line, and search coverage.
@@ -67,26 +77,27 @@ The workspace provides the bootstrap `oia` CLI in [`crates/oia-app`](crates/oia-
 
 Neither `oia-documents` example imports, stores, or detects file types, parses PDFs, or runs OCR.
 
-**Requirements:** Rust 1.99.0 via [rustup](https://rustup.rs/) (`rustup toolchain install 1.99.0`). After locked dependencies are cached, builds and diagnostics run without network access (`--locked --offline`). Without rustup, the scripts warn and use whatever `cargo` is on `PATH`; only the pinned 1.99.0 toolchain has been checked.
+**Requirements:** Rust 1.99.0 via [rustup](https://rustup.rs/) (`rustup toolchain install 1.99.0`). The first desktop build downloads dependencies from the committed lockfile; after they are cached, builds and diagnostics run without network access (`--locked --offline`). Windows requires the C++ build tools and WebView2 runtime. The desktop app has been checked on Windows only; Linux/macOS need Tauri platform prerequisites and remain unverified. Headless kernel checks can use `--no-default-features`. Without rustup, the scripts warn and use whatever `cargo` is on `PATH`; only the pinned 1.99.0 toolchain has been checked.
 
 The run scripts wrap the root workspace Cargo commands (and `lake build` in `proofs/` once `#15` lands and `lake` is installed). Use `scripts/run.sh` on Linux, macOS, or Git Bash and `scripts\run.ps1` in Windows PowerShell:
 
 | Task | POSIX shell | Windows PowerShell |
 | --- | --- | --- |
 | Build workspace | `scripts/run.sh build` | `.\scripts\run.ps1 build` |
-| Inspect `README.md` | `scripts/run.sh run` | `.\scripts\run.ps1 run` |
+| Launch desktop | `scripts/run.sh run` | `.\scripts\run.ps1 run` |
+| Inspect `README.md` | `scripts/run.sh inspect` | `.\scripts\run.ps1 inspect` |
 | Inspect a file | `scripts/run.sh run PATH [MAX_INPUT_BYTES] [MAX_PASSAGES]` | `.\scripts\run.ps1 run PATH [MAX_INPUT_BYTES] [MAX_PASSAGES]` |
 | Search a file | `scripts/run.sh search PATH QUERY [MAX_MATCHES] [MAX_INPUT_BYTES] [MAX_PASSAGES]` | `.\scripts\run.ps1 search PATH QUERY [MAX_MATCHES] [MAX_INPUT_BYTES] [MAX_PASSAGES]` |
 | Format, lint, and test | `scripts/run.sh check` | `.\scripts\run.ps1 check` |
 
-Defaults for `run` and `search` are 1,048,576 input bytes, 10,000 passages, and (for search) 100 matches. Exit code `0` means complete (including empty input or zero matches), `2` means explicitly partial because a budget was reached, and `1` means an error. Oversized input is refused rather than truncated. A complete search with zero matches covers only the file that was read; it is not evidence that the text is absent from the source. Set `OIA_RUST_TOOLCHAIN` to use a different installed toolchain. If PowerShell blocks local scripts, run `powershell -ExecutionPolicy Bypass -File scripts\run.ps1 run`.
+For the text examples (`inspect`, legacy `run PATH`, and `search`), defaults are 1,048,576 input bytes, 10,000 passages, and (for search) 100 matches. Exit code `0` means complete (including empty input or zero matches), `2` means explicitly partial because a budget was reached, and `1` means an error. Oversized input is refused rather than truncated. A complete search with zero matches covers only the file that was read; it is not evidence that the text is absent from the source. Set `OIA_RUST_TOOLCHAIN` to use a different installed toolchain. If PowerShell blocks local scripts, run `powershell -ExecutionPolicy Bypass -File scripts\run.ps1 run`.
 
 The equivalent direct commands are:
 
 ```text
 cargo +1.99.0 run -p oia-documents --example inspect-text --locked --offline -- README.md
 cargo +1.99.0 run -p oia-documents --example find-text --locked --offline -- fixtures/documents/a03/originals/report-v1.txt "two lights"
-cargo +1.99.0 run -p oia-app --bin oia --locked --offline
+cargo +1.99.0 run -p oia-app --bin oia --locked
 ```
 
 See [document text extraction](docs/implementation/document-text.md), [document text search](docs/implementation/document-search.md), [PNG privacy](docs/implementation/png-privacy.md), and [JPEG privacy](docs/implementation/jpeg-privacy.md) for the full contracts, limitations, and verification records.

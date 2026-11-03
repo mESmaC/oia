@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-Build, check, and launch the OIA Rust workspace and CLI/examples.
+Build, check, and launch the OIA desktop workbench and CLI examples.
 
 .DESCRIPTION
-Runs Cargo against the root 15-crate OIA workspace (`Cargo.toml`) using the
+Runs Cargo against the root OIA workspace (`Cargo.toml`) using the
 pinned Rust toolchain (1.99.0), and runs `lake build` in `proofs/` during `check`
 when the `proofs/` package directory exists and `lake` is available on PATH.
 Mirrors `scripts/run.sh`.
@@ -13,8 +13,10 @@ Mirrors `scripts/run.sh`.
   lint              Run clippy across the workspace (`--workspace --all-targets -- -D warnings`).
   test              Run all workspace tests (`cargo test --workspace`).
   check             Run workspace fmt, clippy, test, and (when `proofs/` exists) `lake build`.
-  run [ARGS...]     Run `oia-documents` `inspect-text`: PATH [MAX_INPUT_BYTES] [MAX_PASSAGES].
-                    Defaults to inspecting README.md when no PATH is given.
+  run               Launch the OIA desktop workbench.
+  run PATH [...]    Compatibility alias for inspect.
+  inspect [ARGS...] Run `inspect-text`: PATH [MAX_INPUT_BYTES] [MAX_PASSAGES].
+                    Defaults to README.md when no PATH is given.
   search ARGS...    Run `oia-documents` `find-text`: PATH QUERY [MAX_MATCHES] [MAX_INPUT_BYTES]
                     [MAX_PASSAGES]. Zero matches cover only the file read,
                     not absence from the source.
@@ -31,7 +33,7 @@ OIA_RUST_TOOLCHAIN overrides the pinned toolchain (1.99.0).
 .\scripts\run.ps1 search fixtures\documents\a03\originals\report-v1.txt "two lights"
 #>
 param(
-    [ValidateSet('build', 'fmt', 'lint', 'test', 'check', 'run', 'search', 'help')]
+    [ValidateSet('build', 'fmt', 'lint', 'test', 'check', 'run', 'inspect', 'search', 'help')]
     [string]$Command = 'run',
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$Arguments = @()
@@ -64,9 +66,9 @@ if (Get-Command rustup -ErrorAction SilentlyContinue) {
     [Console]::Error.WriteLine("run.ps1: rustup not found; using $(cargo --version) instead of pinned $Toolchain")
 }
 
-# The workspace lockfile has no third-party packages, so builds stay offline.
+# First builds may download the locked desktop dependencies. Cargo caches them.
 function Invoke-Workspace([string]$Subcommand, [string[]]$Rest) {
-    & cargo @ToolchainArg $Subcommand --manifest-path $Manifest --locked --offline @Rest
+    & cargo @ToolchainArg $Subcommand --manifest-path $Manifest --locked @Rest
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
@@ -104,6 +106,13 @@ switch ($Command) {
         }
     }
     'run' {
+        if ($Arguments.Count -eq 0) {
+            Invoke-Workspace 'run' @('-p', 'oia-app', '--bin', 'oia')
+        } else {
+            Invoke-Workspace 'run' (@('--quiet', '-p', 'oia-documents', '--example', 'inspect-text', '--') + $Arguments)
+        }
+    }
+    'inspect' {
         if ($Arguments.Count -eq 0) { $Arguments = @(Join-Path $Root 'README.md') }
         # Exit codes pass through: 0 complete/empty, 2 partial, 1 error.
         Invoke-Workspace 'run' (@('--quiet', '-p', 'oia-documents', '--example', 'inspect-text', '--') + $Arguments)

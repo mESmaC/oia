@@ -1,12 +1,14 @@
-//! `oia-app` — Application boundary crate for Open Intelligence Agency (`#9`).
+//! Application boundary and local desktop workbench for Open Intelligence Agency.
 //!
-//! In `#9`, this crate establishes the application boundary above `oia-domain` and provides the
-//! bootstrap `oia` CLI version and workspace status banner. Durable jobs, command/query execution,
-//! role-based case services, and workspace shell / renderer integration follow in `#14` and `#16`
-//! once `D01` (`docs/adr/0001-d01-deployment-and-ui-boundary.md`,
-//! `docs/adr/0008-d01-workspace-renderer.md`) is decided.
+//! `local_tools` connects the merged document/privacy kernels to bounded local operations.
+//! The optional (default-enabled) Tauri adapter draws results and collects user intents.
+//! Persistent cases, evidence envelopes, durable jobs and role-based services remain in #14.
 
 use oia_domain::SchemaVersion;
+
+#[cfg(feature = "desktop")]
+pub mod desktop;
+pub mod local_tools;
 
 /// Canonical application binary name.
 pub const APP_NAME: &str = "oia";
@@ -14,11 +16,11 @@ pub const APP_NAME: &str = "oia";
 /// Workspace crate version.
 pub const WORKSPACE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Returns the deterministic `#9` workspace bootstrap status banner.
+/// Reports the implemented workbench scope without opening a window.
 #[must_use]
 pub fn status_banner() -> String {
     format!(
-        "{APP_NAME} v{WORKSPACE_VERSION} | schema_v{} | status=workspace-bootstrap (#9; D01 renderer pending #16)",
+        "{APP_NAME} v{WORKSPACE_VERSION} | schema_v{} | status=local-workbench (session-only tools; cases pending #14)",
         SchemaVersion::V1.as_u32()
     )
 }
@@ -27,12 +29,12 @@ pub fn status_banner() -> String {
 mod tests {
     use super::*;
 
-    /// Verifies that the `#9` bootstrap banner reports the application version and schema v1
+    /// Verifies that the banner reports the application version and schema v1
     /// without claiming unimplemented runtime or UI capabilities.
     #[test]
-    fn status_banner_reports_bootstrap_version_and_schema() {
+    fn status_banner_reports_workbench_version_and_schema() {
         let banner = status_banner();
         assert!(banner.starts_with("oia v0.1.0 | schema_v1 |"));
-        assert!(banner.contains("workspace-bootstrap"));
+        assert!(banner.contains("local-workbench"));
     }
 }

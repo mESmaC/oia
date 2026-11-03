@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OIA — Local workbench</title>
+<link rel="stylesheet" href="style.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#canvas">Skip to evidence</a>
+<div class="stage" id="stage">
+  <svg class="canvas-bg" aria-hidden="true" preserveAspectRatio="none">
+    <defs>
+      <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse"><path d="M48 0H0V48" fill="none" stroke="rgba(255,255,255,.045)" stroke-width="1"/></pattern>
+      <radialGradient id="vignette" cx="50%" cy="50%" r="70%"><stop offset="55%" stop-color="#000" stop-opacity="0"/><stop offset="100%" stop-color="#000" stop-opacity=".85"/></radialGradient>
+    </defs>
+    <rect width="100%" height="100%" fill="url(#grid)"/>
+    <rect width="100%" height="100%" fill="url(#vignette)"/>
+  </svg>
+
+  <!-- A. Top strip: wordmark, command field, readout cells (view state only) -->
+  <header class="top">
+    <div class="wordmark glass"><b>OIA</b><small>Local · session only</small></div>
+    <form class="cmd glass" id="search-form" role="search">
+      <span class="scope" id="scope">NO DOCUMENT</span>
+      <label class="sr-only" for="query">Search the open document for exact text</label>
+      <input id="query" name="query" type="search" placeholder="Open a document to search exact text" maxlength="512" autocomplete="off" data-operation disabled>
+      <button type="submit" id="search-submit" class="cmd-btn" data-operation disabled>Find</button>
+      <button type="button" id="clear-search" class="cmd-btn" data-operation disabled>Clear</button>
+      <kbd>Ctrl F</kbd>
+    </form>
+    <div class="readout glass" aria-label="View state">
+      <div class="cell"><span class="k">Source</span><span class="v" id="ro-source">—</span></div>
+      <div class="cell"><span class="k">SHA-256</span><span class="v" id="ro-hash">—</span></div>
+      <div class="cell"><span class="k">Coverage</span><span class="v" id="ro-coverage">—</span></div>
+      <div class="cell fill"><span class="k">Selection</span><span class="v" id="ro-selection">—</span></div>
+    </div>
+  </header>
+
+  <!-- B. Rail -->
+  <nav class="rail glass" aria-label="Instruments">
+    <button type="button" data-instrument="session" aria-current="page"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.5"/><path d="M12 4v3M12 17v3M4 12h3M17 12h3"/></svg><span>Session</span></button>
+    <button type="button" data-instrument="documents"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="1"/><path d="M8 9h8M8 13h8M8 17h5"/></svg><span>Documents</span></button>
+    <button type="button" data-instrument="privacy"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg><span>Privacy</span></button>
+    <hr>
+    <button type="button" aria-disabled="true" title="Not in this build"><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4z"/><path d="M8 10h8M8 14h5"/></svg><span>News</span></button>
+    <button type="button" aria-disabled="true" title="Not in this build"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c3 3 3 13 0 16M12 4c-3 3-3 13 0 16"/></svg><span>Globe</span></button>
+    <button type="button" aria-disabled="true" title="Not in this build"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="13" height="10" rx="1"/><path d="M16 11l5-2v6l-5-2z"/></svg><span>Cameras</span></button>
+    <button type="button" aria-disabled="true" title="Not in this build"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="1"/><path d="M3 9h18M7 5v14M17 5v14"/></svg><span>Media</span></button>
+    <div class="spacer"></div>
+    <hr>
+    <button type="button" id="effects" aria-pressed="false" title="Opaque panels, no blur or grid"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/></svg><span>Effects</span></button>
+    <button type="button" id="focus" aria-pressed="false" title="Hide the rail and inspector"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg><span>Focus</span></button>
+  </nav>
+
+  <!-- C. Evidence canvas -->
+  <main class="canvas" id="canvas" tabindex="-1" aria-label="Evidence canvas">
+    <div class="canvas-head">
+      <div class="crumb glass">
+        <span class="seg">Session</span><span class="sep" id="crumb-sep" hidden>›</span><span class="seg cur" id="crumb-instrument" hidden></span>
+        <span class="chip" id="crumb-chip">No case · memory only</span>
+      </div>
+      <div class="tools glass">
+        <button type="button" id="open-document" data-operation title="Ctrl+O">Open document</button>
+        <button type="button" id="open-image" data-operation title="Ctrl+I">Inspect image</button>
+      </div>
+    </div>
+
+    <!-- Session view -->
+    <section class="view" id="view-session">
+      <div class="empty">
+        <span class="k">Evidence canvas</span>
+        <h2 id="session-title">No source loaded</h2>
+        <p id="session-prompt">Open a UTF-8 document or a PNG/JPEG image. Files stay in memory for this session.</p>
+        <div class="tray" id="session-tray"></div>
+      </div>
+    </section>
+
+    <!-- Documents view -->
+    <section class="view" id="view-documents" hidden>
+      <div class="empty" id="document-empty">
+        <span class="k">Document reader</span>
+        <h2>No document open</h2>
+        <p>Open a UTF-8 file to read its passages and search exact text. 2 MiB maximum. PDF and OCR are not in this build.</p>
+      </div>
+      <div class="reader-wrap" id="document-loaded" hidden>
+        <section class="matches glass" id="search-panel" hidden aria-label="Search matches">
+          <div class="matches-head"><span class="k" id="search-count">0 matches</span><span class="chip" id="search-chip">Complete</span></div>
+          <p class="coverage" id="search-coverage"></p>
+          <div class="match-list" id="matches"></div>
+        </section>
+        <div class="reader glass" id="reader">
+          <div class="reader-head"><span class="k">Source text · read-only</span><span class="v" id="document-name"></span></div>
+          <div class="passages" id="passages" tabindex="0" aria-label="Passages"></div>
+          <div class="pager"><button type="button" id="previous-page">← Previous</button><span class="k" id="page-label"></span><button type="button" id="next-page">Next →</button></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Privacy view -->
+    <section class="view" id="view-privacy" hidden>
+      <div class="empty" id="privacy-empty">
+        <span class="k">File privacy</span>
+        <h2>No image open</h2>
+        <p>Inspect a PNG or JPEG container. 16 MiB maximum. The original is never modified.</p>
+      </div>
+      <div class="privacy-wrap" id="privacy-loaded" hidden>
+        <div class="bytemap glass">
+          <div class="bytemap-head"><span class="k">Container map · bytes 0 to <span id="bytemap-total"></span></span><span class="chip" id="privacy-chip"></span></div>
+          <div class="bytebar" id="bytebar" role="img" aria-label="Byte ranges of the metadata containers in this file"></div>
+          <div class="legend"><span><i class="sw sw-removable"></i> removable</span><span><i class="sw sw-required"></i> required for rendering</span><span><i class="sw sw-unsupported"></i> unsupported</span><span><i class="sw sw-retained"></i> retained</span><span><i class="sw sw-image"></i> image data</span></div>
+          <p class="coverage" id="privacy-coverage"></p>
+        </div>
+        <div class="table-wrap glass">
+          <table><thead><tr><th scope="col">#</th><th scope="col">Container</th><th scope="col">Bytes</th><th scope="col">Handling</th></tr></thead><tbody id="metadata"></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <div class="view-state glass" id="view-state">
+      <span><b>MODE</b> session</span>
+      <span><b>STORE</b> none</span>
+      <span><b>CLOCK</b> —</span>
+      <span><b>OVERLAYS</b> <span id="vs-overlays">on</span></span>
+    </div>
+  </main>
+
+  <!-- D. Inspector -->
+  <aside class="inspector glass" id="inspector" aria-label="Inspector">
+    <!-- Session inspector -->
+    <div class="ipanel" id="insp-session">
+      <div class="head"><span class="k">Inspect · session</span><h2>Local session</h2><div class="chips"><span class="chip">▮ Memory only</span><span class="chip">No case store</span></div></div>
+      <div class="body" tabindex="0">
+        <section class="sec"><span class="k">Session record</span>
+          <dl class="kv"><dt>Storage</dt><dd>Memory · discarded on exit</dd><dt>Acquisition</dt><dd>User-selected local files</dd><dt>Publication</dt><dd class="none">— none</dd><dt>Network</dt><dd>No requests from this interface</dd></dl>
+        </section>
+        <section class="sec"><span class="k">Loaded sources</span><div id="session-sources" class="source-list"></div></section>
+        <section class="sec"><span class="k">Not in this build</span><p class="note">Persistent cases, PDF and OCR, remote sources, AI summaries, and reports. Windows WebView2 may contact Microsoft on its own; this interface does not.</p></section>
+      </div>
+    </div>
+    <!-- Document inspector -->
+    <div class="ipanel" id="insp-documents" hidden>
+      <div class="head"><span class="k">Inspect · document</span><h2 id="insp-doc-name">No document</h2><div class="chips"><span class="chip">▣ Source</span><span class="chip">▮ Read-only snapshot</span></div></div>
+      <div class="tabs" role="tablist"><button type="button" role="tab" aria-selected="true" data-tab="doc-source">Source</button><button type="button" role="tab" aria-selected="false" data-tab="doc-coverage">Coverage</button><button type="button" role="tab" aria-selected="false" data-tab="doc-limits">Limits</button></div>
+      <div class="body" tabindex="0">
+        <section class="sec" data-pane="doc-source"><span class="k">Source record</span><dl class="kv" id="document-details"></dl></section>
+        <section class="sec" data-pane="doc-coverage" hidden><span class="k">Coverage</span>
+          <div class="meter"><span class="label">Bytes extracted</span><span class="n" id="m-extract-n"></span><div class="bar" id="m-extract"></div></div>
+          <div class="meter"><span class="label">Passages</span><span class="n" id="m-passages-n"></span><div class="bar" id="m-passages"></div></div>
+          <div class="meter" id="m-search-wrap" hidden><span class="label">Bytes searched</span><span class="n" id="m-search-n"></span><div class="bar" id="m-search"></div></div>
+          <p class="coverage" id="document-coverage"></p>
+        </section>
+        <section class="sec" data-pane="doc-limits" hidden><span class="k">Limits</span><p class="note">Exact, case-sensitive search within single lines, up to 200 matches. Zero matches cover only the searched bytes. Byte ranges are zero-based and end-exclusive. Hidden controls are escaped for display only. A hash shows byte identity, not authenticity. Publication, author, and event time are not recorded. Changes on disk do not change this snapshot.</p></section>
+      </div>
+    </div>
+    <!-- Privacy inspector -->
+    <div class="ipanel" id="insp-privacy" hidden>
+      <div class="head"><span class="k">Inspect · image container</span><h2 id="insp-img-name">No image</h2><div class="chips"><span class="chip">▣ Source</span><span class="chip">▮ Original retained</span></div></div>
+      <div class="tabs" role="tablist"><button type="button" role="tab" aria-selected="true" data-tab="img-source">Source</button><button type="button" role="tab" aria-selected="false" data-tab="img-clean">Cleaned copy</button><button type="button" role="tab" aria-selected="false" data-tab="img-limits">Limits</button></div>
+      <div class="body" tabindex="0">
+        <section class="sec" data-pane="img-source"><span class="k">Source record</span><dl class="kv" id="image-details"></dl></section>
+        <section class="sec" data-pane="img-clean" hidden><span class="k">Remove from the copy</span>
+          <div id="selections" class="selections"></div>
+          <p class="note" id="cleanup-reason"></p>
+          <button type="button" id="export-cleaned" class="btn primary" data-operation disabled>Save cleaned copy ↗</button>
+          <div class="result" id="export-result" hidden></div>
+        </section>
+        <section class="sec" data-pane="img-limits" hidden><span class="k">Limits</span><p class="note">Container detection only, not every identifying field. Retained dimensions, density, and image content may still identify a person or place. Unsupported profiles cannot be cleaned. Only the selected categories are removed; rendering data is preserved. The saved copy is reinspected before it is published; an existing destination is never overwritten.</p></section>
+      </div>
+    </div>
+  </aside>
+
+  <!-- E/F. Clock and jobs strip -->
+  <footer class="jobs glass" aria-label="Jobs">
+    <span class="k">Clock</span><span class="count none">— no case open</span>
+    <span class="divider"></span>
+    <span class="k">Jobs</span><span class="count" id="status" role="status" aria-live="polite">Idle · one local worker · nothing running</span>
+    <span class="spacer"></span>
+    <button type="button" id="cancel" class="btn" hidden>Cancel</button>
+  </footer>
+
+  <div class="error glass" id="error" role="alert" hidden><span class="k">Operation failed</span><p id="error-message"></p><button type="button" id="dismiss-error" class="btn">Dismiss</button></div>
+</div>
+</body>
+</html>

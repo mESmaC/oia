@@ -1,8 +1,12 @@
-//! `oia-analysis` — Analysis boundary with a local records-request drafting kernel.
+//! `oia-analysis` — Analysis boundary with local records-request drafting (`INTEL-04`),
+//! multilingual research review (`INTEL-04`), two-view triangulation (`FIELD-03`), and
+//! inspectable composed reasoning (`REASON-01`..=`REASON-04`) kernels.
 //!
-//! Service integration and composed reasoning follow in `#14` and P4 (`#35`–`#37`).
+//! Service integration, durable persistence, and remaining P4 workflows follow in `#14`,
+//! `#11`, and `#35`–`#37`.
 
 pub mod multilingual;
+pub mod reasoning;
 pub mod records_request;
 pub mod triangulation;
 

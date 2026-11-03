@@ -6,7 +6,8 @@ const $ = id => document.getElementById(id);
 const invoke = (command, args) => window.__TAURI__.core.invoke(command, args);
 const SCHEMA = 'oia-local-tools/1';
 const PAGE_SIZE = 100;
-const INSTRUMENTS = ['session', 'documents', 'witness', 'privacy', 'globe'];
+const INSTRUMENTS = ['session', 'documents', 'witness', 'privacy', 'globe', 'media'];
+const SNAPSHOT_SCHEME = 'oia-snapshot'; // Rust-owned read-only scheme serving the held image by its hash
 const TARGETS = {
   text: ['Text metadata', 'PNG text containers'],
   modification_time: ['Modification time', 'PNG tIME container'],
@@ -17,8 +18,8 @@ const TARGETS = {
 };
 const HANDLING = { retained: 'Retained', removable: 'Removable', required_for_rendering: 'Required for rendering', unsupported: 'Unsupported' };
 
-let busy = false, documentView = null, imageView = null, searchView = null;
-let instrument = 'session', page = 0, selectedLine = null, selectedRow = null;
+let busy = false, documentView = null, imageView = null, searchView = null, forensicView = null;
+let instrument = 'session', page = 0, selectedLine = null, selectedRow = null, selectedBlock = null;
 
 const fmt = n => Number(n).toLocaleString('en-US');
 const pad2 = n => String(n).padStart(2, '0');
@@ -64,16 +65,18 @@ function showInstrument(name, focus = false) {
     else button.removeAttribute('aria-current');
   });
   document.querySelectorAll('.globe-tool').forEach(button => { button.hidden = instrument !== 'globe'; });
+  document.querySelectorAll('.media-tool').forEach(button => { button.hidden = instrument !== 'media'; });
   if (instrument === 'globe') Globe.activate(); else Globe.deactivate();
   if (instrument === 'witness') Witness.activate(); else Witness.deactivate();
+  if (instrument === 'media') positionBlocks();
   if (focus) (instrument === 'globe' ? $('globe-canvas') : $('canvas')).focus();
   renderShell();
 }
 function currentView() {
-  return instrument === 'documents' ? documentView : instrument === 'privacy' ? imageView : null;
+  return instrument === 'documents' ? documentView : instrument === 'privacy' || instrument === 'media' ? imageView : null;
 }
 function renderShell() {
-  const names = { session: '', documents: 'Documents', witness: 'Witness', privacy: 'Privacy', globe: 'Globe' };
+  const names = { session: '', documents: 'Documents', witness: 'Witness', privacy: 'Privacy', globe: 'Globe', media: 'Media' };
   const view = currentView();
   $('crumb-sep').hidden = $('crumb-instrument').hidden = instrument === 'session';
   $('crumb-instrument').textContent = names[instrument];
@@ -93,6 +96,11 @@ function renderShell() {
     setText('ro-coverage', imageView.complete ? 'profile supported' : 'partial', imageView.complete ? 'v' : 'v est');
     const row = selectedRow === null ? null : imageView.rows[selectedRow];
     setText('ro-selection', row ? `${pad2(selectedRow + 1)} ${row.kind} · b${row.start}–${row.end}` : 'none', row ? 'v' : 'v none');
+  } else if (instrument === 'media' && imageView) {
+    const f = forensicView && forensicView.file.sha256 === imageView.file.sha256 ? forensicView : null;
+    setText('ro-coverage', f ? (f.partial ? 'cues partial' : 'cue profile complete') : 'cues not run', f && !f.partial ? 'v' : f ? 'v est' : 'v none');
+    const block = f && selectedBlock !== null ? f.report.repeated_blocks.result?.candidates[selectedBlock] : null;
+    setText('ro-selection', block ? `${pad2(selectedBlock + 1)} block · ${block.first.x},${block.first.y} ↔ ${block.repeated.x},${block.repeated.y}` : 'none', block ? 'v' : 'v none');
   } else if (instrument === 'witness') {
     const w = Witness.summary();
     setText('ro-source', w.source, w.loaded ? 'v' : 'v none');
@@ -115,6 +123,8 @@ function renderShell() {
   scope.classList.toggle('off', !documentView);
   $('query').placeholder = documentView ? `Exact text in ${documentView.file.name}` : 'Open a document to search exact text';
   for (const id of ['query', 'search-submit', 'clear-search']) $(id).disabled = busy || !documentView;
+  $('media-run').disabled = $('run-forensics').disabled = busy || !imageView;
+  $('media-empty-action').disabled = busy;
 
   // Session instrument
   $('session-title').textContent = sessionRecords ? 'Records in this session' : 'No session records';
@@ -257,9 +267,10 @@ function clearSearch(focusQuery) {
 }
 
 // ---- Privacy ----
-function openImage() {
+function openImage(target = 'privacy') {
   operation('open_image', {}, 'Choose a PNG or JPEG · inspection begins after selection', data => {
     imageView = data; selectedRow = null;
+    forensicView = null; selectedBlock = null; // a new snapshot invalidates any earlier report
     $('privacy-empty').hidden = true; $('privacy-loaded').hidden = false; $('export-result').hidden = true;
     $('insp-img-name').textContent = data.file.name;
     details($('image-details'), data.file, [['Dimensions', `${data.width} × ${data.height} px`], ['Profile', data.profile]]);
@@ -271,9 +282,192 @@ function openImage() {
       data.complete ? 'coverage' : 'coverage partial');
     renderByteMap();
     renderSelections();
-    showInstrument('privacy');
+    renderMedia();
+    showInstrument(target);
     return `Inspected ${data.file.name} · ${data.complete ? 'supported container profile' : 'partial coverage, cleanup unavailable'}`;
   });
+}
+
+// ---- Media: forensic cues over the held image ----
+const COVERAGE = { complete: ['✓ complete', 'chip'], partial: ['◐ partial', 'chip warn'], not_applicable: ['— not applicable', 'chip'], not_implemented: ['○ not implemented', 'chip'] };
+const METHODS = [['raster_validation', 'Raster validation'], ['rgb_histograms', 'RGB histograms'], ['metadata', 'Metadata cues'], ['repeated_blocks', 'Repeated blocks'], ['jpeg_recompression', 'JPEG recompression residual'], ['learned_ai_detection', 'Learned AI detection'], ['credential_and_watermark_verification', 'Credential and watermark verification']];
+function runForensics() {
+  if (!imageView) return;
+  operation('analyze_image', { sha256: imageView.file.sha256 }, 'Running forensic cues · bounded local analysis of the retained bytes', data => {
+    forensicView = data; selectedBlock = null;
+    renderMedia();
+    showInstrument('media');
+    return `Forensic cues ${data.partial ? 'partial · see methods' : 'complete for the declared profile'} · assessment inconclusive by contract`;
+  });
+}
+function renderMedia() {
+  const loaded = !!imageView;
+  $('media-empty').hidden = loaded;
+  $('media-loaded').hidden = !loaded;
+  $('insp-media-name').textContent = loaded ? imageView.file.name : 'No image';
+  const chips = $('insp-media-chips');
+  chips.replaceChildren();
+  const f = forensicView && loaded && forensicView.file.sha256 === imageView.file.sha256 ? forensicView : null;
+  if (loaded) {
+    chips.append(node('span', '▣ Source', 'chip'), node('span', '▮ Original retained', 'chip'));
+    chips.append(f ? node('span', f.partial ? '◐ Cues partial' : '✓ Cue profile complete', f.partial ? 'chip warn' : 'chip') : node('span', '○ Cues not run', 'chip'));
+    if (f) chips.append(node('span', `◌ ${f.report.assessment} · ${f.report.review_status}`, 'chip'));
+  }
+  const src = $('media-source');
+  if (loaded) details(src, imageView.file, [['Dimensions', `${imageView.width} × ${imageView.height} px`], ['Profile', imageView.profile]]);
+  else src.replaceChildren();
+  $('media-run-note').textContent = !loaded ? 'Inspect an image first.' : f ? 'Report below is for these exact bytes. Re-running repeats the same bounded profile.' : 'Runs the declared cue profile on the retained bytes under the single local worker (30 s limit, cancellable). Nothing is written.';
+  // The image itself: served by Rust under the snapshot scheme, keyed by the hash the inspector shows.
+  const img = $('media-image');
+  if (loaded) {
+    const url = window.__TAURI__.core.convertFileSrc(imageView.file.sha256, SNAPSHOT_SCHEME);
+    if (img.dataset.sha !== imageView.file.sha256) { img.dataset.sha = imageView.file.sha256; img.src = url; }
+    img.alt = `${imageView.file.name}, ${imageView.width} by ${imageView.height} pixels, displayed from the retained bytes in encoded orientation`;
+  } else { img.removeAttribute('src'); delete img.dataset.sha; }
+  for (const id of ['media-report-sec', 'media-cues-sec', 'media-blocks-sec']) $(id).hidden = !f;
+  $('media-hist').hidden = !f;
+  renderMediaState(f);
+  if (!f) { $('media-frame').replaceChildren(); $('media-card').hidden = true; $('media-methods').replaceChildren(); $('media-limitations').replaceChildren(); return; }
+  const r = f.report;
+  const started = r.analysis_started_unix_ms === null ? null : new Date(Number(r.analysis_started_unix_ms)).toISOString();
+  const kvInto = (el, rows) => { el.replaceChildren(); for (const [k, v, cls] of rows) el.append(node('dt', k), node('dd', v === null || v === undefined ? '— not recorded' : String(v), v === null || v === undefined ? 'none' : (cls || ''))); };
+  kvInto($('media-report'), [['Profile', `${r.profile} · schema ${r.schema_version}`], ['Implementation', `${r.implementation_version}${r.build_revision ? ` @ ${r.build_revision}` : ''}`], ['Decoder', r.decoder], ['Analysed', started ? `${started} (analysis time, not capture)` : null], ['Duration', `${fmt(Number(r.analysis_duration_ms))} ms`], ['Source', `${r.source.format} · ${r.source.width} × ${r.source.height} px · ${fmt(r.source.byte_length)} B`], ['Raster', r.raster_validation.result ? `${r.raster_validation.coverage}: ${r.raster_validation.result}` : r.raster_validation.coverage, r.raster_validation.coverage === 'complete' ? '' : 'est'], ['Assessment', r.assessment, 'est'], ['Review', r.review_status], ['Samples', r.sample_domain]]);
+  const cues = $('media-cues');
+  cues.replaceChildren();
+  const m = r.metadata.result;
+  if (m) {
+    for (const cue of m.cues) {
+      const c = node('div', undefined, 'cue');
+      c.append(node('b', `${cue.kind} · ${cue.container}`), node('i', `b${cue.byte_offset}–${cue.byte_offset + cue.byte_length}`), node('span', `${cue.interpretation} · payload sha256 ${cue.payload_sha256.slice(0, 12)}…`));
+      cues.append(c);
+    }
+    for (const u of m.uninspected) {
+      const c = node('div', undefined, 'cue');
+      c.append(node('b', `uninspected · ${u.container}`), node('i', `b${u.byte_offset}–${u.byte_offset + u.byte_length}`), node('span', u.reason));
+      cues.append(c);
+    }
+    if (!m.cues.length && !m.uninspected.length) cues.append(node('p', `No generation or edit signature among ${fmt(Number(m.inspected_text_fields))} inspected text fields. This is not evidence of camera origin.`, 'note'));
+  } else cues.append(node('p', `Metadata cues ${r.metadata.coverage.replace('_', ' ')}.`, 'note'));
+  renderBlockList();
+  renderHistograms(r);
+  const methods = $('media-methods');
+  methods.replaceChildren();
+  for (const [key, label] of METHODS) {
+    const method = r[key];
+    const [text, cls] = COVERAGE[method.coverage] || [method.coverage, 'chip'];
+    const row = node('div', undefined, 'method');
+    row.append(node('span', label, 'name'), node('span', text, cls), node('span', method.scope, 'scope'));
+    if (key === 'repeated_blocks' && method.result) {
+      const b = method.result;
+      row.append(node('span', `${fmt(Number(b.examined_grid_blocks))} / ${fmt(Number(b.total_grid_blocks))} grid blocks examined · ${fmt(Number(b.eligible_blocks))} eligible · ${fmt(Number(b.excluded_low_range_blocks))} low-range and ${fmt(Number(b.excluded_nonopaque_blocks))} non-opaque excluded · ${b.uncovered_right_pixels} right and ${b.uncovered_bottom_pixels} bottom pixels uncovered${b.stopped_at ? ` · stopped: ${b.stopped_at}` : ''}`, 'scope'));
+    }
+    if (key === 'jpeg_recompression' && method.result) {
+      const j = method.result;
+      row.append(node('span', `mean |Δ| ${Number(j.mean_absolute_channel_difference).toFixed(3)} · max |Δ| ${j.maximum_channel_difference} at quality ${r.config.jpeg_quality}`, 'scope'));
+    }
+    if (method.limitations.length) { const ul = node('ul'); for (const l of method.limitations) ul.append(node('li', l)); row.append(ul); }
+    methods.append(row);
+  }
+  $('media-limitations').replaceChildren(...r.limitations.map(l => node('li', l)));
+  renderShell();
+}
+function renderMediaState(f) {
+  const el = $('media-state');
+  el.replaceChildren();
+  if (!imageView) return;
+  const cells = [['IMAGE', `${imageView.width} × ${imageView.height} · encoded orientation`], ['CUES', f ? (f.partial ? 'partial' : 'complete') : 'not run'], ['BLOCKS', f ? String(f.report.repeated_blocks.result?.candidates.length ?? '—') : '—'], ['ASSESSMENT', f ? f.report.assessment : '—']];
+  for (const [k, v] of cells) { const span = node('span'); span.append(node('b', `${k} `), document.createTextNode(v)); if (k === 'CUES' && f?.partial) span.className = 'warn'; el.append(span); }
+}
+function renderBlockList() {
+  const host = $('media-blocks');
+  host.replaceChildren();
+  const r = forensicView?.report;
+  const b = r?.repeated_blocks.result;
+  if (!b) { host.append(node('p', `Repeated blocks ${r ? r.repeated_blocks.coverage.replace('_', ' ') : 'not run'}.`, 'note')); positionBlocks(); return; }
+  if (!b.candidates.length) host.append(node('p', `No exact ${r.config.block_size} px grid-aligned repeat among the eligible blocks. Not evidence that nothing was copied.`, 'note'));
+  b.candidates.forEach((c, i) => {
+    const t = tag(i + 1, `${c.first.x},${c.first.y} ↔ ${c.repeated.x},${c.repeated.y} · ${r.config.block_size} px`);
+    t.setAttribute('aria-pressed', String(selectedBlock === i));
+    t.onclick = () => selectBlock(i);
+    host.append(t);
+  });
+  positionBlocks();
+}
+function selectBlock(i) {
+  selectedBlock = selectedBlock === i ? null : i;
+  renderBlockList(); renderShell();
+}
+function positionBlocks() {
+  // Projection only: the report's pixel coordinates scaled to the displayed image.
+  const frame = $('media-frame'), card = $('media-card'), img = $('media-image');
+  frame.replaceChildren();
+  const r = forensicView?.report, b = r?.repeated_blocks.result;
+  const rect = img.getBoundingClientRect();
+  if (!b || !imageView || !img.complete || !rect.width || instrument !== 'media') { card.hidden = true; return; }
+  // The image is displayed in encoded raster orientation (CSS image-orientation: none), which
+  // is the report's coordinate space, so the scale is the displayed width over the encoded
+  // width the kernel reports. EXIF orientation is applied nowhere, and the panel says so.
+  const stage = $('media-stage').getBoundingClientRect();
+  const scale = rect.width / r.source.width, size = r.config.block_size;
+  frame.style.transform = `translate(${Math.round(rect.left - stage.left)}px, ${Math.round(rect.top - stage.top)}px)`;
+  frame.style.width = `${Math.round(rect.width)}px`; frame.style.height = `${Math.round(rect.height)}px`;
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'link'); svg.setAttribute('aria-hidden', 'true');
+  b.candidates.forEach((c, i) => {
+    for (const [pos, cls] of [[c.first, 'first'], [c.repeated, 'repeated']]) {
+      const el = node('button', undefined, `blk ${cls}${selectedBlock === i ? ' selected' : ''}`);
+      el.type = 'button'; el.style.pointerEvents = 'auto';
+      el.style.left = `${pos.x * scale}px`; el.style.top = `${pos.y * scale}px`;
+      el.style.width = `${Math.max(size * scale, 3)}px`; el.style.height = `${Math.max(size * scale, 3)}px`;
+      el.setAttribute('aria-label', `Candidate ${i + 1}, ${cls} block at ${pos.x}, ${pos.y}`);
+      el.onclick = () => selectBlock(i);
+      frame.append(el);
+    }
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    const h = size * scale / 2;
+    line.setAttribute('x1', c.first.x * scale + h); line.setAttribute('y1', c.first.y * scale + h);
+    line.setAttribute('x2', c.repeated.x * scale + h); line.setAttribute('y2', c.repeated.y * scale + h);
+    if (selectedBlock === i) line.setAttribute('class', 'selected');
+    svg.append(line);
+  });
+  frame.append(svg);
+  const c = selectedBlock === null ? null : b.candidates[selectedBlock];
+  card.hidden = !c;
+  if (c) {
+    card.replaceChildren(node('span', `${pad2(selectedBlock + 1)} · selected candidate`, 'k'), node('h3', 'Exact repeated block'));
+    const rows = node('dl', undefined, 'rows');
+    for (const [k, v, cls] of [['First', `${c.first.x}, ${c.first.y}`], ['Repeated', `${c.repeated.x}, ${c.repeated.y}`], ['Block', `${size} × ${size} px, opaque, grid-aligned`], ['Reads as', 'byte-identical samples; flat regions also repeat', 'est'], ['Verdict', 'none: a cue, not a finding', 'none']]) rows.append(node('dt', k), node('dd', v, cls || ''));
+    card.append(rows);
+  }
+}
+function renderHistograms(r) {
+  // Three small multiples of the recorded sample counts, one per channel, in a neutral fill;
+  // identity is carried by the channel label, never by a series colour. Max per channel printed.
+  const host = $('media-hist');
+  host.replaceChildren();
+  const h = r.rgb_histograms;
+  const head = node('div', undefined, 'head');
+  head.append(node('span', 'RGB histograms · decoded samples', 'k'), node('span', (COVERAGE[h.coverage] || [h.coverage])[0], (COVERAGE[h.coverage] || [, 'chip'])[1]));
+  host.append(head);
+  if (!h.result) { host.append(node('p', h.limitations.join(' ') || 'No histogram in this report.', 'foot')); return; }
+  const W = 320, H = 34;
+  h.result.forEach((bins, i) => {
+    const max = bins.reduce((m, v) => Math.max(m, Number(v)), 0);
+    const row = node('div', undefined, 'chan');
+    row.append(node('span', ['R', 'G', 'B'][i], 'k'));
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.setAttribute('preserveAspectRatio', 'none');
+    svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', `${['Red', 'Green', 'Blue'][i]} channel histogram, 256 bins, maximum ${fmt(max)} samples`);
+    let d = `M0 ${H}`;
+    bins.forEach((v, x) => { const y = max ? H - Number(v) / max * (H - 2) : H; d += ` L${(x / 255 * W).toFixed(1)} ${y.toFixed(1)}`; });
+    d += ` L${W} ${H} Z`;
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'); path.setAttribute('d', d);
+    const base = document.createElementNS('http://www.w3.org/2000/svg', 'line'); base.setAttribute('x1', 0); base.setAttribute('x2', W); base.setAttribute('y1', H - 0.5); base.setAttribute('y2', H - 0.5);
+    svg.append(path, base);
+    row.append(svg, node('span', `max ${fmt(max)}`, 'n'));
+    host.append(row);
+  });
+  host.append(node('p', `0 to 255 per channel · ${r.sample_domain}${h.coverage !== 'complete' ? ` · ${h.limitations.join(' ')}` : ''}`, `foot${h.coverage !== 'complete' ? ' warn' : ''}`));
 }
 function renderByteMap() {
   const v = imageView, total = v.file.bytes || 1;
@@ -345,7 +539,14 @@ document.querySelectorAll('[role="tablist"]').forEach(list => {
   });
 });
 $('open-document').onclick = openDocument;
-$('open-image').onclick = openImage;
+$('open-image').onclick = () => openImage(instrument === 'media' ? 'media' : 'privacy');
+$('media-empty-action').onclick = () => openImage('media');
+$('media-run').onclick = runForensics;
+$('run-forensics').onclick = runForensics;
+$('media-image').onload = positionBlocks;
+window.addEventListener('resize', () => { if (instrument === 'media') positionBlocks(); });
+// Any layout change of the stage (Focus, inspector, narrow layout) reprojects the overlays.
+new ResizeObserver(() => { if (instrument === 'media') positionBlocks(); }).observe($('media-stage'));
 $('search-form').onsubmit = event => {
   event.preventDefault();
   if (!documentView) return;
@@ -392,6 +593,7 @@ function setPresentation(className, on) {
   $('vs-overlays').textContent = document.body.classList.contains('reduced') ? 'reduced' : 'on';
   if (className === 'focused') $('exit-focus').hidden = !on;
   if (className === 'reduced') Globe.setReduced(on);
+  if (instrument === 'media') requestAnimationFrame(positionBlocks);
 }
 $('effects').onclick = () => setPresentation('reduced', !document.body.classList.contains('reduced'));
 $('focus').onclick = () => setPresentation('focused', !document.body.classList.contains('focused'));
@@ -407,15 +609,18 @@ document.addEventListener('keydown', event => {
   const key = event.key.toLowerCase();
   if ((event.ctrlKey || event.metaKey) && key === 'f' && documentView) { event.preventDefault(); showInstrument('documents'); $('query').focus(); }
   if ((event.ctrlKey || event.metaKey) && key === 'o') { event.preventDefault(); if (!busy) openDocument(); }
-  if ((event.ctrlKey || event.metaKey) && key === 'i') { event.preventDefault(); if (!busy) openImage(); }
+  if ((event.ctrlKey || event.metaKey) && key === 'i') { event.preventDefault(); if (!busy) openImage(instrument === 'media' ? 'media' : 'privacy'); }
   if ((event.ctrlKey || event.metaKey) && key === 'g') { event.preventDefault(); showInstrument('globe', true); }
+  if ((event.ctrlKey || event.metaKey) && key === 'm') { event.preventDefault(); showInstrument('media', true); }
   if ((event.ctrlKey || event.metaKey) && event.shiftKey && key === 'e' && instrument === 'globe') { event.preventDefault(); Globe.toggleOverlays(); }
   if (event.key === 'Escape') {
     if (!$('error').hidden) $('error').hidden = true;
+    else if (instrument === 'media' && selectedBlock !== null) selectBlock(selectedBlock);
     else if (document.body.classList.contains('focused')) { setPresentation('focused', false); $('focus').focus(); }
   }
 });
 Globe.onView(() => { if (instrument === 'globe') renderShell(); });
 Witness.onView(() => renderShell());
 if (window.matchMedia('(prefers-reduced-transparency: reduce)').matches) setPresentation('reduced', true);
+renderMedia();
 showInstrument('session');

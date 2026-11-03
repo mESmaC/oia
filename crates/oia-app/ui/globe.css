@@ -20,6 +20,8 @@
 .globe-leaders .region circle { fill: var(--text-2); }
 .globe-leaders .approx path { stroke: var(--amber); }
 .globe-leaders .approx circle { fill: var(--amber); }
+.globe-leaders .cam path { stroke: var(--text-3); }
+.globe-leaders .cam circle { fill: var(--text-3); }
 
 /* Callout tags share the shell's .tag look, positioned in canvas space. */
 .globe-tags { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
@@ -30,6 +32,32 @@
 .gtag[aria-pressed="true"] { border-color: var(--accent); }
 .gtag.region i { color: var(--text-2); }
 .gtag.approx i { color: var(--amber); }
+.gtag.cam { border-color: var(--line); }
+.gtag.cam i { color: var(--text-3); }
+.gtag.cam b { color: var(--text-2); }
+.gtag.cam[aria-pressed="true"] { border-color: var(--accent); }
+.gtag.cam[aria-pressed="true"] b { color: var(--text); }
+
+/* Layers panel: registry entries with their counts, bound to Rust state. */
+.glayers { position: absolute; right: 16px; top: 16px; width: min(260px, calc(100% - 32px)); padding: 8px 10px 10px; }
+.glayers .head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+.glayer-list { display: flex; flex-direction: column; gap: 4px; }
+.glayer { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; padding: 5px 6px; border-radius: var(--r-ctl); font: 12px var(--sans); }
+.glayer:hover { background: var(--fill); }
+.glayer input { accent-color: var(--accent); margin: 0; }
+.glayer .name { display: flex; flex-direction: column; min-width: 0; }
+.glayer .name small { font: 11px var(--mono); color: var(--text-3); letter-spacing: .02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.glayer .name small.warn { color: var(--amber); }
+.glayer .name small.bad { color: var(--red); }
+.glayer .fly { font: 11px var(--mono); letter-spacing: .04em; padding: 4px 7px; border: 1px solid var(--line); border-radius: var(--r-ctl); color: var(--text-2); background: var(--fill); }
+.glayer .fly:hover:not(:disabled) { color: var(--text); background: var(--fill-2); }
+.glayer .fly:disabled { color: var(--text-3); background: none; }
+.glayer-details { display: flex; flex-direction: column; gap: 10px; }
+.glayer-details .entry { padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-ctl); background: var(--fill); }
+.glayer-details .entry .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+.glayer-details .entry .row b { font: 500 13px var(--sans); }
+.glayer-details .entry .kv { grid-template-columns: 84px 1fr; }
+.glayer-details .entry .note { margin-top: 6px; }
 
 /* One bracket per instrument, around the selected geometry's projected bounds. */
 .gbracket { position: absolute; left: 0; top: 0; pointer-events: none; }
@@ -53,6 +81,8 @@
 .gcard .rows dd { text-align: right; overflow-wrap: anywhere; }
 .gcard .rows dd.est { color: var(--amber); }
 .gcard .rows dd.none { color: var(--text-3); }
+.gcard .rows dd.fx { color: var(--violet); }
+.gcard .chips { margin-bottom: 8px; }
 
 /* Not plotted tray: tags with no leaders. */
 .gtray { position: absolute; left: 16px; right: 16px; bottom: 78px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 6px 10px; }

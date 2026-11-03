@@ -70,21 +70,30 @@ impl Operation {
                 )
             })
     }
-    /// A held text snapshot by hash: the reader's document or a corpus slot. Identical
-    /// bytes in both are the same snapshot for citation purposes.
-    fn text_snapshot(&self, sha256: &str) -> Result<Snapshot> {
+    fn text_snapshot(&self, snapshot_ref: &str, sha256: &str) -> Result<Snapshot> {
         let state = self.services.lock()?;
         state
             .document
             .iter()
             .chain(state.corpus.iter())
-            .find(|s| s.info.sha256 == sha256)
+            .find(|s| s.info.snapshot_ref == snapshot_ref && s.info.sha256 == sha256)
             .cloned()
             .ok_or_else(|| {
                 ToolError::new(
                     "stale_input",
                     "That file is no longer held. Open it and try again.",
                 )
+            })
+    }
+    fn corpus_snapshot(&self, snapshot_ref: &str, sha256: &str) -> Result<Snapshot> {
+        self.services
+            .lock()?
+            .corpus
+            .iter()
+            .find(|s| s.info.snapshot_ref == snapshot_ref && s.info.sha256 == sha256)
+            .cloned()
+            .ok_or_else(|| {
+                ToolError::new("stale_input", "That snapshot is not in the held corpus.")
             })
     }
     fn corpus(&self) -> Result<Vec<Snapshot>> {
@@ -201,11 +210,18 @@ async fn open_image(
 async fn search_document(
     state: State<'_, Services>,
     query: String,
+    snapshot_ref: String,
     sha256: String,
 ) -> Result<Envelope<SearchView>> {
     let operation = state.begin()?;
     worker(move || {
         let snapshot = operation.snapshot(FileKind::Text, &sha256)?;
+        if snapshot.info.snapshot_ref != snapshot_ref {
+            return Err(ToolError::new(
+                "stale_input",
+                "The reader snapshot changed.",
+            ));
+        }
         let result = tools::search(&snapshot, &query, &operation.control)?;
         operation.publish(|_| Ok(envelope(result)))
     })
@@ -255,21 +271,12 @@ async fn search_corpus(
 #[tauri::command]
 async fn open_corpus_document(
     state: State<'_, Services>,
+    snapshot_ref: String,
     sha256: String,
 ) -> Result<Envelope<DocumentView>> {
     let mut operation = state.begin()?;
     worker(move || {
-        let snapshot = {
-            let state = operation.services.lock()?;
-            state
-                .corpus
-                .iter()
-                .find(|s| s.info.sha256 == sha256)
-                .cloned()
-                .ok_or_else(|| {
-                    ToolError::new("stale_input", "That file is not in the held corpus.")
-                })?
-        };
+        let snapshot = operation.corpus_snapshot(&snapshot_ref, &sha256)?;
         operation.control = operation.control.processing();
         let view = tools::document(&snapshot, &operation.control)?;
         operation.publish(|s| {
@@ -314,13 +321,14 @@ fn citations(state: State<'_, Services>) -> Result<Envelope<CitationsView>> {
 #[tauri::command]
 async fn cite_selection(
     state: State<'_, Services>,
+    snapshot_ref: String,
     sha256: String,
     start: usize,
     end: usize,
 ) -> Result<Envelope<CitationsView>> {
     let mut operation = state.begin()?;
     worker(move || {
-        let snapshot = operation.text_snapshot(&sha256)?;
+        let snapshot = operation.text_snapshot(&snapshot_ref, &sha256)?;
         operation.control = operation.control.processing();
         let record = tools::cite_selection(&snapshot, start, end, &operation.control)?;
         operation.publish(|s| append_citation(s, record))
@@ -331,6 +339,7 @@ async fn cite_selection(
 #[tauri::command]
 async fn check_citation(
     state: State<'_, Services>,
+    snapshot_ref: String,
     sha256: String,
     start: usize,
     end: usize,
@@ -338,7 +347,7 @@ async fn check_citation(
 ) -> Result<Envelope<CitationsView>> {
     let mut operation = state.begin()?;
     worker(move || {
-        let snapshot = operation.text_snapshot(&sha256)?;
+        let snapshot = operation.text_snapshot(&snapshot_ref, &sha256)?;
         operation.control = operation.control.processing();
         let record = tools::check_citation(&snapshot, start, end, &quote, &operation.control)?;
         operation.publish(|s| append_citation(s, record))
@@ -658,6 +667,130 @@ pub fn run() -> std::result::Result<(), tauri::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn equal_bytes_keep_selected_attribution_and_reopened_references_expire()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let first_path = directory.path().join("first.txt");
+        let second_path = directory.path().join("second.txt");
+        std::fs::write(&first_path, "hit\n")?;
+        std::fs::write(&second_path, "hit\n")?;
+        let control = Control::default();
+        let corpus = tools::open_corpus(&[first_path.clone(), second_path.clone()], &control)?;
+        let first = &corpus[0];
+        let second = &corpus[1];
+        assert_eq!(first.info.sha256, second.info.sha256);
+        assert_ne!(first.info.snapshot_ref, second.info.snapshot_ref);
+        let results = tools::search_corpus(&corpus, "hit", &control)?;
+        assert_eq!(
+            results.documents[1].file.snapshot_ref,
+            second.info.snapshot_ref
+        );
+        assert_eq!(
+            tools::corpus_view(&corpus).files[1].snapshot_ref,
+            second.info.snapshot_ref
+        );
+
+        let services = Services::default();
+        let operation = services.begin()?;
+        operation.publish(|state| {
+            state.document = Some(first.clone());
+            state.corpus = corpus.clone();
+            Ok(())
+        })?;
+        let selected = operation.corpus_snapshot(&second.info.snapshot_ref, &second.info.sha256)?;
+        assert_eq!(
+            tools::document(&selected, &control)?.file.path,
+            second.info.path
+        );
+        operation.publish(|state| {
+            state.document = Some(selected);
+            Ok(())
+        })?;
+        let selected = operation.text_snapshot(&second.info.snapshot_ref, &second.info.sha256)?;
+        let record = tools::cite_selection(&selected, 0, 3, &control)?;
+        let published = operation.publish(|state| append_citation(state, record))?;
+        assert_eq!(published.data.records[0].file.path, second.info.path);
+        assert_eq!(
+            published.data.records[0].file.snapshot_ref,
+            second.info.snapshot_ref
+        );
+
+        operation.publish(|state| {
+            state.document = Some(tools::open_file(&first_path, FileKind::Text, &control)?);
+            state.corpus = vec![second.clone()];
+            Ok(())
+        })?;
+        let selected = operation.text_snapshot(&second.info.snapshot_ref, &second.info.sha256)?;
+        let supplied = tools::check_citation(&selected, 0, 3, "hit", &control)?;
+        assert_eq!(
+            (supplied.status, supplied.file.path),
+            ("valid", second.info.path.clone())
+        );
+        assert_eq!(
+            tools::cite_selection(&selected, 0, 3, &control)?.file.path,
+            second.info.path
+        );
+        assert_eq!(
+            operation
+                .text_snapshot(&second.info.snapshot_ref, "wrong-hash")
+                .err()
+                .map(|error| error.code),
+            Some("stale_input")
+        );
+        assert_eq!(
+            operation
+                .corpus_snapshot(&second.info.snapshot_ref, "wrong-hash")
+                .err()
+                .map(|error| error.code),
+            Some("stale_input")
+        );
+
+        let replacement = tools::open_corpus(&[second_path.clone(), second_path], &control)?;
+        assert_ne!(replacement[0].info.snapshot_ref, second.info.snapshot_ref);
+        assert_ne!(
+            replacement[0].info.snapshot_ref,
+            replacement[1].info.snapshot_ref
+        );
+        operation.publish(|state| {
+            state.corpus = replacement;
+            Ok(())
+        })?;
+        assert_eq!(
+            operation
+                .corpus_snapshot(&second.info.snapshot_ref, &second.info.sha256)
+                .err()
+                .map(|error| error.code),
+            Some("stale_input")
+        );
+        assert_eq!(
+            operation
+                .text_snapshot(&second.info.snapshot_ref, &second.info.sha256)
+                .err()
+                .map(|error| error.code),
+            Some("stale_input")
+        );
+        operation.publish(|state| {
+            state.document = Some(second.clone());
+            Ok(())
+        })?;
+        assert_eq!(
+            operation
+                .text_snapshot(&second.info.snapshot_ref, &second.info.sha256)?
+                .info
+                .path,
+            second.info.path
+        );
+        assert_eq!(
+            operation
+                .corpus_snapshot(&second.info.snapshot_ref, &second.info.sha256)
+                .err()
+                .map(|error| error.code),
+            Some("stale_input")
+        );
+        Ok(())
+    }
 
     // CASE-04: cancellation must fence publication, and a second worker cannot overlap.
     #[test]

@@ -26,6 +26,8 @@ let corpusView = null, corpusSearchView = null, citationsView = null, scope = 'd
 
 const fmt = n => Number(n).toLocaleString('en-US');
 const pad2 = n => String(n).padStart(2, '0');
+const textInput = file => ({ snapshotRef: file.snapshot_ref, sha256: file.sha256 });
+const sameSnapshot = (left, right) => left.snapshot_ref === right.snapshot_ref && left.sha256 === right.sha256;
 function node(tag, text, className) {
   const el = document.createElement(tag);
   if (text !== undefined) el.textContent = text;
@@ -105,7 +107,7 @@ function renderShell() {
     if (!documentView) setText('ro-source', `corpus · ${corpusView.files.length} ${corpusView.files.length === 1 ? 'file' : 'files'}`, 'v');
     const complete = results ? results.complete : corpusView.files.length > 0;
     setText('ro-coverage', results ? `corpus search ${complete ? 'complete' : 'partial'}` : 'corpus held · not searched', results ? (complete ? 'v' : 'v est') : 'v none');
-    const elsewhere = selectedMatch && !(documentView && documentView.file.sha256 === selectedMatch.file.sha256);
+    const elsewhere = selectedMatch && !(documentView && sameSnapshot(documentView.file, selectedMatch.file));
     setText('ro-selection', selectedMatch ? `${elsewhere ? `${selectedMatch.file.name} · ` : ''}line ${selectedMatch.line} · b${selectedMatch.start}–${selectedMatch.end}` : 'none', selectedMatch ? 'v' : 'v none');
   } else if (instrument === 'documents' && documentView) {
     const complete = searchView ? searchView.complete : documentView.complete;
@@ -231,11 +233,11 @@ function openDocument() {
     return `Loaded ${data.file.name} · ${data.complete ? 'complete' : 'partial'} extraction · session only`;
   });
 }
-// A new reader snapshot: the single-document search and line selection belong to the old bytes.
-// A selected corpus match is kept only when it is in these bytes.
+// A new reader snapshot: the single-document search and line selection belong to the old snapshot.
+// A selected corpus match is kept only when it belongs to this same snapshot.
 function applyDocument(data) {
   documentView = data; searchView = null; page = 0; selectedLine = null;
-  if (selectedMatch && selectedMatch.file.sha256 !== data.file.sha256) selectedMatch = null;
+  if (selectedMatch && !sameSnapshot(selectedMatch.file, data.file)) selectedMatch = null;
   $('query').value = '';
   $('document-name').textContent = data.file.name;
   details($('document-details'), data.file);
@@ -256,7 +258,7 @@ function renderDocuments() {
     : 'Open a UTF-8 file to read its passages and search exact text, or open a corpus of up to 20 files to search them together. 2 MiB per file, 8 MiB per corpus. PDF and OCR are not in this build.';
   const tray = $('corpus-tray');
   tray.replaceChildren();
-  if (corpusView) corpusView.files.forEach((f, i) => { const t = tag(i + 1, `${f.name} · ${fmt(f.bytes)} B`); t.onclick = () => openCorpusDocument(f.sha256); tray.append(t); });
+  if (corpusView) corpusView.files.forEach((f, i) => { const t = tag(i + 1, `${f.name} · ${fmt(f.bytes)} B`); t.onclick = () => openCorpusDocument(f); tray.append(t); });
   $('insp-doc-name').textContent = documentView ? documentView.file.name : corpusView ? `Corpus · ${corpusView.files.length} ${corpusView.files.length === 1 ? 'file' : 'files'}` : 'No document';
   const chip = $('insp-doc-corpus');
   chip.hidden = !corpusView;
@@ -277,9 +279,9 @@ function openCorpus() {
     return `Held ${data.files.length} ${data.files.length === 1 ? 'file' : 'files'} · ${fmt(data.total_bytes)} B · session only`;
   });
 }
-function openCorpusDocument(sha256) {
-  if (documentView && documentView.file.sha256 === sha256) { scope = 'document'; renderDocuments(); return null; }
-  return operation('open_corpus_document', { sha256 }, 'Opening the held file in the reader', data => {
+function openCorpusDocument(file) {
+  if (documentView && sameSnapshot(documentView.file, file)) { scope = 'document'; renderDocuments(); return null; }
+  return operation('open_corpus_document', textInput(file), 'Opening the held file in the reader', data => {
     applyDocument(data);
     renderDocuments();
     showInstrument('documents');
@@ -301,7 +303,7 @@ function renderCorpus() {
   c.files.forEach((f, i) => {
     const t = tag(i + 1, `${f.name} · ${fmt(f.bytes)} B · ${f.sha256.slice(0, 8)}…`);
     t.title = f.path;
-    t.onclick = () => openCorpusDocument(f.sha256);
+    t.onclick = () => openCorpusDocument(f);
     list.append(t);
   });
   const s = corpusSearchView;
@@ -352,7 +354,7 @@ function matchButton(m, i, file) {
   const b = node('button', undefined, 'match');
   b.type = 'button';
   b.append(node('span', pad2(i + 1), 'n'), node('span', `L${m.line} · b${m.start}–${m.end}`, 'at'), node('span', m.text, 't'));
-  const current = selectedMatch && selectedMatch.file.sha256 === file.sha256 && selectedMatch.start === m.start && selectedMatch.end === m.end;
+  const current = selectedMatch && sameSnapshot(selectedMatch.file, file) && selectedMatch.start === m.start && selectedMatch.end === m.end;
   if (current) b.setAttribute('aria-current', 'true');
   b.onclick = () => selectMatch(m, file);
   return b;
@@ -367,9 +369,9 @@ function selectMatch(m, file) {
     const line = $(`line-${m.line}`);
     line?.scrollIntoView({ block: 'center' }); line?.focus({ preventScroll: true });
   };
-  if (documentView && documentView.file.sha256 === file.sha256) { focusLine(); return; }
-  if (!corpusView || !corpusView.files.some(f => f.sha256 === file.sha256)) { renderSearch(); renderShell(); return; }
-  operation('open_corpus_document', { sha256: file.sha256 }, `Opening ${file.name} in the reader`, data => {
+  if (documentView && sameSnapshot(documentView.file, file)) { focusLine(); return; }
+  if (!corpusView || !corpusView.files.some(f => sameSnapshot(f, file))) { renderSearch(); renderShell(); return; }
+  operation('open_corpus_document', textInput(file), `Opening ${file.name} in the reader`, data => {
     applyDocument(data);
     selectedMatch = { file, line: m.line, start: m.start, end: m.end };
     renderDocuments();
@@ -392,7 +394,7 @@ function renderSearch() {
       const head = node('div', undefined, 'match-file');
       const t = tag(d.index + 1, d.file.name);
       t.title = `Open ${d.file.name} in the reader`;
-      t.onclick = () => openCorpusDocument(d.file.sha256);
+      t.onclick = () => openCorpusDocument(d.file);
       head.append(t, node('span', describeOutcome(d), `cov${d.search_complete ? '' : ' warn'}`));
       list.append(head);
       for (const m of d.matches) { list.append(matchButton(m, n, d.file)); n += 1; }
@@ -442,7 +444,7 @@ function renderCitations() {
 function citeSelection() {
   if (!selectedMatch) return;
   const { file, start, end } = selectedMatch;
-  operation('cite_selection', { sha256: file.sha256, start, end }, 'Copying the selected bytes and checking the anchor', data => {
+  operation('cite_selection', { ...textInput(file), start, end }, 'Copying the selected bytes and checking the anchor', data => {
     citationsView = data; selectedCitation = data.records.length - 1;
     renderCitations();
     const c = data.records[selectedCitation];
@@ -454,7 +456,7 @@ function checkCitation(event) {
   if (!documentView) return;
   const start = Number($('cite-start').value), end = Number($('cite-end').value), quote = $('cite-quote').value;
   if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < 0) { setText('status', 'Byte offsets must be non-negative integers', 'count bad'); return; }
-  operation('check_citation', { sha256: documentView.file.sha256, start, end, quote }, 'Checking the supplied quote against the open document', data => {
+  operation('check_citation', { ...textInput(documentView.file), start, end, quote }, 'Checking the supplied quote against the open document', data => {
     citationsView = data; selectedCitation = data.records.length - 1;
     renderCitations();
     const c = data.records[selectedCitation];
@@ -773,7 +775,7 @@ $('search-form').onsubmit = event => {
     return;
   }
   if (!documentView) return;
-  operation('search_document', { query: $('query').value, sha256: documentView.file.sha256 }, 'Searching the loaded snapshot', data => {
+  operation('search_document', { query: $('query').value, ...textInput(documentView.file) }, 'Searching the loaded snapshot', data => {
     searchView = data; selectedLine = null; selectedMatch = null;
     renderSearch(); renderPassages(); renderDocumentCoverage(); renderShell();
     showInstrument('documents');

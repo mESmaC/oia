@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -114,6 +114,7 @@ pub enum FileKind {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct FileInfo {
+    pub snapshot_ref: String,
     pub name: String,
     pub path: String,
     pub bytes: usize,
@@ -130,6 +131,16 @@ impl Snapshot {
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
+}
+
+fn next_snapshot_ref() -> Result<String> {
+    static NEXT_SNAPSHOT: AtomicU64 = AtomicU64::new(0);
+    let snapshot_id = NEXT_SNAPSHOT
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |previous| {
+            previous.checked_add(1)
+        })
+        .map_err(|_| ToolError::new("snapshot_limit", "Restart OIA to open more snapshots."))?;
+    Ok(format!("snapshot-{snapshot_id}"))
 }
 
 pub fn open_file(path: &Path, kind: FileKind, control: &Control) -> Result<Snapshot> {
@@ -163,6 +174,7 @@ pub fn open_file(path: &Path, kind: FileKind, control: &Control) -> Result<Snaps
     }
     control.check()?;
     let info = FileInfo {
+        snapshot_ref: next_snapshot_ref()?,
         name: path
             .file_name()
             .unwrap_or_default()

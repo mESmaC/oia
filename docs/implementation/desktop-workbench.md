@@ -20,6 +20,10 @@ The pinned Rust toolchain is 1.99.0. First builds need the locked Cargo dependen
 
 One document and one image snapshot can be held at a time. Switching views retains them and the displayed search in memory; closing the process discards them. UI settings are also session-only. Reopening a changed source explicitly replaces the snapshot. A cancelled or failed open preserves the previous snapshot. No file is automatically reopened after restart.
 
+## Provenance
+
+The Rust side of this workbench (`src/local_tools/`, `src/desktop.rs`, `tauri.conf.json`, `capabilities/`, `build.rs`, `tests/local_tools.rs`, and the first draft of this document) was written by the Codex running-app session ([#16 claim 6591833455](https://github.com/mESmaC/oia/issues/16#issuecomment-6591833455)) and taken unchanged from its worktree on 2026-11-03. The project owner released that work to the visual-study session on 2026-11-03 ([#16 comment 6592993871](https://github.com/mESmaC/oia/issues/16#issuecomment-6592993871)), which delivered it in [PR #105](https://github.com/mESmaC/oia/pull/105) together with the `ui/` presentation layer and now maintains both.
+
 ## Boundary and limits
 
 `src/local_tools/` is a stateless I/O/DTO adapter over the merged kernels: bounded reads, immutable byte snapshots, SHA-256, kernel calls, typed errors and safe output staging. It introduces no case store, job service, query index or alternative extraction/cleanup algorithm. #14 can adopt these functions behind its shared service contracts. `src/desktop.rs` is the Tauri/native-dialog adapter; it owns the transient single-operation gate and publishes results only after a cancellation check. `ui/` draws Rust responses and sends intents; its local state is presentation (tabs, reading pages, focus, checked removal choices), not a parallel evidence model.

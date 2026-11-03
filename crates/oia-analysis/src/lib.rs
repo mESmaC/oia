@@ -6,6 +6,7 @@
 //! Service integration, durable persistence, and remaining P4 workflows follow in `#14`,
 //! `#11`, `#35`–`#37`, and `#48`.
 
+pub mod exposure_audit;
 pub mod multilingual;
 pub mod reasoning;
 pub mod records_request;

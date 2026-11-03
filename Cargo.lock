@@ -2513,6 +2513,13 @@ name = "oia-jpeg-privacy"
 version = "0.1.0"
 
 [[package]]
+name = "oia-market"
+version = "0.1.0"
+dependencies = [
+ "oia-domain",
+]
+
+[[package]]
 name = "oia-media"
 version = "0.1.0"
 dependencies = [
@@ -2541,6 +2548,7 @@ name = "oia-query"
 version = "0.1.0"
 dependencies = [
  "oia-domain",
+ "oia-news-claims",
  "oia-store",
  "oia-time-geo",
 ]

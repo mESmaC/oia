@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 oia-domain = { path = "../oia-domain" }
+oia-news-claims = { path = "../oia-news-claims" }
 oia-time-geo = { path = "../oia-time-geo" }
 oia-store = { path = "../oia-store" }
 

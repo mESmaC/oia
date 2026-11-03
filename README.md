@@ -35,16 +35,19 @@ The repository currently includes the **#9 Rust workspace bootstrap**, platform 
 - **Rust workspace** (`Cargo.toml`, `rustc 1.99.0`, `edition = "2024"`, `#![forbid(unsafe_code)]`, dual-licensed `MIT OR Apache-2.0`):
   - Implemented packages: `oia-documents` (bounded UTF-8 extraction and exact-text passage search), `oia-png-privacy` (bounded PNG metadata inspection and cleanup), `oia-jpeg-privacy` (bounded JPEG container metadata inspection and cleanup), `oia-domain` (validated identifiers and schema version primitives), and `oia-app` (Tauri desktop workbench for real local text and image privacy operations; persistent case services remain in `#14`/`#16`).
   - `oia-forecast` provides a standalone [binary scoring kernel](docs/implementation/forecast-scoring.md); forecast issuance, chronological validation, persistence, calibration, and application integration remain open in `#43`.
+  - `oia-market` provides standalone [point-in-time market normalization](docs/implementation/market-point-in-time.md); provider, storage, application, and full A14 integration remain open in `#41`.
   - Workspace boundary stubs awaiting split P0–P6 implementation PRs (`#10`–`#15` and subsequent phases): `oia-time-geo`, `oia-store`, `oia-ingest`, `oia-query`, `oia-analysis`, `oia-models`, `oia-media`, `oia-devices`, and `oia-export`.
+- **Lean model proofs** ([manifest and commands](proofs/README.md)): frame selection, dependency propagation, and forecast cutoff properties; a shared 24-case fixture tests the merged Rust forecast cutoff path. Model proofs and finite Rust correspondence evidence are distinct.
 - **Architecture Decision Records (`docs/adr/`)**:
   - [ADR 0001 (D01): Deployment and UI boundary (Accepted)](docs/adr/0001-d01-deployment-and-ui-boundary.md)
   - [ADR 0002 (D02): Storage and indexing (Accepted: embedded SQLite + managed blobs)](docs/adr/0002-d02-storage-and-indexing.md)
   - [ADR 0003 (D14): Project licensing and distribution notices (Accepted: `MIT OR Apache-2.0`)](docs/adr/0003-d14-licensing-and-distribution.md)
+  - [ADR 0004 (D13): Lean targets and Rust correspondence](docs/adr/0004-d13-lean-correspondence-target.md)
   - [ADR 0005 (D03): Seed corpus and news sources](docs/adr/0005-d03-seed-corpus-and-news-sources.md)
   - [ADR 0006 (D05): Report and bundle formats](docs/adr/0006-d05-report-and-bundle-formats.md)
   - [ADR 0007 (D04): AI execution and grounding](docs/adr/0007-d04-ai-execution-and-grounding.md)
 
-The Lean 4 formal verification package (`proofs/`, `#15`), remaining P0 runtime packages (`#10`–`#14`), and Phases P1–P6 remain open work packages in the [GitHub implementation backlog](docs/backlog.md):
+The remaining P0 runtime packages (`#10`–`#14`) and Phases P1–P6 remain open work packages in the [GitHub implementation backlog](docs/backlog.md):
 
 - [Product specification](docs/spec.md): workflows, visual identity, and functional requirements across the suite.
 - [Architecture and data contracts](docs/architecture.md): Rust services, evidence and time models, integrations, storage, and the Lean verification boundary.
@@ -79,7 +82,7 @@ Neither `oia-documents` example imports, stores, or detects file types, parses P
 
 **Requirements:** Rust 1.99.0 via [rustup](https://rustup.rs/) (`rustup toolchain install 1.99.0`). Run `scripts/run.sh fetch` (or `.\scripts\run.ps1 fetch`) once to download the locked dependencies, including the desktop ones; every other script command then runs without network access (`--locked --offline`). Windows requires the C++ build tools and WebView2 runtime. The desktop app has been checked on Windows only; Linux/macOS need Tauri platform prerequisites and remain unverified. Headless kernel checks can use `--no-default-features`. Without rustup, the scripts warn and use whatever `cargo` is on `PATH`; only the pinned 1.99.0 toolchain has been checked.
 
-The run scripts wrap the root workspace Cargo commands (and `lake build` in `proofs/` once `#15` lands and `lake` is installed). Use `scripts/run.sh` on Linux, macOS, or Git Bash and `scripts\run.ps1` in Windows PowerShell:
+The run scripts wrap the root workspace Cargo commands and the [pinned Lean 4.35.0 proof gate](proofs/README.md). Install elan and `leanprover/lean4:v4.35.0` for `proofs` or `check`; full validation fails if Lean is unavailable. Production builds do not require Lean. Use `scripts/run.sh` on Linux, macOS, or Git Bash and `scripts\run.ps1` in Windows PowerShell:
 
 | Task | POSIX shell | Windows PowerShell |
 | --- | --- | --- |
@@ -89,7 +92,8 @@ The run scripts wrap the root workspace Cargo commands (and `lake build` in `pro
 | Inspect `README.md` | `scripts/run.sh inspect` | `.\scripts\run.ps1 inspect` |
 | Inspect a file | `scripts/run.sh run PATH [MAX_INPUT_BYTES] [MAX_PASSAGES]` | `.\scripts\run.ps1 run PATH [MAX_INPUT_BYTES] [MAX_PASSAGES]` |
 | Search a file | `scripts/run.sh search PATH QUERY [MAX_MATCHES] [MAX_INPUT_BYTES] [MAX_PASSAGES]` | `.\scripts\run.ps1 search PATH QUERY [MAX_MATCHES] [MAX_INPUT_BYTES] [MAX_PASSAGES]` |
-| Format, lint, and test | `scripts/run.sh check` | `.\scripts\run.ps1 check` |
+| Check Lean proofs and fixture synchronization | `scripts/run.sh proofs` | `.\scripts\run.ps1 proofs` |
+| Check proofs, format, lint, and test | `scripts/run.sh check` | `.\scripts\run.ps1 check` |
 
 For the text examples (`inspect`, legacy `run PATH`, and `search`), defaults are 1,048,576 input bytes, 10,000 passages, and (for search) 100 matches. Exit code `0` means complete (including empty input or zero matches), `2` means explicitly partial because a budget was reached, and `1` means an error. Oversized input is refused rather than truncated. A complete search with zero matches covers only the file that was read; it is not evidence that the text is absent from the source. Set `OIA_RUST_TOOLCHAIN` to use a different installed toolchain. If PowerShell blocks local scripts, run `powershell -ExecutionPolicy Bypass -File scripts\run.ps1 run`.
 

@@ -78,8 +78,8 @@ fn main() -> Result<(), UavError> {
             yaw_deg: 45.0,
         }),
         position: Some(Wgs84Position {
-            latitude_deg: 33.448376,
-            longitude_deg: -112.074036,
+            latitude_deg: 0.125_000,
+            longitude_deg: 0.250_000,
             horizontal_uncertainty_m: Some(1.8),
         }),
         altitude: Some(AltitudeSample {

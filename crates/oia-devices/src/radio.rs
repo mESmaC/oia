@@ -180,6 +180,8 @@ pub enum PlaybackState {
     Stale,
     Disconnected,
     Restricted,
+    Cancelled,
+    Expired,
 }
 
 /// Immutable projection retains source/version, simulation class, and the last observation.
@@ -201,9 +203,11 @@ pub struct RadioSession {
     terminal: Option<PlaybackState>,
     last_reception: Option<Reception>,
     requested_tuning: Option<ReceiveTuning>,
+    deadline_ms: Option<u64>,
 }
 
 impl RadioSession {
+    /// Start an externally budgeted session. The adapter owns duration/connection deadlines.
     pub fn new(
         source: RadioSource,
         started_at_ms: u64,
@@ -222,7 +226,29 @@ impl RadioSession {
             terminal: None,
             last_reception: None,
             requested_tuning: None,
+            deadline_ms: None,
         })
+    }
+
+    /// Bound the entire session, including connection and reception, on the same monotonic
+    /// clock as events. At `deadline_ms` no further data or commands can be accepted.
+    /// The adapter must still cancel its transport and release resources independently.
+    pub fn with_deadline(
+        source: RadioSource,
+        started_at_ms: u64,
+        stale_after_ms: u64,
+        deadline_ms: u64,
+    ) -> Result<Self, RadioError> {
+        if deadline_ms <= started_at_ms {
+            return Err(RadioError::InvalidDeadline);
+        }
+        let mut session = Self::new(source, started_at_ms, stale_after_ms)?;
+        session.deadline_ms = Some(deadline_ms);
+        Ok(session)
+    }
+
+    pub fn deadline_ms(&self) -> Option<u64> {
+        self.deadline_ms
     }
 
     fn check_event(&self, at_ms: u64) -> Result<(), RadioError> {
@@ -231,6 +257,9 @@ impl RadioSession {
         }
         if at_ms < self.last_event_ms {
             return Err(RadioError::ClockRegression);
+        }
+        if self.deadline_ms.is_some_and(|deadline| at_ms >= deadline) {
+            return Err(RadioError::DeadlineExpired);
         }
         Ok(())
     }
@@ -275,6 +304,15 @@ impl RadioSession {
         Ok(())
     }
 
+    /// Permanently cancel without discarding historical observations or requested tuning.
+    /// An already-expired session reports DeadlineExpired and remains Expired.
+    pub fn cancel(&mut self, at_ms: u64) -> Result<(), RadioError> {
+        self.check_event(at_ms)?;
+        self.terminal = Some(PlaybackState::Cancelled);
+        self.last_event_ms = at_ms;
+        Ok(())
+    }
+
     /// Pure query: no reconnect, tuning, network operation, or state mutation.
     /// The freshness threshold is inclusive: age >= threshold is stale.
     pub fn readout(&self, now_ms: u64) -> Result<RadioReadout, RadioError> {
@@ -282,6 +320,9 @@ impl RadioSession {
             return Err(RadioError::ClockRegression);
         }
         let state = self.terminal.unwrap_or_else(|| match self.last_reception {
+            _ if self.deadline_ms.is_some_and(|deadline| now_ms >= deadline) => {
+                PlaybackState::Expired
+            }
             Some(reception) if now_ms - reception.received_at_ms < self.stale_after_ms => {
                 PlaybackState::Receiving
             }
@@ -305,6 +346,8 @@ pub enum RadioError {
     InvalidStaleThreshold,
     SessionEnded,
     ClockRegression,
+    InvalidDeadline,
+    DeadlineExpired,
 }
 
 impl fmt::Display for RadioError {
@@ -318,6 +361,10 @@ impl fmt::Display for RadioError {
             Self::InvalidStaleThreshold => "staleness threshold must be positive milliseconds",
             Self::SessionEnded => "session ended; late data and tuning requests are rejected",
             Self::ClockRegression => "time precedes the last accepted session event",
+            Self::InvalidDeadline => "session deadline must be later than its start time",
+            Self::DeadlineExpired => {
+                "session deadline reached; late data and commands are rejected"
+            }
         })
     }
 }

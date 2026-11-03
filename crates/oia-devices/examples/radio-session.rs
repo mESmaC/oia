@@ -10,7 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None,
         Some(SpectrumKind::Audio),
     )?;
-    let mut session = RadioSession::new(source, 0, 1000)?;
+    let mut session = RadioSession::with_deadline(source.clone(), 0, 1000, 1500)?;
     println!("SIMULATED: {:?}", session.readout(0)?);
     session.receive(Reception {
         received_at_ms: 100,
@@ -21,5 +21,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("SIMULATED: {:?}", session.readout(1100)?);
     session.stop(1200, false)?;
     println!("SIMULATED: {:?}", session.readout(1200)?);
+    let mut bounded = RadioSession::with_deadline(source, 0, 1000, 1500)?;
+    println!("SIMULATED expired connection: {:?}", bounded.readout(1500)?);
+    println!(
+        "SIMULATED late observation: {:?}",
+        bounded.receive(Reception {
+            received_at_ms: 1500,
+            latency_ms: None,
+            tuning: None,
+        })
+    );
+    // The original terminal reason survives the deadline.
+    println!(
+        "SIMULATED disconnected history: {:?}",
+        session.readout(1500)?
+    );
     Ok(())
 }

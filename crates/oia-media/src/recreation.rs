@@ -27,6 +27,9 @@ pub const FIDELITY_AND_EXTERNAL_LABEL_CAVEAT: &str = "Prompt wording organizes r
 /// Default per-item cap on `source_versions` references when `RecreationLimits::new` is used.
 pub const DEFAULT_MAX_SOURCE_VERSIONS_PER_ITEM: usize = 64;
 
+/// Default cap on `negative_keywords` entries when `RecreationLimits::new` is used.
+pub const DEFAULT_MAX_NEGATIVE_KEYWORDS: usize = 64;
+
 /// Which budget was zero or exceeded during recreation-prompt validation or rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecreationLimitKind {
@@ -34,6 +37,7 @@ pub enum RecreationLimitKind {
     Assumptions,
     Unknowns,
     Variants,
+    NegativeKeywords,
     Assets,
     SourceVersionsPerItem,
     TextBytes,
@@ -47,6 +51,7 @@ impl fmt::Display for RecreationLimitKind {
             Self::Assumptions => f.write_str("max_assumptions"),
             Self::Unknowns => f.write_str("max_unknowns"),
             Self::Variants => f.write_str("max_variants"),
+            Self::NegativeKeywords => f.write_str("max_negative_keywords"),
             Self::Assets => f.write_str("max_assets"),
             Self::SourceVersionsPerItem => f.write_str("max_source_versions_per_item"),
             Self::TextBytes => f.write_str("max_text_bytes"),
@@ -62,6 +67,7 @@ pub struct RecreationLimits {
     max_assumptions: usize,
     max_unknowns: usize,
     max_variants: usize,
+    max_negative_keywords: usize,
     max_assets: usize,
     max_source_versions_per_item: usize,
     max_text_bytes: usize,
@@ -70,7 +76,8 @@ pub struct RecreationLimits {
 
 impl RecreationLimits {
     /// Validates that all recreation-prompt budgets are non-zero, using
-    /// [`DEFAULT_MAX_SOURCE_VERSIONS_PER_ITEM`] for per-item source-version lists.
+    /// [`DEFAULT_MAX_SOURCE_VERSIONS_PER_ITEM`] for per-item source-version lists and
+    /// [`DEFAULT_MAX_NEGATIVE_KEYWORDS`] for negative keywords.
     pub fn new(
         max_reported_details: usize,
         max_assumptions: usize,
@@ -108,6 +115,7 @@ impl RecreationLimits {
             max_assumptions,
             max_unknowns,
             max_variants,
+            max_negative_keywords: max_unknowns.max(DEFAULT_MAX_NEGATIVE_KEYWORDS),
             max_assets,
             max_source_versions_per_item: DEFAULT_MAX_SOURCE_VERSIONS_PER_ITEM,
             max_text_bytes,
@@ -129,6 +137,20 @@ impl RecreationLimits {
         Ok(self)
     }
 
+    /// Overrides the limit on `negative_keywords` entries (`>= 1`).
+    pub fn with_max_negative_keywords(
+        mut self,
+        max_negative_keywords: usize,
+    ) -> Result<Self, RecreationError> {
+        if max_negative_keywords == 0 {
+            return Err(RecreationError::ZeroLimit(
+                RecreationLimitKind::NegativeKeywords,
+            ));
+        }
+        self.max_negative_keywords = max_negative_keywords;
+        Ok(self)
+    }
+
     #[must_use]
     pub const fn max_reported_details(self) -> usize {
         self.max_reported_details
@@ -147,6 +169,11 @@ impl RecreationLimits {
     #[must_use]
     pub const fn max_variants(self) -> usize {
         self.max_variants
+    }
+
+    #[must_use]
+    pub const fn max_negative_keywords(self) -> usize {
+        self.max_negative_keywords
     }
 
     #[must_use]
@@ -249,6 +276,26 @@ pub enum RecreationError {
         target_id: OpaqueId,
         reason: &'static str,
     },
+    MissingNegativeKeywordOrigin {
+        negative_id: OpaqueId,
+    },
+    UnknownNegativeOriginReference {
+        negative_id: OpaqueId,
+        kind: &'static str,
+        target_id: OpaqueId,
+    },
+    ContradictedDetailInReportedDetails {
+        negative_id: OpaqueId,
+        detail_id: OpaqueId,
+    },
+    UnpinnedContradictingSourceVersion {
+        negative_id: OpaqueId,
+        source_version: VersionId,
+    },
+    SelfContradictingSourceVersion {
+        negative_id: OpaqueId,
+        source_version: VersionId,
+    },
     InvalidSha256Hex {
         item_id: OpaqueId,
     },
@@ -340,6 +387,49 @@ impl fmt::Display for RecreationError {
                 write!(
                     f,
                     "variant `{variant_id}` has invalid conflict reference `{target_id}`: {reason}"
+                )
+            }
+            Self::MissingNegativeKeywordOrigin { negative_id } => {
+                write!(
+                    f,
+                    "negative keyword `{negative_id}` must carry an explicit evidence-derived origin"
+                )
+            }
+            Self::UnknownNegativeOriginReference {
+                negative_id,
+                kind,
+                target_id,
+            } => {
+                write!(
+                    f,
+                    "negative keyword `{negative_id}` references undeclared {kind} `{target_id}`"
+                )
+            }
+            Self::ContradictedDetailInReportedDetails {
+                negative_id,
+                detail_id,
+            } => {
+                write!(
+                    f,
+                    "negative keyword `{negative_id}` marks detail `{detail_id}` as contradicted, but it appears as a reported detail in this prompt"
+                )
+            }
+            Self::UnpinnedContradictingSourceVersion {
+                negative_id,
+                source_version,
+            } => {
+                write!(
+                    f,
+                    "negative keyword `{negative_id}` cites contradicting source version `{source_version}` that is not pinned in this prompt"
+                )
+            }
+            Self::SelfContradictingSourceVersion {
+                negative_id,
+                source_version,
+            } => {
+                write!(
+                    f,
+                    "negative keyword `{negative_id}` cites source version `{source_version}` as both the contradicted statement source and a contradicting source"
                 )
             }
             Self::InvalidSha256Hex { item_id } => {
@@ -486,6 +576,309 @@ pub struct AccountVariant {
     pub conflicts_with: Vec<OpaqueId>,
 }
 
+/// Evidence-derived origin required for every [`NegativeKeyword`] (`MEDIA-04`, `#140`).
+///
+/// Negative keywords may only exclude aspects justified by a declared [`ExplicitUnknown`]
+/// (or an unknown [`SceneContext`] attribute), a verbatim statement from a source version
+/// contradicted by one or more pinned source versions in this prompt, or a declared
+/// [`AccountVariant`] whose elements must not be merged into another variant's image
+/// (`AGENTS.md` §2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NegativeKeywordOrigin {
+    /// Derived from a declared [`ExplicitUnknown`] or an unknown [`SceneContext`] attribute
+    /// in the same prompt, indicating that a specific value for the aspect is unspecified
+    /// (not established) rather than absent.
+    Unknown { unknown_id: OpaqueId },
+    /// Derived from a verbatim statement from `contradicted_source_version` that is
+    /// contradicted by one or more source versions pinned in this prompt.
+    ContradictedDetail {
+        detail_id: OpaqueId,
+        contradicted_statement: String,
+        contradicted_source_version: VersionId,
+        contradicting_source_versions: Vec<VersionId>,
+    },
+    /// Derived from a competing [`AccountVariant`] (`excluded_variant_id`) whose elements
+    /// must not be merged when rendering `for_variant_id`.
+    Variant {
+        for_variant_id: OpaqueId,
+        excluded_variant_id: OpaqueId,
+    },
+}
+
+/// Input negative keyword excluding an unestablished, contradicted, or competing-variant
+/// element from an illustrative recreation (`MEDIA-04`, `#140`).
+///
+/// `origin` is `Option<NegativeKeywordOrigin>` at the input boundary so callers or
+/// deserialized payloads that omit an origin are explicitly refused with
+/// [`RecreationError::MissingNegativeKeywordOrigin`] rather than silently accepted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NegativeKeyword {
+    pub negative_id: OpaqueId,
+    pub keyword: String,
+    pub rationale: String,
+    pub origin: Option<NegativeKeywordOrigin>,
+}
+
+impl NegativeKeyword {
+    /// Constructs a negative keyword grounded in a declared [`ExplicitUnknown`] or an
+    /// unknown [`SceneContext`] attribute (`context:scene`, `context:time`,
+    /// `context:viewpoint`, `context:lighting`, or `context:apparent_scale`).
+    #[must_use]
+    pub const fn from_unknown(
+        negative_id: OpaqueId,
+        keyword: String,
+        rationale: String,
+        unknown_id: OpaqueId,
+    ) -> Self {
+        Self {
+            negative_id,
+            keyword,
+            rationale,
+            origin: Some(NegativeKeywordOrigin::Unknown { unknown_id }),
+        }
+    }
+
+    /// Constructs a negative keyword grounded in a verbatim contradicted statement, its
+    /// source version, and the pinned source versions in this prompt that contradict it.
+    #[must_use]
+    pub const fn from_contradicted_detail(
+        negative_id: OpaqueId,
+        keyword: String,
+        rationale: String,
+        detail_id: OpaqueId,
+        contradicted_statement: String,
+        contradicted_source_version: VersionId,
+        contradicting_source_versions: Vec<VersionId>,
+    ) -> Self {
+        Self {
+            negative_id,
+            keyword,
+            rationale,
+            origin: Some(NegativeKeywordOrigin::ContradictedDetail {
+                detail_id,
+                contradicted_statement,
+                contradicted_source_version,
+                contradicting_source_versions,
+            }),
+        }
+    }
+
+    /// Constructs a negative keyword scoped to `for_variant_id` that excludes a
+    /// competing [`AccountVariant`] (`excluded_variant_id`) so the two variants are
+    /// not merged into a single image.
+    #[must_use]
+    pub const fn from_variant(
+        negative_id: OpaqueId,
+        keyword: String,
+        rationale: String,
+        for_variant_id: OpaqueId,
+        excluded_variant_id: OpaqueId,
+    ) -> Self {
+        Self {
+            negative_id,
+            keyword,
+            rationale,
+            origin: Some(NegativeKeywordOrigin::Variant {
+                for_variant_id,
+                excluded_variant_id,
+            }),
+        }
+    }
+}
+
+/// Validated negative keyword with a verified evidence-derived [`NegativeKeywordOrigin`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedNegativeKeyword {
+    negative_id: OpaqueId,
+    keyword: String,
+    rationale: String,
+    origin: NegativeKeywordOrigin,
+}
+
+impl ValidatedNegativeKeyword {
+    #[must_use]
+    pub const fn negative_id(&self) -> &OpaqueId {
+        &self.negative_id
+    }
+
+    #[must_use]
+    pub fn keyword(&self) -> &str {
+        &self.keyword
+    }
+
+    #[must_use]
+    pub fn rationale(&self) -> &str {
+        &self.rationale
+    }
+
+    #[must_use]
+    pub const fn origin(&self) -> &NegativeKeywordOrigin {
+        &self.origin
+    }
+}
+
+/// Derives bounded [`NegativeKeyword`] entries from a prompt's unknown [`SceneContext`]
+/// attributes and declared [`ExplicitUnknown`] items (`MEDIA-04`, `#140`).
+///
+/// Single-witness prompts have no cross-source contradiction matrix or competing account
+/// variants, so their negative keywords are derived from unknown context attributes and
+/// declared unknowns (`NegativeKeywordOrigin::Unknown`). Each derived keyword is phrased as
+/// `"a specific value for <aspect>"` to record that a specific value is unspecified rather
+/// than suppressing the attribute altogether. When `oia-app` derives negatives from a
+/// simulated session witness account, the caller must include the simulated account's
+/// source label in the unknown impact/rationale so derived negatives preserve that
+/// qualification.
+pub fn derive_unknown_negative_keywords(
+    context: &SceneContext,
+    unknowns: &[ExplicitUnknown],
+    limits: RecreationLimits,
+) -> Result<Vec<NegativeKeyword>, RecreationError> {
+    let declared_unknown_ids: BTreeSet<&str> =
+        unknowns.iter().map(|u| u.unknown_id.as_str()).collect();
+    let mut context_items: Vec<(&'static str, &'static str, &str)> = Vec::new();
+    for (id_str, aspect, field) in [
+        ("context:scene", "scene", &context.scene),
+        ("context:time", "time", &context.time_context),
+        ("context:viewpoint", "viewpoint", &context.viewpoint),
+        ("context:lighting", "lighting", &context.lighting),
+    ] {
+        if let ContextField::Unknown { reason } = field
+            && !declared_unknown_ids.contains(id_str)
+        {
+            context_items.push((id_str, aspect, reason.as_str()));
+        }
+    }
+    if !declared_unknown_ids.contains("context:apparent_scale") {
+        match &context.apparent_scale {
+            ApparentScale::Unknown { reason } => {
+                context_items.push(("context:apparent_scale", "apparent scale", reason.as_str()));
+            }
+            ApparentScale::ReportedAngularOrRelative {
+                physical_size_unknown_reason,
+                ..
+            } => {
+                context_items.push((
+                    "context:apparent_scale",
+                    "physical size and slant range",
+                    physical_size_unknown_reason.as_str(),
+                ));
+            }
+            ApparentScale::CalibratedEstimate { .. } => {}
+        }
+    }
+
+    let total_count = context_items.len().saturating_add(unknowns.len());
+    if total_count > limits.max_negative_keywords() {
+        return Err(RecreationError::LimitExceeded {
+            kind: RecreationLimitKind::NegativeKeywords,
+            actual: total_count,
+            max: limits.max_negative_keywords(),
+        });
+    }
+
+    let mut out = Vec::new();
+    out.try_reserve_exact(total_count)
+        .map_err(|_| RecreationError::AllocationFailed)?;
+    let mut text_budget = 0usize;
+    let mut used_ids = BTreeSet::new();
+    let mut fallback_seq = 1usize;
+
+    let mut next_negative_id = |raw_unknown_id: &str| -> Result<OpaqueId, RecreationError> {
+        let candidate = format!("neg:{raw_unknown_id}");
+        if candidate.len() <= oia_domain::MAX_ID_LEN
+            && let Ok(id) = OpaqueId::new(candidate)
+            && used_ids.insert(id.clone())
+        {
+            return Ok(id);
+        }
+        loop {
+            let fallback = OpaqueId::new(format!("neg:u{fallback_seq}"))?;
+            fallback_seq = fallback_seq.saturating_add(1);
+            if used_ids.insert(fallback.clone()) {
+                return Ok(fallback);
+            }
+        }
+    };
+
+    for (id_str, aspect, reason) in context_items {
+        let unknown_id = OpaqueId::new(id_str)?;
+        let negative_id = next_negative_id(unknown_id.as_str())?;
+        charge_text_bytes(
+            negative_id.as_str().len(),
+            &mut text_budget,
+            limits.max_text_bytes(),
+        )?;
+        charge_text_bytes(
+            unknown_id.as_str().len(),
+            &mut text_budget,
+            limits.max_text_bytes(),
+        )?;
+        validate_single_line(
+            aspect,
+            "unknown.aspect",
+            &mut text_budget,
+            limits.max_text_bytes(),
+        )?;
+        let keyword = format!("a specific value for {aspect}");
+        charge_text_bytes(
+            "a specific value for ".len(),
+            &mut text_budget,
+            limits.max_text_bytes(),
+        )?;
+        validate_single_line(
+            reason,
+            "unknown.impact_on_recreation",
+            &mut text_budget,
+            limits.max_text_bytes(),
+        )?;
+        out.push(NegativeKeyword::from_unknown(
+            negative_id,
+            keyword,
+            reason.to_owned(),
+            unknown_id,
+        ));
+    }
+
+    for unknown in unknowns {
+        let negative_id = next_negative_id(unknown.unknown_id.as_str())?;
+        charge_text_bytes(
+            negative_id.as_str().len(),
+            &mut text_budget,
+            limits.max_text_bytes(),
+        )?;
+        charge_text_bytes(
+            unknown.unknown_id.as_str().len(),
+            &mut text_budget,
+            limits.max_text_bytes(),
+        )?;
+        validate_single_line(
+            &unknown.aspect,
+            "unknown.aspect",
+            &mut text_budget,
+            limits.max_text_bytes(),
+        )?;
+        let keyword = format!("a specific value for {}", unknown.aspect);
+        charge_text_bytes(
+            "a specific value for ".len(),
+            &mut text_budget,
+            limits.max_text_bytes(),
+        )?;
+        validate_single_line(
+            &unknown.impact_on_recreation,
+            "unknown.impact_on_recreation",
+            &mut text_budget,
+            limits.max_text_bytes(),
+        )?;
+        out.push(NegativeKeyword::from_unknown(
+            negative_id,
+            keyword,
+            unknown.impact_on_recreation.clone(),
+            unknown.unknown_id.clone(),
+        ));
+    }
+    Ok(out)
+}
+
 /// Reference asset selected to accompany a recreation prompt (`MEDIA-04`, `A10`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReferenceAssetInput {
@@ -530,6 +923,7 @@ pub struct RecreationPromptInput {
     pub conflicting_variants: Vec<AccountVariant>,
     pub assumptions: Vec<ExplicitAssumption>,
     pub unknowns: Vec<ExplicitUnknown>,
+    pub negative_keywords: Vec<NegativeKeyword>,
     pub reference_assets: Vec<ReferenceAssetInput>,
 }
 
@@ -549,6 +943,7 @@ pub struct ExportedRecreationPrompt {
     conflicting_variants: Vec<AccountVariant>,
     assumptions: Vec<ExplicitAssumption>,
     unknowns: Vec<ExplicitUnknown>,
+    negative_keywords: Vec<ValidatedNegativeKeyword>,
     permitted_assets: Vec<PermittedReferenceAsset>,
     omitted_assets: Vec<OmittedReferenceAsset>,
     portable_prompt_text: String,
@@ -616,6 +1011,11 @@ impl ExportedRecreationPrompt {
     }
 
     #[must_use]
+    pub fn negative_keywords(&self) -> &[ValidatedNegativeKeyword] {
+        &self.negative_keywords
+    }
+
+    #[must_use]
     pub fn permitted_assets(&self) -> &[PermittedReferenceAsset] {
         &self.permitted_assets
     }
@@ -663,6 +1063,7 @@ pub struct ValidatedImportedRecreation {
     variant_id: Option<OpaqueId>,
     generator_model: String,
     generator_settings: String,
+    negative_keywords: Vec<ValidatedNegativeKeyword>,
 }
 
 impl ValidatedImportedRecreation {
@@ -717,6 +1118,11 @@ impl ValidatedImportedRecreation {
     }
 
     #[must_use]
+    pub fn negative_keywords(&self) -> &[ValidatedNegativeKeyword] {
+        &self.negative_keywords
+    }
+
+    #[must_use]
     pub const fn visible_label(&self) -> &'static str {
         VISIBLE_RECREATION_LABEL
     }
@@ -737,7 +1143,7 @@ impl ValidatedImportedRecreation {
     }
 
     /// Exports a plain UTF-8 metadata sidecar with the recreation label and pinned
-    /// lineage (`MEDIA-04`, portable-label subset of `A10`).
+    /// lineage (`MEDIA-04`, portable-label subset of `A10`, `#140`).
     ///
     /// Every write, including quote/Unicode escape expansion, counts toward the
     /// byte limit. Failure returns no partial document. This does not write a file,
@@ -775,6 +1181,14 @@ impl ValidatedImportedRecreation {
             push_str_bounded(&mut out, "=", max_output_bytes)?;
             push_quoted_escaped(&mut out, value, max_output_bytes)?;
             push_str_bounded(&mut out, "\n", max_output_bytes)?;
+        }
+        if !self.negative_keywords.is_empty() {
+            push_str_bounded(&mut out, "negative_keyword_count=", max_output_bytes)?;
+            push_usize_bounded(&mut out, self.negative_keywords.len(), max_output_bytes)?;
+            push_str_bounded(&mut out, "\n", max_output_bytes)?;
+            for neg in &self.negative_keywords {
+                render_negative_keyword_line("negative_keyword=", neg, &mut out, max_output_bytes)?;
+            }
         }
         push_str_bounded(
             &mut out,
@@ -988,8 +1402,12 @@ fn push_str_bounded(out: &mut String, text: &str, max_out: usize) -> Result<(), 
     Ok(())
 }
 
-fn push_u32_bounded(out: &mut String, value: u32, max_out: usize) -> Result<(), RecreationError> {
-    let mut digits = [0u8; 12];
+fn push_usize_bounded(
+    out: &mut String,
+    value: usize,
+    max_out: usize,
+) -> Result<(), RecreationError> {
+    let mut digits = [0u8; 20];
     let mut n = value;
     let mut pos = digits.len();
     if n == 0 {
@@ -1010,6 +1428,10 @@ fn push_u32_bounded(out: &mut String, value: u32, max_out: usize) -> Result<(), 
     let slice = digits.get(pos..).unwrap_or(&[]);
     let text = std::str::from_utf8(slice).unwrap_or("0");
     push_str_bounded(out, text, max_out)
+}
+
+fn push_u32_bounded(out: &mut String, value: u32, max_out: usize) -> Result<(), RecreationError> {
+    push_usize_bounded(out, value as usize, max_out)
 }
 
 /// Appends `"..."` with `\` and `"` escaped as `\\` and `\"` so free text can never
@@ -1130,6 +1552,13 @@ pub fn export_recreation_prompt(
             kind: RecreationLimitKind::Variants,
             actual: input.conflicting_variants.len(),
             max: limits.max_variants(),
+        });
+    }
+    if input.negative_keywords.len() > limits.max_negative_keywords() {
+        return Err(RecreationError::LimitExceeded {
+            kind: RecreationLimitKind::NegativeKeywords,
+            actual: input.negative_keywords.len(),
+            max: limits.max_negative_keywords(),
         });
     }
     if input.reference_assets.len() > limits.max_assets() {
@@ -1405,6 +1834,215 @@ pub fn export_recreation_prompt(
         }
     }
 
+    let mut context_unknown_ids = BTreeSet::new();
+    for (id_str, field) in [
+        ("context:scene", &input.context.scene),
+        ("context:time", &input.context.time_context),
+        ("context:viewpoint", &input.context.viewpoint),
+        ("context:lighting", &input.context.lighting),
+    ] {
+        if matches!(field, ContextField::Unknown { .. }) {
+            context_unknown_ids.insert(OpaqueId::new(id_str)?);
+        }
+    }
+    if matches!(
+        &input.context.apparent_scale,
+        ApparentScale::Unknown { .. } | ApparentScale::ReportedAngularOrRelative { .. }
+    ) {
+        context_unknown_ids.insert(OpaqueId::new("context:apparent_scale")?);
+    }
+
+    let mut pinned_source_versions = BTreeSet::new();
+    for field in [
+        &input.context.scene,
+        &input.context.time_context,
+        &input.context.viewpoint,
+        &input.context.lighting,
+    ] {
+        if let ContextField::Reported {
+            source_versions, ..
+        } = field
+        {
+            for v in source_versions {
+                pinned_source_versions.insert(v.clone());
+            }
+        }
+    }
+    match &input.context.apparent_scale {
+        ApparentScale::ReportedAngularOrRelative {
+            source_versions, ..
+        } => {
+            for v in source_versions {
+                pinned_source_versions.insert(v.clone());
+            }
+        }
+        ApparentScale::CalibratedEstimate {
+            calibration_version,
+            ..
+        } => {
+            pinned_source_versions.insert(calibration_version.clone());
+        }
+        ApparentScale::Unknown { .. } => {}
+    }
+    for detail in &input.shared_reported_details {
+        for v in &detail.source_versions {
+            pinned_source_versions.insert(v.clone());
+        }
+    }
+    for variant in &input.conflicting_variants {
+        for detail in &variant.reported_details {
+            for v in &detail.source_versions {
+                pinned_source_versions.insert(v.clone());
+            }
+        }
+    }
+
+    let mut negative_ids = BTreeSet::new();
+    let mut validated_negatives = Vec::new();
+    validated_negatives
+        .try_reserve_exact(input.negative_keywords.len())
+        .map_err(|_| RecreationError::AllocationFailed)?;
+
+    for neg in &input.negative_keywords {
+        charge_text_bytes(
+            neg.negative_id.as_str().len(),
+            &mut text_budget,
+            limits.max_text_bytes(),
+        )?;
+        if !negative_ids.insert(neg.negative_id.clone()) {
+            return Err(RecreationError::DuplicateId {
+                kind: "negative_keyword",
+                id: neg.negative_id.clone(),
+            });
+        }
+        validate_single_line(
+            &neg.keyword,
+            "negative_keyword.keyword",
+            &mut text_budget,
+            limits.max_text_bytes(),
+        )?;
+        validate_single_line(
+            &neg.rationale,
+            "negative_keyword.rationale",
+            &mut text_budget,
+            limits.max_text_bytes(),
+        )?;
+        let Some(origin) = &neg.origin else {
+            return Err(RecreationError::MissingNegativeKeywordOrigin {
+                negative_id: neg.negative_id.clone(),
+            });
+        };
+        match origin {
+            NegativeKeywordOrigin::Unknown { unknown_id } => {
+                charge_text_bytes(
+                    unknown_id.as_str().len(),
+                    &mut text_budget,
+                    limits.max_text_bytes(),
+                )?;
+                if !unknown_ids.contains(unknown_id) && !context_unknown_ids.contains(unknown_id) {
+                    return Err(RecreationError::UnknownNegativeOriginReference {
+                        negative_id: neg.negative_id.clone(),
+                        kind: "unknown",
+                        target_id: unknown_id.clone(),
+                    });
+                }
+            }
+            NegativeKeywordOrigin::ContradictedDetail {
+                detail_id,
+                contradicted_statement,
+                contradicted_source_version,
+                contradicting_source_versions,
+            } => {
+                charge_text_bytes(
+                    detail_id.as_str().len(),
+                    &mut text_budget,
+                    limits.max_text_bytes(),
+                )?;
+                if detail_ids.contains(detail_id) {
+                    return Err(RecreationError::ContradictedDetailInReportedDetails {
+                        negative_id: neg.negative_id.clone(),
+                        detail_id: detail_id.clone(),
+                    });
+                }
+                validate_single_line(
+                    contradicted_statement,
+                    "negative_keyword.contradicted_statement",
+                    &mut text_budget,
+                    limits.max_text_bytes(),
+                )?;
+                charge_text_bytes(
+                    contradicted_source_version.as_str().len(),
+                    &mut text_budget,
+                    limits.max_text_bytes(),
+                )?;
+                validate_source_versions(
+                    &neg.negative_id,
+                    contradicting_source_versions,
+                    limits,
+                    &mut text_budget,
+                )?;
+                for v in contradicting_source_versions {
+                    if v == contradicted_source_version {
+                        return Err(RecreationError::SelfContradictingSourceVersion {
+                            negative_id: neg.negative_id.clone(),
+                            source_version: v.clone(),
+                        });
+                    }
+                    if !pinned_source_versions.contains(v) {
+                        return Err(RecreationError::UnpinnedContradictingSourceVersion {
+                            negative_id: neg.negative_id.clone(),
+                            source_version: v.clone(),
+                        });
+                    }
+                }
+            }
+            NegativeKeywordOrigin::Variant {
+                for_variant_id,
+                excluded_variant_id,
+            } => {
+                charge_text_bytes(
+                    for_variant_id.as_str().len(),
+                    &mut text_budget,
+                    limits.max_text_bytes(),
+                )?;
+                charge_text_bytes(
+                    excluded_variant_id.as_str().len(),
+                    &mut text_budget,
+                    limits.max_text_bytes(),
+                )?;
+                let Some(for_variant) = variant_map.get(for_variant_id) else {
+                    return Err(RecreationError::UnknownNegativeOriginReference {
+                        negative_id: neg.negative_id.clone(),
+                        kind: "variant",
+                        target_id: for_variant_id.clone(),
+                    });
+                };
+                if !variant_map.contains_key(excluded_variant_id) {
+                    return Err(RecreationError::UnknownNegativeOriginReference {
+                        negative_id: neg.negative_id.clone(),
+                        kind: "variant",
+                        target_id: excluded_variant_id.clone(),
+                    });
+                }
+                if for_variant_id == excluded_variant_id
+                    || !for_variant.conflicts_with.contains(excluded_variant_id)
+                {
+                    return Err(RecreationError::InvalidVariantConflict {
+                        variant_id: for_variant_id.clone(),
+                        target_id: excluded_variant_id.clone(),
+                        reason: "variant negative must exclude a declared conflicting variant",
+                    });
+                }
+            }
+        }
+        validated_negatives.push(ValidatedNegativeKeyword {
+            negative_id: neg.negative_id.clone(),
+            keyword: neg.keyword.clone(),
+            rationale: neg.rationale.clone(),
+            origin: origin.clone(),
+        });
+    }
+
     let mut asset_ids = BTreeSet::new();
     let mut permitted_assets = Vec::new();
     let mut omitted_assets = Vec::new();
@@ -1476,8 +2114,13 @@ pub fn export_recreation_prompt(
         }
     }
 
-    let portable_prompt_text =
-        render_portable_text(input, &permitted_assets, &omitted_assets, limits)?;
+    let portable_prompt_text = render_portable_text(
+        input,
+        &validated_negatives,
+        &permitted_assets,
+        &omitted_assets,
+        limits,
+    )?;
 
     Ok(ExportedRecreationPrompt {
         schema_version: SchemaVersion::V1,
@@ -1490,6 +2133,7 @@ pub fn export_recreation_prompt(
         conflicting_variants: input.conflicting_variants.clone(),
         assumptions: input.assumptions.clone(),
         unknowns: input.unknowns.clone(),
+        negative_keywords: validated_negatives,
         permitted_assets,
         omitted_assets,
         portable_prompt_text,
@@ -1516,8 +2160,262 @@ fn render_reported_detail_line(
     push_str_bounded(out, "\n", max_out)
 }
 
+fn render_negative_keyword_line(
+    prefix: &str,
+    neg: &ValidatedNegativeKeyword,
+    out: &mut String,
+    max_out: usize,
+) -> Result<(), RecreationError> {
+    push_str_bounded(out, prefix, max_out)?;
+    push_str_bounded(out, "[", max_out)?;
+    push_str_bounded(out, neg.negative_id.as_str(), max_out)?;
+    push_str_bounded(out, "] ", max_out)?;
+    match &neg.origin {
+        NegativeKeywordOrigin::Unknown { unknown_id } => {
+            push_str_bounded(out, "origin=unknown unknown_id=", max_out)?;
+            push_str_bounded(out, unknown_id.as_str(), max_out)?;
+        }
+        NegativeKeywordOrigin::ContradictedDetail {
+            detail_id,
+            contradicted_statement,
+            contradicted_source_version,
+            contradicting_source_versions,
+        } => {
+            push_str_bounded(out, "origin=contradicted_detail detail_id=", max_out)?;
+            push_str_bounded(out, detail_id.as_str(), max_out)?;
+            push_str_bounded(out, " contradicted_source=", max_out)?;
+            push_str_bounded(out, contradicted_source_version.as_str(), max_out)?;
+            push_str_bounded(out, " contradicted_statement=", max_out)?;
+            push_quoted_escaped(out, contradicted_statement, max_out)?;
+            push_str_bounded(out, " contradicting_sources=[", max_out)?;
+            push_version_list(out, contradicting_source_versions, max_out)?;
+            push_str_bounded(out, "]", max_out)?;
+        }
+        NegativeKeywordOrigin::Variant {
+            for_variant_id,
+            excluded_variant_id,
+        } => {
+            push_str_bounded(out, "origin=variant for_variant=", max_out)?;
+            push_str_bounded(out, for_variant_id.as_str(), max_out)?;
+            push_str_bounded(out, " excludes_variant=", max_out)?;
+            push_str_bounded(out, excluded_variant_id.as_str(), max_out)?;
+        }
+    }
+    push_str_bounded(out, " keyword=", max_out)?;
+    push_quoted_escaped(out, &neg.keyword, max_out)?;
+    push_str_bounded(out, " rationale=", max_out)?;
+    push_quoted_escaped(out, &neg.rationale, max_out)?;
+    push_str_bounded(out, "\n", max_out)
+}
+
+fn render_positive_context_entry<'a>(
+    indent: &str,
+    label: &str,
+    field: &'a ContextField,
+    assumption_map: &BTreeMap<&OpaqueId, &ExplicitAssumption>,
+    emitted_assumptions: &mut BTreeSet<&'a OpaqueId>,
+    out: &mut String,
+    max_out: usize,
+) -> Result<(), RecreationError> {
+    match field {
+        ContextField::Reported {
+            description,
+            source_versions,
+        } => {
+            push_str_bounded(out, indent, max_out)?;
+            push_str_bounded(out, "- [context:", max_out)?;
+            push_str_bounded(out, label, max_out)?;
+            push_str_bounded(out, "] origin=source_context sources=[", max_out)?;
+            push_version_list(out, source_versions, max_out)?;
+            push_str_bounded(out, "] keyword=", max_out)?;
+            push_quoted_escaped(out, description, max_out)?;
+            push_str_bounded(out, "\n", max_out)
+        }
+        ContextField::Assumed {
+            description,
+            assumption_id,
+        } => {
+            emitted_assumptions.insert(assumption_id);
+            push_str_bounded(out, indent, max_out)?;
+            push_str_bounded(out, "- [context:", max_out)?;
+            push_str_bounded(out, label, max_out)?;
+            push_str_bounded(out, "] origin=assumption assumption_id=", max_out)?;
+            push_str_bounded(out, assumption_id.as_str(), max_out)?;
+            push_str_bounded(out, " keyword=", max_out)?;
+            push_quoted_escaped(out, description, max_out)?;
+            if let Some(assumption) = assumption_map.get(assumption_id) {
+                push_str_bounded(out, " assumption=", max_out)?;
+                push_quoted_escaped(out, &assumption.assumption, max_out)?;
+                push_str_bounded(out, " rationale=", max_out)?;
+                push_quoted_escaped(out, &assumption.rationale, max_out)?;
+            }
+            push_str_bounded(out, "\n", max_out)
+        }
+        ContextField::Unknown { .. } => Ok(()),
+    }
+}
+
+fn render_positive_scale_entry(
+    indent: &str,
+    apparent_scale: &ApparentScale,
+    out: &mut String,
+    max_out: usize,
+) -> Result<(), RecreationError> {
+    match apparent_scale {
+        ApparentScale::ReportedAngularOrRelative {
+            description,
+            source_versions,
+            physical_size_unknown_reason,
+        } => {
+            push_str_bounded(out, indent, max_out)?;
+            push_str_bounded(
+                out,
+                "- [context:apparent_scale] origin=source_angular_scale sources=[",
+                max_out,
+            )?;
+            push_version_list(out, source_versions, max_out)?;
+            push_str_bounded(out, "] keyword=", max_out)?;
+            push_quoted_escaped(out, description, max_out)?;
+            push_str_bounded(out, " physical_size_unknown_reason=", max_out)?;
+            push_quoted_escaped(out, physical_size_unknown_reason, max_out)?;
+            push_str_bounded(out, "\n", max_out)
+        }
+        ApparentScale::CalibratedEstimate {
+            description,
+            calibration_version,
+            uncertainty_bounds,
+        } => {
+            push_str_bounded(out, indent, max_out)?;
+            push_str_bounded(
+                out,
+                "- [context:apparent_scale] origin=calibrated_scale calibration_version=",
+                max_out,
+            )?;
+            push_str_bounded(out, calibration_version.as_str(), max_out)?;
+            push_str_bounded(out, " keyword=", max_out)?;
+            push_quoted_escaped(out, description, max_out)?;
+            push_str_bounded(out, " uncertainty_bounds=", max_out)?;
+            push_quoted_escaped(out, uncertainty_bounds, max_out)?;
+            push_str_bounded(out, "\n", max_out)
+        }
+        ApparentScale::Unknown { .. } => Ok(()),
+    }
+}
+
+fn render_positive_entries_for_scope(
+    input: &RecreationPromptInput,
+    variant: Option<&AccountVariant>,
+    assumption_map: &BTreeMap<&OpaqueId, &ExplicitAssumption>,
+    indent: &str,
+    out: &mut String,
+    max_out: usize,
+) -> Result<(), RecreationError> {
+    push_str_bounded(out, indent, max_out)?;
+    push_str_bounded(out, "- [prompt:title] title=", max_out)?;
+    push_quoted_escaped(out, &input.title, max_out)?;
+    push_str_bounded(out, "\n", max_out)?;
+
+    let mut emitted_assumptions = BTreeSet::new();
+    render_positive_context_entry(
+        indent,
+        "scene",
+        &input.context.scene,
+        assumption_map,
+        &mut emitted_assumptions,
+        out,
+        max_out,
+    )?;
+    render_positive_context_entry(
+        indent,
+        "time",
+        &input.context.time_context,
+        assumption_map,
+        &mut emitted_assumptions,
+        out,
+        max_out,
+    )?;
+    render_positive_context_entry(
+        indent,
+        "viewpoint",
+        &input.context.viewpoint,
+        assumption_map,
+        &mut emitted_assumptions,
+        out,
+        max_out,
+    )?;
+    render_positive_context_entry(
+        indent,
+        "lighting",
+        &input.context.lighting,
+        assumption_map,
+        &mut emitted_assumptions,
+        out,
+        max_out,
+    )?;
+    render_positive_scale_entry(indent, &input.context.apparent_scale, out, max_out)?;
+
+    for detail in &input.shared_reported_details {
+        push_str_bounded(out, indent, max_out)?;
+        push_str_bounded(out, "- [", max_out)?;
+        push_str_bounded(out, detail.detail_id.as_str(), max_out)?;
+        push_str_bounded(out, "] origin=source_detail sources=[", max_out)?;
+        push_version_list(out, &detail.source_versions, max_out)?;
+        push_str_bounded(out, "] keyword=", max_out)?;
+        push_quoted_escaped(out, &detail.statement, max_out)?;
+        if let Some(note) = &detail.source_note {
+            push_str_bounded(out, " note=", max_out)?;
+            push_quoted_escaped(out, note, max_out)?;
+        }
+        push_str_bounded(out, "\n", max_out)?;
+    }
+
+    if let Some(v) = variant {
+        for detail in &v.reported_details {
+            push_str_bounded(out, indent, max_out)?;
+            push_str_bounded(out, "- [", max_out)?;
+            push_str_bounded(out, detail.detail_id.as_str(), max_out)?;
+            push_str_bounded(out, "] origin=variant_source_detail variant_id=", max_out)?;
+            push_str_bounded(out, v.variant_id.as_str(), max_out)?;
+            push_str_bounded(out, " sources=[", max_out)?;
+            push_version_list(out, &detail.source_versions, max_out)?;
+            push_str_bounded(out, "] keyword=", max_out)?;
+            push_quoted_escaped(out, &detail.statement, max_out)?;
+            if let Some(note) = &detail.source_note {
+                push_str_bounded(out, " note=", max_out)?;
+                push_quoted_escaped(out, note, max_out)?;
+            }
+            push_str_bounded(out, "\n", max_out)?;
+        }
+    }
+
+    for item in &input.assumptions {
+        if emitted_assumptions.contains(&item.assumption_id) {
+            continue;
+        }
+        push_str_bounded(out, indent, max_out)?;
+        push_str_bounded(out, "- [", max_out)?;
+        push_str_bounded(out, item.assumption_id.as_str(), max_out)?;
+        push_str_bounded(out, "] origin=assumption keyword=", max_out)?;
+        push_quoted_escaped(out, &item.assumption, max_out)?;
+        push_str_bounded(out, " rationale=", max_out)?;
+        push_quoted_escaped(out, &item.rationale, max_out)?;
+        push_str_bounded(out, "\n", max_out)?;
+    }
+
+    Ok(())
+}
+
+fn negative_applies_to_variant(neg: &ValidatedNegativeKeyword, variant_id: &OpaqueId) -> bool {
+    match &neg.origin {
+        NegativeKeywordOrigin::Unknown { .. }
+        | NegativeKeywordOrigin::ContradictedDetail { .. } => true,
+        NegativeKeywordOrigin::Variant { for_variant_id, .. } => for_variant_id == variant_id,
+    }
+}
+
 fn render_portable_text(
     input: &RecreationPromptInput,
+    validated_negatives: &[ValidatedNegativeKeyword],
     permitted_assets: &[PermittedReferenceAsset],
     omitted_assets: &[OmittedReferenceAsset],
     limits: RecreationLimits,
@@ -1675,6 +2573,64 @@ fn render_portable_text(
             push_str_bounded(&mut out, " impact=", max_out)?;
             push_quoted_escaped(&mut out, &item.impact_on_recreation, max_out)?;
             push_str_bounded(&mut out, "\n", max_out)?;
+        }
+    }
+
+    if !validated_negatives.is_empty() {
+        let assumption_map: BTreeMap<&OpaqueId, &ExplicitAssumption> = input
+            .assumptions
+            .iter()
+            .map(|a| (&a.assumption_id, a))
+            .collect();
+
+        push_str_bounded(
+            &mut out,
+            "\n## Positive Prompt Keywords (Source-Pinned Details and Declared Assumptions)\n",
+            max_out,
+        )?;
+        if input.conflicting_variants.is_empty() {
+            render_positive_entries_for_scope(input, None, &assumption_map, "", &mut out, max_out)?;
+        } else {
+            for variant in &input.conflicting_variants {
+                push_str_bounded(&mut out, "### Variant `", max_out)?;
+                push_str_bounded(&mut out, variant.variant_id.as_str(), max_out)?;
+                push_str_bounded(&mut out, "`\n", max_out)?;
+                render_positive_entries_for_scope(
+                    input,
+                    Some(variant),
+                    &assumption_map,
+                    "  ",
+                    &mut out,
+                    max_out,
+                )?;
+            }
+        }
+
+        push_str_bounded(
+            &mut out,
+            "\n## Negative Prompt Keywords (Evidence-Derived Exclusions)\n",
+            max_out,
+        )?;
+        if input.conflicting_variants.is_empty() {
+            for neg in validated_negatives {
+                render_negative_keyword_line("- ", neg, &mut out, max_out)?;
+            }
+        } else {
+            for variant in &input.conflicting_variants {
+                push_str_bounded(&mut out, "### Variant `", max_out)?;
+                push_str_bounded(&mut out, variant.variant_id.as_str(), max_out)?;
+                push_str_bounded(&mut out, "`\n", max_out)?;
+                let mut any_for_variant = false;
+                for neg in validated_negatives {
+                    if negative_applies_to_variant(neg, &variant.variant_id) {
+                        any_for_variant = true;
+                        render_negative_keyword_line("  - ", neg, &mut out, max_out)?;
+                    }
+                }
+                if !any_for_variant {
+                    push_str_bounded(&mut out, "  - (none)\n", max_out)?;
+                }
+            }
         }
     }
 
@@ -1846,6 +2802,16 @@ pub fn validate_imported_recreation(
         });
     }
 
+    let applicable_negatives: Vec<ValidatedNegativeKeyword> = match &input.variant_id {
+        Some(selected_variant_id) => exported_prompt
+            .negative_keywords
+            .iter()
+            .filter(|neg| negative_applies_to_variant(neg, selected_variant_id))
+            .cloned()
+            .collect(),
+        None => exported_prompt.negative_keywords.clone(),
+    };
+
     Ok(ValidatedImportedRecreation {
         schema_version: SchemaVersion::V1,
         artifact_id: input.artifact_id.clone(),
@@ -1857,5 +2823,6 @@ pub fn validate_imported_recreation(
         variant_id: input.variant_id.clone(),
         generator_model: input.generator_model.clone(),
         generator_settings: input.generator_settings.clone(),
+        negative_keywords: applicable_negatives,
     })
 }

@@ -1,4 +1,4 @@
-use oia_documents::utf16::{ByteOrder, Utf16Error, Utf16Limits, extract_utf16};
+use oia_documents::utf16::{ByteOrder, ByteOrderMark, Utf16Error, Utf16Limits, extract_utf16};
 use oia_documents::{ExtractionError, ExtractionStatus, StopReason};
 
 fn encode(text: &str, order: ByteOrder) -> Vec<u8> {
@@ -19,6 +19,7 @@ fn decoded_passages_reencode_to_exact_source_ranges() -> Result<(), Utf16Error> 
         let limits = Utf16Limits::new(input.len(), original.len(), 4)?;
         let result = extract_utf16(&input, order, limits, || Ok(()))?;
         assert_eq!(result.byte_order(), order);
+        assert_eq!(result.byte_order_mark(), ByteOrderMark::Preserved);
         assert_eq!(result.limits(), limits);
         assert_eq!(result.passages().len(), 4);
         let mut source_end = 0;
@@ -59,6 +60,14 @@ fn decoded_passages_reencode_to_exact_source_ranges() -> Result<(), Utf16Error> 
 fn malformed_utf16_is_rejected_even_after_the_passage_limit() -> Result<(), Utf16Error> {
     let limits = Utf16Limits::new(128, 128, 1)?;
     for order in [ByteOrder::LittleEndian, ByteOrder::BigEndian] {
+        let opposite = match order {
+            ByteOrder::LittleEndian => ByteOrder::BigEndian,
+            ByteOrder::BigEndian => ByteOrder::LittleEndian,
+        };
+        assert_eq!(
+            extract_utf16(&encode("\u{feff}text", opposite), order, limits, || Ok(())),
+            Err(Utf16Error::ConflictingByteOrderMark { declared: order })
+        );
         for suffix in [vec![0xd800], vec![0xdc00], vec![0xd800, 0x0041]] {
             let mut input = encode("ok\n", order);
             input.extend(suffix.into_iter().flat_map(|unit: u16| match order {
@@ -124,9 +133,11 @@ fn budgets_and_stop_requests_fail_without_publishing_partial_success() -> Result
     );
     let empty = extract_utf16(&[], order, limits, || Ok(()))?;
     assert_eq!(empty.coverage().status(), ExtractionStatus::Empty);
+    assert_eq!(empty.byte_order_mark(), ByteOrderMark::Absent);
     assert!(empty.passages().is_empty());
     let exact = extract_utf16(&encode("a\n", order), order, limits, || Ok(()))?;
     assert_eq!(exact.coverage().status(), ExtractionStatus::Complete);
+    assert_eq!(exact.byte_order_mark(), ByteOrderMark::Absent);
     assert_eq!(exact.passages().len(), 1);
     Ok(())
 }

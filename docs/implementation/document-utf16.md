@@ -12,8 +12,12 @@ only. Acceptance scope: the source preservation and partial-coverage subset of
 accepts caller-supplied bytes and an explicit `ByteOrder::LittleEndian` or
 `ByteOrder::BigEndian`. It does not guess an encoding or switch endianness based
 on content. Callers must establish the encoding from source metadata or a
-separate explicit detection step. A BOM decoded as U+FEFF remains part of the
-text. Other valid scalar values, including noncharacters, are not normalized.
+separate explicit detection step. An initial BOM that contradicts the declared
+byte order is a typed error, not a reason to swap endianness. A matching BOM
+decoded as U+FEFF remains part of the text and its original source-byte range;
+`byte_order_mark()` records `Preserved` or `Absent` alongside coverage. The
+initial U+FFFE code unit is reserved for that mismatch check; other valid scalar
+values, including noncharacters elsewhere, are not normalized.
 
 Each owned `Utf16Passage` contains its exact decoded text, one-based line number,
 and a zero-based, half-open `source_byte_range()` into the original **UTF-16**
@@ -61,8 +65,8 @@ never instructions or tool calls.
 
 The three targeted tests in `tests/utf16_contract.rs` cover exact original-byte
 round trips in both byte orders (including a supplementary scalar), partial
-coverage, malformed suffixes, output expansion limits, and cancellation at the
-return boundary. They address evidence preservation and bounded failure behavior,
+coverage, contradictory BOMs, malformed suffixes, output expansion limits, and
+cancellation at the return boundary. They address evidence preservation and bounded failure behavior,
 not empirical OCR accuracy or formal implementation correspondence.
 
 Run from the repository root with the pinned Rust 1.99.0 toolchain:

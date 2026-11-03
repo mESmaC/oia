@@ -20,6 +20,12 @@ impl ByteOrder {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ByteOrderMark {
+    Absent,
+    Preserved,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Utf16Limits {
     extraction: ExtractionLimits,
     max_decoded_bytes: usize,
@@ -59,6 +65,7 @@ impl Utf16Limits {
 pub enum Utf16Error {
     Extraction(ExtractionError),
     ZeroDecodedByteLimit,
+    ConflictingByteOrderMark { declared: ByteOrder },
     OddByteLength { input_bytes: usize },
     UnpairedSurrogate { byte_offset: usize, code_unit: u16 },
     DecodedTextTooLarge { limit_bytes: usize },
@@ -69,6 +76,10 @@ impl fmt::Display for Utf16Error {
         match self {
             Self::Extraction(error) => error.fmt(formatter),
             Self::ZeroDecodedByteLimit => write!(formatter, "decoded byte limit must be positive"),
+            Self::ConflictingByteOrderMark { declared } => write!(
+                formatter,
+                "initial UTF-16 byte-order mark contradicts declared {declared:?} encoding"
+            ),
             Self::OddByteLength { input_bytes } => {
                 write!(
                     formatter,
@@ -125,6 +136,7 @@ pub struct Utf16Extraction {
     coverage: Coverage,
     limits: Utf16Limits,
     byte_order: ByteOrder,
+    byte_order_mark: ByteOrderMark,
 }
 
 impl Utf16Extraction {
@@ -142,6 +154,10 @@ impl Utf16Extraction {
 
     pub fn byte_order(&self) -> ByteOrder {
         self.byte_order
+    }
+
+    pub fn byte_order_mark(&self) -> ByteOrderMark {
+        self.byte_order_mark
     }
 }
 
@@ -165,6 +181,15 @@ pub fn extract_utf16(
             input_bytes: input.len(),
         });
     }
+    let byte_order_mark = match pairs.first().map(|pair| byte_order.code_unit(*pair)) {
+        Some(0xfffe) => {
+            return Err(Utf16Error::ConflictingByteOrderMark {
+                declared: byte_order,
+            });
+        }
+        Some(0xfeff) => ByteOrderMark::Preserved,
+        _ => ByteOrderMark::Absent,
+    };
     let mut units = pairs.iter().enumerate();
     let mut passages = Vec::new();
     let mut current_text = String::new();
@@ -251,6 +276,7 @@ pub fn extract_utf16(
         },
         limits,
         byte_order,
+        byte_order_mark,
     })
 }
 

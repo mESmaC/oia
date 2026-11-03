@@ -17,7 +17,8 @@ The `motion` module propagates caller-supplied, versioned elliptical elements
 in TDB and solves one-way light time against geometric target/observer
 samplers. Positions use AU, velocities AU/day, and the J2000 ecliptic frame.
 Propagated results retain element provenance and age; numerical results carry
-iteration, residual, and tolerance reports. See the
+iteration, residual, and tolerance reports. Supported JD, element age, phase,
+angle, and light-time range domains are explicit. See the
 [motion contract and verification record](../../docs/implementation/sky-motion.md).
 
 These are modelled geometric calculations, not observations, apparent places,

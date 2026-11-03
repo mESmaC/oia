@@ -292,6 +292,8 @@ Import stages must validate limits, paths, entry uniqueness, types, references, 
 
 ## 11. Rust and Lean verification boundary
 
+[ADR 0004](adr/0004-d13-lean-correspondence-target.md) and the [proof manifest](../proofs/README.md) document the implemented Lean models and the first finite Rust cutoff correspondence fixture, including assumptions and remaining gaps.
+
 Candidate proofs include interval selection, bounded searches, ordering/deduplication, structured privacy filtering, diff reconstruction, soundness of a restricted rule engine, and selected coordinate/abstraction properties.
 
 Each proof-backed component must have:

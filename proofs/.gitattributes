@@ -1,0 +1,2 @@
+# The Lean exporter checks exact bytes, including on Windows checkouts.
+fixtures/*.tsv text eol=lf

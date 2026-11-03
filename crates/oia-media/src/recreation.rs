@@ -735,6 +735,64 @@ impl ValidatedImportedRecreation {
     pub const fn can_establish_physical_measurement(&self) -> bool {
         false
     }
+
+    /// Exports a plain UTF-8 metadata sidecar with the recreation label and pinned
+    /// lineage (`MEDIA-04`, portable-label subset of `A10`).
+    ///
+    /// Every write, including quote/Unicode escape expansion, counts toward the
+    /// byte limit. Failure returns no partial document. This does not write a file,
+    /// embed a pixel watermark, verify image bytes, or export the referenced prompt;
+    /// distribute that prompt separately to retain its source notes and assumptions.
+    pub fn portable_metadata_text(
+        &self,
+        max_output_bytes: usize,
+    ) -> Result<String, RecreationError> {
+        if max_output_bytes == 0 {
+            return Err(RecreationError::ZeroLimit(RecreationLimitKind::OutputBytes));
+        }
+        let mut out = String::new();
+        push_str_bounded(&mut out, VISIBLE_RECREATION_LABEL, max_output_bytes)?;
+        push_str_bounded(
+            &mut out,
+            "\nRecreation metadata sidecar\n",
+            max_output_bytes,
+        )?;
+        for (name, value) in [
+            ("artifact_id", self.artifact_id.as_str()),
+            ("artifact_version", self.artifact_version.as_str()),
+            ("declared_sha256_hex", self.sha256_hex.as_str()),
+            ("media_type", self.media_type.as_str()),
+            ("prompt_id", self.prompt_id.as_str()),
+            ("prompt_version", self.prompt_version.as_str()),
+            (
+                "variant_id",
+                self.variant_id.as_ref().map_or("", OpaqueId::as_str),
+            ),
+            ("generator_model", self.generator_model.as_str()),
+            ("generator_settings", self.generator_settings.as_str()),
+        ] {
+            push_str_bounded(&mut out, name, max_output_bytes)?;
+            push_str_bounded(&mut out, "=", max_output_bytes)?;
+            push_quoted_escaped(&mut out, value, max_output_bytes)?;
+            push_str_bounded(&mut out, "\n", max_output_bytes)?;
+        }
+        push_str_bounded(
+            &mut out,
+            "An empty variant_id means the prompt has no conflicting variants.\n\
+             Observation evidence: false\nPhysical measurement: false\n\
+             Digest is caller-declared; image bytes have not been verified.\n\
+             This sidecar does not embed or verify a visible label in image pixels.\n\
+             Distribute the referenced prompt separately for source notes, assumptions and unknowns.\n",
+            max_output_bytes,
+        )?;
+        push_str_bounded(
+            &mut out,
+            FIDELITY_AND_EXTERNAL_LABEL_CAVEAT,
+            max_output_bytes,
+        )?;
+        push_str_bounded(&mut out, "\n", max_output_bytes)?;
+        Ok(out)
+    }
 }
 
 fn is_disallowed_control_or_format_char(ch: char) -> bool {

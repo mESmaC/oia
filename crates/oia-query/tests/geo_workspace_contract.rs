@@ -9,15 +9,16 @@ use oia_domain::witness::AccountOrigin;
 use oia_domain::{ActorId, OpaqueId, VersionId};
 use oia_news_claims::{ClaimAssessmentState, LineageRelationKind};
 use oia_query::geo_workspace::{
-    ClusterConflict, ClusterLimits, ClusterMatchCriteria, DistinctEvidenceCounts,
+    ClusterConflict, ClusterLimitKind, ClusterLimits, ClusterMatchCriteria, DistinctEvidenceCounts,
     EarliestKnownSourceQualification, EventClusterLedger, EvidenceLineageLink, GeoClusteringError,
     GeoEvidenceItem, GeoEvidenceKind, LocationQualification, ReportedClusteringTime,
     TemporalComparisonOutcome,
 };
 
 /// Verifies `GEO-01` and `docs/architecture.md` §3.1: `CalendarDateOnly` never
-/// converts a date-only historical record to a midnight UTC timestamp, and
-/// `ApproximateGazetteerCentroid` requires a strictly positive radius.
+/// converts a date-only historical record to a midnight UTC timestamp,
+/// `minimum_whole_day_separation` uses the timezone-safe `-2` bound (`B7`),
+/// and `LocationQualification` rejects invalid radii (`B6`).
 #[test]
 fn calendar_date_only_never_masquerades_as_midnight_utc() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -28,23 +29,31 @@ fn calendar_date_only_never_masquerades_as_midnight_utc() -> Result<(), Box<dyn 
         LocationQualification::gazetteer_centroid("Invalid zero radius", 0.0, max_text),
         Err(GeoClusteringError::InvalidDistanceOrRadius { .. })
     ));
+    assert!(matches!(
+        LocationQualification::gazetteer_centroid("Invalid NaN radius", f64::NAN, max_text),
+        Err(GeoClusteringError::InvalidDistanceOrRadius { .. })
+    ));
+    assert!(matches!(
+        LocationQualification::surveyed(OpaqueId::new("loc:neg")?, Some(-5.0)),
+        Err(GeoClusteringError::InvalidDistanceOrRadius { .. })
+    ));
     let centroid =
         LocationQualification::gazetteer_centroid("Synthetic Basin Centroid", 15_000.0, max_text)?;
     assert!(centroid.is_approximate());
 
     let qual = EarliestKnownSourceQualification::new(
-        OpaqueId::new("source:synth-archive-1997")?,
-        VersionId::new("ver:archive-1997-v1")?,
-        "1997-03-18",
-        "First published 5 days after reported sighting in regional digest",
+        OpaqueId::new("source:synth-archive-2024")?,
+        VersionId::new("ver:archive-2024-v1")?,
+        "2024-06-20",
+        "Synthetic test fixture: archival clipping dated 5 days after reported synthetic observation",
         max_text,
     )?;
     let date_only = ReportedClusteringTime::calendar_date_only(
-        "13 March 1997",
-        "America/Phoenix (date only)",
-        1997,
-        3,
-        13,
+        "15 June 2024 (synthetic date-only record)",
+        "Synthetic Local Time (date only)",
+        2024,
+        6,
+        15,
         Some(qual),
         max_text,
     )?;
@@ -54,10 +63,11 @@ fn calendar_date_only_never_masquerades_as_midnight_utc() -> Result<(), Box<dyn 
     // Comparing a CalendarDateOnly record with an ExactInstant on the same UTC date
     // must report `CalendarDateOnlyCannotResolveSubDayGap` rather than a fabricated
     // millisecond offset from 00:00:00Z.
+    // 2024-06-15T20:30:00Z = 1_718_483_400_000 ms
     let evening_instant = ReportedClusteringTime::exact_instant(
-        "1997-03-13T20:30:00Z",
+        "2024-06-15T20:30:00Z",
         "UTC",
-        858_285_000_000,
+        1_718_483_400_000,
         None,
         max_text,
     )?;
@@ -68,13 +78,46 @@ fn calendar_date_only_never_masquerades_as_midnight_utc() -> Result<(), Box<dyn 
         }
     );
 
+    // B7 boundary check: Date-only 2024-06-15 compared with instant 2024-06-13T23:59:59Z
+    // (`1_718_323_199_000` ms, 2 UTC days apart). Under UTC+14, local 2024-06-15 00:00 is
+    // 2024-06-14T10:00Z (~10 hours after 2024-06-13T23:59:59Z), so the true separation
+    // can be < 24 hours (0 whole days).
+    let two_utc_days_earlier = ReportedClusteringTime::exact_instant(
+        "2024-06-13T23:59:59Z",
+        "UTC",
+        1_718_323_199_000,
+        None,
+        max_text,
+    )?;
+    assert_eq!(
+        date_only.compare_temporal_separation(&two_utc_days_earlier),
+        TemporalComparisonOutcome::CalendarDateOnlyCannotResolveSubDayGap {
+            minimum_whole_day_separation: 0
+        }
+    );
+
+    // 3 UTC days earlier (`2024-06-12T23:59:59Z` = `1_718_236_799_000` ms) guarantees at least 1 whole day.
+    let three_utc_days_earlier = ReportedClusteringTime::exact_instant(
+        "2024-06-12T23:59:59Z",
+        "UTC",
+        1_718_236_799_000,
+        None,
+        max_text,
+    )?;
+    assert_eq!(
+        date_only.compare_temporal_separation(&three_utc_days_earlier),
+        TemporalComparisonOutcome::CalendarDateOnlyCannotResolveSubDayGap {
+            minimum_whole_day_separation: 1
+        }
+    );
+
     // Two CalendarDateOnly records compare by whole calendar days only.
     let later_date = ReportedClusteringTime::calendar_date_only(
-        "16 March 1997",
-        "America/Phoenix (date only)",
-        1997,
-        3,
-        16,
+        "18 June 2024 (synthetic date-only record)",
+        "Synthetic Local Time (date only)",
+        2024,
+        6,
+        18,
         None,
         max_text,
     )?;
@@ -91,7 +134,9 @@ fn calendar_date_only_never_masquerades_as_midnight_utc() -> Result<(), Box<dyn 
 /// - Mixed-stance source classes (`Supported` + `Contradicted`) are counted in
 ///   `mixed_stance_independent_source_count` and never inflate
 ///   `supportive_independent_source_count`;
-/// - `AccountOrigin::Simulated` items are excluded from observed counts;
+/// - `AccountOrigin::Simulated` items are excluded from observed counts, and a reported
+///   item quoting only a simulated item surfaces `LineageAnchoredOnlyToSimulatedEvidence`;
+/// - Missing pairwise distances surface `SpatialSeparationNotEvaluated` (`B9`);
 /// - `merge_clusters`, `split_cluster`, and `revert_decision` are append-only,
 ///   retain all historical cluster versions, and never delete decision records.
 #[test]
@@ -151,7 +196,7 @@ fn reversible_clustering_lineage_and_mixed_stance_counts() -> Result<(), Box<dyn
         Vec::new(),
         base_time.clone(),
         LocationQualification::surveyed(OpaqueId::new("loc:surveyed-b")?, Some(100.0))?,
-        BTreeMap::from([(String::from("formation"), String::from("linear-row"))]),
+        BTreeMap::from([(String::from("formation"), String::from("triangle"))]),
         limits,
     )?;
     ledger.register_item_with_initial_cluster(
@@ -159,12 +204,10 @@ fn reversible_clustering_lineage_and_mixed_stance_counts() -> Result<(), Box<dyn
         OpaqueId::new("cluster:c2")?,
         VersionId::new("ver:c2-v1")?,
         criteria.clone(),
-        "Original newspaper article cluster",
+        "Initial newspaper cluster",
     )?;
 
-    // 3. Wire article quoting `item:article-1` (`LineageRelationKind::Quotes`) but assessing
-    // the claim as `Contradicted`. Must collapse into source class #2 and mark class #2 as
-    // mixed-stance (`mixed_stance_independent_source_count == 1`), NOT supportive.
+    // 3. Quoting wire article (`Contradicted`, quotes `item:article-1` via `LineageRelationKind::Quotes`).
     let article_2_quote = GeoEvidenceItem::new(
         OpaqueId::new("item:article-2-quote")?,
         VersionId::new("ver:article-2-v1")?,
@@ -267,6 +310,14 @@ fn reversible_clustering_lineage_and_mixed_stance_counts() -> Result<(), Box<dyn
             .iter()
             .any(|c| matches!(c, ClusterConflict::MixedStanceSourceClass { .. }))
     );
+    // B9: Because no pairwise distances were registered in this test, `SpatialSeparationNotEvaluated`
+    // must be explicitly surfaced rather than silently looking like spatial agreement.
+    assert!(
+        merged_all
+            .conflicts()
+            .iter()
+            .any(|c| matches!(c, ClusterConflict::SpatialSeparationNotEvaluated { .. }))
+    );
 
     // Revert `decision:m3`, split `cluster:c123`, and revert the split.
     // All prior decisions and archived cluster versions remain intact.
@@ -318,79 +369,246 @@ fn reversible_clustering_lineage_and_mixed_stance_counts() -> Result<(), Box<dyn
     Ok(())
 }
 
-/// Verifies `AGENTS.md` §4: revising a clustered evidence item preserves its
-/// prior version and flags affected clusters with `needs_reassessment = true`
-/// without mutating their pinned item versions in place.
+/// Verifies `B1`, `B2`, `B3`, `B4`, and `B5`:
+/// - `B1`: Reverting a merge when a retired `cluster_id` was reused by a newly registered
+///   cluster fails with `RevertDestinationClusterInUse` rather than overwriting or orphaning items.
+/// - `B2`: `revise_item` never mutates `archived_cluster_versions` in place; reassessment reasons
+///   are recorded in the side table (`cluster_needs_reassessment` / `cluster_reassessment_reasons`)
+///   and carried forward through merge, split, and revert while preserving pre-decision
+///   `pinned_item_versions`.
+/// - `B3`: Revising an upstream lineage item (or registering a referenced upstream item later)
+///   flags all active clusters whose members reach that item transitively through lineage.
+/// - `B4` & `B5`: Ledger boundary re-validates item/criteria limits against `self.limits` and
+///   enforces `max_revisions_per_item` / `max_reassessment_reasons_per_cluster`.
 #[test]
-fn item_revision_flags_clusters_for_reassessment_without_in_place_mutation()
+fn revert_collision_transitive_lineage_reassessment_and_ledger_budgets()
 -> Result<(), Box<dyn std::error::Error>> {
-    let limits = ClusterLimits::default();
-    let max_text = limits.max_text_bytes();
-    let mut ledger = EventClusterLedger::new(limits);
+    let strict_limits = ClusterLimits::with_revision_limit(64, 8, 8, 8, 1, 2)?;
+    let permissive_limits = ClusterLimits::default();
+    let mut ledger = EventClusterLedger::new(strict_limits);
 
-    let criteria = ClusterMatchCriteria::new(5_000.0, 300_000, 0, BTreeSet::new())?;
     let t = ReportedClusteringTime::exact_instant(
         "2026-11-01T22:00:00Z",
         "UTC",
         1_762_034_400_000,
         None,
-        max_text,
+        strict_limits.max_text_bytes(),
     )?;
-    let item_v1 = GeoEvidenceItem::new(
-        OpaqueId::new("item:radar-track-1")?,
-        VersionId::new("ver:radar-track-1-v1")?,
-        OpaqueId::new("source:synth-radar-west")?,
-        Some(String::from("sha256:1010")),
-        GeoEvidenceKind::SensorObservation {
-            origin: AccountOrigin::Reported,
-        },
+    let criteria = ClusterMatchCriteria::new(5_000.0, 300_000, 0, BTreeSet::new())?;
+
+    // B4: Item constructed with `permissive_limits` (2 properties) must be rejected by
+    // `ledger` whose `max_properties_per_item` is 1.
+    let over_budget_item = GeoEvidenceItem::new(
+        OpaqueId::new("item:over-budget")?,
+        VersionId::new("ver:over-budget-v1")?,
+        OpaqueId::new("source:synth-x")?,
+        None,
+        GeoEvidenceKind::PublishedArticle,
         ClaimAssessmentState::Supported,
         Vec::new(),
         t.clone(),
-        LocationQualification::surveyed(OpaqueId::new("loc:radar-site-1")?, Some(25.0))?,
+        LocationQualification::surveyed(OpaqueId::new("loc:1")?, None)?,
+        BTreeMap::from([
+            (String::from("k1"), String::from("v1")),
+            (String::from("k2"), String::from("v2")),
+        ]),
+        permissive_limits,
+    )?;
+    assert!(matches!(
+        ledger.register_item_with_initial_cluster(
+            over_budget_item,
+            OpaqueId::new("cluster:over")?,
+            VersionId::new("ver:over-c1")?,
+            criteria.clone(),
+            "Should reject over-budget item",
+        ),
+        Err(GeoClusteringError::BudgetExceeded {
+            limit: ClusterLimitKind::PropertiesPerItem,
+            ..
+        })
+    ));
+
+    // Register X (in `c:x`), Y republishing X (in `c:y`), and W (in `c:w`).
+    let item_x_v1 = GeoEvidenceItem::new(
+        OpaqueId::new("item:x")?,
+        VersionId::new("ver:x-v1")?,
+        OpaqueId::new("source:src-x")?,
+        None,
+        GeoEvidenceKind::PublishedArticle,
+        ClaimAssessmentState::Supported,
+        Vec::new(),
+        t.clone(),
+        LocationQualification::surveyed(OpaqueId::new("loc:x")?, None)?,
         BTreeMap::new(),
-        limits,
+        strict_limits,
     )?;
     ledger.register_item_with_initial_cluster(
-        item_v1,
-        OpaqueId::new("cluster:radar-c1")?,
-        VersionId::new("ver:radar-c1-v1")?,
-        criteria,
-        "Initial radar observation cluster",
+        item_x_v1,
+        OpaqueId::new("cluster:x")?,
+        VersionId::new("ver:cx-v1")?,
+        criteria.clone(),
+        "Cluster X",
     )?;
 
-    let item_v2 = GeoEvidenceItem::new(
-        OpaqueId::new("item:radar-track-1")?,
-        VersionId::new("ver:radar-track-1-v2")?,
-        OpaqueId::new("source:synth-radar-west")?,
-        Some(String::from("sha256:2020")),
-        GeoEvidenceKind::SensorObservation {
-            origin: AccountOrigin::Reported,
-        },
+    let item_y_v1 = GeoEvidenceItem::new(
+        OpaqueId::new("item:y")?,
+        VersionId::new("ver:y-v1")?,
+        OpaqueId::new("source:src-y")?,
+        None,
+        GeoEvidenceKind::PublishedArticle,
+        ClaimAssessmentState::Supported,
+        vec![EvidenceLineageLink::new(
+            LineageRelationKind::Republishes,
+            OpaqueId::new("item:x")?,
+        )],
+        t.clone(),
+        LocationQualification::surveyed(OpaqueId::new("loc:y")?, None)?,
+        BTreeMap::new(),
+        strict_limits,
+    )?;
+    ledger.register_item_with_initial_cluster(
+        item_y_v1,
+        OpaqueId::new("cluster:y")?,
+        VersionId::new("ver:cy-v1")?,
+        criteria.clone(),
+        "Cluster Y republishing X",
+    )?;
+
+    let item_w_v1 = GeoEvidenceItem::new(
+        OpaqueId::new("item:w")?,
+        VersionId::new("ver:w-v1")?,
+        OpaqueId::new("source:src-w")?,
+        None,
+        GeoEvidenceKind::PublishedArticle,
+        ClaimAssessmentState::Supported,
+        Vec::new(),
+        t.clone(),
+        LocationQualification::surveyed(OpaqueId::new("loc:w")?, None)?,
+        BTreeMap::new(),
+        strict_limits,
+    )?;
+    ledger.register_item_with_initial_cluster(
+        item_w_v1,
+        OpaqueId::new("cluster:w")?,
+        VersionId::new("ver:cw-v1")?,
+        criteria.clone(),
+        "Cluster W",
+    )?;
+
+    let actor = ActorId::new("actor:reviewer")?;
+    ledger.merge_clusters(
+        &OpaqueId::new("cluster:y")?,
+        &OpaqueId::new("cluster:w")?,
+        OpaqueId::new("cluster:yw")?,
+        VersionId::new("ver:cyw-v1")?,
+        criteria.clone(),
+        OpaqueId::new("decision:merge-yw")?,
+        actor.clone(),
+        "Merge Y and W",
+    )?;
+
+    // B3 & B2: Revise X's `source_id` to `source:src-w`.
+    // Both `cluster:x` (direct member) and `cluster:yw` (reaches X via Y -> X lineage)
+    // must be flagged for reassessment, while `archived_cluster_versions()[ver:cx-v1]`
+    // remains completely unchanged (`needs_reassessment() == false`).
+    let item_x_v2 = GeoEvidenceItem::new(
+        OpaqueId::new("item:x")?,
+        VersionId::new("ver:x-v2")?,
+        OpaqueId::new("source:src-w")?,
+        None,
+        GeoEvidenceKind::PublishedArticle,
+        ClaimAssessmentState::Supported,
+        Vec::new(),
+        t.clone(),
+        LocationQualification::surveyed(OpaqueId::new("loc:x")?, None)?,
+        BTreeMap::new(),
+        strict_limits,
+    )?;
+    let flagged = ledger.revise_item(
+        &VersionId::new("ver:x-v1")?,
+        item_x_v2,
+        "Corrected upstream publisher attribution",
+    )?;
+    assert_eq!(
+        flagged,
+        vec![OpaqueId::new("cluster:x")?, OpaqueId::new("cluster:yw")?]
+    );
+    assert!(ledger.cluster_needs_reassessment(&OpaqueId::new("cluster:x")?));
+    assert!(ledger.cluster_needs_reassessment(&OpaqueId::new("cluster:yw")?));
+    // Archived snapshot at `ver:cx-v1` is untouched:
+    assert!(
+        !ledger.archived_cluster_versions()[&VersionId::new("ver:cx-v1")?].needs_reassessment()
+    );
+
+    // B5: Because `max_revisions_per_item` is 2 (`ver:x-v1` + `ver:x-v2`), a 3rd version
+    // must be rejected with `BudgetExceeded { limit: ClusterLimitKind::RevisionsPerItem, .. }`.
+    let item_x_v3 = GeoEvidenceItem::new(
+        OpaqueId::new("item:x")?,
+        VersionId::new("ver:x-v3")?,
+        OpaqueId::new("source:src-w")?,
+        None,
+        GeoEvidenceKind::PublishedArticle,
         ClaimAssessmentState::Disputed,
         Vec::new(),
-        t,
-        LocationQualification::surveyed(OpaqueId::new("loc:radar-site-1")?, Some(25.0))?,
+        t.clone(),
+        LocationQualification::surveyed(OpaqueId::new("loc:x")?, None)?,
         BTreeMap::new(),
-        limits,
+        strict_limits,
+    )?;
+    assert!(matches!(
+        ledger.revise_item(
+            &VersionId::new("ver:x-v2")?,
+            item_x_v3,
+            "Exceeds revision cap"
+        ),
+        Err(GeoClusteringError::BudgetExceeded {
+            limit: ClusterLimitKind::RevisionsPerItem,
+            ..
+        })
+    ));
+
+    // B1: Register a new item `item:new` reusing the retired `cluster:y` ID.
+    // Attempting to revert `decision:merge-yw` must fail with `RevertDestinationClusterInUse`
+    // instead of overwriting `cluster:y` and orphaning `item:new`.
+    let item_new = GeoEvidenceItem::new(
+        OpaqueId::new("item:new")?,
+        VersionId::new("ver:new-v1")?,
+        OpaqueId::new("source:src-new")?,
+        None,
+        GeoEvidenceKind::PublishedArticle,
+        ClaimAssessmentState::Supported,
+        Vec::new(),
+        t,
+        LocationQualification::surveyed(OpaqueId::new("loc:new")?, None)?,
+        BTreeMap::new(),
+        strict_limits,
+    )?;
+    ledger.register_item_with_initial_cluster(
+        item_new,
+        OpaqueId::new("cluster:y")?,
+        VersionId::new("ver:cy-reused-v1")?,
+        criteria,
+        "New item registered under retired cluster:y ID",
     )?;
 
-    let flagged = ledger.revise_item(
-        &VersionId::new("ver:radar-track-1-v1")?,
-        item_v2,
-        "Clutter filter calibration corrected range gate",
-    )?;
-    assert_eq!(flagged, vec![OpaqueId::new("cluster:radar-c1")?]);
-
-    let cluster = &ledger.clusters()[&OpaqueId::new("cluster:radar-c1")?];
-    assert!(cluster.needs_reassessment());
-    assert_eq!(
-        cluster.pinned_item_versions()[&OpaqueId::new("item:radar-track-1")?],
-        VersionId::new("ver:radar-track-1-v1")?
-    );
-    assert_eq!(
-        ledger.item_version_history()[&OpaqueId::new("item:radar-track-1")?].len(),
-        2
+    assert!(matches!(
+        ledger.revert_decision(
+            &OpaqueId::new("decision:merge-yw")?,
+            OpaqueId::new("decision:revert-yw")?,
+            &[
+                VersionId::new("ver:cy-restored")?,
+                VersionId::new("ver:cw-restored")?,
+            ],
+            actor,
+            "Attempt revert while cluster:y is in use",
+        ),
+        Err(GeoClusteringError::RevertDestinationClusterInUse { .. })
+    ));
+    // Verify `item:new` is still safely in `cluster:y`.
+    assert!(
+        ledger.clusters()[&OpaqueId::new("cluster:y")?]
+            .member_item_ids()
+            .contains(&OpaqueId::new("item:new")?)
     );
     Ok(())
 }

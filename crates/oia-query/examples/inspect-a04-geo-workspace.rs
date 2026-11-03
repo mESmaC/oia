@@ -25,12 +25,14 @@ fn run_a04_clustering_inspection() -> Result<(), Box<dyn std::error::Error>> {
         BTreeSet::from([String::from("apparent_shape")]),
     )?;
 
-    // 1. Primary witness account with uncertain bounded interval (GEO-01, GEO-03, A04).
+    // 1. Primary witness account on 1 November 2026:
+    //    UTC interval 2026-11-01 09:10:00Z .. 09:25:00Z (`1_761_988_200_000` .. `1_761_989_100_000`),
+    //    which corresponds to 21:10–21:25 local ship time in `Etc/GMT-12` (UTC+12).
     let witness_time = ReportedClusteringTime::bounded_interval(
-        "approx 21:10–21:25 local ship time",
-        "Etc/GMT-12",
-        1_762_000_200_000,
-        1_762_001_100_000,
+        "approx 21:10-21:25 local ship time (1 Nov 2026)",
+        "Etc/GMT-12 (UTC+12)",
+        1_761_988_200_000,
+        1_761_989_100_000,
         Some(String::from(
             "Bridge logbook entry; wristwatch unverified against GPS",
         )),
@@ -70,7 +72,7 @@ fn run_a04_clustering_inspection() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let article_time = ReportedClusteringTime::calendar_date_only(
         "1 November 2026 (date-only archival clipping)",
-        "Etc/GMT+12",
+        "Etc/GMT-12 (UTC+12)",
         2026,
         11,
         1,
@@ -136,18 +138,23 @@ fn run_a04_clustering_inspection() -> Result<(), Box<dyn std::error::Error>> {
         OpaqueId::new("cluster:gamma")?,
         VersionId::new("ver:cluster-gamma-v1")?,
         criteria.clone(),
-        "Syndicated wire reprint with contradictory commentary",
+        "Syndicated wire reprint with contradictory editorial stance",
     )?;
 
     ledger.record_pairwise_distance_m(
         &OpaqueId::new("item:witness-01")?,
         &OpaqueId::new("item:article-root")?,
-        18_400.0,
+        14_200.0,
     )?;
     ledger.record_pairwise_distance_m(
         &OpaqueId::new("item:witness-01")?,
         &OpaqueId::new("item:article-reprint")?,
-        18_400.0,
+        14_200.0,
+    )?;
+    ledger.record_pairwise_distance_m(
+        &OpaqueId::new("item:article-root")?,
+        &OpaqueId::new("item:article-reprint")?,
+        0.0,
     )?;
 
     let actor = ActorId::new("actor:analyst-01")?;

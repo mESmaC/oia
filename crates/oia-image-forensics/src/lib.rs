@@ -318,10 +318,14 @@ pub fn analyze(
         } else {
             "PNG container, bounded complete zlib stream/Adler-32 and limited raster decoder checks passed"
         }),
-        limitations: vec![
-            "These profile checks are not a proof of full format conformance or authenticity.",
-            "JPEG decoder can zero-fill premature entropy even with its strict option. All JPEG results are partial decoder-output diagnostics, never verified source samples.",
-        ],
+        limitations: if parsed.format == ImageFormat::Jpeg {
+            vec![
+                "These profile checks are not a proof of full format conformance or authenticity.",
+                "JPEG decoder can zero-fill premature entropy even with its strict option. All JPEG results are partial decoder-output diagnostics, never verified source samples.",
+            ]
+        } else {
+            vec!["These profile checks are not a proof of full format conformance or authenticity."]
+        },
     };
     let rgb_histograms = Method {
         coverage: Coverage::Complete,

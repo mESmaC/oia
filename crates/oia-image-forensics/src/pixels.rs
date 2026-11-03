@@ -249,6 +249,9 @@ pub(crate) fn recompression(
 
 fn label_map(png: &[u8], source_sha256: &str, config: &Config) -> Result<Vec<u8>, ForensicError> {
     let header_end = 33;
+    if png.get(12..16) != Some(&b"IHDR"[..]) {
+        return Err(ForensicError::Unsupported("encoded PNG IHDR chunk"));
+    }
     let mut output = CappedWriter {
         bytes: Vec::new(),
         limit: config.max_artifact_bytes,

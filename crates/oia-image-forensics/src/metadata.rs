@@ -48,7 +48,7 @@ pub(crate) fn png_field(
             payload.len(),
             match kind {
                 b"pHYs" | b"sRGB" | b"gAMA" | b"tIME" | b"bKGD" | b"cHRM" | b"sBIT" => {
-                    "fixed-layout ancillary metadata not interpreted; not a generation/edit text field"
+                    "fixed-layout ancillary metadata (including tIME modification time) not interpreted"
                 }
                 b"zTXt" => "compressed text deliberately not decompressed",
                 b"iCCP" => "compressed color profile not decoded or applied",

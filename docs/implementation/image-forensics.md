@@ -56,9 +56,9 @@ cleaned copy.
   separately. Accept supported sequential/progressive Huffman frames with one
   or three components; cap scans before decoding. Refuse unsupported processes,
   CMYK/YCCK, trailing bytes, structural errors, codec errors and budget overflow.
-  Baseline SOF0 entropy shorter than a conservative two-bit-per-block floor is
-  refused before decoding: each component needs at least one coded block per
-  32-by-32 source region (maximum sampling factor four). Stuffed/restart bytes
+  Sequential SOF0/SOF1 entropy shorter than a conservative two-bit-per-block
+  floor is refused before decoding: each component needs at least one coded
+  block per 32-by-32 source region (maximum sampling factor four). Stuffed/restart bytes
   are counted generously, so this only rejects grossly impossible inputs and
   does not certify remaining entropy. Progressive frames do not use this floor.
 - Other formats are unsupported. No fallback resizing or format conversion.
@@ -105,10 +105,10 @@ forgeable/removable. Compressed text, Exif, extended XMP, opaque application
 metadata and credential/profile regions remain explicit uninspected ranges,
 making metadata coverage partial. No compressed metadata inflation, C2PA or
 watermark verification is implemented.
-Fixed-layout ancillary PNG metadata (including pHYs, sRGB, gAMA, tIME and bKGD)
-also remains uninspected/partial, with a reason specific to that scope rather
-than calling it compressed text. APP0 records, including possible JFIF/JFXX
-embedded thumbnails, and APP14 declarations are listed as uninspected ranges;
+Fixed-layout ancillary PNG metadata (including pHYs, sRGB, gAMA, tIME modification
+time and bKGD) also remains uninspected/partial, with a reason specific to that
+scope rather than calling it compressed text. APP0 records, including possible
+JFIF/JFXX embedded thumbnails, and APP14 declarations are listed as uninspected ranges;
 retaining them for codec interpretation does not imply metadata inspection.
 
 ### Histograms and repeated blocks
@@ -211,7 +211,7 @@ revision recorded in the PR. Focused and workspace checks passed:
 ```text
 cargo build -p oia-image-forensics --locked --offline
 cargo test -p oia-image-forensics --locked --offline
-python crates/oia-image-forensics/tests/reference_check.py
+python -I crates/oia-image-forensics/tests/reference_check.py
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked --offline -- -D warnings
 cargo test --workspace --locked --offline
@@ -231,6 +231,17 @@ pre-IDAT labels and PNG zlib checksum/end/trailing/excess-output failures.
 Fixtures are synthetic patterns.
 No corpus/operational accuracy evaluation, non-Windows execution, hardware
 measurement or Lean proof is claimed.
+
+The 2026-11-03 follow-up extends the gross-truncation regression to SOF1,
+checks the tIME wording and absence of JPEG-only limitations in PNG reports,
+and guards the derived-map IHDR type. On Windows x86_64 MSVC with rustc
+1.99.0, the focused package build and four contract tests passed. Python
+3.12.10 / Pillow 12.3.0 ran the updated reference check from a task-local
+virtual environment under `-I`; workspace fmt, all-target Clippy with warnings
+denied, all workspace tests, and `git diff --check` also passed. Lake and elan
+were unavailable, so the separate Lean proof-only gate was not run; no Lean
+files or proof-covered algorithms changed. These checks do not add real-image
+corpus evidence or complete A10.
 
 Full A10 remains incomplete: no UI comparison/zoom/channel/frequency views,
 evaluated copy-move/compositing methods, learned AI detector, credential/watermark

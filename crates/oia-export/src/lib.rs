@@ -7,6 +7,8 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::indexing_slicing, clippy::unwrap_used, clippy::expect_used)]
 
+pub mod bundle;
+
 use std::error::Error;
 use std::fmt;
 
@@ -2624,14 +2626,31 @@ fn push_markdown_code_pair(
     push_backticks_bounded(out, fence_len, max_out)
 }
 
-fn is_bidi_or_zero_width(ch: char) -> bool {
+pub(crate) fn is_bidi_or_zero_width(ch: char) -> bool {
     matches!(
         ch,
-        '\u{200B}'..='\u{200F}'
-            | '\u{202A}'..='\u{202E}'
-            | '\u{2060}'..='\u{2064}'
-            | '\u{2066}'..='\u{2069}'
+        '\u{0085}'
+            | '\u{00AD}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061C}'
+            | '\u{06DD}'
+            | '\u{070F}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08E2}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{206F}'
+            | '\u{3164}'
             | '\u{FEFF}'
+            | '\u{FFA0}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0000}'..='\u{E007F}'
     )
 }
 
@@ -2698,18 +2717,35 @@ fn push_control_hex_escape(out: &mut String, code: u32, max_out: usize) -> Resul
     let b2 = ((code >> 8) & 0xF) as usize;
     let b1 = ((code >> 4) & 0xF) as usize;
     let b0 = (code & 0xF) as usize;
-    let seq = [
-        b'\\',
-        b'u',
-        b'{',
-        *HEX.get(b3).unwrap_or(&b'0'),
-        *HEX.get(b2).unwrap_or(&b'0'),
-        *HEX.get(b1).unwrap_or(&b'0'),
-        *HEX.get(b0).unwrap_or(&b'0'),
-        b'}',
-    ];
-    let text = std::str::from_utf8(&seq).unwrap_or("\\u{0000}");
-    push_str_bounded(out, text, max_out)
+    if code > 0xFFFF {
+        let b4 = ((code >> 16) & 0xF) as usize;
+        let seq = [
+            b'\\',
+            b'u',
+            b'{',
+            *HEX.get(b4).unwrap_or(&b'0'),
+            *HEX.get(b3).unwrap_or(&b'0'),
+            *HEX.get(b2).unwrap_or(&b'0'),
+            *HEX.get(b1).unwrap_or(&b'0'),
+            *HEX.get(b0).unwrap_or(&b'0'),
+            b'}',
+        ];
+        let text = std::str::from_utf8(&seq).unwrap_or("\\u{0000}");
+        push_str_bounded(out, text, max_out)
+    } else {
+        let seq = [
+            b'\\',
+            b'u',
+            b'{',
+            *HEX.get(b3).unwrap_or(&b'0'),
+            *HEX.get(b2).unwrap_or(&b'0'),
+            *HEX.get(b1).unwrap_or(&b'0'),
+            *HEX.get(b0).unwrap_or(&b'0'),
+            b'}',
+        ];
+        let text = std::str::from_utf8(&seq).unwrap_or("\\u{0000}");
+        push_str_bounded(out, text, max_out)
+    }
 }
 
 fn make_owned_str(input: &str) -> Result<String, ReportError> {

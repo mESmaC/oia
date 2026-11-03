@@ -3563,13 +3563,15 @@ impl MarketEffectForecastBook {
     }
 
     /// Synchronize any reassessment flags from `ledger` into all recorded [`MarketEffectEvaluationRecord`]s
-    /// without altering their historical scores (`B4`).
+    /// without altering their historical scores (`B4`, `B6`).
     pub fn sync_ledger_reassessments(&mut self, ledger: &ForecastLedger) {
         for eval in self.evaluations_by_version.values_mut() {
             eval.materialize_live_binary_reassessments();
             if let Some(bin_eval_ver) = &eval.binary_evaluation_version
                 && let Some(bin_eval) = ledger.evaluation(bin_eval_ver)
             {
+                eval.binary_reassessment_handle =
+                    ledger.shared_evaluation_reassessment_handle(bin_eval_ver);
                 for r in &bin_eval.reassessment_reasons {
                     let wrapped = MarketReassessmentReason::BinaryLedgerReassessment(r.clone());
                     if !eval.reassessment_reasons.contains(&wrapped) {

@@ -94,7 +94,12 @@ and compose with [`oia_forecast::issuance`](../../crates/oia-forecast/src/issuan
      maintains a single canonical scalar resolution history across alias
      `resolution_id`s for the same `(target, unit, horizon)`, and flags existing
      evaluations with `MarketReassessmentReason` when a scalar or paired binary
-     resolution is superseded without mutating cached historical scores.
+     resolution in the owning `ForecastLedger` is superseded without mutating
+     cached historical scores (cloning `ForecastLedger`,
+     `MarketEffectForecastBook`, or `MarketEffectEvaluationRecord` creates an
+     isolated value snapshot so mutations in a forked clone never cross-contaminate
+     the original book or ledger unless explicitly synchronized via
+     `sync_ledger_reassessments` / `evaluation_with_ledger`).
    - `evaluate_simulated_strategy` enforces a return-expressible `effect_unit`
      via `SimulatedReturnBasis` (`BasisPoints`, `LogBasisPoints`,
      `PercentagePoints`, `LogPercentagePoints`, `DecimalReturn`,

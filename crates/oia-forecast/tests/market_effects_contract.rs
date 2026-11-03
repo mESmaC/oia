@@ -1303,6 +1303,50 @@ fn preserves_mixed_qual_quant_revisions_return_basis_atomic_eval_and_scalar_prov
             .needs_reassessment()
     );
 
+    // --- B6: Forked ForecastLedger clone cannot invalidate the original MarketEffectForecastBook ---
+    let mut ledger_fork = ledger.clone();
+    let fork_only_res_ver = VersionId::new("resolution:log-bin-fork-only-v2")?;
+    ledger_fork.record_outcome_resolution(OutcomeResolutionRecord {
+        resolution_id: OpaqueId::new("res-series:log-bin")?,
+        version_id: fork_only_res_ver,
+        outcome_id: OpaqueId::new("outcome:log-test")?,
+        actor: ActorId::new("actor:eval")?,
+        recorded_at_utc_ms: log_draft.horizon_end_utc_ms + 150_000,
+        evidence_versions: vec![VersionId::new("source:log-bin-fork-ev")?],
+        state: ResolutionState::Resolved {
+            occurred: false,
+            observed_event_utc_ms: None,
+        },
+        supersedes_version: Some(log_bin_res_v1.clone()),
+        correction_rationale: Some("Fork-only hypothetical binary correction.".to_owned()),
+    })?;
+    assert!(
+        ledger_fork
+            .evaluation(&bin_corr_ledger_eval_ver)
+            .ok_or("missing fork ledger eval")?
+            .needs_reassessment
+    );
+    assert!(
+        !ledger
+            .evaluation(&bin_corr_ledger_eval_ver)
+            .ok_or("missing original ledger eval")?
+            .needs_reassessment
+    );
+    assert!(
+        !book
+            .evaluation(&bin_corr_eval_ver)
+            .ok_or("missing original market eval")?
+            .needs_reassessment()
+    );
+    assert!(
+        book.evaluation(&bin_corr_eval_ver)
+            .ok_or("missing original market eval")?
+            .reassessment_reasons()
+            .is_empty()
+    );
+
+    let book_snapshot_before_corr = book.clone();
+
     let log_bin_res_v2 = VersionId::new("resolution:log-bin-v2")?;
     ledger.record_outcome_resolution(OutcomeResolutionRecord {
         resolution_id: OpaqueId::new("res-series:log-bin")?,
@@ -1340,6 +1384,12 @@ fn preserves_mixed_qual_quant_revisions_return_basis_atomic_eval_and_scalar_prov
                 new_resolution_version: log_bin_res_v2,
             }
         )]
+    );
+    assert!(
+        !book_snapshot_before_corr
+            .evaluation(&bin_corr_eval_ver)
+            .ok_or("missing snapshot market eval")?
+            .needs_reassessment()
     );
 
     Ok(())

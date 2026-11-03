@@ -644,9 +644,15 @@ struct RegisteredOutcomeContract {
     horizon_end_utc_ms: i64,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub(crate) struct SharedReassessmentHandle {
     reasons: Arc<Mutex<Vec<ReassessmentReason>>>,
+}
+
+impl Clone for SharedReassessmentHandle {
+    fn clone(&self) -> Self {
+        Self::with_initial(self.snapshot())
+    }
 }
 
 impl PartialEq for SharedReassessmentHandle {
@@ -661,6 +667,12 @@ impl SharedReassessmentHandle {
     pub(crate) fn with_initial(initial: Vec<ReassessmentReason>) -> Self {
         Self {
             reasons: Arc::new(Mutex::new(initial)),
+        }
+    }
+
+    pub(crate) fn share(&self) -> Self {
+        Self {
+            reasons: Arc::clone(&self.reasons),
         }
     }
 
@@ -1627,7 +1639,7 @@ impl ForecastLedger {
     ) -> Option<SharedReassessmentHandle> {
         self.shared_evaluation_reassessments
             .get(evaluation_version)
-            .cloned()
+            .map(SharedReassessmentHandle::share)
     }
 
     /// Look up an issued forecast vintage by its immutable [`VersionId`].

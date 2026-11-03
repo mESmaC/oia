@@ -1,4 +1,8 @@
 //! Explicit, versioned trading sessions and closures with honest unknown coverage.
+//!
+//! **Provisional pending #12:** calendar and instant types follow the local
+//! Unix-epoch UTC millisecond convention described in `crate::model`; they migrate
+//! to the shared time/geometry primitives when that contract lands.
 
 use std::collections::BTreeSet;
 
@@ -48,8 +52,9 @@ pub struct TradingCalendarInput {
     pub closures: Vec<TradingClosure>,
 }
 
-/// A validated calendar. UTC session bounds are supplied explicitly; this type
-/// does not invent timezone or DST conversions from the timezone identifier.
+/// **Provisional pending #12.** A validated calendar. UTC session bounds are
+/// supplied explicitly; this type does not invent timezone or DST conversions
+/// from the timezone identifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TradingCalendarVersion {
     input: TradingCalendarInput,
@@ -70,6 +75,10 @@ impl TradingCalendarVersion {
             .ok_or(MarketError::ArithmeticOverflow)?;
         limits.check_len(entry_count)?;
         let mut dates = BTreeSet::new();
+        let mut ordered_sessions = Vec::new();
+        ordered_sessions
+            .try_reserve_exact(input.sessions.len())
+            .map_err(|_| MarketError::AllocationFailed)?;
         for session in &input.sessions {
             validate_calendar_date(session.local_date, input.coverage_start, input.coverage_end)?;
             validate_timestamp("session open_at_utc_ms", session.open_at_utc_ms)?;
@@ -84,6 +93,19 @@ impl TradingCalendarVersion {
                     "duplicate session or closure local date",
                 ));
             }
+            ordered_sessions.push(session);
+        }
+        ordered_sessions.sort_by_key(|session| (session.open_at_utc_ms, session.close_at_utc_ms));
+        let mut furthest_close = None;
+        for session in ordered_sessions {
+            if furthest_close.is_some_and(|close| session.open_at_utc_ms < close) {
+                return Err(MarketError::InvalidCalendar(
+                    "trading sessions overlap in UTC",
+                ));
+            }
+            furthest_close = Some(furthest_close.map_or(session.close_at_utc_ms, |close| {
+                close.max(session.close_at_utc_ms)
+            }));
         }
         for closure in &input.closures {
             validate_calendar_date(closure.local_date, input.coverage_start, input.coverage_end)?;
@@ -149,15 +171,22 @@ impl TradingCalendarVersion {
         at_utc_ms: i64,
     ) -> Result<SessionAt<'_>, MarketError> {
         validate_timestamp("session query instant", at_utc_ms)?;
-        Ok(match self.calendar_day(local_date) {
-            CalendarDay::Open(session)
-                if at_utc_ms >= session.open_at_utc_ms && at_utc_ms < session.close_at_utc_ms =>
-            {
-                SessionAt::Open(session)
-            }
-            CalendarDay::Unknown => SessionAt::Unknown,
-            _ => SessionAt::Closed,
-        })
+        let day = self.calendar_day(local_date);
+        if let CalendarDay::Open(session) = day
+            && at_utc_ms >= session.open_at_utc_ms
+            && at_utc_ms < session.close_at_utc_ms
+        {
+            return Ok(SessionAt::Open(session));
+        }
+        if matches!(day, CalendarDay::Unknown) {
+            return Ok(SessionAt::Unknown);
+        }
+        if self.input.sessions.iter().any(|session| {
+            at_utc_ms >= session.open_at_utc_ms && at_utc_ms < session.close_at_utc_ms
+        }) {
+            return Ok(SessionAt::Unknown);
+        }
+        Ok(SessionAt::Closed)
     }
 }
 

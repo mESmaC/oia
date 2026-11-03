@@ -149,9 +149,16 @@ pub fn select_quote_as_of<'a>(
                             .availability
                             .public_available_at_utc_ms
                             .cmp(&current.availability.public_available_at_utc_ms)
-                    })
-                    .then_with(|| quote.version.cmp(&current.version));
-                ordering == Ordering::Greater
+                    });
+                match ordering {
+                    Ordering::Greater => true,
+                    Ordering::Less => false,
+                    Ordering::Equal => {
+                        return Err(MarketError::InvalidQuote(
+                            "multiple quote versions share observation and public availability",
+                        ));
+                    }
+                }
             }
         };
         if replace {
@@ -298,6 +305,7 @@ pub fn select_release_vintage<'a>(
             }
         }
     }
+    let mut latest_known_public = None;
     for (revision, vintage) in &revisions {
         check_control().map_err(MarketError::Stopped)?;
         match (&vintage.predecessor_version, revisions.get(&(revision - 1))) {
@@ -308,21 +316,20 @@ pub fn select_release_vintage<'a>(
                         "predecessor does not match the previous revision",
                     ));
                 }
-                if let (Some(current_public), Some(previous_public)) = (
-                    vintage.availability.public_available_at_utc_ms,
-                    previous.availability.public_available_at_utc_ms,
-                ) && current_public < previous_public
-                {
-                    return Err(MarketError::InvalidRelease(
-                        "public availability moves backward across revisions",
-                    ));
-                }
             }
             _ => {
                 return Err(MarketError::InvalidRelease(
                     "revision chain must be consecutive and explicitly linked",
                 ));
             }
+        }
+        if let Some(current_public) = vintage.availability.public_available_at_utc_ms {
+            if latest_known_public.is_some_and(|previous| current_public < previous) {
+                return Err(MarketError::InvalidRelease(
+                    "public availability moves backward across revisions",
+                ));
+            }
+            latest_known_public = Some(current_public);
         }
     }
     let mut exclusions = Vec::new();
@@ -411,6 +418,11 @@ fn validate_action(action: &CorporateActionRecord) -> Result<(), MarketError> {
             "split ratio terms must be positive",
         ));
     }
+    if action.revision == 0 {
+        return Err(MarketError::InvalidAction(
+            "action revision sequence starts at one",
+        ));
+    }
     Ok(())
 }
 
@@ -445,6 +457,13 @@ pub fn adjust_quote<'a>(
         });
     }
     limits.check_len(actions.len())?;
+    for action in actions {
+        check_control().map_err(MarketError::Stopped)?;
+        validate_action(action)?;
+        if action.instrument_id != quote.instrument_id {
+            return Err(MarketError::ScopeMismatch("action instrument_id"));
+        }
+    }
     let mut adjusted_price = ExactRational::from_decimal(quote.price)?;
     let method_id = if basis == PriceAdjustmentBasis::SplitAdjusted {
         SPLIT_ADJUSTED_METHOD_ID
@@ -465,27 +484,92 @@ pub fn adjust_quote<'a>(
             .try_reserve_exact(actions.len())
             .map_err(|_| MarketError::AllocationFailed)?;
         let mut versions = BTreeSet::new();
-        let mut effective_instants = BTreeSet::new();
+        let mut chains: BTreeMap<&OpaqueId, BTreeMap<u32, &CorporateActionRecord>> =
+            BTreeMap::new();
         for action in actions {
             check_control().map_err(MarketError::Stopped)?;
-            validate_action(action)?;
-            if action.instrument_id != quote.instrument_id {
-                return Err(MarketError::ScopeMismatch("action instrument_id"));
-            }
             if !versions.insert(&action.version) {
                 return Err(MarketError::DuplicateVersion(action.version.clone()));
             }
-            if !effective_instants.insert(action.effective_at_utc_ms) {
-                return Err(MarketError::InvalidAction(
-                    "multiple split actions at one instrument/effective instant are ambiguous",
-                ));
+            if chains
+                .entry(&action.action_id)
+                .or_default()
+                .insert(action.revision, action)
+                .is_some()
+            {
+                return Err(MarketError::DuplicateRevision(action.revision));
             }
+        }
+        for revisions in chains.values() {
+            let mut latest_known_public = None;
+            for (revision, action) in revisions {
+                check_control().map_err(MarketError::Stopped)?;
+                match (&action.predecessor_version, revisions.get(&(revision - 1))) {
+                    (None, _) if *revision == 1 => {}
+                    (Some(predecessor), Some(previous)) if *revision > 1 => {
+                        if predecessor != &previous.version {
+                            return Err(MarketError::InvalidAction(
+                                "action predecessor does not match the previous revision",
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Err(MarketError::InvalidAction(
+                            "action revision chain must be consecutive and explicitly linked",
+                        ));
+                    }
+                }
+                if let Some(current_public) = action.availability.public_available_at_utc_ms {
+                    if latest_known_public.is_some_and(|previous| current_public < previous) {
+                        return Err(MarketError::InvalidAction(
+                            "action public availability moves backward across revisions",
+                        ));
+                    }
+                    latest_known_public = Some(current_public);
+                }
+            }
+        }
+        let mut selected_by_event: BTreeMap<&OpaqueId, &CorporateActionRecord> = BTreeMap::new();
+        for action in actions {
+            check_control().map_err(MarketError::Stopped)?;
+            if let Some(reason) = availability_exclusion(action.availability, cutoff_utc_ms, mode) {
+                excluded_actions.push(ExcludedVersion {
+                    version: action.version.clone(),
+                    reason,
+                });
+                continue;
+            }
+            match selected_by_event.get_mut(&action.action_id) {
+                Some(current) if action.revision > current.revision => *current = action,
+                Some(_) => {}
+                None => {
+                    selected_by_event.insert(&action.action_id, action);
+                }
+            }
+        }
+        for action in actions {
+            check_control().map_err(MarketError::Stopped)?;
+            if availability_exclusion(action.availability, cutoff_utc_ms, mode).is_some() {
+                continue;
+            }
+            let selected =
+                selected_by_event
+                    .get(&action.action_id)
+                    .ok_or(MarketError::InvalidAction(
+                        "admissible action is missing from its revision chain",
+                    ))?;
+            if !std::ptr::eq(*selected, action) {
+                excluded_actions.push(ExcludedVersion {
+                    version: action.version.clone(),
+                    reason: ExclusionReason::SupersededByAdmissibleRevision,
+                });
+            }
+        }
+        let mut effective_instants = BTreeSet::new();
+        for action in selected_by_event.values() {
+            check_control().map_err(MarketError::Stopped)?;
             let exclusion = if action.effective_at_utc_ms > cutoff_utc_ms {
                 Some(ExclusionReason::EffectiveAfterCutoff)
-            } else if let Some(reason) =
-                availability_exclusion(action.availability, cutoff_utc_ms, mode)
-            {
-                Some(reason)
             } else if action.effective_at_utc_ms <= quote.observed_at_utc_ms {
                 Some(ExclusionReason::NotEffectiveForQuote)
             } else {
@@ -497,13 +581,18 @@ pub fn adjust_quote<'a>(
                     reason,
                 });
             } else {
-                eligible.push(action);
+                if !effective_instants.insert(action.effective_at_utc_ms) {
+                    return Err(MarketError::InvalidAction(
+                        "distinct split events at one instrument/effective instant are ambiguous",
+                    ));
+                }
+                eligible.push(*action);
             }
         }
         eligible.sort_by(|left, right| {
             left.effective_at_utc_ms
                 .cmp(&right.effective_at_utc_ms)
-                .then_with(|| left.version.cmp(&right.version))
+                .then_with(|| left.action_id.cmp(&right.action_id))
         });
         for action in eligible {
             check_control().map_err(MarketError::Stopped)?;

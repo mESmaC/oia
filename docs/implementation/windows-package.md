@@ -34,6 +34,8 @@ checkout may become untracked and must be moved before packaging again.
 
 The archive includes `oia.exe`, both repository licenses, third-party notices,
 README, Cargo.lock, usage/limits in PACKAGE.txt, and build-manifest.json. The
+Cesium license and bundled-library notices are also provided as separate files
+when the renderer is included. The
 manifest records revision, UTC build time, compiler, target, profile, OS, Cargo
 arguments, optional vendor inventory, and hashes/lengths for payload files other
 than itself. It is not a signed attestation or evidence of bit-reproducible builds.

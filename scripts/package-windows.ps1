@@ -79,6 +79,8 @@ if (-not $WithoutGlobe) {
     $VendorInventory = @(Get-ChildItem -LiteralPath $VendorCopy -File -Recurse | Sort-Object FullName | ForEach-Object {
         [ordered]@{ path = $_.FullName.Substring($VendorCopy.Length + 1).Replace('\', '/'); sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
     })
+    Copy-Item -LiteralPath (Join-Path $VendorCopy 'LICENSE.md') -Destination (Join-Path $Payload 'Cesium-LICENSE.md')
+    Copy-Item -LiteralPath (Join-Path $VendorCopy 'ThirdParty.json') -Destination (Join-Path $Payload 'Cesium-ThirdParty.json')
 }
 $Toolchain = ([IO.File]::ReadAllText((Join-Path $Source 'rust-toolchain.toml')) | Select-String 'channel\s*=\s*"([^"]+)"').Matches.Groups[1].Value
 if (-not $Toolchain) { throw 'package-windows: missing pinned Rust toolchain' }

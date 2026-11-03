@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::indexing_slicing, clippy::unwrap_used, clippy::expect_used)]
 
+pub mod station;
 pub mod uav;
 
 /// Crate boundary marker for `oia-devices` (`docs/architecture.md` §1.2, `#9`).

@@ -71,7 +71,8 @@ Lean metaprograms or changes to the audit itself.
 Git blob `d3580d7358e57a957a4d63925d0e6be41e81b084`.
 The tested path is `ForecastLedger::issue_forecast`, through its private
 `validate_cutoff_and_sources` function. Production Rust is unchanged here.
-The final PR validation record identifies the exact model/test commit checked.
+The [local validation record](VALIDATION.md) identifies the exact model/test
+commit checked and the positive and negative gate results.
 
 The projection maps `ProspectiveStrict` to `strictProspective`,
 `RetrospectiveReconstructed` to `retrospectiveReconstruction`, `Option<i64>`

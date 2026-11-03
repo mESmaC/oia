@@ -137,15 +137,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         4096,
     )?;
 
-    println!(
-        "\nValidated imported recreation `{}` (variant={:?}, observation_evidence={})",
-        imported.artifact_id(),
-        imported
-            .variant_id()
-            .map(OpaqueId::as_str)
-            .unwrap_or("shared"),
-        imported.can_serve_as_observation_evidence()
-    );
+    print!("\n{}", imported.portable_metadata_text(4096)?);
 
     Ok(())
 }

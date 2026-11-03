@@ -186,6 +186,61 @@ fn conflicting_accounts_and_imported_recreation_preserve_separation_and_labels()
     assert!(!validated.can_serve_as_observation_evidence());
     assert!(!validated.can_establish_physical_measurement());
 
+    // MEDIA-04/A10: exported metadata must retain labels and lineage, and never
+    // claim that a declared digest or a sidecar proves image-byte/pixel integrity.
+    let mut quoted_import = import_input.clone();
+    quoted_import.generator_settings =
+        "seed=108, note=\"variant_id=forged\" \\ می\u{200C}خواهم \u{200F}".to_owned();
+    let quoted = validate_imported_recreation(&quoted_import, &exported, 4096)?;
+    let sidecar = quoted.portable_metadata_text(4096)?;
+    assert!(sidecar.starts_with(VISIBLE_RECREATION_LABEL));
+    for line in [
+        "artifact_id=\"artifact:rec-1\"",
+        "artifact_version=\"ver:rec-1-v1\"",
+        "prompt_id=\"prompt:a10-recreation\"",
+        "prompt_version=\"ver:prompt-a10-v1\"",
+        "variant_id=\"variant:tandem-pair\"",
+        "generator_model=\"flux-illustrative-v1\"",
+        "media_type=\"image/png\"",
+        "Observation evidence: false",
+        "Physical measurement: false",
+        "Digest is caller-declared; image bytes have not been verified.",
+    ] {
+        assert!(sidecar.lines().any(|actual| actual == line), "{line}");
+    }
+    assert!(sidecar.contains(&format!(
+        "declared_sha256_hex=\"{}\"",
+        import_input.sha256_hex
+    )));
+    assert!(sidecar.contains("note=\\\"variant_id=forged\\\" \\\\ می\u{200C}خواهم \\u{200f}"));
+    assert!(!sidecar.contains('\u{200F}'));
+    assert!(sidecar.contains(quoted.fidelity_caveat()));
+    assert_eq!(quoted.portable_metadata_text(sidecar.len())?, sidecar);
+    assert!(matches!(
+        quoted.portable_metadata_text(sidecar.len() - 1),
+        Err(RecreationError::LimitExceeded {
+            kind: RecreationLimitKind::OutputBytes,
+            ..
+        })
+    ));
+    assert_eq!(
+        quoted.portable_metadata_text(0),
+        Err(RecreationError::ZeroLimit(RecreationLimitKind::OutputBytes))
+    );
+
+    let mut shared_input = input.clone();
+    shared_input.conflicting_variants.clear();
+    let shared =
+        export_recreation_prompt(&shared_input, limits, AssetExportPolicy::OmitWithNotice)?;
+    let mut shared_import = import_input.clone();
+    shared_import.variant_id = None;
+    let shared_validated = validate_imported_recreation(&shared_import, &shared, 4096)?;
+    assert!(
+        shared_validated
+            .portable_metadata_text(4096)?
+            .contains("\nvariant_id=\"\"\n")
+    );
+
     // Omitting variant_id when the prompt has conflicting variants is rejected.
     let mut missing_variant = import_input.clone();
     missing_variant.variant_id = None;

@@ -7,6 +7,7 @@ The Rust entry points live in [`crates/oia-media/src/recreation.rs`](../../crate
 
 - `oia_media::recreation::export_recreation_prompt`
 - `oia_media::recreation::validate_imported_recreation`
+- `ValidatedImportedRecreation::portable_metadata_text`
 
 ## Contract
 
@@ -34,6 +35,26 @@ with read-only getters and a deterministic, human-editable UTF-8 prompt document
    - Verifies that `prompt_id` and `prompt_version` match the exported prompt, requires `variant_id` to identify which declared variant was depicted whenever the prompt has conflicting variants (`MissingVariantSelection`), checks the 64-character lowercase hexadecimal SHA-256 digest format, preserves `generator_model` and `generator_settings`, requires an exact match with `VISIBLE_RECREATION_LABEL`, and returns an encapsulated `ValidatedImportedRecreation` whose `can_serve_as_observation_evidence()` and `can_establish_physical_measurement()` methods always return `false`.
    - Preserves `FIDELITY_AND_EXTERNAL_LABEL_CAVEAT`, stating that prompt wording alone neither proves physical fidelity nor guarantees external-generator metadata labeling.
 
+### Imported recreation metadata export
+
+`ValidatedImportedRecreation::portable_metadata_text(max_output_bytes)` returns a
+plain UTF-8 sidecar beginning with `ILLUSTRATIVE RECREATION`. It retains artifact
+ID/version, caller-declared digest, media type, prompt ID/version, selected variant,
+and generator model/settings. An explicitly empty `variant_id` means the validated
+prompt has no conflicting variants. It includes the fidelity caveat and explicit
+statements that the recreation cannot serve as observation evidence or establish
+physical measurements. Digest format validation does not verify image bytes.
+
+All values use the prompt exporter's quote and Unicode escaping rules. The byte
+budget includes escape expansion and every label; a zero budget is rejected and
+overflow returns an error without a partial document. The caller chooses where
+to save the returned text. This is a metadata sidecar, not a watermark or an image
+exporter, and it cannot guarantee that a label accompanies externally shared
+pixels. Distribute the pinned prompt separately to retain its source references,
+assumptions, unknowns, and competing accounts. Report/bundle integration remains
+open; downstream `oia-export` currently escapes ZWNJ/ZWJ in reports pending the
+shared helper work in #10.
+
 ## Limitations and remaining `#31` scope
 
 - This module is an in-memory validation and rendering kernel; it checks the 64-character lowercase hex SHA-256 format of caller-supplied digest strings and the exact `VISIBLE_RECREATION_LABEL` metadata string, but does not read or hash image files, decode image pixels, verify visual watermarks inside rendered pixel buffers, execute external image-generation models, or persist records to `oia-store`.
@@ -56,3 +77,19 @@ Three targeted contract tests in [`crates/oia-media/tests/recreation_contract.rs
 1. Persian, Devanagari, and emoji text preserve `ZWNJ`/`ZWJ`, while invisible-only fields containing each supported formatting/tag character are exported with visible `\u{...}` escapes rather than raw invisible characters.
 2. Conflicting variants, assumptions, unknowns, angular scale, omitted unpermitted assets, mandatory variant selection on import, and exact `VISIBLE_RECREATION_LABEL` metadata remain separated and refuse promotion to observation or measurement evidence.
 3. Unattributed reported details, per-item `source_versions` overflows, Unicode line-break/bidi/zero-width injection, quote-escape forging in manifest fields, asymmetric/empty variants, and budget-exceeding outputs are rejected without silent truncation or invented defaults.
+
+### Metadata sidecar verification (2026-11-03)
+
+Executed on Windows x86_64 MSVC with pinned `rustc 1.99.0`:
+
+- `cargo test -p oia-media --locked --offline --test recreation_contract`: all three existing contract tests passed, with focused assertions added for sidecar label/lineage preservation, quoted settings, visible Unicode escapes, absent variant semantics, and exact/insufficient/zero output budgets.
+- `cargo run -p oia-media --example export-recreation-prompt --locked --offline`: the synthetic example emitted the prompt followed by the labeled imported-recreation metadata sidecar.
+
+These checks cover metadata export only; they do not establish image-byte integrity,
+pixel watermarking, full A10 integration, or a formal proof claim.
+
+The workspace baseline also passed for this change: `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets --locked --offline -- -D warnings`, and
+`cargo test --workspace --locked --offline` (including the existing Rust cutoff
+correspondence test). Documentation relative links/fences and `git diff --check`
+passed. The Lean proof gate was not rerun; no covered algorithm changed.

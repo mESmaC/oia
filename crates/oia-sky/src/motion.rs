@@ -13,7 +13,19 @@ pub const MOTION_MODEL_ID: &str =
 
 /// Speed of light in AU/day, using the exact SI speed and IAU 2012 AU.
 pub const SPEED_OF_LIGHT_AU_PER_DAY: f64 = 299_792.458 * 86_400.0 / 149_597_870.700;
+/// Earliest supported TDB Julian date (1900-01-01T00:00 TDB).
+pub const MIN_JD_TDB: f64 = 2_415_020.5;
+/// Latest supported TDB Julian date (2100-01-01T00:00 TDB).
+pub const MAX_JD_TDB: f64 = 2_488_069.5;
+/// Maximum absolute propagation age from the element epoch (100 Julian years).
+pub const MAX_ELEMENT_AGE_DAYS: f64 = 36_525.0;
+/// Maximum absolute unwrapped mean anomaly. At this bound, one `f64` ulp is
+/// about 2.3e-10 rad (0.035 m at 1 AU), rather than an unbounded phase error.
+pub const MAX_UNWRAPPED_MEAN_ANOMALY_RAD: f64 = 1.0e6;
+/// Largest accepted observer-to-target range for light-time correction.
+pub const MAX_LIGHT_TIME_RANGE_AU: f64 = 1.0e9;
 
+const MAX_INPUT_ANGLE_DEG: f64 = 360.0;
 const MAX_METADATA_BYTES: usize = 128;
 
 /// Fields named by motion validation errors.
@@ -26,6 +38,8 @@ pub enum MotionField {
     AscendingNode,
     ArgumentOfPeriapsis,
     MeanAnomaly,
+    ElementAge,
+    Range,
     GravitationalParameter,
     Iterations,
     Tolerance,
@@ -134,6 +148,16 @@ fn in_range(field: MotionField, value: f64, min: f64, max: f64) -> Result<f64, M
     }
 }
 
+fn normalized_angle(field: MotionField, value: f64) -> Result<f64, MotionError> {
+    let value = in_range(field, value, -MAX_INPUT_ANGLE_DEG, MAX_INPUT_ANGLE_DEG)?;
+    let normalized = value.rem_euclid(360.0) + 0.0;
+    if normalized >= 360.0 {
+        Ok(0.0)
+    } else {
+        Ok(normalized)
+    }
+}
+
 fn metadata(field: MotionField, value: &str) -> Result<&str, MotionError> {
     if value.trim().is_empty() {
         return Err(MotionError::EmptyMetadata(field));
@@ -150,11 +174,13 @@ fn metadata(field: MotionField, value: &str) -> Result<&str, MotionError> {
     Ok(value)
 }
 
-/// A TDB Julian date. No UTC, UT1, or TT conversion is performed.
+/// A TDB Julian date in the supported 1900–2100 range. No UTC, UT1, or TT
+/// conversion is performed. **Provisional pending #12:** this type will move to
+/// or be replaced by shared higher-precision time and uncertainty primitives.
 ///
 /// The absolute date is an `f64`; near 2024 its spacing is about 43 µs. Use a
 /// returned light-time duration rather than subtracting absolute epochs when
-/// microsecond-scale timing matters. Higher-precision time belongs to #12.
+/// microsecond-scale timing matters.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TdbEpoch {
     jd_tdb: f64,
@@ -162,8 +188,9 @@ pub struct TdbEpoch {
 
 impl TdbEpoch {
     pub fn new(jd_tdb: f64) -> Result<Self, MotionError> {
-        finite(MotionField::JdTdb, jd_tdb)?;
-        Ok(Self { jd_tdb })
+        Ok(Self {
+            jd_tdb: in_range(MotionField::JdTdb, jd_tdb, MIN_JD_TDB, MAX_JD_TDB)?,
+        })
     }
 
     pub fn jd_tdb(self) -> f64 {
@@ -382,7 +409,7 @@ impl<'a> EllipticalElements<'a> {
         provenance: ElementProvenance<'a>,
         center: CenterId<'a>,
         epoch: TdbEpoch,
-        parameters: KeplerianParameters,
+        mut parameters: KeplerianParameters,
     ) -> Result<Self, MotionError> {
         in_range(
             MotionField::SemiMajorAxis,
@@ -405,12 +432,13 @@ impl<'a> EllipticalElements<'a> {
             0.0,
             180.0,
         )?;
-        finite(MotionField::AscendingNode, parameters.ascending_node_deg)?;
-        finite(
+        parameters.ascending_node_deg =
+            normalized_angle(MotionField::AscendingNode, parameters.ascending_node_deg)?;
+        parameters.argument_of_periapsis_deg = normalized_angle(
             MotionField::ArgumentOfPeriapsis,
             parameters.argument_of_periapsis_deg,
         )?;
-        finite(
+        parameters.mean_anomaly_at_epoch_deg = normalized_angle(
             MotionField::MeanAnomaly,
             parameters.mean_anomaly_at_epoch_deg,
         )?;
@@ -507,16 +535,24 @@ impl<'a> KeplerOrbit<'a> {
         epoch: TdbEpoch,
         limits: PropagationLimits,
     ) -> Result<OrbitalState<'a>, MotionError> {
-        let element_age_days = epoch.days_since(self.elements.epoch);
+        let element_age_days = in_range(
+            MotionField::ElementAge,
+            epoch.days_since(self.elements.epoch),
+            -MAX_ELEMENT_AGE_DAYS,
+            MAX_ELEMENT_AGE_DAYS,
+        )?;
         let mean_anomaly = self
             .elements
             .parameters
             .mean_anomaly_at_epoch_deg
             .to_radians()
             + self.mean_motion_rad_day * element_age_days;
-        if !mean_anomaly.is_finite() || !element_age_days.is_finite() {
-            return Err(MotionError::NonFiniteDerived("mean anomaly or element age"));
-        }
+        let mean_anomaly = in_range(
+            MotionField::MeanAnomaly,
+            mean_anomaly,
+            -MAX_UNWRAPPED_MEAN_ANOMALY_RAD,
+            MAX_UNWRAPPED_MEAN_ANOMALY_RAD,
+        )?;
         let mean_anomaly = mean_anomaly.rem_euclid(2.0 * std::f64::consts::PI);
         let (eccentric_anomaly, kepler_report) =
             solve_kepler(mean_anomaly, self.elements.parameters.eccentricity, limits)?;
@@ -787,6 +823,9 @@ impl<'a> LightTimePosition<'a> {
 /// Solves `tau = |target(t - tau) - observer(t)| / c` by bounded fixed-point
 /// iteration. Both samplers must return geometric states in the same inertial
 /// center and frame. The observer is evaluated only at the reception epoch.
+/// A non-inertial center can add a center-motion error of about `v_center*tau`;
+/// the retained heliocentric Mars comparison exhibits roughly 10 km from this
+/// effect, so use an inertial SSB-centered reference for tight verification.
 pub fn light_time_corrected_position<'a, E, F, G>(
     reception: TdbEpoch,
     mut target: F,
@@ -822,12 +861,20 @@ where
         if range_au <= 0.0 {
             return Err(MotionError::DegenerateRange.into());
         }
+        in_range(
+            MotionField::Range,
+            range_au,
+            f64::MIN_POSITIVE,
+            MAX_LIGHT_TIME_RANGE_AU,
+        )?;
         let next_light_time_days = range_au / SPEED_OF_LIGHT_AU_PER_DAY;
         if !next_light_time_days.is_finite() {
             return Err(MotionError::NonFiniteDerived("light time").into());
         }
         residual_days = (next_light_time_days - light_time_days).abs();
-        if residual_days <= limits.tolerance_days {
+        // Always apply at least one update; a coarse tolerance must not turn
+        // the initial tau = 0 guess into a supposedly corrected result.
+        if iteration > 1 && residual_days <= limits.tolerance_days {
             return Ok(LightTimePosition {
                 reception,
                 emission,

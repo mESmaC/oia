@@ -11,9 +11,9 @@ use std::path::PathBuf;
 
 use oia_sky::motion::{
     CartesianState, CenterId, ElementProvenance, EllipticalElements, KeplerOrbit,
-    KeplerianParameters, LightTimeError, LightTimeLimits, MotionError, PositionAu,
-    PropagationLimits, ReferenceFrame, SPEED_OF_LIGHT_AU_PER_DAY, TdbEpoch, VelocityAuPerDay,
-    light_time_corrected_position,
+    KeplerianParameters, LightTimeError, LightTimeLimits, MAX_JD_TDB, MAX_LIGHT_TIME_RANGE_AU,
+    MIN_JD_TDB, MotionError, MotionField, PositionAu, PropagationLimits, ReferenceFrame,
+    SPEED_OF_LIGHT_AU_PER_DAY, TdbEpoch, VelocityAuPerDay, light_time_corrected_position,
 };
 
 const AU_KM: f64 = 149_597_870.700;
@@ -311,15 +311,39 @@ fn stationary_light_time_has_a_retarded_epoch_and_bounded_failure() {
         error,
         LightTimeError::Motion(MotionError::LightTimeDidNotConverge { iterations: 1, .. })
     ));
+
+    let target = |epoch| -> Result<CartesianState<'_>, MotionError> {
+        Ok(CartesianState::new_geometric(
+            epoch,
+            ReferenceFrame::EclipticOfJ2000,
+            center,
+            target_position,
+            VelocityAuPerDay::new(0.0, 0.0, 0.0).unwrap(),
+        ))
+    };
+    let observer =
+        |epoch| -> Result<CartesianState<'_>, MotionError> { Ok(zero_state(epoch, center)) };
+    let coarse = light_time_corrected_position(
+        reception,
+        target,
+        observer,
+        LightTimeLimits::new(4, 1.0e-4).unwrap(),
+    )
+    .unwrap();
+    assert!(coarse.light_time_days() > 0.0);
+    assert_eq!(coarse.iterations(), 2);
 }
 
 #[test]
 fn one_hour_two_body_propagation_matches_independent_horizons_rows() {
-    const SUN_GM: f64 = 132_712_440_041.939_38;
-    const EARTH_GM: f64 = 398_600.435_436;
-    const MARS_GM: f64 = 42_828.375_214;
-    const JUPITER_GM: f64 = 126_712_764.8;
-    const MOON_GM: f64 = 4_902.800_066;
+    // DE441 technical comments, "Mass parameter (GM) for Sun, Moon, and
+    // Planets": https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de441_tech-comments.txt
+    // GM5 is the Jupiter-system (barycenter) value, not the isolated planet.
+    const SUN_GM: f64 = 132_712_440_041.279_42;
+    const EARTH_GM: f64 = 398_600.435_507;
+    const MARS_GM: f64 = 42_828.375_816;
+    const JUPITER_GM: f64 = 126_712_764.100_000;
+    const MOON_GM: f64 = 4_902.800_118;
     let cases = [
         ("vec-helio-earth-geometric", "Sun", SUN_GM + EARTH_GM),
         ("vec-helio-mars-geometric", "Sun", SUN_GM + MARS_GM),
@@ -344,13 +368,14 @@ fn one_hour_two_body_propagation_matches_independent_horizons_rows() {
 
 #[test]
 fn light_time_matches_separately_retained_horizons_mars_rows() {
-    const SUN_GM: f64 = 132_712_440_041.939_38;
-    const MARS_GM: f64 = 42_828.375_214;
-    let geometric = vector_rows("vec-helio-mars-geometric", "GEOMETRIC");
-    let corrected_reference = vector_rows("vec-helio-mars-lt", "LT CORRECTED");
+    // Same DE441 source and Mars-system GM as the short-horizon checks above.
+    const SUN_GM: f64 = 132_712_440_041.279_42;
+    const MARS_GM: f64 = 42_828.375_816;
+    let geometric = vector_rows("vec-ssb-mars-geometric", "GEOMETRIC");
+    let corrected_reference = vector_rows("vec-ssb-mars-lt", "LT CORRECTED");
     let orbit = fit_orbit(
-        "vec-helio-mars-geometric",
-        "Sun",
+        "vec-ssb-mars-geometric",
+        "Solar System Barycenter",
         geometric[0],
         mu_au_day(SUN_GM + MARS_GM),
     );
@@ -358,7 +383,7 @@ fn light_time_matches_separately_retained_horizons_mars_rows() {
 
     for (geometric_row, expected) in geometric.iter().zip(corrected_reference.iter()) {
         assert_eq!(geometric_row.jd_tdb, expected.jd_tdb);
-        let center = CenterId::new("Sun").unwrap();
+        let center = CenterId::new("Solar System Barycenter").unwrap();
         let target = |epoch| -> Result<CartesianState<'_>, MotionError> {
             orbit
                 .state_at(epoch, propagation_limits)
@@ -388,9 +413,9 @@ fn light_time_matches_separately_retained_horizons_mars_rows() {
             corrected.iterations()
         );
         assert!(correction_km > 1_000.0, "correction must be non-trivial");
-        assert!(position_error_km <= 50.0, "{position_error_km:.6} km");
-        assert!(range_error_km <= 50.0, "{range_error_km:.6} km");
-        assert!(light_time_error_days <= 2.0e-9);
+        assert!(position_error_km <= 0.25, "{position_error_km:.6} km");
+        assert!(range_error_km <= 0.25, "{range_error_km:.6} km");
+        assert!(light_time_error_days <= 1.0e-11);
         assert!(corrected.residual_days() <= corrected.tolerance_days());
         assert!(
             (expected.epoch().days_since(corrected.emission()) - corrected.light_time_days()).abs()
@@ -427,6 +452,85 @@ fn invalid_domains_and_exhausted_kepler_budget_are_typed_errors() {
     assert!(PositionAu::new(f64::NAN, 0.0, 0.0).is_err());
     assert!(VelocityAuPerDay::new(0.0, f64::INFINITY, 0.0).is_err());
     assert!(TdbEpoch::new(f64::NAN).is_err());
+    assert!(TdbEpoch::new(f64::MAX).is_err());
+    assert!(TdbEpoch::new(-f64::MAX).is_err());
+    assert!(TdbEpoch::new(MAX_JD_TDB + 1.0).is_err());
+
+    let mut huge_angle = parameters;
+    huge_angle.mean_anomaly_at_epoch_deg = 1.0e308;
+    assert!(matches!(
+        EllipticalElements::new(provenance, center, epoch, huge_angle),
+        Err(MotionError::OutOfRange {
+            field: MotionField::MeanAnomaly,
+            ..
+        })
+    ));
+    let mut normalized_angles = parameters;
+    normalized_angles.ascending_node_deg = 360.0;
+    normalized_angles.argument_of_periapsis_deg = -360.0;
+    normalized_angles.mean_anomaly_at_epoch_deg = 360.0;
+    let normalized = EllipticalElements::new(provenance, center, epoch, normalized_angles).unwrap();
+    assert_eq!(normalized.parameters().ascending_node_deg, 0.0);
+    assert_eq!(normalized.parameters().argument_of_periapsis_deg, 0.0);
+    assert_eq!(normalized.parameters().mean_anomaly_at_epoch_deg, 0.0);
+
+    let oldest_epoch = TdbEpoch::new(MIN_JD_TDB).unwrap();
+    let old_orbit = KeplerOrbit::new(
+        EllipticalElements::new(provenance, center, oldest_epoch, parameters).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        old_orbit.state_at(
+            TdbEpoch::new(MAX_JD_TDB).unwrap(),
+            PropagationLimits::new(20, 1.0e-12).unwrap()
+        ),
+        Err(MotionError::OutOfRange {
+            field: MotionField::ElementAge,
+            ..
+        })
+    ));
+    let mut excessive_phase = parameters;
+    excessive_phase.gravitational_parameter_au3_day2 = 1.0e12;
+    let excessive_phase_orbit = KeplerOrbit::new(
+        EllipticalElements::new(provenance, center, epoch, excessive_phase).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        excessive_phase_orbit.state_at(
+            TdbEpoch::new(epoch.jd_tdb() + 1.0).unwrap(),
+            PropagationLimits::new(20, 1.0e-12).unwrap()
+        ),
+        Err(MotionError::OutOfRange {
+            field: MotionField::MeanAnomaly,
+            ..
+        })
+    ));
+
+    let distant_position = PositionAu::new(MAX_LIGHT_TIME_RANGE_AU * 2.0, 0.0, 0.0).unwrap();
+    let distant_target = |epoch| -> Result<CartesianState<'_>, MotionError> {
+        Ok(CartesianState::new_geometric(
+            epoch,
+            ReferenceFrame::EclipticOfJ2000,
+            center,
+            distant_position,
+            VelocityAuPerDay::new(0.0, 0.0, 0.0).unwrap(),
+        ))
+    };
+    let observer =
+        |epoch| -> Result<CartesianState<'_>, MotionError> { Ok(zero_state(epoch, center)) };
+    assert!(matches!(
+        light_time_corrected_position(
+            epoch,
+            distant_target,
+            observer,
+            LightTimeLimits::new(4, 1.0e-12).unwrap()
+        ),
+        Err(LightTimeError::Motion(MotionError::OutOfRange {
+            field: MotionField::Range,
+            ..
+        }))
+    ));
+
     assert!(PropagationLimits::new(0, 1.0e-12).is_err());
     assert!(LightTimeLimits::new(0, 1.0e-12).is_err());
     assert!(LightTimeLimits::new(10, f64::NAN).is_err());

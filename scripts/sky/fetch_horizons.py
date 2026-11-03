@@ -241,6 +241,26 @@ CASES: list[dict] = [
                    "CENTER": "500@10", "VEC_CORR": "LT"},
     },
     {
+        "id": "vec-ssb-mars-geometric",
+        "purpose": "Solar-system-barycentric geometric (no light-time correction) ICRF "
+        "ecliptic state vector of Mars; TDB epochs; inertial light-time reference.",
+        "requirements": ["SPACE-05"],
+        "scenarios": ["A05"],
+        "expected_outcome": "ephemeris",
+        "params": {**VECTOR_COMMON, **VECTOR_EPOCH, "COMMAND": "499",
+                   "CENTER": "500@0", "VEC_CORR": "NONE"},
+    },
+    {
+        "id": "vec-ssb-mars-lt",
+        "purpose": "Same as vec-ssb-mars-geometric with one-way light-time correction, "
+        "retaining an inertial-center reference for the light-time solver.",
+        "requirements": ["SPACE-05"],
+        "scenarios": ["A05"],
+        "expected_outcome": "ephemeris",
+        "params": {**VECTOR_COMMON, **VECTOR_EPOCH, "COMMAND": "499",
+                   "CENTER": "500@0", "VEC_CORR": "LT"},
+    },
+    {
         "id": "vec-geo-moon-geometric",
         "purpose": "Geocentric geometric ICRF ecliptic state vector of the Moon (lunar "
         "orbit); TDB epochs.",

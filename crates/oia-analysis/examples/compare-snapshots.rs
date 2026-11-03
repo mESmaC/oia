@@ -1,8 +1,9 @@
 //! Read-only local comparison. Supplied timestamps describe retrieval of the
 //! captured text; file modification times are never substituted for provenance.
 use oia_analysis::snapshot_change::{
-    Capture, ChangeRule, MAX_TEXT_BYTES, METHOD_ID, RuleDecision, Snapshot, SnapshotInput,
-    SnapshotScope, StopReason, TextComparison, evaluate,
+    Capture, ChangeExplanation, ChangeExplanationLimits, ChangeRule, LineChangeCounts,
+    MAX_TEXT_BYTES, METHOD_ID, RuleDecision, Snapshot, SnapshotInput, SnapshotScope, StopReason,
+    TextComparison, evaluate,
 };
 use oia_domain::{OpaqueId, VersionId};
 use std::env;
@@ -125,6 +126,14 @@ fn run() -> Result<ExitCode, Box<dyn Error>> {
             Ok(())
         }
     })?;
+    let notification =
+        result.explain_notification(ChangeExplanationLimits::default_limits(), || {
+            if started.elapsed() >= Duration::from_secs(5) {
+                Err(StopReason::DeadlineExceeded)
+            } else {
+                Ok(())
+            }
+        })?;
     let mut output = io::stdout().lock();
     writeln!(
         output,
@@ -141,22 +150,25 @@ fn run() -> Result<ExitCode, Box<dyn Error>> {
     )?;
     writeln!(
         output,
-        "rule={}; criterion=any exact text change; max_retrieval_age_seconds={max_age}",
-        rule.version()
+        "rule={}; criterion={}; max_retrieval_age_seconds={max_age}",
+        notification.rule_version(),
+        notification.rule_criterion()
     )?;
     writeln!(
         output,
-        "before={}; retrieved_unix_seconds={}; bytes={}; coverage=complete",
+        "before={}; retrieved_unix_seconds={}; bytes={}; coverage={:?}",
         before.input().version,
         before_time.duration_since(UNIX_EPOCH)?.as_secs(),
-        before_text.len()
+        before_text.len(),
+        notification.baseline_coverage()
     )?;
     writeln!(
         output,
-        "after={}; retrieved_unix_seconds={}; bytes={}; coverage=complete",
+        "after={}; retrieved_unix_seconds={}; bytes={}; coverage={:?}",
         after.input().version,
         after_time.duration_since(UNIX_EPOCH)?.as_secs(),
-        after_text.len()
+        after_text.len(),
+        notification.current_coverage()
     )?;
     writeln!(
         output,
@@ -192,6 +204,87 @@ fn run() -> Result<ExitCode, Box<dyn Error>> {
                 .get(after.clone())
                 .ok_or_else(|| invalid("invalid after span"))?,
         )?;
+    }
+    match notification.explanation() {
+        ChangeExplanation::Changed {
+            method_id,
+            before_line_count,
+            after_line_count,
+            line_counts,
+            hunks,
+        } => {
+            match line_counts {
+                LineChangeCounts::Exact {
+                    unchanged_lines,
+                    inserted_lines,
+                    removed_lines,
+                } => {
+                    writeln!(
+                        output,
+                        "explanation_method={method_id}; before_lines={before_line_count}; after_lines={after_line_count}; line_counts=Exact; unchanged_lines={unchanged_lines}; inserted_lines={inserted_lines}; removed_lines={removed_lines}; hunk_count={}",
+                        hunks.len()
+                    )?;
+                }
+                LineChangeCounts::CoalescedWindowUpperBound {
+                    trimmed_unchanged_lines,
+                    coalesced_before_window_lines,
+                    coalesced_after_window_lines,
+                } => {
+                    writeln!(
+                        output,
+                        "explanation_method={method_id}; before_lines={before_line_count}; after_lines={after_line_count}; line_counts=CoalescedWindowUpperBound; trimmed_unchanged_lines={trimmed_unchanged_lines}; coalesced_before_window_upper_bound={coalesced_before_window_lines}; coalesced_after_window_upper_bound={coalesced_after_window_lines}; hunk_count={}; interior window exceeded MAX_LCS_CELLS and coalesced into one Modified hunk that may include unchanged lines",
+                        hunks.len()
+                    )?;
+                }
+            }
+            for (idx, hunk) in hunks.iter().enumerate() {
+                writeln!(
+                    output,
+                    "hunk[{idx}] kind={:?}; before_lines={:?}; after_lines={:?}; before_bytes={:?}; after_bytes={:?}",
+                    hunk.kind(),
+                    hunk.before_lines(),
+                    hunk.after_lines(),
+                    hunk.before_bytes(),
+                    hunk.after_bytes()
+                )?;
+                if !hunk.before_bytes().is_empty() {
+                    excerpt(
+                        &mut output,
+                        &format!("hunk[{idx}].before"),
+                        before_text
+                            .get(hunk.before_bytes())
+                            .ok_or_else(|| invalid("invalid hunk before_bytes"))?,
+                    )?;
+                }
+                if !hunk.after_bytes().is_empty() {
+                    excerpt(
+                        &mut output,
+                        &format!("hunk[{idx}].after"),
+                        after_text
+                            .get(hunk.after_bytes())
+                            .ok_or_else(|| invalid("invalid hunk after_bytes"))?,
+                    )?;
+                }
+            }
+        }
+        ChangeExplanation::Unchanged {
+            method_id,
+            line_count,
+        } => {
+            writeln!(
+                output,
+                "explanation_method={method_id}; status=Unchanged; lines={line_count}"
+            )?;
+        }
+        ChangeExplanation::Inconclusive {
+            baseline_coverage,
+            current_coverage,
+        } => {
+            writeln!(
+                output,
+                "explanation_status=Inconclusive; baseline_coverage={baseline_coverage:?}; current_coverage={current_coverage:?}"
+            )?;
+        }
     }
     Ok(match result.decision() {
         RuleDecision::ChangeDetected | RuleDecision::NoTextChange => ExitCode::SUCCESS,

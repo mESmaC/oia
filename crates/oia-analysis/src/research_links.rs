@@ -1,5 +1,5 @@
 //! Bounded public link analysis, reversible conflicting-identity resolution,
-//! circular citation tracing, and scientific/technical development tracking
+//! structural citation-cycle tracing, and scientific/technical development tracking
 //! (`INTEL-02`, `INTEL-04` alternate names, `REASON-03` reversible decisions,
 //! `A08` subset, `#36`).
 //!
@@ -18,28 +18,42 @@
 //!   (`Proposed` or `Confirmed`) candidates, it resolves to
 //!   [`MentionResolution::DisputedIdentity`] rather than silently merging to one entity,
 //!   and any link or technical record referencing that mention inherits the disputed state.
-//!   Reversing a candidate match (`DecisionState::Reversed`) requires a non-empty rationale
-//!   and cleanly unlinks dependent edges without deleting candidate history.
-//! - **Circular citation tracing (`INTEL-01`, `INTEL-02`, `A08`):** Traces directed
-//!   [`PublicLinkRelation::CitesPublication`] cycles across publications using Tarjan
+//!   Reversing a candidate match (`DecisionState::Reversed`) requires a non-empty rationale,
+//!   retains the full candidate list on [`EvaluatedMention::candidates`], and cleanly unlinks
+//!   dependent edges when all candidates are reversed. Note: because [`evaluate_research_links`]
+//!   is a stateless projection over the current candidate set, if a mention has two candidates
+//!   (`A`, `B`) and `A` is later reversed while `B` is confirmed, dependent links resolve to
+//!   `B` without a cross-snapshot diff flag.
+//! - **Structural circular citation tracing (`INTEL-01`, `INTEL-02`, `A08`):** Traces directed
+//!   [`PublicLinkRelation::CitesPublication`] cycles across publications using iterative Tarjan
 //!   strongly connected components (for guaranteed $O(V + E)$ cycle-membership detection)
 //!   plus bounded canonical elementary-cycle enumeration. Publications that participate in
-//!   a citation cycle, or whose outgoing citation paths lead only into a citation cycle,
-//!   are flagged so circular references cannot inflate independent technical support.
+//!   a citation cycle, or whose outgoing citation paths lead *exclusively* into a citation
+//!   cycle without reaching any acyclic publication, are flagged as structure. Corroboration
+//!   and independent-root verdicts belong exclusively to `oia_documents::lineage` (`AGENTS.md` §4).
 //! - **Proposal and patent vs. demonstrated capability (`INTEL-02`, `#36`):** Tracks
 //!   scientific and technical developments across grants, contracts, patents, theoretical
 //!   and simulation papers, and laboratory or field test reports. Grant awards, contract
 //!   scopes, patent filings/grants, and conceptual or simulation papers are capped at
 //!   proposal, patent, or analytical stages and can never establish demonstrated capability
-//!   — even if their prose claims a demonstration. Reported laboratory or field test
-//!   records are kept distinct from OIA-verified measurements (`AGENTS.md` §3), count
-//!   independent non-circular, non-simulated source groups, and flag downstream outputs for
-//!   reassessment when sources are corrected or retracted.
+//!   — even if their prose claims a demonstration. Only sources with observational or
+//!   source-assertion origins (`AcquiredSourceMaterial`, `NormalizedObservation`,
+//!   `ExtractedClaim`, `UserTestimony`, `ConventionalDerivative`) whose upstream lineage roots
+//!   are also observational or source-assertion records can establish reported links or
+//!   reported demonstrations; `Simulation`, `AnalyticalInference`, `Forecast`,
+//!   `PredictiveDerivative`, and `IllustrativeRecreation` sources are excluded. Retracted
+//!   sources (`SourceLifecycleState::Retracted`) are excluded from active maturity and
+//!   confirmed link counts, and both direct and transitive upstream `CorrectedBy` / `Retracted`
+//!   states propagate `needs_reassessment` to downstream mentions, links, and technical items.
 //!
 //! ### Relationship to other modules (`AGENTS.md` §4)
 //!
-//! - `oia_documents::lineage` (`#19`) evaluates document-release graphs, bibliographic
-//!   citation cycles, and claim-level corroboration over document artifacts.
+//! - **Option (b) boundary with `oia_documents::lineage` (`#19`):** `oia_documents::lineage`
+//!   is the sole owner of document-release corroboration verdicts and independent-root counts
+//!   (`evaluate_claim_corroboration`, `independent_root_count`). This module stays
+//!   dependency-independent of `oia-documents` and reports `CitesPublication` edges, directed
+//!   citation cycles, and shared in-set `derived_from_versions` as *structure only*, without
+//!   computing a parallel independent-corroboration count.
 //! - [`crate::reasoning`] (`#35`) evaluates general `AbstractionSpec` steps inside a
 //!   deductive/correlative `ReasoningGraph`. This module reuses [`DecisionState`] and
 //!   [`EvidenceOriginClass`] from [`crate::reasoning`] and [`StopReason`] from
@@ -47,7 +61,7 @@
 
 pub use crate::multilingual::StopReason;
 pub use crate::reasoning::{DecisionState, EvidenceOriginClass};
-use oia_domain::text::is_format_control;
+use oia_domain::text::requires_visible_unicode_escape;
 use oia_domain::{OpaqueId, VersionId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -72,14 +86,16 @@ pub const TECHNICAL_MATURITY_CAVEAT: &str = "Patents, grant awards, contract sco
     literature remain source assertions requiring independent empirical verification.";
 
 /// Mandatory caveat attached to every [`ResearchLinkReport`] regarding circular citations.
-pub const CIRCULAR_CITATION_CAVEAT: &str = "Publications connected by a directed citation cycle \
-    or deriving solely from the same source lineage do not provide independent technical \
-    corroboration.";
+pub const CIRCULAR_CITATION_CAVEAT: &str = "Citation edges, directed citation cycles, and \
+    declared source lineage are reported as graph structure only; document-level independent \
+    corroboration verdicts belong to oia_documents::lineage.";
 
-/// Mandatory caveat attached to every [`ResearchLinkReport`] regarding simulated sources.
-pub const SIMULATED_SOURCE_CAVEAT: &str = "Sources with EvidenceOriginClass::Simulation (or \
-    deriving solely from simulated sources) are retained for fixture and sensitivity checks only; \
-    they never count as reported public links or demonstrated capability.";
+/// Mandatory caveat attached to every [`ResearchLinkReport`] regarding non-empirical or
+/// synthetic sources.
+pub const SIMULATED_SOURCE_CAVEAT: &str = "Sources with Simulation, AnalyticalInference, \
+    Forecast, PredictiveDerivative, or IllustrativeRecreation origin classes (or deriving from \
+    non-observational / non-source-assertion lineage roots) never count as reported public links \
+    or demonstrated capability.";
 
 /// Default maximum number of source versions in one evaluation request.
 pub const MAX_SOURCES: usize = 128;
@@ -112,7 +128,7 @@ pub const MAX_REPORTED_CYCLES: usize = 64;
 /// Default maximum depth-first search steps during elementary citation-cycle enumeration.
 pub const MAX_CYCLE_DFS_STEPS: usize = 16_384;
 
-const CONTROL_CHECK_INTERVAL: usize = 256;
+const CONTROL_CHECK_INTERVAL: usize = 64;
 
 /// Which budget was zero or exceeded in a [`ResearchLinkRequest`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -467,7 +483,7 @@ impl fmt::Display for ResearchLinkError {
             }
             Self::ControlOrFormatCharacter { context, field } => write!(
                 f,
-                "{context}.{field} contains disallowed control or Unicode format characters"
+                "{context}.{field} contains disallowed control or invisible Unicode format characters"
             ),
             Self::DuplicateSourceVersion(v) => {
                 write!(f, "duplicate source version {v} in research link request")
@@ -608,7 +624,8 @@ pub enum SourceLifecycleState {
         replacement_version: VersionId,
         summary: String,
     },
-    /// Version has been retracted; dependent items need reassessment.
+    /// Version has been retracted; dependent items are excluded from active link/maturity
+    /// rollups and flagged for reassessment.
     Retracted { reason: String },
 }
 
@@ -1005,10 +1022,11 @@ pub struct TechnicalEvidenceItem {
     pub artifact_kind: TechnicalArtifactKind,
     pub claimed_stage: ClaimedTechnicalStage,
     /// Optional reference to a [`PublicEntityKind::Publication`] node so citation cycles
-    /// (`CitesPublication`) propagate to this item's independence assessment.
+    /// (`CitesPublication`) propagate to this item's structural cycle flags.
     pub publication_entity_id: Option<OpaqueId>,
     /// Optional references to [`PublicEntityKind::Grant`] or [`PublicEntityKind::Contract`]
-    /// nodes supporting or associated with this item.
+    /// nodes declared by the item itself (kept distinct from link-confirmed funding in
+    /// [`TechnicalDevelopmentAssessment::item_declared_funding_or_contract_ids`]).
     pub funding_or_contract_ids: Vec<OpaqueId>,
     pub source_version: VersionId,
     pub verbatim_claim: String,
@@ -1068,8 +1086,9 @@ pub struct SourceSummary {
     pub version_id: VersionId,
     pub origin_class: EvidenceOriginClass,
     pub lifecycle: SourceLifecycleState,
-    /// `true` when `origin_class` is not `Simulation` and its declared in-set lineage does
-    /// not trace exclusively to `Simulation` sources.
+    /// `true` only when `lifecycle` is not `Retracted`, `origin_class` is an observational or
+    /// source-assertion class (`!origin_class.requires_non_observational_qualification()`), and
+    /// at least one in-set lineage root is also non-retracted and observational/source-assertion.
     pub counts_as_reported_public_source: bool,
     /// Upstream source versions that were declared in `derived_from_versions` and are present
     /// in the evaluated request.
@@ -1082,24 +1101,28 @@ pub struct SourceSummary {
     pub lineage_root_versions: Vec<VersionId>,
 }
 
-/// Evaluated [`IdentityMention`] with its resolved state and reassessment notices.
+/// Evaluated [`IdentityMention`] with its retained candidate history, resolved state, and
+/// reassessment notices.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvaluatedMention {
     pub mention_id: OpaqueId,
     pub verbatim_text: String,
     pub source_version: VersionId,
     pub expected_kind: PublicEntityKind,
+    /// Full candidate list (including `Reversed` candidates and their reversal rationales)
+    /// preserved for auditability (`REASON-03`).
+    pub candidates: Vec<IdentityCandidateMatch>,
     pub resolution: MentionResolution,
     pub needs_reassessment: bool,
     pub reassessment_reasons: Vec<ReassessmentReason>,
 }
 
 /// Effective status of a [`PublicLinkRecord`] after resolving endpoint mentions, decisions,
-/// and source origin classes.
+/// source lifecycle, and source origin classes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkEffectiveStatus {
     /// Confirmed substantive link (`!ObservedCoOccurrence`) with uniquely confirmed endpoints
-    /// and a non-simulated source.
+    /// and a qualifying non-retracted observational/source-assertion source.
     ConfirmedSubstantive {
         from_entity_id: OpaqueId,
         to_entity_id: OpaqueId,
@@ -1119,11 +1142,15 @@ pub enum LinkEffectiveStatus {
     /// Link cannot be resolved to a single pair of entities because at least one endpoint
     /// mention has [`MentionResolution::DisputedIdentity`] (`A08`).
     DisputedEndpointIdentity { disputed_mention_ids: Vec<OpaqueId> },
-    /// Link is backed by a simulated source (`!counts_as_reported_public_source`).
+    /// Link is backed by a `Simulation`, `AnalyticalInference`, `Forecast`,
+    /// `PredictiveDerivative`, or `IllustrativeRecreation` source (`!counts_as_reported_public_source`).
     SimulatedSourceOnly {
         from_entity_id: Option<OpaqueId>,
         to_entity_id: Option<OpaqueId>,
     },
+    /// Link is inactive because its source version (or all of its in-set lineage roots) has
+    /// been [`SourceLifecycleState::Retracted`].
+    InactiveRetractedSource,
     /// Link is inactive because its own decision is `Reversed` or an endpoint mention is
     /// `AllReversed`.
     InactiveReversed,
@@ -1154,7 +1181,7 @@ pub struct CitationCycle {
     /// `true` if any link in the cycle has `ProposedUnconfirmed` status rather than
     /// `ConfirmedSubstantive`.
     pub includes_unconfirmed_link: bool,
-    /// `true` if any link in the cycle comes from a simulated source.
+    /// `true` if any link in the cycle comes from a non-observational / simulated source.
     pub includes_simulated_source: bool,
 }
 
@@ -1175,17 +1202,22 @@ pub enum DemonstrationCaveat {
     /// A laboratory test report claimed a field or operational demonstration; scope is capped
     /// at [`DemonstrationScope::Laboratory`].
     LaboratoryReportClaimedFieldDemonstration,
-    /// A simulated source (`EvidenceOriginClass::Simulation`) claimed a demonstration.
+    /// A source with `Simulation`, `AnalyticalInference`, `Forecast`, `PredictiveDerivative`,
+    /// or `IllustrativeRecreation` origin class (or deriving solely from such roots) claimed a
+    /// demonstration (`AGENTS.md` §2).
     SimulatedSourceCannotEstablishDemonstration,
-    /// The item's publication participates in or depends on a directed citation cycle.
+    /// A retracted source (`SourceLifecycleState::Retracted`) cannot establish active maturity.
+    RetractedSourceCannotEstablishMaturity { source_version: VersionId },
+    /// The item's publication participates in or depends exclusively on a directed citation cycle.
     CircularCitationChain { publication_entity_id: OpaqueId },
 }
 
 /// Assessed technical stage of a single [`TechnicalEvidenceItem`] after applying `INTEL-02`
-/// artifact-kind, simulation, decision, and circular-citation rules.
+/// artifact-kind, source-origin, lifecycle, decision, and circular-citation rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AssessedTechnicalStage {
     ReversedClaim,
+    RetractedSourceClaim,
     SimulatedEvidenceOnly,
     ProposalOrFundingScopeOnly,
     PatentSpecificationOnly,
@@ -1204,6 +1236,7 @@ impl fmt::Display for AssessedTechnicalStage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ReversedClaim => f.write_str("reversed_claim"),
+            Self::RetractedSourceClaim => f.write_str("retracted_source_claim"),
             Self::SimulatedEvidenceOnly => f.write_str("simulated_evidence_only"),
             Self::ProposalOrFundingScopeOnly => f.write_str("proposal_or_funding_scope_only"),
             Self::PatentSpecificationOnly => f.write_str("patent_specification_only"),
@@ -1244,26 +1277,28 @@ pub struct AssessedTechnicalItem {
 }
 
 /// Overall rolled-up maturity classification for a [`TechnicalDevelopmentAssessment`] (`INTEL-02`).
+///
+/// Document-level corroboration verdicts and independent-root counts are owned by
+/// `oia_documents::lineage` (`AGENTS.md` §4); this enum reports the highest qualifying stage
+/// together with structural source/publication metadata on [`TechnicalDevelopmentAssessment`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OverallTechnicalMaturity {
-    /// Every item on the track has been reversed.
+    /// Every item on the track has been reversed or comes from a retracted source.
     NoActiveEvidence,
-    /// Only simulated evidence items are active.
+    /// Only simulated or non-observational/non-source-assertion items are active.
     SimulatedOnly,
     /// Active evidence consists only of grant/contract proposals, awards, theoretical papers,
     /// or patents — never demonstrated capability (`INTEL-02`).
     ProposalOrPatentOnly,
     /// Highest active evidence is an analytical or simulation study without empirical test reports.
     AnalyticalOrModelledOnly,
-    /// Empirical test reports exist, but all are either unconfirmed (`Proposed`) or tied to a
-    /// circular citation chain.
+    /// Empirical test reports exist, but all are either unconfirmed (`Proposed`) or tied
+    /// exclusively to a circular citation chain.
     CircularOrUnconfirmedDemonstrationOnly,
-    /// At least one confirmed, non-simulated, non-circular laboratory or field test report
-    /// supports this capability track. Still subject to [`TECHNICAL_MATURITY_CAVEAT`].
-    ReportedDemonstratedCapability {
-        highest_scope: DemonstrationScope,
-        independent_group_count: usize,
-    },
+    /// At least one confirmed, non-retracted, observational/source-assertion, non-circular
+    /// laboratory or field test report supports this capability track. Still subject to
+    /// [`TECHNICAL_MATURITY_CAVEAT`] and `oia_documents::lineage` corroboration evaluation.
+    ReportedDemonstratedCapability { highest_scope: DemonstrationScope },
 }
 
 impl fmt::Display for OverallTechnicalMaturity {
@@ -1276,13 +1311,9 @@ impl fmt::Display for OverallTechnicalMaturity {
             Self::CircularOrUnconfirmedDemonstrationOnly => {
                 f.write_str("circular_or_unconfirmed_demonstration_only")
             }
-            Self::ReportedDemonstratedCapability {
-                highest_scope,
-                independent_group_count,
-            } => write!(
-                f,
-                "reported_demonstrated_capability({highest_scope}, independent_groups={independent_group_count})"
-            ),
+            Self::ReportedDemonstratedCapability { highest_scope } => {
+                write!(f, "reported_demonstrated_capability({highest_scope})")
+            }
         }
     }
 }
@@ -1306,18 +1337,24 @@ pub struct TechnicalDevelopmentAssessment {
     pub confirmed_demonstration_item_count: usize,
     pub circular_demonstration_item_count: usize,
     pub simulated_item_count: usize,
+    pub retracted_item_count: usize,
     pub reversed_item_count: usize,
-    /// Number of independent non-simulated, non-circular source groups supporting
-    /// `ConfirmedReportedDemonstration` items (merging sources that share declared lineage
-    /// roots or cite one another via `CitesPublication`).
-    pub independent_demonstration_group_count: usize,
+    /// Source versions of confirmed, non-circular demonstration items (reported as structure;
+    /// independent-corroboration verdicts belong to `oia_documents::lineage`).
+    pub demonstration_source_versions: Vec<VersionId>,
+    /// In-set lineage root versions that are shared by two or more confirmed, non-circular
+    /// demonstration items on this track (structural shared-lineage indicator).
+    pub shared_demonstration_lineage_roots: Vec<VersionId>,
     /// `true` if any item claimed an empirical demonstration from a grant, contract, patent,
-    /// conceptual/simulation paper, or simulated source.
+    /// conceptual/simulation paper, or non-observational/simulated source.
     pub has_unsupported_demonstration_claim: bool,
-    /// Confirmed funding/contract entities linked either directly on items or via confirmed
-    /// `GrantsFundingTo` / `AwardsContractTo` / `LinksGrantOrContractToOutput` edges to the
-    /// resolved subject or item publications.
+    /// Confirmed funding/contract entities established by `ConfirmedSubstantive`
+    /// `GrantsFundingTo` / `AwardsContractTo` / `LinksGrantOrContractToOutput` links touching
+    /// the resolved subject or item publications.
     pub confirmed_funding_or_contract_ids: Vec<OpaqueId>,
+    /// Funding/contract entities declared directly on confirmed items' `funding_or_contract_ids`
+    /// fields (kept separate from link-confirmed [`Self::confirmed_funding_or_contract_ids`]).
+    pub item_declared_funding_or_contract_ids: Vec<OpaqueId>,
     /// Mentions with `DisputedIdentity` that touch funding/contract links for this subject,
     /// kept separate so disputed organization/grant matches never appear as confirmed funding.
     pub disputed_funding_mention_ids: Vec<OpaqueId>,
@@ -1341,8 +1378,8 @@ pub enum ResearchLinkLimitation {
         reported_cycles: usize,
         dfs_steps: usize,
     },
-    /// At least one source in the request has `EvidenceOriginClass::Simulation` (or derives
-    /// solely from simulated sources).
+    /// At least one source in the request has a non-observational / simulated origin class (or
+    /// derives exclusively from such lineage roots).
     ContainsSimulatedSources {
         simulated_source_versions: Vec<VersionId>,
     },
@@ -1373,8 +1410,8 @@ pub struct ResearchLinkReport {
     /// Canonical elementary directed citation cycles over active `CitesPublication` edges.
     pub citation_cycles: Vec<CitationCycle>,
     /// All publication entity IDs that either belong to a directed citation cycle (exact via
-    /// Tarjan SCCs + self-free cycle paths) or whose outgoing `CitesPublication` paths lead
-    /// exclusively into a citation cycle.
+    /// Tarjan SCCs) or whose outgoing `CitesPublication` paths lead *exclusively* into a
+    /// citation cycle without reaching any acyclic publication.
     pub publications_with_circular_dependency: Vec<OpaqueId>,
     pub developments: Vec<TechnicalDevelopmentAssessment>,
     pub limitations: Vec<ResearchLinkLimitation>,
@@ -1389,6 +1426,18 @@ impl ResearchLinkReport {
     }
 }
 
+/// Internal resolved representation of a [`LinkEndpoint`].
+#[derive(Debug, Clone)]
+struct ResolvedEndpoint {
+    kind: PublicEntityKind,
+    entity_id: Option<OpaqueId>,
+    is_confirmed_unique: bool,
+    is_proposed_only: bool,
+    disputed_mention_id: Option<OpaqueId>,
+    reversed_mention_id: Option<OpaqueId>,
+    reassessment_reasons: Vec<ReassessmentReason>,
+}
+
 fn check_stop_tick(
     counter: &mut usize,
     check_stop: &mut impl FnMut() -> Option<StopReason>,
@@ -1400,6 +1449,15 @@ fn check_stop_tick(
         return Err(ResearchLinkError::Stopped(reason));
     }
     Ok(())
+}
+
+/// Returns `true` when `origin` is an observational or source-assertion class eligible to
+/// back reported public links and reported empirical test records (`AGENTS.md` §2).
+///
+/// Excludes `Simulation`, `AnalyticalInference`, `Forecast`, `PredictiveDerivative`, and
+/// `IllustrativeRecreation`.
+const fn can_back_reported_public_evidence(origin: EvidenceOriginClass) -> bool {
+    !origin.requires_non_observational_qualification()
 }
 
 fn validate_text_field(
@@ -1421,10 +1479,10 @@ fn validate_text_field(
             max: max_bytes,
         });
     }
-    if value
-        .chars()
-        .any(|ch| ch.is_control() || is_format_control(ch))
-    {
+    // Uses `requires_visible_unicode_escape` from `oia_domain::text`, which rejects control
+    // characters and bidi/invisible format characters while preserving ZWNJ (U+200C) and
+    // ZWJ (U+200D) for multilingual script shaping (`INTEL-04`).
+    if value.chars().any(requires_visible_unicode_escape) {
         return Err(ResearchLinkError::ControlOrFormatCharacter { context, field });
     }
     *total_text_bytes = total_text_bytes.saturating_add(value.len());
@@ -1477,7 +1535,7 @@ fn validate_decision_state(
     }
 }
 
-fn source_reassessment_reason(
+fn direct_source_reassessment_reason(
     lifecycle: &SourceLifecycleState,
     version_id: &VersionId,
 ) -> Option<ReassessmentReason> {
@@ -1651,9 +1709,13 @@ pub fn evaluate_research_links(
         }
     }
 
-    // Compute source lineage roots and simulation taint across in-set sources.
+    // Compute source lineage roots, transitive reassessment reasons, retraction status, and
+    // observational/source-assertion eligibility across in-set sources.
     let mut source_summaries = Vec::with_capacity(request.sources.len());
     let mut source_summary_by_version: BTreeMap<VersionId, SourceSummary> = BTreeMap::new();
+    let mut source_reassessment_by_version: BTreeMap<VersionId, Vec<ReassessmentReason>> =
+        BTreeMap::new();
+    let mut source_retracted_by_version: BTreeMap<VersionId, bool> = BTreeMap::new();
     let mut limitations = Vec::new();
     let mut simulated_source_versions = Vec::new();
     let mut non_current_source_versions = Vec::new();
@@ -1676,17 +1738,24 @@ pub fn evaluate_research_links(
             });
         }
 
-        // Walk in-set upstream graph to find roots and check whether all roots are Simulation.
+        // Walk in-set upstream graph to find roots, propagate reassessment reasons transitively,
+        // and check whether at least one root is non-retracted and observational/source-assertion.
         let mut visited: BTreeSet<VersionId> = BTreeSet::new();
         let mut stack: Vec<VersionId> = vec![src.version_id.clone()];
         let mut roots: BTreeSet<VersionId> = BTreeSet::new();
-        let mut has_non_simulated_anchor = false;
+        let mut lineage_reasons: BTreeSet<ReassessmentReason> = BTreeSet::new();
+        let mut has_qualifying_empirical_or_source_root = false;
+        let mut has_non_retracted_root = false;
 
         while let Some(curr_ver) = stack.pop() {
+            check_stop_tick(&mut tick, &mut check_stop)?;
             if !visited.insert(curr_ver.clone()) {
                 continue;
             }
             if let Some(curr_src) = source_by_version.get(&curr_ver) {
+                if let Some(r) = direct_source_reassessment_reason(&curr_src.lifecycle, &curr_ver) {
+                    lineage_reasons.insert(r);
+                }
                 let curr_in_set_up: Vec<VersionId> = curr_src
                     .derived_from_versions
                     .iter()
@@ -1695,8 +1764,13 @@ pub fn evaluate_research_links(
                     .collect();
                 if curr_in_set_up.is_empty() {
                     roots.insert(curr_ver.clone());
-                    if curr_src.origin_class != EvidenceOriginClass::Simulation {
-                        has_non_simulated_anchor = true;
+                    let root_retracted =
+                        matches!(curr_src.lifecycle, SourceLifecycleState::Retracted { .. });
+                    if !root_retracted {
+                        has_non_retracted_root = true;
+                        if can_back_reported_public_evidence(curr_src.origin_class) {
+                            has_qualifying_empirical_or_source_root = true;
+                        }
                     }
                 } else {
                     for next_up in curr_in_set_up {
@@ -1710,22 +1784,37 @@ pub fn evaluate_research_links(
         if roots.is_empty() {
             for v in &visited {
                 roots.insert(v.clone());
-                if let Some(s) = source_by_version.get(v)
-                    && s.origin_class != EvidenceOriginClass::Simulation
-                {
-                    has_non_simulated_anchor = true;
+                if let Some(s) = source_by_version.get(v) {
+                    let root_retracted =
+                        matches!(s.lifecycle, SourceLifecycleState::Retracted { .. });
+                    if !root_retracted {
+                        has_non_retracted_root = true;
+                        if can_back_reported_public_evidence(s.origin_class) {
+                            has_qualifying_empirical_or_source_root = true;
+                        }
+                    }
                 }
             }
         }
 
-        let counts_as_reported_public_source =
-            src.origin_class != EvidenceOriginClass::Simulation && has_non_simulated_anchor;
-        if !counts_as_reported_public_source {
+        let is_retracted = matches!(src.lifecycle, SourceLifecycleState::Retracted { .. })
+            || !has_non_retracted_root;
+        let has_qualifying_origin = can_back_reported_public_evidence(src.origin_class)
+            && has_qualifying_empirical_or_source_root;
+        let counts_as_reported_public_source = !is_retracted && has_qualifying_origin;
+
+        if !has_qualifying_origin {
             simulated_source_versions.push(src.version_id.clone());
         }
         if !matches!(src.lifecycle, SourceLifecycleState::Current) {
             non_current_source_versions.push(src.version_id.clone());
         }
+
+        source_reassessment_by_version.insert(
+            src.version_id.clone(),
+            lineage_reasons.into_iter().collect(),
+        );
+        source_retracted_by_version.insert(src.version_id.clone(), is_retracted);
 
         let summary = SourceSummary {
             source_id: src.source_id.clone(),
@@ -1787,6 +1876,7 @@ pub fn evaluate_research_links(
             });
         }
         for alt in &entity.alternate_names {
+            check_stop_tick(&mut tick, &mut check_stop)?;
             if !source_by_version.contains_key(&alt.source_version) {
                 return Err(ResearchLinkError::UnknownSourceVersion {
                     context: "entity.alternate_name.source_version",
@@ -1843,12 +1933,12 @@ pub fn evaluate_research_links(
                 mention.mention_id.clone(),
             ));
         }
-        let Some(mention_src) = source_by_version.get(&mention.source_version) else {
+        if !source_by_version.contains_key(&mention.source_version) {
             return Err(ResearchLinkError::UnknownSourceVersion {
                 context: "mention.source_version",
                 version_id: mention.source_version.clone(),
             });
-        };
+        }
         validate_text_field(
             "mention",
             "verbatim_text",
@@ -1878,12 +1968,14 @@ pub fn evaluate_research_links(
         let mut reversed_count = 0usize;
         let mut reasons: BTreeSet<ReassessmentReason> = BTreeSet::new();
 
-        if let Some(r) = source_reassessment_reason(&mention_src.lifecycle, &mention.source_version)
-        {
-            reasons.insert(r);
+        if let Some(src_reasons) = source_reassessment_by_version.get(&mention.source_version) {
+            for r in src_reasons {
+                reasons.insert(r.clone());
+            }
         }
 
         for cand in &mention.candidates {
+            check_stop_tick(&mut tick, &mut check_stop)?;
             if !seen_cand_ids.insert(cand.candidate_id.clone()) {
                 return Err(ResearchLinkError::DuplicateCandidateId {
                     mention_id: mention.mention_id.clone(),
@@ -1910,12 +2002,12 @@ pub fn evaluate_research_links(
                     target_entity_id: cand.target_entity_id.clone(),
                 });
             }
-            let Some(cand_src) = source_by_version.get(&cand.supporting_source_version) else {
+            if !source_by_version.contains_key(&cand.supporting_source_version) {
                 return Err(ResearchLinkError::UnknownSourceVersion {
                     context: "mention.candidate.supporting_source_version",
                     version_id: cand.supporting_source_version.clone(),
                 });
-            };
+            }
             validate_text_field(
                 "mention.candidate",
                 "matching_basis",
@@ -1933,18 +2025,19 @@ pub fn evaluate_research_links(
             )?;
 
             if !matches!(cand.decision, DecisionState::Reversed { .. }) {
-                if let Some(r) =
-                    source_reassessment_reason(&cand_src.lifecycle, &cand.supporting_source_version)
+                if let Some(cand_reasons) =
+                    source_reassessment_by_version.get(&cand.supporting_source_version)
                 {
-                    reasons.insert(r);
+                    for r in cand_reasons {
+                        reasons.insert(r.clone());
+                    }
                 }
-                if let Some(def_src) = source_by_version.get(&target_entity.defining_source_version)
-                    && let Some(r) = source_reassessment_reason(
-                        &def_src.lifecycle,
-                        &target_entity.defining_source_version,
-                    )
+                if let Some(def_reasons) =
+                    source_reassessment_by_version.get(&target_entity.defining_source_version)
                 {
-                    reasons.insert(r);
+                    for r in def_reasons {
+                        reasons.insert(r.clone());
+                    }
                 }
             }
 
@@ -1993,6 +2086,7 @@ pub fn evaluate_research_links(
             verbatim_text: mention.verbatim_text.clone(),
             source_version: mention.source_version.clone(),
             expected_kind: mention.expected_kind,
+            candidates: mention.candidates.clone(),
             resolution,
             needs_reassessment: !reassessment_reasons.is_empty(),
             reassessment_reasons,
@@ -2003,18 +2097,7 @@ pub fn evaluate_research_links(
 
     let resolve_endpoint = |context: &'static str,
                             endpoint: &LinkEndpoint|
-     -> Result<
-        (
-            PublicEntityKind,
-            Option<OpaqueId>,
-            bool,
-            bool,
-            Option<OpaqueId>,
-            Option<OpaqueId>,
-            Vec<ReassessmentReason>,
-        ),
-        ResearchLinkError,
-    > {
+     -> Result<ResolvedEndpoint, ResearchLinkError> {
         match endpoint {
             LinkEndpoint::Entity(entity_id) => {
                 let Some(ent) = entity_by_id.get(entity_id) else {
@@ -2023,22 +2106,19 @@ pub fn evaluate_research_links(
                         entity_id: entity_id.clone(),
                     });
                 };
-                let mut ep_reasons = Vec::new();
-                if let Some(def_src) = source_by_version.get(&ent.defining_source_version)
-                    && let Some(r) =
-                        source_reassessment_reason(&def_src.lifecycle, &ent.defining_source_version)
-                {
-                    ep_reasons.push(r);
-                }
-                Ok((
-                    ent.kind,
-                    Some(entity_id.clone()),
-                    true,
-                    false,
-                    None,
-                    None,
-                    ep_reasons,
-                ))
+                let ep_reasons = source_reassessment_by_version
+                    .get(&ent.defining_source_version)
+                    .cloned()
+                    .unwrap_or_default();
+                Ok(ResolvedEndpoint {
+                    kind: ent.kind,
+                    entity_id: Some(entity_id.clone()),
+                    is_confirmed_unique: true,
+                    is_proposed_only: false,
+                    disputed_mention_id: None,
+                    reversed_mention_id: None,
+                    reassessment_reasons: ep_reasons,
+                })
             }
             LinkEndpoint::Mention(mention_id) => {
                 let Some(m) = mention_by_id.get(mention_id) else {
@@ -2049,54 +2129,54 @@ pub fn evaluate_research_links(
                 };
                 let mut ep_reasons = m.reassessment_reasons.clone();
                 match &m.resolution {
-                    MentionResolution::ConfirmedUnique { entity_id, .. } => Ok((
-                        m.expected_kind,
-                        Some(entity_id.clone()),
-                        true,
-                        false,
-                        None,
-                        None,
-                        ep_reasons,
-                    )),
+                    MentionResolution::ConfirmedUnique { entity_id, .. } => Ok(ResolvedEndpoint {
+                        kind: m.expected_kind,
+                        entity_id: Some(entity_id.clone()),
+                        is_confirmed_unique: true,
+                        is_proposed_only: false,
+                        disputed_mention_id: None,
+                        reversed_mention_id: None,
+                        reassessment_reasons: ep_reasons,
+                    }),
                     MentionResolution::ProposedOnly {
                         candidate_entity_id,
                         ..
-                    } => Ok((
-                        m.expected_kind,
-                        Some(candidate_entity_id.clone()),
-                        false,
-                        true,
-                        None,
-                        None,
-                        ep_reasons,
-                    )),
+                    } => Ok(ResolvedEndpoint {
+                        kind: m.expected_kind,
+                        entity_id: Some(candidate_entity_id.clone()),
+                        is_confirmed_unique: false,
+                        is_proposed_only: true,
+                        disputed_mention_id: None,
+                        reversed_mention_id: None,
+                        reassessment_reasons: ep_reasons,
+                    }),
                     MentionResolution::DisputedIdentity { .. } => {
                         ep_reasons.push(ReassessmentReason::DisputedMentionIdentity {
                             mention_id: mention_id.clone(),
                         });
-                        Ok((
-                            m.expected_kind,
-                            None,
-                            false,
-                            false,
-                            Some(mention_id.clone()),
-                            None,
-                            ep_reasons,
-                        ))
+                        Ok(ResolvedEndpoint {
+                            kind: m.expected_kind,
+                            entity_id: None,
+                            is_confirmed_unique: false,
+                            is_proposed_only: false,
+                            disputed_mention_id: Some(mention_id.clone()),
+                            reversed_mention_id: None,
+                            reassessment_reasons: ep_reasons,
+                        })
                     }
                     MentionResolution::AllReversed { .. } => {
                         ep_reasons.push(ReassessmentReason::ReversedMentionIdentity {
                             mention_id: mention_id.clone(),
                         });
-                        Ok((
-                            m.expected_kind,
-                            None,
-                            false,
-                            false,
-                            None,
-                            Some(mention_id.clone()),
-                            ep_reasons,
-                        ))
+                        Ok(ResolvedEndpoint {
+                            kind: m.expected_kind,
+                            entity_id: None,
+                            is_confirmed_unique: false,
+                            is_proposed_only: false,
+                            disputed_mention_id: None,
+                            reversed_mention_id: Some(mention_id.clone()),
+                            reassessment_reasons: ep_reasons,
+                        })
                     }
                 }
             }
@@ -2123,6 +2203,10 @@ pub fn evaluate_research_links(
                 version_id: link.source_version.clone(),
             });
         };
+        let link_src_retracted = source_retracted_by_version
+            .get(&link.source_version)
+            .copied()
+            .unwrap_or(false);
         validate_text_field(
             "link",
             "verbatim_excerpt",
@@ -2134,29 +2218,23 @@ pub fn evaluate_research_links(
         )?;
         validate_decision_state("link", &link.decision, limits, &mut total_text_bytes)?;
 
-        let (
-            from_kind,
-            from_entity,
-            from_confirmed,
-            from_proposed,
-            from_disputed,
-            from_reversed,
-            from_reasons,
-        ) = resolve_endpoint("link.from_endpoint", &link.from_endpoint)?;
-        let (to_kind, to_entity, to_confirmed, to_proposed, to_disputed, to_reversed, to_reasons) =
-            resolve_endpoint("link.to_endpoint", &link.to_endpoint)?;
+        let from_res = resolve_endpoint("link.from_endpoint", &link.from_endpoint)?;
+        let to_res = resolve_endpoint("link.to_endpoint", &link.to_endpoint)?;
 
-        if !link.relation.accepts_endpoint_kinds(from_kind, to_kind) {
+        if !link
+            .relation
+            .accepts_endpoint_kinds(from_res.kind, to_res.kind)
+        {
             return Err(ResearchLinkError::InvalidLinkEndpointKinds {
                 link_id: link.link_id.clone(),
                 relation: link.relation,
-                from_kind,
-                to_kind,
+                from_kind: from_res.kind,
+                to_kind: to_res.kind,
             });
         }
 
         if link.relation == PublicLinkRelation::CitesPublication
-            && let (Some(f_id), Some(t_id)) = (&from_entity, &to_entity)
+            && let (Some(f_id), Some(t_id)) = (&from_res.entity_id, &to_res.entity_id)
             && f_id == t_id
         {
             return Err(ResearchLinkError::SelfCitationLink {
@@ -2167,30 +2245,32 @@ pub fn evaluate_research_links(
 
         let mut reasons: BTreeSet<ReassessmentReason> = BTreeSet::new();
         if !matches!(link.decision, DecisionState::Reversed { .. }) {
-            if let Some(r) =
-                source_reassessment_reason(&link_src_summary.lifecycle, &link.source_version)
-            {
+            if let Some(src_reasons) = source_reassessment_by_version.get(&link.source_version) {
+                for r in src_reasons {
+                    reasons.insert(r.clone());
+                }
+            }
+            for r in from_res.reassessment_reasons {
                 reasons.insert(r);
             }
-            for r in from_reasons {
-                reasons.insert(r);
-            }
-            for r in to_reasons {
+            for r in to_res.reassessment_reasons {
                 reasons.insert(r);
             }
         }
 
         let effective_status = if matches!(link.decision, DecisionState::Reversed { .. })
-            || from_reversed.is_some()
-            || to_reversed.is_some()
+            || from_res.reversed_mention_id.is_some()
+            || to_res.reversed_mention_id.is_some()
         {
             LinkEffectiveStatus::InactiveReversed
-        } else if from_disputed.is_some() || to_disputed.is_some() {
+        } else if link_src_retracted {
+            LinkEffectiveStatus::InactiveRetractedSource
+        } else if from_res.disputed_mention_id.is_some() || to_res.disputed_mention_id.is_some() {
             let mut disputed_mention_ids = Vec::new();
-            if let Some(m) = from_disputed {
+            if let Some(m) = from_res.disputed_mention_id {
                 disputed_mention_ids.push(m);
             }
-            if let Some(m) = to_disputed
+            if let Some(m) = to_res.disputed_mention_id
                 && !disputed_mention_ids.contains(&m)
             {
                 disputed_mention_ids.push(m);
@@ -2202,36 +2282,33 @@ pub fn evaluate_research_links(
         } else if !link.relation.is_substantive_public_link() {
             co_occurrence_link_count += 1;
             LinkEffectiveStatus::CoOccurrenceOnly {
-                from_entity_id: from_entity,
-                to_entity_id: to_entity,
+                from_entity_id: from_res.entity_id,
+                to_entity_id: to_res.entity_id,
             }
         } else if !link_src_summary.counts_as_reported_public_source {
             if link.relation == PublicLinkRelation::CitesPublication
-                && let (Some(f_id), Some(t_id)) = (&from_entity, &to_entity)
+                && let (Some(f_id), Some(t_id)) = (&from_res.entity_id, &to_res.entity_id)
             {
                 citation_edges.push((
                     f_id.clone(),
                     t_id.clone(),
                     link.link_id.clone(),
                     matches!(link.decision, DecisionState::Proposed { .. })
-                        || from_proposed
-                        || to_proposed,
+                        || from_res.is_proposed_only
+                        || to_res.is_proposed_only,
                     true,
                 ));
             }
             LinkEffectiveStatus::SimulatedSourceOnly {
-                from_entity_id: from_entity,
-                to_entity_id: to_entity,
+                from_entity_id: from_res.entity_id,
+                to_entity_id: to_res.entity_id,
             }
-        } else {
-            let (Some(f_id), Some(t_id)) = (from_entity, to_entity) else {
-                unreachable!("non-reversed, non-disputed endpoints always carry an entity ID");
-            };
+        } else if let (Some(f_id), Some(t_id)) = (from_res.entity_id, to_res.entity_id) {
             let is_unconfirmed = matches!(link.decision, DecisionState::Proposed { .. })
-                || !from_confirmed
-                || !to_confirmed
-                || from_proposed
-                || to_proposed;
+                || !from_res.is_confirmed_unique
+                || !to_res.is_confirmed_unique
+                || from_res.is_proposed_only
+                || to_res.is_proposed_only;
             if link.relation == PublicLinkRelation::CitesPublication {
                 citation_edges.push((
                     f_id.clone(),
@@ -2253,6 +2330,8 @@ pub fn evaluate_research_links(
                     to_entity_id: t_id,
                 }
             }
+        } else {
+            LinkEffectiveStatus::InactiveReversed
         };
 
         let reassessment_reasons: Vec<ReassessmentReason> = reasons.into_iter().collect();
@@ -2279,18 +2358,6 @@ pub fn evaluate_research_links(
         .iter()
         .cloned()
         .collect();
-
-    let mut pub_citation_neighbors: BTreeMap<OpaqueId, BTreeSet<OpaqueId>> = BTreeMap::new();
-    for (from_pub, to_pub, _, _, _) in &citation_edges {
-        pub_citation_neighbors
-            .entry(from_pub.clone())
-            .or_default()
-            .insert(to_pub.clone());
-        pub_citation_neighbors
-            .entry(to_pub.clone())
-            .or_default()
-            .insert(from_pub.clone());
-    }
 
     // 6. Validate and evaluate technical developments (`INTEL-02`).
     let mut seen_dev_ids = BTreeSet::new();
@@ -2325,36 +2392,33 @@ pub fn evaluate_research_links(
             });
         }
 
-        let (
-            subj_kind,
-            subj_entity,
-            subj_confirmed,
-            _subj_proposed,
-            subj_disputed,
-            subj_reversed,
-            subj_reasons,
-        ) = resolve_endpoint("development.subject_endpoint", &dev.subject_endpoint)?;
+        let subj_res = resolve_endpoint("development.subject_endpoint", &dev.subject_endpoint)?;
 
         if !matches!(
-            subj_kind,
+            subj_res.kind,
             PublicEntityKind::Organization | PublicEntityKind::Facility
         ) {
             return Err(ResearchLinkError::DevelopmentSubjectKindInvalid {
                 development_id: dev.development_id.clone(),
-                actual_kind: subj_kind,
+                actual_kind: subj_res.kind,
             });
         }
 
-        let resolved_subject_entity_id = if subj_confirmed { subj_entity } else { None };
-        let subject_identity_disputed = subj_disputed.is_some();
+        let resolved_subject_entity_id = if subj_res.is_confirmed_unique {
+            subj_res.entity_id
+        } else {
+            None
+        };
+        let subject_identity_disputed = subj_res.disputed_mention_id.is_some();
 
-        let mut dev_reasons: BTreeSet<ReassessmentReason> = subj_reasons.into_iter().collect();
-        if let Some(m) = &subj_disputed {
+        let mut dev_reasons: BTreeSet<ReassessmentReason> =
+            subj_res.reassessment_reasons.into_iter().collect();
+        if let Some(m) = &subj_res.disputed_mention_id {
             dev_reasons.insert(ReassessmentReason::DisputedMentionIdentity {
                 mention_id: m.clone(),
             });
         }
-        if let Some(m) = &subj_reversed {
+        if let Some(m) = &subj_res.reversed_mention_id {
             dev_reasons.insert(ReassessmentReason::ReversedMentionIdentity {
                 mention_id: m.clone(),
             });
@@ -2369,12 +2433,15 @@ pub fn evaluate_research_links(
         let mut confirmed_demonstration_item_count = 0usize;
         let mut circular_demonstration_item_count = 0usize;
         let mut simulated_item_count = 0usize;
+        let mut retracted_item_count = 0usize;
         let mut reversed_item_count = 0usize;
         let mut has_unsupported_demonstration_claim = false;
         let mut highest_confirmed_non_circular_scope: Option<DemonstrationScope> = None;
 
-        let mut valid_demo_anchors: Vec<(VersionId, Option<OpaqueId>)> = Vec::new();
+        let mut demo_source_versions: BTreeSet<VersionId> = BTreeSet::new();
+        let mut demo_lineage_root_counts: BTreeMap<VersionId, usize> = BTreeMap::new();
         let mut confirmed_funding_set: BTreeSet<OpaqueId> = BTreeSet::new();
+        let mut item_declared_funding_set: BTreeSet<OpaqueId> = BTreeSet::new();
         let mut item_publications: BTreeSet<OpaqueId> = BTreeSet::new();
 
         for item in &dev.items {
@@ -2391,6 +2458,10 @@ pub fn evaluate_research_links(
                     version_id: item.source_version.clone(),
                 });
             };
+            let item_src_retracted = source_retracted_by_version
+                .get(&item.source_version)
+                .copied()
+                .unwrap_or(false);
             validate_text_field(
                 "development.item",
                 "verbatim_claim",
@@ -2472,10 +2543,11 @@ pub fn evaluate_research_links(
             let mut caveats = Vec::new();
 
             if !matches!(item.decision, DecisionState::Reversed { .. })
-                && let Some(r) =
-                    source_reassessment_reason(&item_src_summary.lifecycle, &item.source_version)
+                && let Some(src_reasons) = source_reassessment_by_version.get(&item.source_version)
             {
-                item_reasons.insert(r);
+                for r in src_reasons {
+                    item_reasons.insert(r.clone());
+                }
             }
 
             let pub_in_cycle = item
@@ -2483,9 +2555,19 @@ pub fn evaluate_research_links(
                 .as_ref()
                 .is_some_and(|pub_id| circular_pub_set.contains(pub_id));
 
+            let is_confirmed_item = matches!(item.decision, DecisionState::Confirmed { .. });
+
             let assessed_stage = if matches!(item.decision, DecisionState::Reversed { .. }) {
                 reversed_item_count += 1;
                 AssessedTechnicalStage::ReversedClaim
+            } else if item_src_retracted {
+                retracted_item_count += 1;
+                caveats.push(
+                    DemonstrationCaveat::RetractedSourceCannotEstablishMaturity {
+                        source_version: item.source_version.clone(),
+                    },
+                );
+                AssessedTechnicalStage::RetractedSourceClaim
             } else if !item_src_summary.counts_as_reported_public_source {
                 simulated_item_count += 1;
                 if item.claimed_stage.claims_empirical_demonstration() {
@@ -2497,9 +2579,9 @@ pub fn evaluate_research_links(
                 }
                 AssessedTechnicalStage::SimulatedEvidenceOnly
             } else {
-                if matches!(item.decision, DecisionState::Confirmed { .. }) {
+                if is_confirmed_item {
                     for fund_id in &item.funding_or_contract_ids {
-                        confirmed_funding_set.insert(fund_id.clone());
+                        item_declared_funding_set.insert(fund_id.clone());
                     }
                     if let Some(pub_id) = &item.publication_entity_id {
                         item_publications.insert(pub_id.clone());
@@ -2607,41 +2689,37 @@ pub fn evaluate_research_links(
                                     );
                                 }
 
-                                match &item.decision {
-                                    DecisionState::Proposed { .. } => {
-                                        unconfirmed_demonstration_item_count += 1;
-                                        if pub_in_cycle {
-                                            circular_demonstration_item_count += 1;
-                                        }
-                                        AssessedTechnicalStage::UnconfirmedReportedDemonstration {
-                                            scope,
-                                            in_citation_cycle: pub_in_cycle,
-                                        }
-                                    }
-                                    DecisionState::Confirmed { .. } => {
-                                        confirmed_demonstration_item_count += 1;
-                                        if pub_in_cycle {
-                                            circular_demonstration_item_count += 1;
-                                        } else {
-                                            highest_confirmed_non_circular_scope =
-                                                Some(match highest_confirmed_non_circular_scope {
-                                                    Some(
-                                                        DemonstrationScope::FieldOrOperational,
-                                                    ) => DemonstrationScope::FieldOrOperational,
-                                                    _ => scope,
-                                                });
-                                            valid_demo_anchors.push((
-                                                item.source_version.clone(),
-                                                item.publication_entity_id.clone(),
-                                            ));
-                                        }
-                                        AssessedTechnicalStage::ConfirmedReportedDemonstration {
-                                            scope,
-                                            in_citation_cycle: pub_in_cycle,
+                                if is_confirmed_item {
+                                    confirmed_demonstration_item_count += 1;
+                                    if pub_in_cycle {
+                                        circular_demonstration_item_count += 1;
+                                    } else {
+                                        highest_confirmed_non_circular_scope =
+                                            Some(match highest_confirmed_non_circular_scope {
+                                                Some(DemonstrationScope::FieldOrOperational) => {
+                                                    DemonstrationScope::FieldOrOperational
+                                                }
+                                                _ => scope,
+                                            });
+                                        demo_source_versions.insert(item.source_version.clone());
+                                        for root_ver in &item_src_summary.lineage_root_versions {
+                                            *demo_lineage_root_counts
+                                                .entry(root_ver.clone())
+                                                .or_insert(0) += 1;
                                         }
                                     }
-                                    DecisionState::Reversed { .. } => {
-                                        unreachable!("reversed handled in outer branch")
+                                    AssessedTechnicalStage::ConfirmedReportedDemonstration {
+                                        scope,
+                                        in_citation_cycle: pub_in_cycle,
+                                    }
+                                } else {
+                                    unconfirmed_demonstration_item_count += 1;
+                                    if pub_in_cycle {
+                                        circular_demonstration_item_count += 1;
+                                    }
+                                    AssessedTechnicalStage::UnconfirmedReportedDemonstration {
+                                        scope,
+                                        in_citation_cycle: pub_in_cycle,
                                     }
                                 }
                             }
@@ -2673,6 +2751,7 @@ pub fn evaluate_research_links(
 
         let mut disputed_funding_mentions: BTreeSet<OpaqueId> = BTreeSet::new();
         for eval_link in &evaluated_links {
+            check_stop_tick(&mut tick, &mut check_stop)?;
             if !eval_link.relation.is_funding_or_contract_link() {
                 continue;
             }
@@ -2708,20 +2787,29 @@ pub fn evaluate_research_links(
                 LinkEffectiveStatus::DisputedEndpointIdentity {
                     disputed_mention_ids,
                 } => {
-                    let touches_subject = endpoint_may_touch_development(
+                    let touches_from = endpoint_may_touch_development(
                         &eval_link.from_endpoint,
                         &dev.subject_endpoint,
                         resolved_subject_entity_id.as_ref(),
                         &item_publications,
                         &request.mentions,
-                    ) || endpoint_may_touch_development(
-                        &eval_link.to_endpoint,
-                        &dev.subject_endpoint,
-                        resolved_subject_entity_id.as_ref(),
-                        &item_publications,
-                        &request.mentions,
-                    );
-                    if touches_subject {
+                        &mut tick,
+                        &mut check_stop,
+                    )?;
+                    let touches_to = if touches_from {
+                        false
+                    } else {
+                        endpoint_may_touch_development(
+                            &eval_link.to_endpoint,
+                            &dev.subject_endpoint,
+                            resolved_subject_entity_id.as_ref(),
+                            &item_publications,
+                            &request.mentions,
+                            &mut tick,
+                            &mut check_stop,
+                        )?
+                    };
+                    if touches_from || touches_to {
                         for m_id in disputed_mention_ids {
                             disputed_funding_mentions.insert(m_id.clone());
                             dev_reasons.insert(ReassessmentReason::DisputedMentionIdentity {
@@ -2734,17 +2822,13 @@ pub fn evaluate_research_links(
             }
         }
 
-        let independent_demonstration_group_count = count_independent_demonstration_groups(
-            &valid_demo_anchors,
-            &source_summary_by_version,
-            &pub_citation_neighbors,
-        );
+        let shared_demonstration_lineage_roots: Vec<VersionId> = demo_lineage_root_counts
+            .into_iter()
+            .filter_map(|(root, count)| (count >= 2).then_some(root))
+            .collect();
 
         let overall_maturity = if let Some(highest_scope) = highest_confirmed_non_circular_scope {
-            OverallTechnicalMaturity::ReportedDemonstratedCapability {
-                highest_scope,
-                independent_group_count: independent_demonstration_group_count,
-            }
+            OverallTechnicalMaturity::ReportedDemonstratedCapability { highest_scope }
         } else if unconfirmed_demonstration_item_count > 0 || circular_demonstration_item_count > 0
         {
             OverallTechnicalMaturity::CircularOrUnconfirmedDemonstrationOnly
@@ -2773,10 +2857,13 @@ pub fn evaluate_research_links(
             confirmed_demonstration_item_count,
             circular_demonstration_item_count,
             simulated_item_count,
+            retracted_item_count,
             reversed_item_count,
-            independent_demonstration_group_count,
+            demonstration_source_versions: demo_source_versions.into_iter().collect(),
+            shared_demonstration_lineage_roots,
             has_unsupported_demonstration_claim,
             confirmed_funding_or_contract_ids: confirmed_funding_set.into_iter().collect(),
+            item_declared_funding_or_contract_ids: item_declared_funding_set.into_iter().collect(),
             disputed_funding_mention_ids: disputed_funding_mentions.into_iter().collect(),
             items: assessed_items,
             needs_reassessment: !dev_reassessment_list.is_empty(),
@@ -2814,105 +2901,50 @@ fn endpoint_may_touch_development(
     subject_id: Option<&OpaqueId>,
     publications: &BTreeSet<OpaqueId>,
     mentions: &[IdentityMention],
-) -> bool {
+    tick: &mut usize,
+    check_stop: &mut impl FnMut() -> Option<StopReason>,
+) -> Result<bool, ResearchLinkError> {
+    check_stop_tick(tick, check_stop)?;
     if endpoint == subject_endpoint {
-        return true;
+        return Ok(true);
     }
-    let subject_candidates: BTreeSet<OpaqueId> = match subject_endpoint {
-        LinkEndpoint::Entity(id) => [id.clone()].into_iter().collect(),
-        LinkEndpoint::Mention(m_id) => mentions
-            .iter()
-            .find(|m| &m.mention_id == m_id)
-            .map(|m| {
-                m.candidates
-                    .iter()
-                    .filter(|c| !matches!(c.decision, DecisionState::Reversed { .. }))
-                    .map(|c| c.target_entity_id.clone())
-                    .collect()
-            })
-            .unwrap_or_default(),
-    };
-    match endpoint {
+    let mut subject_candidates: BTreeSet<OpaqueId> = BTreeSet::new();
+    match subject_endpoint {
         LinkEndpoint::Entity(id) => {
-            subject_id.is_some_and(|s| s == id)
-                || subject_candidates.contains(id)
-                || publications.contains(id)
+            subject_candidates.insert(id.clone());
         }
         LinkEndpoint::Mention(m_id) => {
-            mentions
-                .iter()
-                .find(|m| &m.mention_id == m_id)
-                .is_some_and(|m| {
-                    m.candidates.iter().any(|c| {
-                        !matches!(c.decision, DecisionState::Reversed { .. })
-                            && (subject_id.is_some_and(|s| s == &c.target_entity_id)
-                                || subject_candidates.contains(&c.target_entity_id)
-                                || publications.contains(&c.target_entity_id))
-                    })
-                })
-        }
-    }
-}
-
-fn count_independent_demonstration_groups(
-    anchors: &[(VersionId, Option<OpaqueId>)],
-    source_summaries: &BTreeMap<VersionId, SourceSummary>,
-    pub_citation_neighbors: &BTreeMap<OpaqueId, BTreeSet<OpaqueId>>,
-) -> usize {
-    let n = anchors.len();
-    if n == 0 {
-        return 0;
-    }
-    let mut parent: Vec<usize> = (0..n).collect();
-    let find = |parent: &mut [usize], mut x: usize| -> usize {
-        while parent[x] != x {
-            parent[x] = parent[parent[x]];
-            x = parent[x];
-        }
-        x
-    };
-
-    for i in 0..n {
-        let roots_i: BTreeSet<&VersionId> = source_summaries
-            .get(&anchors[i].0)
-            .map(|s| s.lineage_root_versions.iter().collect())
-            .unwrap_or_default();
-
-        for j in (i + 1)..n {
-            let mut connected = anchors[i].0 == anchors[j].0;
-            if !connected {
-                let roots_j: BTreeSet<&VersionId> = source_summaries
-                    .get(&anchors[j].0)
-                    .map(|s| s.lineage_root_versions.iter().collect())
-                    .unwrap_or_default();
-                if roots_i.iter().any(|r| roots_j.contains(r)) {
-                    connected = true;
-                }
-            }
-            if !connected
-                && let (Some(pub_i), Some(pub_j)) = (&anchors[i].1, &anchors[j].1)
-                && (pub_i == pub_j
-                    || pub_citation_neighbors
-                        .get(pub_i)
-                        .is_some_and(|nbrs| nbrs.contains(pub_j)))
-            {
-                connected = true;
-            }
-            if connected {
-                let ri = find(&mut parent, i);
-                let rj = find(&mut parent, j);
-                if ri != rj {
-                    parent[rj] = ri;
+            if let Some(m) = mentions.iter().find(|m| &m.mention_id == m_id) {
+                for c in &m.candidates {
+                    check_stop_tick(tick, check_stop)?;
+                    if !matches!(c.decision, DecisionState::Reversed { .. }) {
+                        subject_candidates.insert(c.target_entity_id.clone());
+                    }
                 }
             }
         }
     }
-
-    let mut distinct_roots = BTreeSet::new();
-    for i in 0..n {
-        distinct_roots.insert(find(&mut parent, i));
+    match endpoint {
+        LinkEndpoint::Entity(id) => Ok(subject_id.is_some_and(|s| s == id)
+            || subject_candidates.contains(id)
+            || publications.contains(id)),
+        LinkEndpoint::Mention(m_id) => {
+            let Some(m) = mentions.iter().find(|m| &m.mention_id == m_id) else {
+                return Ok(false);
+            };
+            for c in &m.candidates {
+                check_stop_tick(tick, check_stop)?;
+                if !matches!(c.decision, DecisionState::Reversed { .. })
+                    && (subject_id.is_some_and(|s| s == &c.target_entity_id)
+                        || subject_candidates.contains(&c.target_entity_id)
+                        || publications.contains(&c.target_entity_id))
+                {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
     }
-    distinct_roots.len()
 }
 
 /// Traces directed citation cycles and circular dependencies over active `CitesPublication` edges.
@@ -2948,92 +2980,75 @@ fn trace_citation_cycles(
     }
     let nodes: Vec<OpaqueId> = nodes_set.into_iter().collect();
 
+    // Iterative Tarjan strongly connected components over `nodes` (`O(V + E)`).
     let mut index_counter = 0usize;
     let mut indices: BTreeMap<OpaqueId, usize> = BTreeMap::new();
     let mut lowlink: BTreeMap<OpaqueId, usize> = BTreeMap::new();
     let mut on_stack: BTreeSet<OpaqueId> = BTreeSet::new();
-    let mut stack: Vec<OpaqueId> = Vec::new();
+    let mut tarjan_stack: Vec<OpaqueId> = Vec::new();
     let mut in_cycle_scc: BTreeSet<OpaqueId> = BTreeSet::new();
 
-    #[allow(clippy::too_many_arguments)]
-    fn strongconnect(
-        v: &OpaqueId,
-        adj: &BTreeMap<OpaqueId, Vec<(OpaqueId, OpaqueId, bool, bool)>>,
-        index_counter: &mut usize,
-        indices: &mut BTreeMap<OpaqueId, usize>,
-        lowlink: &mut BTreeMap<OpaqueId, usize>,
-        on_stack: &mut BTreeSet<OpaqueId>,
-        stack: &mut Vec<OpaqueId>,
-        in_cycle_scc: &mut BTreeSet<OpaqueId>,
-    ) {
-        let v_idx = *index_counter;
-        *index_counter += 1;
-        indices.insert(v.clone(), v_idx);
-        lowlink.insert(v.clone(), v_idx);
-        stack.push(v.clone());
-        on_stack.insert(v.clone());
+    for root in &nodes {
+        check_stop_tick(tick, check_stop)?;
+        if indices.contains_key(root) {
+            continue;
+        }
+        let root_idx = index_counter;
+        index_counter += 1;
+        indices.insert(root.clone(), root_idx);
+        lowlink.insert(root.clone(), root_idx);
+        tarjan_stack.push(root.clone());
+        on_stack.insert(root.clone());
 
-        if let Some(neighbors) = adj.get(v) {
-            for (w, _, _, _) in neighbors {
-                if !indices.contains_key(w) {
-                    strongconnect(
-                        w,
-                        adj,
-                        index_counter,
-                        indices,
-                        lowlink,
-                        on_stack,
-                        stack,
-                        in_cycle_scc,
-                    );
-                    let lw = lowlink.get(w).copied().unwrap_or(v_idx);
-                    if let Some(lv) = lowlink.get_mut(v)
-                        && lw < *lv
-                    {
-                        *lv = lw;
-                    }
-                } else if on_stack.contains(w) {
-                    let iw = indices.get(w).copied().unwrap_or(v_idx);
-                    if let Some(lv) = lowlink.get_mut(v)
+        let mut call_stack: Vec<(OpaqueId, usize)> = vec![(root.clone(), 0)];
+        while let Some((v, neighbor_idx)) = call_stack.pop() {
+            check_stop_tick(tick, check_stop)?;
+            let neighbors_len = adj.get(&v).map_or(0, Vec::len);
+            if neighbor_idx < neighbors_len {
+                call_stack.push((v.clone(), neighbor_idx + 1));
+                let w = adj[&v][neighbor_idx].0.clone();
+                if !indices.contains_key(&w) {
+                    let w_idx = index_counter;
+                    index_counter += 1;
+                    indices.insert(w.clone(), w_idx);
+                    lowlink.insert(w.clone(), w_idx);
+                    tarjan_stack.push(w.clone());
+                    on_stack.insert(w.clone());
+                    call_stack.push((w, 0));
+                } else if on_stack.contains(&w) {
+                    let iw = indices.get(&w).copied().unwrap_or(0);
+                    if let Some(lv) = lowlink.get_mut(&v)
                         && iw < *lv
                     {
                         *lv = iw;
                     }
                 }
-            }
-        }
-
-        if lowlink.get(v) == indices.get(v) {
-            let mut scc = Vec::new();
-            while let Some(w) = stack.pop() {
-                on_stack.remove(&w);
-                let done = &w == v;
-                scc.push(w);
-                if done {
-                    break;
+            } else {
+                if let Some((parent, _)) = call_stack.last() {
+                    let lv = lowlink.get(&v).copied().unwrap_or(0);
+                    if let Some(lp) = lowlink.get_mut(parent)
+                        && lv < *lp
+                    {
+                        *lp = lv;
+                    }
+                }
+                if lowlink.get(&v) == indices.get(&v) {
+                    let mut scc = Vec::new();
+                    while let Some(w) = tarjan_stack.pop() {
+                        on_stack.remove(&w);
+                        let done = w == v;
+                        scc.push(w);
+                        if done {
+                            break;
+                        }
+                    }
+                    if scc.len() >= 2 {
+                        for member in scc {
+                            in_cycle_scc.insert(member);
+                        }
+                    }
                 }
             }
-            if scc.len() >= 2 {
-                for member in scc {
-                    in_cycle_scc.insert(member);
-                }
-            }
-        }
-    }
-
-    for node in &nodes {
-        check_stop_tick(tick, check_stop)?;
-        if !indices.contains_key(node) {
-            strongconnect(
-                node,
-                &adj,
-                &mut index_counter,
-                &mut indices,
-                &mut lowlink,
-                &mut on_stack,
-                &mut stack,
-                &mut in_cycle_scc,
-            );
         }
     }
 
@@ -3124,6 +3139,7 @@ fn trace_citation_cycles(
 
     let mut circular_pubs = in_cycle_scc.clone();
     for node in &nodes {
+        check_stop_tick(tick, check_stop)?;
         if circular_pubs.contains(node) {
             continue;
         }
@@ -3137,6 +3153,7 @@ fn trace_citation_cycles(
         let mut queue: Vec<OpaqueId> = vec![node.clone()];
         let mut reaches_acyclic_root = false;
         while let Some(curr) = queue.pop() {
+            check_stop_tick(tick, check_stop)?;
             if !visited.insert(curr.clone()) {
                 continue;
             }

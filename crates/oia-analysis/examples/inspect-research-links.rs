@@ -460,15 +460,17 @@ fn print_report(label: &str, req: &ResearchLinkRequest) -> Result<(), ExampleErr
     }
     for dev in &report.developments {
         println!(
-            "Development {} ({}): overall_maturity={}, resolved_subject={:?}, disputed_subject={}, independent_demo_groups={}, unsupported_demo_claim={}, confirmed_funding={:?}, disputed_funding_mentions={:?}",
+            "Development {} ({}): overall_maturity={}, resolved_subject={:?}, disputed_subject={}, demo_sources={:?}, shared_demo_roots={:?}, unsupported_demo_claim={}, confirmed_funding={:?}, item_declared_funding={:?}, disputed_funding_mentions={:?}",
             dev.development_id,
             escape_display(&dev.topic),
             dev.overall_maturity,
             dev.resolved_subject_entity_id,
             dev.subject_identity_disputed,
-            dev.independent_demonstration_group_count,
+            dev.demonstration_source_versions,
+            dev.shared_demonstration_lineage_roots,
             dev.has_unsupported_demonstration_claim,
             dev.confirmed_funding_or_contract_ids,
+            dev.item_declared_funding_or_contract_ids,
             dev.disputed_funding_mention_ids
         );
         for item in &dev.items {

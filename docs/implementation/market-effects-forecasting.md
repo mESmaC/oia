@@ -78,17 +78,28 @@ and compose with [`oia_forecast::issuance`](../../crates/oia-forecast/src/issuan
      - Post-cutoff or unknown language-model knowledge under `ProspectiveStrict`
        (`IssuanceError::ModelKnowledgeAfterStrictCutoff`).
    - Quantitative vintages bridge directly into `ForecastLedger` (`#43`) and
-     `evaluate_intervals` (`#43`). `evaluate_market_effect_cohort` requires all
-     earlier vintages (`1..vintage_number`) of any included series to be present
-     in the cohort, computes exact integer interval coverage ratios
-     `(covered_count, resolved_scalar_count)` for both forecast and baseline
-     intervals, retains explicit `MarketPredictionMissRecord` entries, and keeps
-     qualitative, unresolved, and invalidated vintages visible.
-   - `evaluate_simulated_strategy` requires strictly positive round-trip
-     transaction frictions (`commission_bps_per_side`, `half_spread_bps_per_side`,
-     `slippage_bps_per_side`), deducts `round_trip_friction_bps()` from gross
-     simulated return, and guarantees `is_observed_market_return() == false` and
-     `can_execute_orders() == false`.
+     `evaluate_intervals` (`#43`), including across mixed
+     `QualitativeOrInsufficient <-> Quantitative` series revisions (`Qual -> Quant`
+     initializes the binary ledger chain while preserving market-series lineage,
+     and `Quant -> Qual -> Quant` bridges to the most recent prior quantitative
+     vintage with accumulated new evidence versions and frozen quantitative
+     series fields).
+   - `evaluate_market_effect_cohort` validates scalar interval scoring and finite
+     point-error bounds before committing binary `ForecastLedger` evaluations so
+     failed evaluations never leave orphaned state, requires all earlier vintages
+     (`1..vintage_number`) of any included series to be present in the cohort,
+     validates scalar resolution target, series `effect_unit`, horizon, and
+     chronology across both quantitative and qualitative vintages, retains
+     resolution version and evidence lineage on `EvaluatedMarketVintageSummary`,
+     and flags existing evaluations with `MarketReassessmentReason` when a scalar
+     or binary resolution is superseded without mutating cached historical scores.
+   - `evaluate_simulated_strategy` enforces a return-expressible `effect_unit`
+     via `SimulatedReturnBasis` (`BasisPoints`, `PercentagePoints`,
+     `DecimalReturn`), refuses non-return/level/volatility units, converts
+     realized returns into basis points before deducting strictly positive
+     round-trip transaction frictions (`commission_bps_per_side`,
+     `half_spread_bps_per_side`, `slippage_bps_per_side`), and guarantees
+     `is_observed_market_return() == false` and `can_execute_orders() == false`.
 
 ## Limitations and remaining `#44` scope
 

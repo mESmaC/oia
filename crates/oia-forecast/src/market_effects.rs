@@ -41,7 +41,7 @@ use crate::interval::{
 use crate::issuance::{
     CutoffAdmissibilityMode, CutoffSourceInput, EvaluationRunRecord, ForecastDraft, ForecastLedger,
     IssuanceError, MAX_FORECAST_COLLECTION_LEN, MAX_LEDGER_RECORDS, MAX_TEXT_FIELD_BYTES,
-    MAX_VALID_UTC_MS, MIN_VALID_UTC_MS, OutcomeDefinition, RevisionRationale,
+    MAX_VALID_UTC_MS, MIN_VALID_UTC_MS, OutcomeDefinition, ReassessmentReason, RevisionRationale,
     validate_source_admissible_at_cutoff,
 };
 use crate::scoring::{
@@ -775,6 +775,7 @@ pub struct MarketScalarResolutionRecord {
     recorded_at_utc_ms: i64,
     evidence_versions: Vec<VersionId>,
     state: MarketScalarResolutionState,
+    supersedes_version: Option<VersionId>,
 }
 
 impl MarketScalarResolutionRecord {
@@ -827,6 +828,12 @@ impl MarketScalarResolutionRecord {
     pub fn state(&self) -> &MarketScalarResolutionState {
         &self.state
     }
+
+    /// Prior scalar resolution [`VersionId`] superseded by this resolution snapshot, if any.
+    #[must_use]
+    pub fn supersedes_version(&self) -> Option<&VersionId> {
+        self.supersedes_version.as_ref()
+    }
 }
 
 /// Input specification for recording a [`MarketScalarResolutionRecord`].
@@ -851,7 +858,8 @@ pub struct MarketCohortEvaluationItem {
     pub market_vintage_version: VersionId,
     /// Required for `Quantitative` vintages; must be `None` for `QualitativeOrInsufficient` vintages.
     pub binary_resolution_version: Option<VersionId>,
-    /// Required for `Quantitative` vintages; optional for `QualitativeOrInsufficient` vintages.
+    /// Required for `Quantitative` vintages; optional for `QualitativeOrInsufficient` vintages
+    /// belonging to a mixed series with an established quantitative `effect_unit`.
     pub scalar_resolution_version: Option<VersionId>,
 }
 
@@ -878,12 +886,30 @@ pub struct EvaluatedMarketVintageSummary {
     pub vintage_number: usize,
     pub is_quantitative: bool,
     pub post_cutoff_model_knowledge_disclosed: bool,
+    pub binary_resolution_version: Option<VersionId>,
+    pub scalar_resolution_id: Option<OpaqueId>,
+    pub scalar_resolution_version: Option<VersionId>,
+    pub scalar_resolution_evidence_versions: Vec<VersionId>,
     pub brier_scores: Option<BrierScores>,
     pub interval_scores: Option<IntervalScores>,
     pub point_error: Option<f64>,
     pub baseline_point_error: Option<f64>,
     pub direction_matched: Option<bool>,
     pub scalar_resolution_state: Option<MarketScalarResolutionState>,
+}
+
+/// Why a previously recorded [`MarketEffectEvaluationRecord`] requires reassessment while
+/// preserving its historical scores and vintage summaries (`MARKET-05`, `A14`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MarketReassessmentReason {
+    /// A pinned scalar market outcome resolution was superseded by a corrected resolution version.
+    ScalarResolutionSuperseded {
+        resolution_id: OpaqueId,
+        previous_resolution_version: VersionId,
+        new_resolution_version: VersionId,
+    },
+    /// The paired binary [`ForecastLedger`] evaluation run requires reassessment.
+    BinaryLedgerReassessment(ReassessmentReason),
 }
 
 /// Immutable evaluation record over a cohort of market-effect forecast vintages (`MARKET-05`, `A14`).
@@ -906,6 +932,8 @@ pub struct MarketEffectEvaluationRecord {
     mean_abs_error: Option<f64>,
     mean_baseline_abs_error: Option<f64>,
     misses: Vec<MarketPredictionMissRecord>,
+    needs_reassessment: bool,
+    reassessment_reasons: Vec<MarketReassessmentReason>,
 }
 
 impl MarketEffectEvaluationRecord {
@@ -1001,6 +1029,77 @@ impl MarketEffectEvaluationRecord {
     pub fn misses(&self) -> &[MarketPredictionMissRecord] {
         &self.misses
     }
+
+    /// True if any pinned scalar outcome resolution or binary outcome resolution was superseded
+    /// by a later correction (`MARKET-05`, `A14`).
+    #[must_use]
+    pub fn needs_reassessment(&self) -> bool {
+        self.needs_reassessment
+    }
+
+    /// Reassessment reasons accumulated on this evaluation record without mutating its scores.
+    #[must_use]
+    pub fn reassessment_reasons(&self) -> &[MarketReassessmentReason] {
+        &self.reassessment_reasons
+    }
+}
+
+/// Dimensional basis for converting a forecast and realized market effect into basis points (`bps`)
+/// before deducting round-trip transaction frictions (`MARKET-05`, `A14`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SimulatedReturnBasis {
+    /// Effect unit is already denominated in basis points of return (`1.0` unit = `1.0` bps).
+    /// Supported unit identifiers: `"unit:bps"`, `"unit:return_bps"`, `"unit:car_bps"`,
+    /// `"unit:excess_return_bps"`, `"unit:log_return_bps"`, `"bps"`, `"return_bps"`, `"car_bps"`.
+    BasisPoints,
+    /// Effect unit is denominated in percentage points of return (`1.0` unit = `100.0` bps).
+    /// Supported unit identifiers: `"unit:pct"`, `"unit:return_pct"`, `"unit:car_pct"`,
+    /// `"unit:excess_return_pct"`, `"pct"`, `"return_pct"`, `"car_pct"`.
+    PercentagePoints,
+    /// Effect unit is denominated in decimal/fractional return (`1.0` unit = `10_000.0` bps).
+    /// Supported unit identifiers: `"unit:decimal_return"`, `"unit:fractional_return"`,
+    /// `"decimal_return"`, `"fractional_return"`.
+    DecimalReturn,
+}
+
+impl SimulatedReturnBasis {
+    /// Parse a supported return unit identifier into its [`SimulatedReturnBasis`], or return `None`
+    /// for non-return units (e.g., temperature, currency price levels, volatility points, volume).
+    #[must_use]
+    pub fn from_effect_unit(unit: &OpaqueId) -> Option<Self> {
+        match unit.as_str() {
+            "unit:bps"
+            | "unit:return_bps"
+            | "unit:car_bps"
+            | "unit:excess_return_bps"
+            | "unit:log_return_bps"
+            | "bps"
+            | "return_bps"
+            | "car_bps" => Some(Self::BasisPoints),
+            "unit:pct"
+            | "unit:return_pct"
+            | "unit:car_pct"
+            | "unit:excess_return_pct"
+            | "pct"
+            | "return_pct"
+            | "car_pct" => Some(Self::PercentagePoints),
+            "unit:decimal_return"
+            | "unit:fractional_return"
+            | "decimal_return"
+            | "fractional_return" => Some(Self::DecimalReturn),
+            _ => None,
+        }
+    }
+
+    /// Multiplicative factor converting one unit in this return basis to basis points (`bps`).
+    #[must_use]
+    pub const fn bps_per_unit(self) -> f64 {
+        match self {
+            Self::BasisPoints => 1.0,
+            Self::PercentagePoints => 100.0,
+            Self::DecimalReturn => 10_000.0,
+        }
+    }
 }
 
 /// Explicit fee, spread, and slippage assumptions required for any hypothetical strategy simulation (`MARKET-05`).
@@ -1027,6 +1126,9 @@ pub struct SimulatedStrategyEvaluation {
     simulation_version: VersionId,
     forecast_version: VersionId,
     scalar_resolution_version: VersionId,
+    effect_unit: OpaqueId,
+    return_basis: SimulatedReturnBasis,
+    realized_effect_in_unit: f64,
     friction_config: SimulatedFrictionConfig,
     gross_simulated_return_bps: f64,
     round_trip_friction_deducted_bps: f64,
@@ -1047,6 +1149,24 @@ impl SimulatedStrategyEvaluation {
     #[must_use]
     pub fn scalar_resolution_version(&self) -> &VersionId {
         &self.scalar_resolution_version
+    }
+
+    /// Original `effect_unit` preserved from the forecast and scalar resolution.
+    #[must_use]
+    pub fn effect_unit(&self) -> &OpaqueId {
+        &self.effect_unit
+    }
+
+    /// Dimensional return basis used to convert `realized_effect_in_unit` into basis points.
+    #[must_use]
+    pub fn return_basis(&self) -> SimulatedReturnBasis {
+        self.return_basis
+    }
+
+    /// Realized scalar market effect expressed in the original `effect_unit`.
+    #[must_use]
+    pub fn realized_effect_in_unit(&self) -> f64 {
+        self.realized_effect_in_unit
     }
 
     #[must_use]
@@ -1265,6 +1385,8 @@ pub struct MarketEffectForecastBook {
     vintages_by_version: BTreeMap<VersionId, MarketEffectVintageRecord>,
     series_vintages: BTreeMap<OpaqueId, Vec<VersionId>>,
     scalar_resolutions: BTreeMap<VersionId, MarketScalarResolutionRecord>,
+    scalar_resolution_history_by_id: BTreeMap<OpaqueId, Vec<VersionId>>,
+    scalar_target_key_to_resolution_id: BTreeMap<(OpaqueId, OpaqueId, i64, i64), OpaqueId>,
     evaluations_by_version: BTreeMap<VersionId, MarketEffectEvaluationRecord>,
     evaluation_order: Vec<VersionId>,
 }
@@ -1285,6 +1407,8 @@ impl MarketEffectForecastBook {
             vintages_by_version: BTreeMap::new(),
             series_vintages: BTreeMap::new(),
             scalar_resolutions: BTreeMap::new(),
+            scalar_resolution_history_by_id: BTreeMap::new(),
+            scalar_target_key_to_resolution_id: BTreeMap::new(),
             evaluations_by_version: BTreeMap::new(),
             evaluation_order: Vec::new(),
         })
@@ -1296,7 +1420,8 @@ impl MarketEffectForecastBook {
     ///
     /// When `draft.prediction` is `MarketEffectPrediction::Quantitative`, the vintage is also
     /// issued into `ledger` so binary outcome resolutions and reliability reports share the
-    /// same immutable version graph.
+    /// same immutable version graph, preserving linked revisions across qualitative/quantitative
+    /// transitions without fabricating earlier probabilities.
     pub fn issue_market_effect_forecast(
         &mut self,
         ledger: &mut ForecastLedger,
@@ -1314,6 +1439,14 @@ impl MarketEffectForecastBook {
                 field: "version_id",
                 id: draft.version_id.as_str().to_owned(),
             });
+        }
+        if ledger.vintage(&draft.version_id).is_some()
+            || ledger.resolution(&draft.version_id).is_some()
+            || ledger.evaluation(&draft.version_id).is_some()
+        {
+            return Err(MarketEffectError::Issuance(
+                IssuanceError::DuplicateVersionId(draft.version_id),
+            ));
         }
 
         validate_timestamp("information_cutoff_utc_ms", draft.information_cutoff_utc_ms)?;
@@ -2117,8 +2250,22 @@ impl MarketEffectForecastBook {
             }
         };
 
+        // Find the most recent prior Quantitative vintage in this series (if any) so mixed
+        // qualitative/quantitative series preserve frozen quantitative contracts and bridge
+        // cleanly into ForecastLedger without dropping or fabricating earlier probabilities (B1).
+        let prior_quant_vintage = self
+            .series_vintages
+            .get(&draft.forecast_id)
+            .and_then(|series| {
+                series
+                    .iter()
+                    .rev()
+                    .filter_map(|ver| self.vintages_by_version.get(ver))
+                    .find(|rec| matches!(rec.prediction, MarketEffectPrediction::Quantitative(_)))
+            });
+
         // When prediction is Quantitative, bridge into ForecastLedger so binary scoring,
-        // outcome resolution, and reliability reports track this exact vintage (MARKET-05, A14).
+        // outcome resolution, and reliability reports track this exact vintage (MARKET-05, A14, B1).
         if let MarketEffectPrediction::Quantitative(quant) = &draft.prediction {
             let mut assumptions_text: Vec<String> = draft
                 .assumption_parameters
@@ -2138,6 +2285,96 @@ impl MarketEffectForecastBook {
             if assumptions_text.is_empty() {
                 assumptions_text.push(draft.real_world_vs_price_effect_rationale.clone());
             }
+
+            let (ledger_predecessor, ledger_rationale) = match prior_quant_vintage {
+                Some(prev_q_rec) => {
+                    if let MarketEffectPrediction::Quantitative(prev_q) = &prev_q_rec.prediction {
+                        if quant.effect_unit != prev_q.effect_unit {
+                            return Err(MarketEffectError::RevisionContractViolation {
+                                forecast_id: draft.forecast_id,
+                                reason: "revision cannot change quantitative effect_unit",
+                            });
+                        }
+                        if quant.outcome_definition != prev_q.outcome_definition {
+                            return Err(MarketEffectError::RevisionContractViolation {
+                                forecast_id: draft.forecast_id,
+                                reason: "revision cannot change quantitative outcome_definition",
+                            });
+                        }
+                        if quant.baseline_probability != prev_q.baseline_probability
+                            || quant.baseline_point_estimate != prev_q.baseline_point_estimate
+                            || quant.baseline_interval != prev_q.baseline_interval
+                        {
+                            return Err(MarketEffectError::RevisionContractViolation {
+                                forecast_id: draft.forecast_id,
+                                reason: "revision cannot change quantitative baseline contract",
+                            });
+                        }
+                    }
+
+                    let rationale = draft.revision_rationale.as_ref().ok_or_else(|| {
+                        MarketEffectError::RevisionContractViolation {
+                            forecast_id: draft.forecast_id.clone(),
+                            reason: "missing revision_rationale for quantitative revision",
+                        }
+                    })?;
+
+                    if draft.predecessor_version.as_ref() == Some(&prev_q_rec.version_id) {
+                        (Some(prev_q_rec.version_id.clone()), Some(rationale.clone()))
+                    } else {
+                        let prev_q_sources: BTreeSet<&VersionId> = prev_q_rec
+                            .sources
+                            .iter()
+                            .map(|s| &s.source_version)
+                            .collect();
+                        let mut bridged_new_evidence = Vec::new();
+                        let mut seen_bridged = BTreeSet::new();
+                        for ev in &rationale.new_evidence_versions {
+                            if !prev_q_sources.contains(ev) && seen_bridged.insert(ev.clone()) {
+                                bridged_new_evidence.push(ev.clone());
+                            }
+                        }
+                        for src in &draft.sources {
+                            if !prev_q_sources.contains(&src.source_version)
+                                && seen_bridged.insert(src.source_version.clone())
+                            {
+                                bridged_new_evidence.push(src.source_version.clone());
+                            }
+                        }
+                        if bridged_new_evidence.is_empty() {
+                            return Err(MarketEffectError::RevisionContractViolation {
+                                forecast_id: draft.forecast_id,
+                                reason: "quantitative revision after intervening qualitative vintage must retain at least one new source version relative to the prior quantitative vintage",
+                            });
+                        }
+                        if let Some(imm_pred) = &draft.predecessor_version {
+                            assumptions_text.push(format!(
+                                "Bridged quantitative revision from {} across intervening qualitative predecessor {}: {}",
+                                prev_q_rec.version_id, imm_pred, rationale.summary
+                            ));
+                        }
+                        (
+                            Some(prev_q_rec.version_id.clone()),
+                            Some(RevisionRationale {
+                                new_evidence_versions: bridged_new_evidence,
+                                summary: rationale.summary.clone(),
+                            }),
+                        )
+                    }
+                }
+                None => {
+                    if let (Some(imm_pred), Some(rationale)) =
+                        (&draft.predecessor_version, &draft.revision_rationale)
+                    {
+                        assumptions_text.push(format!(
+                            "Transitioned to quantitative forecast from qualitative predecessor {imm_pred}: {}",
+                            rationale.summary
+                        ));
+                    }
+                    (None, None)
+                }
+            };
+
             let ledger_draft = ForecastDraft {
                 forecast_id: draft.forecast_id.clone(),
                 version_id: draft.version_id.clone(),
@@ -2159,8 +2396,8 @@ impl MarketEffectForecastBook {
                 sources: draft.sources.clone(),
                 comparison_set: draft.comparison_set.clone(),
                 assumptions: assumptions_text,
-                predecessor_version: draft.predecessor_version.clone(),
-                revision_rationale: draft.revision_rationale.clone(),
+                predecessor_version: ledger_predecessor,
+                revision_rationale: ledger_rationale,
             };
             ledger.issue_forecast(ledger_draft)?;
         }
@@ -2209,7 +2446,13 @@ impl MarketEffectForecastBook {
         )
     }
 
-    /// Record an independent scalar market-effect resolution version (`MARKET-05`, `A14`).
+    /// Record an independent scalar market-effect resolution version (`MARKET-05`, `A14`, `B4`).
+    ///
+    /// Recording a subsequent version for an existing `resolution_id` (or the same
+    /// `(target_instrument_id, effect_unit, horizon_start_utc_ms, horizon_end_utc_ms)` contract)
+    /// preserves the prior resolution version in the book, links `supersedes_version`, and flags
+    /// any dependent [`MarketEffectEvaluationRecord`] with `needs_reassessment = true` without
+    /// mutating cached historical scores.
     pub fn record_scalar_resolution(
         &mut self,
         draft: MarketScalarResolutionDraft,
@@ -2304,9 +2547,84 @@ impl MarketEffectForecastBook {
             }
         }
 
+        let target_key = (
+            draft.target_instrument_id.clone(),
+            draft.effect_unit.clone(),
+            draft.horizon_start_utc_ms,
+            draft.horizon_end_utc_ms,
+        );
+
+        let canonical_resolution_id = if let Some(existing_history) = self
+            .scalar_resolution_history_by_id
+            .get(&draft.resolution_id)
+        {
+            if let Some(first_ver) = existing_history.first()
+                && let Some(first_rec) = self.scalar_resolutions.get(first_ver)
+                && (first_rec.target_instrument_id != draft.target_instrument_id
+                    || first_rec.effect_unit != draft.effect_unit
+                    || first_rec.horizon_start_utc_ms != draft.horizon_start_utc_ms
+                    || first_rec.horizon_end_utc_ms != draft.horizon_end_utc_ms)
+            {
+                return Err(MarketEffectError::InvalidEvaluationCohort(
+                    "scalar resolution_id is already registered for a different target, unit, or horizon",
+                ));
+            }
+            draft.resolution_id.clone()
+        } else if let Some(existing_res_id) =
+            self.scalar_target_key_to_resolution_id.get(&target_key)
+        {
+            existing_res_id.clone()
+        } else {
+            draft.resolution_id.clone()
+        };
+
+        let mut supersedes_version = None;
+        if let Some(history) = self
+            .scalar_resolution_history_by_id
+            .get(&canonical_resolution_id)
+            && let Some(prior_ver) = history.last()
+        {
+            let prior = self.scalar_resolutions.get(prior_ver).ok_or(
+                MarketEffectError::InvalidEvaluationCohort(
+                    "missing prior scalar resolution in lineage",
+                ),
+            )?;
+            if draft.recorded_at_utc_ms < prior.recorded_at_utc_ms {
+                return Err(MarketEffectError::InvalidTimestamp {
+                    field: "recorded_at_utc_ms",
+                    reason: "superseding scalar resolution recorded_at_utc_ms cannot precede superseded resolution",
+                });
+            }
+            supersedes_version = Some(prior_ver.clone());
+
+            let prior_versions: BTreeSet<&VersionId> = history.iter().collect();
+            for eval in self.evaluations_by_version.values_mut() {
+                let mut pinned_prior_versions = Vec::new();
+                for v in &eval.vintages {
+                    if let Some(pinned_ver) = &v.scalar_resolution_version
+                        && prior_versions.contains(pinned_ver)
+                        && !pinned_prior_versions.contains(pinned_ver)
+                    {
+                        pinned_prior_versions.push(pinned_ver.clone());
+                    }
+                }
+                for old_ver in pinned_prior_versions {
+                    let reason = MarketReassessmentReason::ScalarResolutionSuperseded {
+                        resolution_id: canonical_resolution_id.clone(),
+                        previous_resolution_version: old_ver,
+                        new_resolution_version: draft.version_id.clone(),
+                    };
+                    eval.needs_reassessment = true;
+                    if !eval.reassessment_reasons.contains(&reason) {
+                        eval.reassessment_reasons.push(reason);
+                    }
+                }
+            }
+        }
+
         let ver_key = draft.version_id.clone();
         let record = MarketScalarResolutionRecord {
-            resolution_id: draft.resolution_id,
+            resolution_id: draft.resolution_id.clone(),
             version_id: draft.version_id,
             target_instrument_id: draft.target_instrument_id,
             effect_unit: draft.effect_unit,
@@ -2316,8 +2634,25 @@ impl MarketEffectForecastBook {
             recorded_at_utc_ms: draft.recorded_at_utc_ms,
             evidence_versions: draft.evidence_versions,
             state: draft.state,
+            supersedes_version,
         };
         self.used_versions.insert(ver_key.clone());
+        self.scalar_target_key_to_resolution_id
+            .entry(target_key)
+            .or_insert_with(|| canonical_resolution_id.clone());
+        self.scalar_resolution_history_by_id
+            .entry(canonical_resolution_id.clone())
+            .or_default()
+            .push(ver_key.clone());
+        if draft.resolution_id != canonical_resolution_id {
+            let full_lineage = self
+                .scalar_resolution_history_by_id
+                .get(&canonical_resolution_id)
+                .cloned()
+                .unwrap_or_else(|| vec![ver_key.clone()]);
+            self.scalar_resolution_history_by_id
+                .insert(draft.resolution_id, full_lineage);
+        }
         self.scalar_resolutions.insert(ver_key.clone(), record);
         self.scalar_resolutions
             .get(&ver_key)
@@ -2328,10 +2663,12 @@ impl MarketEffectForecastBook {
 
     /// Evaluate a chronological holdout cohort of market-effect vintages against both
     /// binary outcome resolutions (in `ledger`) and scalar prediction-interval resolutions
-    /// (`MARKET-05`, `A14`).
+    /// (`MARKET-05`, `A14`, `B3`, `B4`).
     ///
-    /// Preserves all earlier vintages of any included series, records explicit interval and
-    /// directional misses, and keeps qualitative, unresolved, and invalidated vintages visible.
+    /// Preserves all earlier vintages of any included series, validates all fallible scalar
+    /// interval and error calculations before mutating `ledger` (`B3`), validates and retains
+    /// scalar resolution provenance across both quantitative and qualitative vintages (`B4`),
+    /// and records explicit interval and directional misses.
     pub fn evaluate_market_effect_cohort(
         &mut self,
         ledger: &mut ForecastLedger,
@@ -2353,6 +2690,23 @@ impl MarketEffectForecastBook {
                 field: "evaluation_version",
                 id: evaluation_version.as_str().to_owned(),
             });
+        }
+        if ledger.vintage(&evaluation_version).is_some()
+            || ledger.resolution(&evaluation_version).is_some()
+            || ledger.evaluation(&evaluation_version).is_some()
+        {
+            return Err(MarketEffectError::DuplicateIdentifier {
+                field: "evaluation_version",
+                id: evaluation_version.as_str().to_owned(),
+            });
+        }
+        if let Some(bin_eval_ver) = &binary_evaluation_version {
+            if *bin_eval_ver == evaluation_version || self.used_versions.contains(bin_eval_ver) {
+                return Err(MarketEffectError::DuplicateIdentifier {
+                    field: "binary_evaluation_version",
+                    id: bin_eval_ver.as_str().to_owned(),
+                });
+            }
         }
         validate_timestamp("evaluated_at_utc_ms", evaluated_at_utc_ms)?;
         if !(1..=MAX_EVALUATION_ROWS).contains(&row_limit) {
@@ -2499,6 +2853,121 @@ impl MarketEffectForecastBook {
                             "QualitativeOrInsufficient vintage cannot supply a binary_resolution_version",
                         ));
                     }
+                    if let Some(scalar_res_ver) = &item.scalar_resolution_version {
+                        let scalar_res = self.scalar_resolutions.get(scalar_res_ver).ok_or(
+                            MarketEffectError::InvalidEvaluationCohort(
+                                "unknown scalar_resolution_version in cohort",
+                            ),
+                        )?;
+                        let series_effect_unit = self
+                            .series_vintages
+                            .get(&vintage.forecast_id)
+                            .and_then(|vers| {
+                                vers.iter()
+                                    .filter_map(|v| self.vintages_by_version.get(v))
+                                    .find_map(|rec| match &rec.prediction {
+                                        MarketEffectPrediction::Quantitative(q) => {
+                                            Some(&q.effect_unit)
+                                        }
+                                        MarketEffectPrediction::QualitativeOrInsufficient(_) => {
+                                            None
+                                        }
+                                    })
+                            });
+                        let Some(expected_unit) = series_effect_unit else {
+                            return Err(MarketEffectError::InvalidEvaluationCohort(
+                                "QualitativeOrInsufficient vintage without an established quantitative series effect_unit cannot supply a scalar_resolution_version",
+                            ));
+                        };
+                        if scalar_res.target_instrument_id != vintage.target_instrument_id
+                            || scalar_res.effect_unit != *expected_unit
+                            || scalar_res.horizon_start_utc_ms != vintage.horizon_start_utc_ms
+                            || scalar_res.horizon_end_utc_ms != vintage.horizon_end_utc_ms
+                        {
+                            return Err(MarketEffectError::InvalidEvaluationCohort(
+                                "scalar resolution target, unit, or horizon does not match forecast vintage",
+                            ));
+                        }
+                        if scalar_res.recorded_at_utc_ms < vintage.issued_at_utc_ms {
+                            return Err(MarketEffectError::InvalidEvaluationCohort(
+                                "scalar resolution recorded_at_utc_ms predates forecast issuance",
+                            ));
+                        }
+                        if evaluated_at_utc_ms < scalar_res.recorded_at_utc_ms {
+                            return Err(MarketEffectError::InvalidEvaluationCohort(
+                                "evaluated_at_utc_ms predates scalar resolution recorded_at_utc_ms",
+                            ));
+                        }
+                        if let MarketScalarResolutionState::Resolved {
+                            observed_at_utc_ms, ..
+                        } = &scalar_res.state
+                            && (*observed_at_utc_ms <= vintage.information_cutoff_utc_ms
+                                || *observed_at_utc_ms <= vintage.origin_utc_ms
+                                || *observed_at_utc_ms <= vintage.issued_at_utc_ms)
+                        {
+                            return Err(MarketEffectError::InvalidEvaluationCohort(
+                                "scalar resolution observed_at_utc_ms occurred at or before forecast cutoff/origin/issuance",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Validate binary_evaluation_version presence and evaluate all fallible scalar interval
+        // and point-error calculations BEFORE mutating `ledger` so a failed scalar evaluation
+        // never leaves a half-committed binary evaluation in `ledger` (B3).
+        if !binary_cohort.is_empty() && binary_evaluation_version.is_none() {
+            return Err(MarketEffectError::InvalidEvaluationCohort(
+                "binary_evaluation_version is required when cohort contains quantitative vintages",
+            ));
+        }
+
+        let interval_eval: Option<IntervalEvaluation<'_>> = if !interval_rows.is_empty() {
+            Some(evaluate_intervals(&interval_rows, row_limit)?)
+        } else {
+            None
+        };
+
+        // Pre-validate all scalar point errors, sums, and excursions for finite representation
+        // before mutating `ledger`.
+        let mut prechecked_abs_error_sum = 0.0_f64;
+        let mut prechecked_baseline_abs_error_sum = 0.0_f64;
+        for item in cohort {
+            if let Some(vintage) = self.vintages_by_version.get(&item.market_vintage_version)
+                && let MarketEffectPrediction::Quantitative(quant) = &vintage.prediction
+                && let Some(scalar_ver) = &item.scalar_resolution_version
+                && let Some(scalar_res) = self.scalar_resolutions.get(scalar_ver)
+                && let MarketScalarResolutionState::Resolved { realized_value, .. } =
+                    &scalar_res.state
+            {
+                let err = quant.point_estimate - *realized_value;
+                let base_err = quant.baseline_point_estimate - *realized_value;
+                if !err.is_finite() || !err.abs().is_finite() {
+                    return Err(MarketEffectError::Interval(IntervalError::ScoreOverflow {
+                        forecast_version: vintage.version_id.clone(),
+                        side: crate::interval::IntervalSide::Forecast,
+                    }));
+                }
+                if !base_err.is_finite() || !base_err.abs().is_finite() {
+                    return Err(MarketEffectError::Interval(IntervalError::ScoreOverflow {
+                        forecast_version: vintage.version_id.clone(),
+                        side: crate::interval::IntervalSide::Baseline,
+                    }));
+                }
+                prechecked_abs_error_sum += err.abs();
+                prechecked_baseline_abs_error_sum += base_err.abs();
+                if !prechecked_abs_error_sum.is_finite() {
+                    return Err(MarketEffectError::Interval(IntervalError::ScoreOverflow {
+                        forecast_version: vintage.version_id.clone(),
+                        side: crate::interval::IntervalSide::Forecast,
+                    }));
+                }
+                if !prechecked_baseline_abs_error_sum.is_finite() {
+                    return Err(MarketEffectError::Interval(IntervalError::ScoreOverflow {
+                        forecast_version: vintage.version_id.clone(),
+                        side: crate::interval::IntervalSide::Baseline,
+                    }));
                 }
             }
         }
@@ -2518,16 +2987,17 @@ impl MarketEffectForecastBook {
             None
         };
 
-        let interval_eval: Option<IntervalEvaluation<'_>> = if !interval_rows.is_empty() {
-            Some(evaluate_intervals(&interval_rows, row_limit)?)
-        } else {
-            None
-        };
-
         let mut brier_by_vintage = BTreeMap::new();
+        let mut reassessment_reasons = Vec::new();
         if let Some(bin_rec) = &binary_eval_record {
             for v in &bin_rec.vintages {
                 brier_by_vintage.insert(v.forecast_version.clone(), v.brier_scores);
+            }
+            for r in &bin_rec.reassessment_reasons {
+                let mapped = MarketReassessmentReason::BinaryLedgerReassessment(r.clone());
+                if !reassessment_reasons.contains(&mapped) {
+                    reassessment_reasons.push(mapped);
+                }
             }
         }
 
@@ -2551,6 +3021,37 @@ impl MarketEffectForecastBook {
                     "unknown market_vintage_version in cohort",
                 ))?;
 
+            let scalar_res = item
+                .scalar_resolution_version
+                .as_ref()
+                .and_then(|ver| self.scalar_resolutions.get(ver));
+
+            if let Some(sr) = scalar_res {
+                let target_key = (
+                    sr.target_instrument_id.clone(),
+                    sr.effect_unit.clone(),
+                    sr.horizon_start_utc_ms,
+                    sr.horizon_end_utc_ms,
+                );
+                let canonical_res_id = self
+                    .scalar_target_key_to_resolution_id
+                    .get(&target_key)
+                    .unwrap_or(&sr.resolution_id);
+                if let Some(history) = self.scalar_resolution_history_by_id.get(canonical_res_id)
+                    && let Some(latest_ver) = history.last()
+                    && *latest_ver != sr.version_id
+                {
+                    let reason = MarketReassessmentReason::ScalarResolutionSuperseded {
+                        resolution_id: canonical_res_id.clone(),
+                        previous_resolution_version: sr.version_id.clone(),
+                        new_resolution_version: latest_ver.clone(),
+                    };
+                    if !reassessment_reasons.contains(&reason) {
+                        reassessment_reasons.push(reason);
+                    }
+                }
+            }
+
             match &vintage.prediction {
                 MarketEffectPrediction::Quantitative(quant) => {
                     quantitative_count += 1;
@@ -2560,10 +3061,6 @@ impl MarketEffectForecastBook {
                         .and_then(|idx| interval_eval.as_ref().and_then(|ev| ev.rows.get(*idx)))
                         .and_then(|row| row.scores);
 
-                    let scalar_res = item
-                        .scalar_resolution_version
-                        .as_ref()
-                        .and_then(|ver| self.scalar_resolutions.get(ver));
                     let scalar_state = scalar_res.map(|r| r.state.clone());
 
                     let mut point_error = None;
@@ -2639,6 +3136,12 @@ impl MarketEffectForecastBook {
                         is_quantitative: true,
                         post_cutoff_model_knowledge_disclosed: vintage
                             .post_cutoff_model_knowledge_disclosed,
+                        binary_resolution_version: item.binary_resolution_version.clone(),
+                        scalar_resolution_id: scalar_res.map(|r| r.resolution_id.clone()),
+                        scalar_resolution_version: scalar_res.map(|r| r.version_id.clone()),
+                        scalar_resolution_evidence_versions: scalar_res
+                            .map(|r| r.evidence_versions.clone())
+                            .unwrap_or_default(),
                         brier_scores,
                         interval_scores,
                         point_error,
@@ -2649,11 +3152,6 @@ impl MarketEffectForecastBook {
                 }
                 MarketEffectPrediction::QualitativeOrInsufficient(_) => {
                     qualitative_or_insufficient_count += 1;
-                    let scalar_state = item
-                        .scalar_resolution_version
-                        .as_ref()
-                        .and_then(|ver| self.scalar_resolutions.get(ver))
-                        .map(|r| r.state.clone());
                     summaries.push(EvaluatedMarketVintageSummary {
                         forecast_id: vintage.forecast_id.clone(),
                         forecast_version: vintage.version_id.clone(),
@@ -2661,12 +3159,18 @@ impl MarketEffectForecastBook {
                         is_quantitative: false,
                         post_cutoff_model_knowledge_disclosed: vintage
                             .post_cutoff_model_knowledge_disclosed,
+                        binary_resolution_version: None,
+                        scalar_resolution_id: scalar_res.map(|r| r.resolution_id.clone()),
+                        scalar_resolution_version: scalar_res.map(|r| r.version_id.clone()),
+                        scalar_resolution_evidence_versions: scalar_res
+                            .map(|r| r.evidence_versions.clone())
+                            .unwrap_or_default(),
                         brier_scores: None,
                         interval_scores: None,
                         point_error: None,
                         baseline_point_error: None,
                         direction_matched: None,
-                        scalar_resolution_state: scalar_state,
+                        scalar_resolution_state: scalar_res.map(|r| r.state.clone()),
                     });
                 }
             }
@@ -2703,6 +3207,8 @@ impl MarketEffectForecastBook {
             mean_abs_error,
             mean_baseline_abs_error,
             misses,
+            needs_reassessment: !reassessment_reasons.is_empty(),
+            reassessment_reasons,
         };
 
         self.used_versions.insert(evaluation_version.clone());
@@ -2717,10 +3223,12 @@ impl MarketEffectForecastBook {
     }
 
     /// Evaluate a hypothetical strategy simulation with mandatory fee, half-spread, and slippage
-    /// deductions (`MARKET-05`, `AGENTS.md` §6).
+    /// deductions (`MARKET-05`, `AGENTS.md` §6, `B2`).
     ///
-    /// Refuses zero-friction simulations and guarantees `is_observed_market_return() == false`
-    /// and `can_execute_orders() == false`.
+    /// Requires a supported return `effect_unit` ([`SimulatedReturnBasis`]), converts the realized
+    /// scalar return into basis points before deducting round-trip friction, preserves the original
+    /// `effect_unit` and raw value, refuses zero-friction simulations, and guarantees
+    /// `is_observed_market_return() == false` and `can_execute_orders() == false`.
     pub fn evaluate_simulated_strategy(
         &self,
         simulation_version: VersionId,
@@ -2757,6 +3265,11 @@ impl MarketEffectForecastBook {
                 "strategy simulation requires a Quantitative market-effect vintage",
             ));
         };
+        let Some(return_basis) = SimulatedReturnBasis::from_effect_unit(&quant.effect_unit) else {
+            return Err(MarketEffectError::InvalidStrategySimulation(
+                "effect_unit is not a supported return unit (expected bps, pct, or decimal_return); cannot deduct basis-point frictions from non-return or level/volatility units",
+            ));
+        };
         let scalar_res = self
             .scalar_resolutions
             .get(scalar_resolution_version)
@@ -2772,15 +3285,39 @@ impl MarketEffectForecastBook {
                 "scalar resolution does not match forecast target, unit, or horizon",
             ));
         }
-        let MarketScalarResolutionState::Resolved { realized_value, .. } = scalar_res.state else {
+        if scalar_res.recorded_at_utc_ms < vintage.issued_at_utc_ms {
+            return Err(MarketEffectError::InvalidStrategySimulation(
+                "scalar resolution recorded_at_utc_ms predates forecast issuance",
+            ));
+        }
+        let MarketScalarResolutionState::Resolved {
+            realized_value,
+            observed_at_utc_ms,
+        } = scalar_res.state
+        else {
             return Err(MarketEffectError::InvalidStrategySimulation(
                 "strategy simulation requires a Resolved scalar market outcome",
             ));
         };
+        if observed_at_utc_ms <= vintage.information_cutoff_utc_ms
+            || observed_at_utc_ms <= vintage.origin_utc_ms
+            || observed_at_utc_ms <= vintage.issued_at_utc_ms
+        {
+            return Err(MarketEffectError::InvalidStrategySimulation(
+                "scalar resolution observed_at_utc_ms occurred at or before forecast cutoff/origin/issuance",
+            ));
+        }
+
+        let realized_return_bps = realized_value * return_basis.bps_per_unit();
+        if !realized_return_bps.is_finite() {
+            return Err(MarketEffectError::InvalidStrategySimulation(
+                "realized return conversion to basis points overflowed finite bounds",
+            ));
+        }
 
         let gross_simulated_return_bps = match quant.expected_direction {
-            MarketDirection::Positive => realized_value,
-            MarketDirection::Negative => -realized_value,
+            MarketDirection::Positive => realized_return_bps,
+            MarketDirection::Negative => -realized_return_bps,
             MarketDirection::AmbiguousOrTwoSided | MarketDirection::MutedOrAlreadyPriced => {
                 return Err(MarketEffectError::InvalidStrategySimulation(
                     "directional strategy simulation requires Positive or Negative expected_direction",
@@ -2798,6 +3335,9 @@ impl MarketEffectForecastBook {
             simulation_version,
             forecast_version: forecast_version.clone(),
             scalar_resolution_version: scalar_resolution_version.clone(),
+            effect_unit: quant.effect_unit.clone(),
+            return_basis,
+            realized_effect_in_unit: realized_value,
             friction_config: friction,
             gross_simulated_return_bps,
             round_trip_friction_deducted_bps: round_trip_friction,
@@ -2831,6 +3371,22 @@ impl MarketEffectForecastBook {
         version_id: &VersionId,
     ) -> Option<&MarketScalarResolutionRecord> {
         self.scalar_resolutions.get(version_id)
+    }
+
+    /// Return all scalar resolution versions recorded for `resolution_id` in recording order (`B4`).
+    #[must_use]
+    pub fn scalar_resolution_lineage(
+        &self,
+        resolution_id: &OpaqueId,
+    ) -> Vec<&MarketScalarResolutionRecord> {
+        self.scalar_resolution_history_by_id
+            .get(resolution_id)
+            .map(|vers| {
+                vers.iter()
+                    .filter_map(|v| self.scalar_resolutions.get(v))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Look up a market-effect evaluation run by its immutable [`VersionId`].

@@ -1,9 +1,12 @@
-//! Forecast issuance, cutoff admissibility, and evaluation kernels for Open Intelligence Agency.
+//! Forecast issuance, cutoff admissibility, historical analogue precedent retrieval,
+//! and evaluation kernels for Open Intelligence Agency.
 //!
-//! Binary scoring (`scoring`) and immutable issuance/revision/resolution lifecycle (`issuance`)
-//! are implemented; durable storage, calibration fitting, `D12` dataset selection, and application
-//! service integration remain open in `#43`.
+//! Binary scoring (`scoring`), reliability (`reliability`), scalar intervals (`interval`),
+//! immutable issuance/revision/resolution lifecycle (`issuance`), and historical analogue
+//! forecasting (`analogues`, `#45`) are implemented; durable storage, calibration fitting,
+//! `D12` dataset selection, and application service integration remain open in `#43` and `#45`.
 
+pub mod analogues;
 pub mod interval;
 pub mod issuance;
 pub mod reliability;

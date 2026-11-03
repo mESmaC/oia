@@ -98,3 +98,18 @@ The workspace baseline also passed for this change: `cargo fmt --all -- --check`
 `cargo test --workspace --locked --offline` (including the existing Rust cutoff
 correspondence test). Documentation relative links/fences and `git diff --check`
 passed. The Lean proof gate was not rerun; no covered algorithm changed.
+
+### Shared Unicode display policy verification (2026-11-03)
+
+On Windows x86_64 MSVC with pinned Rust 1.99.0, after rebasing onto `b13946b`,
+workspace formatting, clippy (`--workspace --all-targets --locked --offline --
+-D warnings`), and tests (`--workspace --locked --offline`) passed. The synthetic
+`export-recreation-prompt` example also ran successfully. Existing report,
+recreation, and bundle contract tests now cover multilingual joiner preservation,
+visible soft-hyphen/formatting escapes, and continued strict bundle joiner refusal.
+No new test cases were added. Relative documentation links/fences and diff checks
+passed. An initial shared-cache clippy run reported a missing existing citation
+module; the successful baseline used the task's isolated build cache. The optional
+Cesium payload was absent, so Globe rendering was not exercised. No Lean proof
+check was rerun; no covered algorithm or proof claim changed. These checks cover
+the Unicode export slice, not full A10/A16 integration.

@@ -27,6 +27,8 @@ Rust from that snapshot, and reuses dependencies under `target/package-windows/b
 It excludes other ignored/untracked content. Temporary snapshots remain under
 `target/package-windows/` for inspection, including after errors. Failed builds
 do not create the destination ZIP, and an existing destination is never replaced.
+A process lock covers building and copying, so concurrent packagers cannot mix
+one revision's executable with another revision's manifest; a competing run fails.
 The ZIP defaults to ignored `target/packages/`. A custom destination inside the
 checkout may become untracked and must be moved before packaging again.
 

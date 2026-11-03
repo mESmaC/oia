@@ -47,6 +47,14 @@ $Work = Join-Path $Root ('target/package-windows/' + [guid]::NewGuid().ToString(
 $Source = Join-Path $Work 'source'
 $Payload = Join-Path $Work 'payload'
 New-Item -ItemType Directory -Path $Source, $Payload -Force | Out-Null
+# Hold the lock through copying the executable. Cargo's own lock ends at build
+# completion and would otherwise let a second packager replace our binary.
+try {
+    $BuildLock = [IO.File]::Open((Join-Path $Root 'target/package-windows/build.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+} catch {
+    throw 'package-windows: another package build holds the build lock; retry after it finishes'
+}
+try {
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $SourceZip = Join-Path $Work 'source.zip'
 & git -C $Root archive --format=zip "--output=$SourceZip" $Revision
@@ -118,3 +126,6 @@ Write-Host "package-windows: $OutputPath"
 Write-Host "SHA256 $((Get-FileHash -LiteralPath $OutputPath -Algorithm SHA256).Hash.ToLowerInvariant())"
 # Keep the task-owned snapshot and manifest for inspection. All intermediates are
 # under ignored target/; no recursive cleanup of caller-supplied paths is needed.
+} finally {
+    $BuildLock.Dispose()
+}

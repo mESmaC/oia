@@ -601,6 +601,7 @@ impl RecreationState {
             conflicting_variants: Vec::new(),
             assumptions,
             unknowns,
+            negative_keywords: Vec::new(),
             reference_assets: Vec::new(),
         };
         let prompt =

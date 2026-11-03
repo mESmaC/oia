@@ -6,27 +6,41 @@ Implemented slice of [#45](https://github.com/mESmaC/oia/issues/45), supporting
 [the architecture](../architecture.md), and deterministic scenario `A15` in
 [delivery and verification](../delivery.md). The Rust library entry points live
 in [`oia_forecast::analogues`](../../crates/oia-forecast/src/analogues.rs) and
-compose with [`oia_forecast::issuance`](../../crates/oia-forecast/src/issuance.rs)
-and [`oia_forecast::scoring`](../../crates/oia-forecast/src/scoring.rs).
+compose with [`oia_forecast::issuance`](../../crates/oia-forecast/src/issuance.rs),
+[`oia_forecast::reliability`](../../crates/oia-forecast/src/reliability.rs), and
+[`oia_forecast::scoring`](../../crates/oia-forecast/src/scoring.rs).
 
 ## Contract
 
-1. **Sourced event-response histories and point-in-time knowability (`FORECAST-01`, `FORECAST-04`):**
+1. **Sourced event-response histories, precedent corrections, and point-in-time knowability (`FORECAST-01`, `FORECAST-04`):**
    - `PrecedentLibrary` stores up to `5,000` versioned `PrecedentEpisodeRecord`
      entries across government, institutional, industry, and community actors
-     (`PrecedentSector`), recording initiating conditions, actor response steps
+     (`PrecedentSector`), recording record curation timestamps
+     (`recorded_at_utc_ms`), initiating conditions, actor response steps
      (`ActorResponseStep` with separate `announced_intention` and observed
      `action_summary`), terminal outcomes (`PrecedentOutcomeDisposition`),
-     elapsed durations, and cited `CutoffSourceInput` versions.
+     elapsed durations, and cited `CutoffSourceInput` versions. Conflicting
+     metadata timestamps for the same `source_version` are rejected with
+     `AnalogueError::ConflictingSourceMetadata`.
+   - `PrecedentLibrary::record_episode_correction` records a superseding version
+     of an existing precedent episode (`supersedes_version` +
+     `correction_rationale`) while preserving all prior versions in
+     `episode_history`, and notifies `ForecastLedger::record_precedent_supersession`
+     so any `EvaluationRunRecord` whose evaluated vintages cited a superseded
+     precedent version in `comparison_set` is flagged with
+     `needs_reassessment = true` and
+     `ReassessmentReason::PrecedentEpisodeSuperseded` without rewriting issued
+     vintages or historical scores (`AGENTS.md` §4).
    - Chronological ordering (`TemporalSequenceRelation::ObservedSequenceOnly`)
      is kept distinct from assessed causation
      (`TemporalSequenceRelation::AssessedCausalLink`, which requires a non-empty
      rationale and cited evidence versions).
-   - `evaluate_episode_against_target` evaluates what was knowable at a
-     forecast's `information_cutoff_utc_ms` under `ProspectiveStrict` or
-     `RetrospectiveReconstructed`:
-     - Episodes whose initiating event or initiation evidence was not admissible
-       at cutoff are classified as `EpisodePointInTimeStatus::InadmissibleAtCutoff`
+   - Point-in-time evaluation at `information_cutoff_utc_ms` shares the crate's
+     per-source admissibility check (`validate_source_admissible_at_cutoff`):
+     - Under `ProspectiveStrict`, episodes curated after
+       `information_cutoff_utc_ms` (`recorded_at_utc_ms > information_cutoff_utc_ms`),
+       or whose initiating event or initiation evidence was not admissible at
+       cutoff, are classified as `EpisodePointInTimeStatus::InadmissibleAtCutoff`
        and rejected from the active comparison set.
      - Episodes that initiated at or before cutoff whose outcome either
        remained `CensoredOrIncompleteFollowUp` or resolved / became publicly
@@ -36,32 +50,43 @@ and [`oia_forecast::scoring`](../../crates/oia-forecast/src/scoring.rs).
        and post-cutoff evidence sources so future outcomes cannot leak into
        point-in-time base rates or forecast sources.
 
-2. **Multi-criteria retrieval, editable comparison sets, and episode independence (`FORECAST-02`, `A15`):**
+2. **Multi-criteria retrieval, encapsulated comparison sets, and episode independence (`FORECAST-02`, `A15`):**
    - Compares each precedent against a target `AnalogueProfile` across seven
      explicit dimensions (`EventScale`, `Geography`, `ActorSector`,
      `InstitutionalRegime`, `TensionLevel`, `EconomicCondition`, and
      `InformationQuality`), producing per-dimension similarity/difference notes
      (`DimensionAssessment`), institutional regime difference disclosures, and
      transfer limitation notes.
-   - `AnalogueComparisonSet::apply_edit` records auditable `ComparisonSetEdit`
-     entries (`IncludeEpisode`, `ExcludeEpisode`, `AnnotateTransferLimits`).
-     Excluding a counterexample retains the removed record in `excluded_entries`
-     with its rationale and increments `excluded_counterexample_count`.
+   - `AnalogueComparisonSet` keeps its fields private behind read-only getters so
+     callers cannot bypass the sparse-history gate, lookahead protection, or
+     edit history. `AnalogueComparisonSet::apply_edit` and
+     `AnalogueComparisonSet::re_retrieve_at_cutoff` record auditable
+     `ComparisonSetEdit` entries (`IncludeEpisode`, `ExcludeEpisode`,
+     `AnnotateTransferLimits`, and `AdvanceCutoff`). Excluding a counterexample
+     retains the removed record in `excluded_entries` with its rationale and
+     increments `excluded_counterexample_count`.
    - `EpisodeDependencyKind` (`IndependentEpisode`, `SharedCrisisOrCampaign`,
      `PolicySpilloverOrRetaliation`, `SharedSourceLineageOnly`) assigns a
-     shared `independence_cluster_key` to related episodes so coordinated waves
-     or syndicated reports do not inflate `independent_cluster_count` or
-     `independent_cluster_support_ratio_bps`.
+     shared `independence_cluster_key` to related episodes, and any active
+     episodes declared as `IndependentEpisode` that cite the exact same outcome
+     evidence source version are automatically merged into a shared cluster key
+     (`shared-outcome-source:<version>`) so repeated sources or coordinated
+     waves cannot inflate `independent_cluster_count`.
    - `PrecedentOutcomeDisposition::DocumentedNonResponse` represents verified
      observation windows where no action was taken, distinct from
      `CensoredOrIncompleteFollowUp`.
 
-3. **Conditional response sequences, uncalibrated frequency caveats, and transferability (`FORECAST-03`, `A15`):**
+3. **Conditional response sequences, mixed-cluster accounting, and transferability (`FORECAST-03`, `A15`):**
    - `HistoricalFrequencySummary` reports active episode counts, independent
      cluster counts, dependent episode counts, supportive responses, divergent
-     counterexamples, documented non-responses, cutoff-censored counts, raw and
-     cluster-deduplicated support ratios in basis points, and elapsed-time
-     bounds (`ElapsedTimeRangeMs { min_elapsed_ms, median_elapsed_ms, max_elapsed_ms }`),
+     counterexamples, documented non-responses, cutoff-censored counts,
+     unanimously supportive clusters (`independent_supportive_cluster_count`),
+     unanimously counterexample clusters
+     (`independent_counterexample_cluster_count`), mixed-outcome clusters
+     (`mixed_outcome_cluster_count`), raw and within-cluster-weighted support
+     ratios in basis points (ensuring deduplication never treats a mixed-outcome
+     cluster as wholly supportive), and elapsed-time bounds
+     (`ElapsedTimeRangeMs { min_elapsed_ms, median_elapsed_ms, max_elapsed_ms }`),
      always paired with `is_calibrated_probability: false` and
      `UNCALIBRATED_HISTORICAL_FREQUENCY_CAVEAT`.
    - `AnalogueComparisonSet::assess_transferability` flags
@@ -79,11 +104,13 @@ and [`oia_forecast::scoring`](../../crates/oia-forecast/src/scoring.rs).
 4. **`ForecastLedger` integration and timing evaluation (`FORECAST-04`, `A15`):**
    - `AnalogueComparisonSet::issue_forecast` bridges a validated comparison set
      and `AnalogueForecastIssuanceSpec` into `ForecastLedger::issue_forecast`,
-     freezing active episode `VersionId`s into `comparison_set` and merging
-     cutoff-admissible precedent sources with `scenario_sources`. Quantitative
-     issuance is refused when `PredictionJustification` is
-     `QualitativeScenarioOnly` or when history is `SparseOrPoorlyTransferable`
-     without an explicit `sparse_history_override_rationale`.
+     pinning `current_version_id` as the first element of
+     `ForecastDraft::comparison_set` followed by each active episode's
+     `VersionId`, and merging cutoff-admissible precedent sources with
+     `scenario_sources`. Quantitative issuance is refused when
+     `PredictionJustification` is `QualitativeScenarioOnly` or when history is
+     `SparseOrPoorlyTransferable` without an explicit
+     `sparse_history_override_rationale`.
    - `AnalogueComparisonSet::evaluate_resolution_timing` compares an observed
      resolution timestamp against the precedent `ElapsedTimeRangeMs`
      (`signed_error_from_median_ms`, `abs_error_from_median_ms`,

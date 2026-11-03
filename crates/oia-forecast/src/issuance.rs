@@ -259,6 +259,13 @@ pub enum ReassessmentReason {
         previous_resolution_version: VersionId,
         new_resolution_version: VersionId,
     },
+    /// A historical precedent episode version frozen in an evaluated vintage's `comparison_set`
+    /// was superseded by a corrected precedent version (`FORECAST-02`, `FORECAST-04`, `AGENTS.md` §4).
+    PrecedentEpisodeSuperseded {
+        episode_id: OpaqueId,
+        previous_episode_version: VersionId,
+        new_episode_version: VersionId,
+    },
 }
 
 /// Immutable evaluation run pinning exact forecast, baseline, and outcome resolution versions.
@@ -644,6 +651,7 @@ pub struct ForecastLedger {
     series_vintages: BTreeMap<OpaqueId, Vec<VersionId>>,
     resolutions_by_version: BTreeMap<VersionId, OutcomeResolutionRecord>,
     outcome_resolutions: BTreeMap<OpaqueId, Vec<VersionId>>,
+    superseded_precedents: BTreeMap<VersionId, (OpaqueId, VersionId)>,
     evaluations_by_version: BTreeMap<VersionId, EvaluationRunRecord>,
     evaluation_order: Vec<VersionId>,
     total_evaluated_vintages: usize,
@@ -667,6 +675,7 @@ impl ForecastLedger {
             series_vintages: BTreeMap::new(),
             resolutions_by_version: BTreeMap::new(),
             outcome_resolutions: BTreeMap::new(),
+            superseded_precedents: BTreeMap::new(),
             evaluations_by_version: BTreeMap::new(),
             evaluation_order: Vec::new(),
             total_evaluated_vintages: 0,
@@ -1386,6 +1395,21 @@ impl ForecastLedger {
                 }
             }
 
+            // If this vintage's frozen comparison_set cites an already-superseded precedent episode version,
+            // disclose that immediately (`FORECAST-02`, `FORECAST-04`, `AGENTS.md` §4).
+            for comp_ver in &vintage.comparison_set {
+                if let Some((ep_id, latest_ep_ver)) = self.superseded_precedents.get(comp_ver) {
+                    let reason = ReassessmentReason::PrecedentEpisodeSuperseded {
+                        episode_id: ep_id.clone(),
+                        previous_episode_version: comp_ver.clone(),
+                        new_episode_version: latest_ep_ver.clone(),
+                    };
+                    if !reassessment_reasons.contains(&reason) {
+                        reassessment_reasons.push(reason);
+                    }
+                }
+            }
+
             let brier_scores = match maybe_row_idx {
                 Some(idx) => binary_eval.rows.get(*idx).and_then(|r| r.scores),
                 None => {
@@ -1446,6 +1470,80 @@ impl ForecastLedger {
                 version_id: evaluation_version,
             },
         )
+    }
+
+    /// Return the immutable [`VersionId`]s of all issued forecast vintages whose frozen
+    /// `comparison_set` includes `comparison_version` (`FORECAST-02`, `FORECAST-04`).
+    #[must_use]
+    pub fn vintages_citing_comparison_version(
+        &self,
+        comparison_version: &VersionId,
+    ) -> Vec<VersionId> {
+        self.vintages_by_version
+            .values()
+            .filter(|v| v.comparison_set.contains(comparison_version))
+            .map(|v| v.version_id.clone())
+            .collect()
+    }
+
+    /// Record that a historical precedent episode's prior version(s) were superseded by
+    /// `new_episode_version`, flagging any dependent [`EvaluationRunRecord`] whose evaluated
+    /// vintages cited one of `prior_episode_versions` in `comparison_set` without rewriting
+    /// the issued vintages or historical scores (`FORECAST-02`, `FORECAST-04`, `AGENTS.md` §4).
+    ///
+    /// Returns the list of issued forecast vintage [`VersionId`]s whose frozen `comparison_set`
+    /// cited any of `prior_episode_versions`.
+    pub fn record_precedent_supersession(
+        &mut self,
+        episode_id: &OpaqueId,
+        prior_episode_versions: &[VersionId],
+        new_episode_version: &VersionId,
+    ) -> Vec<VersionId> {
+        let prior_set: BTreeSet<&VersionId> = prior_episode_versions.iter().collect();
+        for old_ver in prior_episode_versions {
+            self.superseded_precedents.insert(
+                old_ver.clone(),
+                (episode_id.clone(), new_episode_version.clone()),
+            );
+        }
+
+        let mut affected_vintages = Vec::new();
+        for vintage in self.vintages_by_version.values() {
+            if vintage
+                .comparison_set
+                .iter()
+                .any(|ver| prior_set.contains(ver))
+            {
+                affected_vintages.push(vintage.version_id.clone());
+            }
+        }
+
+        let vintages_by_ver = &self.vintages_by_version;
+        for eval in self.evaluations_by_version.values_mut() {
+            let mut pinned_old_versions = Vec::new();
+            for ev_vintage in &eval.vintages {
+                if let Some(vintage_rec) = vintages_by_ver.get(&ev_vintage.forecast_version) {
+                    for comp_ver in &vintage_rec.comparison_set {
+                        if prior_set.contains(comp_ver) && !pinned_old_versions.contains(comp_ver) {
+                            pinned_old_versions.push(comp_ver.clone());
+                        }
+                    }
+                }
+            }
+            for old_ver in pinned_old_versions {
+                let reason = ReassessmentReason::PrecedentEpisodeSuperseded {
+                    episode_id: episode_id.clone(),
+                    previous_episode_version: old_ver,
+                    new_episode_version: new_episode_version.clone(),
+                };
+                eval.needs_reassessment = true;
+                if !eval.reassessment_reasons.contains(&reason) {
+                    eval.reassessment_reasons.push(reason);
+                }
+            }
+        }
+
+        affected_vintages
     }
 
     /// Look up an issued forecast vintage by its immutable [`VersionId`].
@@ -1538,6 +1636,59 @@ fn validate_collection_len(field: &'static str, actual: usize) -> Result<(), Iss
     Ok(())
 }
 
+/// Shared per-source cutoff admissibility check used by [`ForecastLedger`] and [`crate::analogues`] (`AGENTS.md` §4).
+///
+/// Validates `public_available_at_utc_ms`, optional `event_utc_ms`, and optional `ingested_at_utc_ms`
+/// against `cutoff_utc_ms` and `cutoff_mode`, returning `public_available_at_utc_ms` when admissible.
+pub(crate) fn validate_source_admissible_at_cutoff(
+    src: &CutoffSourceInput,
+    cutoff_utc_ms: i64,
+    cutoff_mode: &CutoffAdmissibilityMode,
+) -> Result<i64, IssuanceError> {
+    let Some(pub_ms) = src.public_available_at_utc_ms else {
+        return Err(IssuanceError::SourcePublicAvailabilityAfterCutoff {
+            source_version: src.source_version.clone(),
+            public_available_at_utc_ms: None,
+            cutoff_utc_ms,
+        });
+    };
+    validate_timestamp_range("sources[].public_available_at_utc_ms", pub_ms)?;
+    if pub_ms > cutoff_utc_ms {
+        return Err(IssuanceError::SourcePublicAvailabilityAfterCutoff {
+            source_version: src.source_version.clone(),
+            public_available_at_utc_ms: Some(pub_ms),
+            cutoff_utc_ms,
+        });
+    }
+    if let Some(event_ms) = src.event_utc_ms {
+        validate_timestamp_range("sources[].event_utc_ms", event_ms)?;
+        let bound = pub_ms.min(cutoff_utc_ms);
+        if event_ms > bound {
+            return Err(IssuanceError::SourceEventAfterAvailabilityOrCutoff {
+                source_version: src.source_version.clone(),
+                event_utc_ms: event_ms,
+                bound_utc_ms: bound,
+            });
+        }
+    }
+    if let Some(ing_ms) = src.ingested_at_utc_ms {
+        validate_timestamp_range("sources[].ingested_at_utc_ms", ing_ms)?;
+    }
+    if matches!(cutoff_mode, CutoffAdmissibilityMode::ProspectiveStrict) {
+        match src.ingested_at_utc_ms {
+            Some(ing_ms) if ing_ms <= cutoff_utc_ms => {}
+            other => {
+                return Err(IssuanceError::SourceIngestedAfterStrictCutoff {
+                    source_version: src.source_version.clone(),
+                    ingested_at_utc_ms: other,
+                    cutoff_utc_ms,
+                });
+            }
+        }
+    }
+    Ok(pub_ms)
+}
+
 fn validate_cutoff_and_sources(
     cutoff_mode: &CutoffAdmissibilityMode,
     cutoff_utc_ms: i64,
@@ -1590,47 +1741,7 @@ fn validate_cutoff_and_sources(
                 "duplicate source_version in forecast sources",
             ));
         }
-        let Some(pub_ms) = src.public_available_at_utc_ms else {
-            return Err(IssuanceError::SourcePublicAvailabilityAfterCutoff {
-                source_version: src.source_version.clone(),
-                public_available_at_utc_ms: None,
-                cutoff_utc_ms,
-            });
-        };
-        validate_timestamp_range("sources[].public_available_at_utc_ms", pub_ms)?;
-        if pub_ms > cutoff_utc_ms {
-            return Err(IssuanceError::SourcePublicAvailabilityAfterCutoff {
-                source_version: src.source_version.clone(),
-                public_available_at_utc_ms: Some(pub_ms),
-                cutoff_utc_ms,
-            });
-        }
-        if let Some(event_ms) = src.event_utc_ms {
-            validate_timestamp_range("sources[].event_utc_ms", event_ms)?;
-            let bound = pub_ms.min(cutoff_utc_ms);
-            if event_ms > bound {
-                return Err(IssuanceError::SourceEventAfterAvailabilityOrCutoff {
-                    source_version: src.source_version.clone(),
-                    event_utc_ms: event_ms,
-                    bound_utc_ms: bound,
-                });
-            }
-        }
-        if let Some(ing_ms) = src.ingested_at_utc_ms {
-            validate_timestamp_range("sources[].ingested_at_utc_ms", ing_ms)?;
-        }
-        if matches!(cutoff_mode, CutoffAdmissibilityMode::ProspectiveStrict) {
-            match src.ingested_at_utc_ms {
-                Some(ing_ms) if ing_ms <= cutoff_utc_ms => {}
-                other => {
-                    return Err(IssuanceError::SourceIngestedAfterStrictCutoff {
-                        source_version: src.source_version.clone(),
-                        ingested_at_utc_ms: other,
-                        cutoff_utc_ms,
-                    });
-                }
-            }
-        }
+        validate_source_admissible_at_cutoff(src, cutoff_utc_ms, cutoff_mode)?;
     }
 
     Ok(post_cutoff_model_knowledge_disclosed)

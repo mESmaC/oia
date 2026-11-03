@@ -16,7 +16,8 @@
 //!   frequency summaries that never masquerade as calibrated probabilities (`FORECAST-03`).
 //! - Direct bridging into [`crate::issuance::ForecastLedger`] so original and revised analogue
 //!   forecasts remain immutable and evaluable alongside base-rate baselines, reliability summaries,
-//!   elapsed-time error (`AnalogueTimingEvaluation`), and unresolved outcomes (`FORECAST-04`, `A15`).
+//!   elapsed-time error (`AnalogueTimingEvaluation`), precedent corrections, and unresolved outcomes
+//!   (`FORECAST-04`, `A15`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -27,7 +28,7 @@ use crate::issuance::{
     CutoffAdmissibilityMode, CutoffSourceInput, ForecastDraft, ForecastLedger,
     ForecastVintageRecord, IssuanceError, MAX_FORECAST_COLLECTION_LEN, MAX_TEXT_FIELD_BYTES,
     MAX_VALID_UTC_MS, MIN_VALID_UTC_MS, OutcomeDefinition, OutcomeResolutionRecord,
-    ResolutionState, RevisionRationale,
+    ResolutionState, RevisionRationale, validate_source_admissible_at_cutoff,
 };
 use crate::scoring::{Probability, ScoringError, UnresolvedReason};
 
@@ -261,6 +262,31 @@ pub enum PrecedentOutcomeDisposition {
     },
 }
 
+impl PrecedentOutcomeDisposition {
+    /// Return the outcome or partial evidence versions cited by this disposition.
+    #[must_use]
+    pub fn cited_evidence_versions(&self) -> &[VersionId] {
+        match self {
+            Self::TargetResponseOccurred {
+                outcome_evidence_versions,
+                ..
+            }
+            | Self::DivergentResponseOccurred {
+                outcome_evidence_versions,
+                ..
+            }
+            | Self::DocumentedNonResponse {
+                outcome_evidence_versions,
+                ..
+            } => outcome_evidence_versions,
+            Self::CensoredOrIncompleteFollowUp {
+                partial_evidence_versions,
+                ..
+            } => partial_evidence_versions,
+        }
+    }
+}
+
 /// Episode dependency and lineage classification (`FORECAST-02`, `A15`).
 ///
 /// Related episodes sharing a crisis cluster, policy cascade, or syndicated source lineage
@@ -287,13 +313,17 @@ pub enum EpisodeDependencyKind {
     },
 }
 
-/// Versioned historical event-response episode (`FORECAST-01`, `FORECAST-02`).
+/// Versioned historical event-response episode (`FORECAST-01`, `FORECAST-02`, `FORECAST-04`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrecedentEpisodeRecord {
     pub episode_id: OpaqueId,
     pub version_id: VersionId,
     pub schema_version: SchemaVersion,
     pub recorded_by: ActorId,
+    /// Timestamp when this precedent episode version was curated/recorded in OIA (`FORECAST-01`, `FORECAST-04`).
+    /// Under [`CutoffAdmissibilityMode::ProspectiveStrict`], `recorded_at_utc_ms` must be `<= information_cutoff_utc_ms`
+    /// so hindsight-curated precedent tags or dependency classifications cannot leak into strict prospective retrieval.
+    pub recorded_at_utc_ms: i64,
     pub title: String,
     pub initiating_condition: String,
     pub initiating_event_utc_ms: i64,
@@ -303,10 +333,15 @@ pub struct PrecedentEpisodeRecord {
     pub response_steps: Vec<ActorResponseStep>,
     pub outcome: PrecedentOutcomeDisposition,
     pub sources: Vec<CutoffSourceInput>,
+    /// Prior episode `VersionId` superseded when a later source or outcome correction updates this precedent (`FORECAST-04`, `AGENTS.md` §4).
+    pub supersedes_version: Option<VersionId>,
+    /// Mandatory explanation when `supersedes_version` is `Some`.
+    pub correction_rationale: Option<String>,
 }
 
 impl PrecedentEpisodeRecord {
     /// Key used to deduplicate dependent episodes when counting independent precedent clusters.
+    #[must_use]
     pub fn independence_cluster_key(&self) -> String {
         match &self.dependency {
             EpisodeDependencyKind::IndependentEpisode => {
@@ -350,7 +385,8 @@ pub enum EpisodePointInTimeStatus {
         explanation: String,
         admissible_response_steps: usize,
     },
-    /// The initiating event occurred after `information_cutoff_utc_ms` or its initiation
+    /// The initiating event occurred after `information_cutoff_utc_ms`, the episode record was
+    /// curated after `information_cutoff_utc_ms` under `ProspectiveStrict`, or its initiation
     /// evidence was not admissible under the active [`CutoffAdmissibilityMode`].
     InadmissibleAtCutoff { reason: String },
 }
@@ -421,6 +457,8 @@ pub struct AnalogueMatchEntry {
     pub knowable_target_elapsed_ms: Option<i64>,
     /// Cutoff-admissible source inputs for this episode at `information_cutoff_utc_ms`.
     pub cutoff_admissible_sources: Vec<CutoffSourceInput>,
+    /// Outcome evidence versions cited by this episode, used to detect shared-source lineage across episodes.
+    pub cited_outcome_evidence_versions: Vec<VersionId>,
 }
 
 /// Explicit criteria for retrieving candidate historical precedents (`FORECAST-02`, `A15`).
@@ -440,7 +478,7 @@ pub struct AnalogueQueryCriteria {
     pub min_independent_clusters: usize,
 }
 
-/// Action recorded when an analyst edits a comparison set (`FORECAST-02`, `A15`).
+/// Action recorded when an analyst edits or advances a comparison set (`FORECAST-02`, `A15`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComparisonEditAction {
     /// Manually include a cutoff-admissible episode from the library (even if below `min_matched_dimensions`).
@@ -459,6 +497,13 @@ pub enum ComparisonEditAction {
         episode_id: OpaqueId,
         institutional_difference_note: Option<String>,
         additional_limitations: Vec<String>,
+        rationale: String,
+    },
+    /// Re-evaluate the comparison set at a non-decreasing `new_cutoff_utc_ms`, producing a new
+    /// comparison-set version while preserving prior exclusions and annotations (`FORECAST-02`, `FORECAST-04`).
+    AdvanceCutoff {
+        previous_cutoff_utc_ms: i64,
+        new_cutoff_utc_ms: i64,
         rationale: String,
     },
 }
@@ -505,13 +550,29 @@ pub struct HistoricalFrequencySummary {
     pub censored_at_cutoff_count: usize,
     pub excluded_episode_count: usize,
     pub excluded_counterexample_count: usize,
+    /// Number of independent clusters whose resolved episodes are *unanimously* `SupportiveAnalogue`.
     pub independent_supportive_cluster_count: usize,
+    /// Number of independent clusters whose resolved episodes are *unanimously* counterexamples
+    /// (`DivergentCounterexample` or `DocumentedNonResponseCounterexample`).
+    pub independent_counterexample_cluster_count: usize,
+    /// Number of independent clusters containing *both* at least one `SupportiveAnalogue` and at
+    /// least one counterexample (`FORECAST-02`, `B2`). Kept out of `independent_supportive_cluster_count`
+    /// while remaining in the denominator `independent_resolved_cluster_count` so cluster deduplication
+    /// can never inflate apparent support over a mixed-outcome cluster.
+    pub mixed_outcome_cluster_count: usize,
     pub independent_resolved_cluster_count: usize,
     /// Raw support ratio in basis points (`0..=10_000`) over `resolved_knowable_episode_count`,
     /// or `None` when zero resolved episodes exist.
     pub raw_resolved_support_ratio_bps: Option<u32>,
-    /// Cluster-deduplicated support ratio in basis points (`0..=10_000`) over
-    /// `independent_resolved_cluster_count`, or `None` when zero resolved clusters exist.
+    /// Cluster-deduplicated support ratio in basis points (`0..=10_000`), computed as the mean of
+    /// per-cluster resolved support fractions (`supportive_in_cluster / resolved_in_cluster`) across
+    /// all `independent_resolved_cluster_count` clusters (`None` when zero resolved clusters exist).
+    ///
+    /// - Unanimously supportive clusters contribute weight `1.0` (`10_000` bps).
+    /// - Unanimously counterexample clusters contribute weight `0.0` (`0` bps).
+    /// - Mixed-outcome clusters contribute their exact within-cluster support fraction
+    ///   `supportive_in_cluster / resolved_in_cluster`, ensuring deduplication never treats a
+    ///   mixed cluster as wholly supportive (`B2`).
     pub independent_cluster_support_ratio_bps: Option<u32>,
     pub target_elapsed_time_range: Option<ElapsedTimeRangeMs>,
     /// Always `false`: historical counts are not calibrated probabilities (`FORECAST-03`, `AGENTS.md` §2).
@@ -558,20 +619,24 @@ pub enum TransferabilityAssessment {
 }
 
 /// Versioned, editable comparison set of historical precedents (`FORECAST-02`, `FORECAST-03`, `A15`).
+///
+/// Fields are private so callers cannot bypass the sparse-history gate, lookahead cutoff checks,
+/// or the comparison-set edit audit trail (`B1`). Use the public getters, [`Self::apply_edit`],
+/// and [`Self::re_retrieve_at_cutoff`] to inspect or update the comparison set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnalogueComparisonSet {
-    pub comparison_set_id: OpaqueId,
-    pub current_version_id: VersionId,
-    pub information_cutoff_utc_ms: i64,
-    pub cutoff_mode: CutoffAdmissibilityMode,
-    pub target_profile: AnalogueProfile,
-    pub min_matched_dimensions: usize,
-    pub min_independent_clusters: usize,
-    pub active_entries: Vec<AnalogueMatchEntry>,
-    pub excluded_entries: Vec<ExcludedAnalogueEntry>,
-    pub edit_history: Vec<ComparisonSetEdit>,
-    /// Episodes rejected at retrieval because their initiating event was not knowable at cutoff.
-    pub inadmissible_episode_ids: Vec<(OpaqueId, String)>,
+    comparison_set_id: OpaqueId,
+    current_version_id: VersionId,
+    information_cutoff_utc_ms: i64,
+    cutoff_mode: CutoffAdmissibilityMode,
+    target_profile: AnalogueProfile,
+    min_matched_dimensions: usize,
+    min_independent_clusters: usize,
+    active_entries: Vec<AnalogueMatchEntry>,
+    excluded_entries: Vec<ExcludedAnalogueEntry>,
+    edit_history: Vec<ComparisonSetEdit>,
+    /// Episodes rejected at retrieval because their initiating event or record curation was not admissible at cutoff.
+    inadmissible_episode_ids: Vec<(OpaqueId, String)>,
 }
 
 /// One conditional step in a multi-step response sequence (`FORECAST-03`, `A15`).
@@ -717,6 +782,8 @@ pub enum AnalogueError {
     },
     /// Precedent episode referenced an unknown or duplicate source version.
     InvalidEpisodeSources(&'static str),
+    /// Two records cited the same `source_version` with conflicting metadata timestamps.
+    ConflictingSourceMetadata { source_version: VersionId },
     /// Response step or outcome timestamp/elapsed duration was inconsistent with `initiating_event_utc_ms`.
     InvalidEpisodeChronology {
         episode_id: OpaqueId,
@@ -725,6 +792,11 @@ pub enum AnalogueError {
     /// `PolicySpilloverOrRetaliation` referenced a `predecessor_episode_id` not registered in the library
     /// or equal to `episode_id`.
     InvalidEpisodeDependency {
+        episode_id: OpaqueId,
+        reason: &'static str,
+    },
+    /// Episode supersession / correction violated linkage or chronology invariants (`B3`).
+    InvalidEpisodeSupersession {
         episode_id: OpaqueId,
         reason: &'static str,
     },
@@ -774,11 +846,18 @@ impl fmt::Display for AnalogueError {
                 write!(f, "duplicate {kind} identifier {identifier}")
             }
             Self::InvalidEpisodeSources(msg) => write!(f, "invalid episode sources: {msg}"),
+            Self::ConflictingSourceMetadata { source_version } => write!(
+                f,
+                "conflicting metadata timestamps for source_version {source_version}"
+            ),
             Self::InvalidEpisodeChronology { episode_id, reason } => {
                 write!(f, "episode {episode_id} chronology error: {reason}")
             }
             Self::InvalidEpisodeDependency { episode_id, reason } => {
                 write!(f, "episode {episode_id} dependency error: {reason}")
+            }
+            Self::InvalidEpisodeSupersession { episode_id, reason } => {
+                write!(f, "episode {episode_id} supersession error: {reason}")
             }
             Self::InvalidQueryCriteria(msg) => write!(f, "invalid analogue query criteria: {msg}"),
             Self::InvalidComparisonEdit { episode_id, reason } => {
@@ -821,17 +900,22 @@ impl From<ScoringError> for AnalogueError {
     }
 }
 
-/// Bounded in-memory repository of sourced historical precedent episodes (`FORECAST-01`, `FORECAST-02`).
+/// Bounded in-memory repository of sourced historical precedent episodes (`FORECAST-01`, `FORECAST-02`, `FORECAST-04`).
+///
+/// Preserves every registered episode version in `episodes_by_version` and `episode_versions_by_id`
+/// so later corrections (`record_episode_correction`) never overwrite historical versions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrecedentLibrary {
     max_episodes: usize,
     used_versions: BTreeSet<VersionId>,
-    episodes_by_id: BTreeMap<OpaqueId, PrecedentEpisodeRecord>,
+    sources_by_version: BTreeMap<VersionId, CutoffSourceInput>,
+    episodes_by_version: BTreeMap<VersionId, PrecedentEpisodeRecord>,
+    episode_versions_by_id: BTreeMap<OpaqueId, Vec<VersionId>>,
     episode_order: Vec<OpaqueId>,
 }
 
 impl PrecedentLibrary {
-    /// Create a bounded precedent library accepting up to `max_episodes` records (`1..=MAX_PRECEDENT_EPISODES`).
+    /// Create a bounded precedent library accepting up to `max_episodes` versioned records (`1..=MAX_PRECEDENT_EPISODES`).
     pub fn new(max_episodes: usize) -> Result<Self, AnalogueError> {
         if !(1..=MAX_PRECEDENT_EPISODES).contains(&max_episodes) {
             return Err(AnalogueError::BudgetExceeded {
@@ -843,25 +927,33 @@ impl PrecedentLibrary {
         Ok(Self {
             max_episodes,
             used_versions: BTreeSet::new(),
-            episodes_by_id: BTreeMap::new(),
+            sources_by_version: BTreeMap::new(),
+            episodes_by_version: BTreeMap::new(),
+            episode_versions_by_id: BTreeMap::new(),
             episode_order: Vec::new(),
         })
     }
 
-    /// Register an immutable historical precedent episode after validating its sources,
+    /// Register an initial historical precedent episode after validating its sources,
     /// chronology, causal-link evidence, and dependency references (`FORECAST-01`, `FORECAST-02`).
+    ///
+    /// Initial registrations must have `supersedes_version == None` and `correction_rationale == None`.
+    /// To supersede an existing episode with a corrected version, call [`Self::record_episode_correction`].
     pub fn register_episode(
         &mut self,
         episode: PrecedentEpisodeRecord,
     ) -> Result<&PrecedentEpisodeRecord, AnalogueError> {
-        if self.episodes_by_id.len() >= self.max_episodes {
+        if self.episodes_by_version.len() >= self.max_episodes {
             return Err(AnalogueError::BudgetExceeded {
                 field: "precedent_episodes",
-                actual: self.episodes_by_id.len() + 1,
+                actual: self.episodes_by_version.len() + 1,
                 limit: self.max_episodes,
             });
         }
-        if self.episodes_by_id.contains_key(&episode.episode_id) {
+        if self
+            .episode_versions_by_id
+            .contains_key(&episode.episode_id)
+        {
             return Err(AnalogueError::DuplicateIdentifier {
                 kind: "episode_id",
                 identifier: episode.episode_id.as_str().to_owned(),
@@ -873,317 +965,216 @@ impl PrecedentLibrary {
                 identifier: episode.version_id.as_str().to_owned(),
             });
         }
-
-        validate_text("episode.title", &episode.title)?;
-        validate_text(
-            "episode.initiating_condition",
-            &episode.initiating_condition,
-        )?;
-        validate_profile("episode.profile", &episode.profile)?;
-        validate_ts("initiating_event_utc_ms", episode.initiating_event_utc_ms)?;
-
-        if episode.sources.is_empty() || episode.sources.len() > MAX_FORECAST_COLLECTION_LEN {
-            return Err(AnalogueError::BudgetExceeded {
-                field: "episode.sources",
-                actual: episode.sources.len(),
-                limit: MAX_FORECAST_COLLECTION_LEN,
+        if episode.supersedes_version.is_some() || episode.correction_rationale.is_some() {
+            return Err(AnalogueError::InvalidEpisodeSupersession {
+                episode_id: episode.episode_id,
+                reason: "initial episode registration must have supersedes_version=None and correction_rationale=None",
             });
         }
 
-        let mut source_map: BTreeMap<&VersionId, &CutoffSourceInput> = BTreeMap::new();
+        validate_episode_record(
+            &episode,
+            &self.episode_versions_by_id,
+            &self.sources_by_version,
+        )?;
+
         for src in &episode.sources {
-            if let Some(ev_ms) = src.event_utc_ms {
-                validate_ts("source.event_utc_ms", ev_ms)?;
-                if let Some(pub_ms) = src.public_available_at_utc_ms
-                    && ev_ms > pub_ms
-                {
-                    return Err(AnalogueError::InvalidEpisodeSources(
-                        "source event_utc_ms cannot exceed public_available_at_utc_ms",
-                    ));
-                }
-            }
-            if let Some(pub_ms) = src.public_available_at_utc_ms {
-                validate_ts("source.public_available_at_utc_ms", pub_ms)?;
-            }
-            if let Some(ing_ms) = src.ingested_at_utc_ms {
-                validate_ts("source.ingested_at_utc_ms", ing_ms)?;
-            }
-            if source_map.insert(&src.source_version, src).is_some() {
-                return Err(AnalogueError::InvalidEpisodeSources(
-                    "duplicate source_version in episode.sources",
-                ));
-            }
+            self.sources_by_version
+                .insert(src.source_version.clone(), src.clone());
         }
-
-        validate_evidence_refs(
-            "episode.initiation_evidence_versions",
-            &episode.initiation_evidence_versions,
-            &source_map,
-        )?;
-
-        match &episode.dependency {
-            EpisodeDependencyKind::IndependentEpisode => {}
-            EpisodeDependencyKind::SharedCrisisOrCampaign {
-                dependency_note, ..
-            } => {
-                validate_text("dependency.dependency_note", dependency_note)?;
-            }
-            EpisodeDependencyKind::PolicySpilloverOrRetaliation {
-                predecessor_episode_id,
-                dependency_note,
-                ..
-            } => {
-                validate_text("dependency.dependency_note", dependency_note)?;
-                if predecessor_episode_id == &episode.episode_id {
-                    return Err(AnalogueError::InvalidEpisodeDependency {
-                        episode_id: episode.episode_id,
-                        reason: "episode cannot reference itself as predecessor_episode_id",
-                    });
-                }
-                if !self.episodes_by_id.contains_key(predecessor_episode_id) {
-                    return Err(AnalogueError::InvalidEpisodeDependency {
-                        episode_id: episode.episode_id,
-                        reason: "predecessor_episode_id must already be registered in PrecedentLibrary",
-                    });
-                }
-            }
-            EpisodeDependencyKind::SharedSourceLineageOnly {
-                upstream_source_version,
-                dependency_note,
-            } => {
-                validate_text("dependency.dependency_note", dependency_note)?;
-                if !source_map.contains_key(upstream_source_version) {
-                    return Err(AnalogueError::InvalidEpisodeDependency {
-                        episode_id: episode.episode_id,
-                        reason: "upstream_source_version must be present in episode.sources",
-                    });
-                }
-            }
-        }
-
-        if episode.response_steps.len() > MAX_RESPONSE_STEPS_PER_EPISODE {
-            return Err(AnalogueError::BudgetExceeded {
-                field: "episode.response_steps",
-                actual: episode.response_steps.len(),
-                limit: MAX_RESPONSE_STEPS_PER_EPISODE,
-            });
-        }
-
-        let mut seen_step_ids = BTreeSet::new();
-        let mut prev_step_ms = episode.initiating_event_utc_ms;
-        for step in &episode.response_steps {
-            if !seen_step_ids.insert(&step.step_id) {
-                return Err(AnalogueError::DuplicateIdentifier {
-                    kind: "step_id",
-                    identifier: step.step_id.as_str().to_owned(),
-                });
-            }
-            validate_text("step.action_summary", &step.action_summary)?;
-            if let Some(intent) = &step.announced_intention {
-                validate_text("step.announced_intention", intent)?;
-            }
-            validate_ts("step.action_utc_ms", step.action_utc_ms)?;
-            if step.action_utc_ms < prev_step_ms {
-                return Err(AnalogueError::InvalidEpisodeChronology {
-                    episode_id: episode.episode_id,
-                    reason: "response_steps must be ordered non-decreasing in action_utc_ms and >= initiating_event_utc_ms",
-                });
-            }
-            let expected_elapsed = step
-                .action_utc_ms
-                .checked_sub(episode.initiating_event_utc_ms)
-                .ok_or(AnalogueError::InvalidEpisodeChronology {
-                    episode_id: episode.episode_id.clone(),
-                    reason: "overflow computing step elapsed_from_initiation_ms",
-                })?;
-            if step.elapsed_from_initiation_ms != expected_elapsed {
-                return Err(AnalogueError::InvalidEpisodeChronology {
-                    episode_id: episode.episode_id,
-                    reason: "step.elapsed_from_initiation_ms must equal action_utc_ms - initiating_event_utc_ms",
-                });
-            }
-            validate_evidence_refs(
-                "step.evidence_versions",
-                &step.evidence_versions,
-                &source_map,
-            )?;
-            if let TemporalSequenceRelation::AssessedCausalLink {
-                rationale,
-                supporting_evidence_versions,
-            } = &step.sequence_relation
-            {
-                validate_text("step.sequence_relation.rationale", rationale)?;
-                validate_evidence_refs(
-                    "step.sequence_relation.supporting_evidence_versions",
-                    supporting_evidence_versions,
-                    &source_map,
-                )?;
-            }
-            prev_step_ms = step.action_utc_ms;
-        }
-
-        match &episode.outcome {
-            PrecedentOutcomeDisposition::TargetResponseOccurred {
-                outcome_summary,
-                resolved_at_utc_ms,
-                elapsed_from_initiation_ms,
-                outcome_evidence_versions,
-            } => {
-                validate_text("outcome.outcome_summary", outcome_summary)?;
-                validate_ts("outcome.resolved_at_utc_ms", *resolved_at_utc_ms)?;
-                if *resolved_at_utc_ms < prev_step_ms {
-                    return Err(AnalogueError::InvalidEpisodeChronology {
-                        episode_id: episode.episode_id,
-                        reason: "outcome resolved_at_utc_ms cannot precede initiating event or response steps",
-                    });
-                }
-                let expected = resolved_at_utc_ms
-                    .checked_sub(episode.initiating_event_utc_ms)
-                    .ok_or(AnalogueError::InvalidEpisodeChronology {
-                        episode_id: episode.episode_id.clone(),
-                        reason: "overflow computing outcome elapsed_from_initiation_ms",
-                    })?;
-                if *elapsed_from_initiation_ms != expected {
-                    return Err(AnalogueError::InvalidEpisodeChronology {
-                        episode_id: episode.episode_id,
-                        reason: "outcome elapsed_from_initiation_ms must equal resolved_at_utc_ms - initiating_event_utc_ms",
-                    });
-                }
-                validate_evidence_refs(
-                    "outcome.outcome_evidence_versions",
-                    outcome_evidence_versions,
-                    &source_map,
-                )?;
-            }
-            PrecedentOutcomeDisposition::DivergentResponseOccurred {
-                divergent_action_summary,
-                resolved_at_utc_ms,
-                elapsed_from_initiation_ms,
-                outcome_evidence_versions,
-            } => {
-                validate_text("outcome.divergent_action_summary", divergent_action_summary)?;
-                validate_ts("outcome.resolved_at_utc_ms", *resolved_at_utc_ms)?;
-                if *resolved_at_utc_ms < prev_step_ms {
-                    return Err(AnalogueError::InvalidEpisodeChronology {
-                        episode_id: episode.episode_id,
-                        reason: "outcome resolved_at_utc_ms cannot precede initiating event or response steps",
-                    });
-                }
-                let expected = resolved_at_utc_ms
-                    .checked_sub(episode.initiating_event_utc_ms)
-                    .ok_or(AnalogueError::InvalidEpisodeChronology {
-                        episode_id: episode.episode_id.clone(),
-                        reason: "overflow computing outcome elapsed_from_initiation_ms",
-                    })?;
-                if *elapsed_from_initiation_ms != expected {
-                    return Err(AnalogueError::InvalidEpisodeChronology {
-                        episode_id: episode.episode_id,
-                        reason: "outcome elapsed_from_initiation_ms must equal resolved_at_utc_ms - initiating_event_utc_ms",
-                    });
-                }
-                validate_evidence_refs(
-                    "outcome.outcome_evidence_versions",
-                    outcome_evidence_versions,
-                    &source_map,
-                )?;
-            }
-            PrecedentOutcomeDisposition::DocumentedNonResponse {
-                observed_window_end_utc_ms,
-                observation_duration_ms,
-                non_response_rationale,
-                outcome_evidence_versions,
-            } => {
-                validate_text("outcome.non_response_rationale", non_response_rationale)?;
-                validate_ts(
-                    "outcome.observed_window_end_utc_ms",
-                    *observed_window_end_utc_ms,
-                )?;
-                if *observed_window_end_utc_ms <= episode.initiating_event_utc_ms
-                    || *observed_window_end_utc_ms < prev_step_ms
-                {
-                    return Err(AnalogueError::InvalidEpisodeChronology {
-                        episode_id: episode.episode_id,
-                        reason: "DocumentedNonResponse observed_window_end_utc_ms must exceed initiating_event_utc_ms and all steps",
-                    });
-                }
-                let expected = observed_window_end_utc_ms
-                    .checked_sub(episode.initiating_event_utc_ms)
-                    .ok_or(AnalogueError::InvalidEpisodeChronology {
-                        episode_id: episode.episode_id.clone(),
-                        reason: "overflow computing observation_duration_ms",
-                    })?;
-                if *observation_duration_ms != expected {
-                    return Err(AnalogueError::InvalidEpisodeChronology {
-                        episode_id: episode.episode_id,
-                        reason: "observation_duration_ms must equal observed_window_end_utc_ms - initiating_event_utc_ms",
-                    });
-                }
-                validate_evidence_refs(
-                    "outcome.outcome_evidence_versions",
-                    outcome_evidence_versions,
-                    &source_map,
-                )?;
-            }
-            PrecedentOutcomeDisposition::CensoredOrIncompleteFollowUp {
-                observed_until_utc_ms,
-                coverage_gap_note,
-                partial_evidence_versions,
-                ..
-            } => {
-                validate_text("outcome.coverage_gap_note", coverage_gap_note)?;
-                validate_ts("outcome.observed_until_utc_ms", *observed_until_utc_ms)?;
-                if *observed_until_utc_ms < prev_step_ms {
-                    return Err(AnalogueError::InvalidEpisodeChronology {
-                        episode_id: episode.episode_id,
-                        reason: "observed_until_utc_ms cannot precede initiating event or response steps",
-                    });
-                }
-                validate_evidence_refs(
-                    "outcome.partial_evidence_versions",
-                    partial_evidence_versions,
-                    &source_map,
-                )?;
-            }
-        }
-
         let id = episode.episode_id.clone();
-        self.used_versions.insert(episode.version_id.clone());
+        let ver = episode.version_id.clone();
+        self.used_versions.insert(ver.clone());
         self.episode_order.push(id.clone());
-        self.episodes_by_id.insert(id.clone(), episode);
-        self.episodes_by_id
-            .get(&id)
+        self.episode_versions_by_id
+            .entry(id)
+            .or_default()
+            .push(ver.clone());
+        self.episodes_by_version.insert(ver.clone(), episode);
+        self.episodes_by_version
+            .get(&ver)
             .ok_or(AnalogueError::InvalidEpisodeSources(
                 "internal episode lookup failed",
             ))
     }
 
-    /// Retrieve an episode by `episode_id`.
-    pub fn get(&self, episode_id: &OpaqueId) -> Option<&PrecedentEpisodeRecord> {
-        self.episodes_by_id.get(episode_id)
+    /// Record a superseding correction to an existing historical precedent episode while
+    /// preserving all prior versions of the episode in the library (`FORECAST-02`, `FORECAST-04`, `B3`, `AGENTS.md` §4).
+    ///
+    /// - Validates that `corrected.supersedes_version` matches the latest registered version of
+    ///   `corrected.episode_id` and that `corrected.correction_rationale` is non-empty.
+    /// - Requires `corrected.recorded_at_utc_ms >= prior.recorded_at_utc_ms` and
+    ///   `corrected.initiating_event_utc_ms == prior.initiating_event_utc_ms`.
+    /// - Notifies `ledger` via [`ForecastLedger::record_precedent_supersession`] so any
+    ///   [`crate::issuance::EvaluationRunRecord`] whose evaluated vintages pinned an earlier
+    ///   version of `corrected.episode_id` in `comparison_set` is flagged with
+    ///   `needs_reassessment = true` and [`crate::issuance::ReassessmentReason::PrecedentEpisodeSuperseded`]
+    ///   without mutating any issued forecast vintage or historical score.
+    pub fn record_episode_correction(
+        &mut self,
+        corrected: PrecedentEpisodeRecord,
+        ledger: &mut ForecastLedger,
+    ) -> Result<(&PrecedentEpisodeRecord, Vec<VersionId>), AnalogueError> {
+        if self.episodes_by_version.len() >= self.max_episodes {
+            return Err(AnalogueError::BudgetExceeded {
+                field: "precedent_episodes",
+                actual: self.episodes_by_version.len() + 1,
+                limit: self.max_episodes,
+            });
+        }
+        if self.used_versions.contains(&corrected.version_id) {
+            return Err(AnalogueError::DuplicateIdentifier {
+                kind: "version_id",
+                identifier: corrected.version_id.as_str().to_owned(),
+            });
+        }
+
+        let (Some(prior_ver), Some(rationale)) = (
+            &corrected.supersedes_version,
+            &corrected.correction_rationale,
+        ) else {
+            return Err(AnalogueError::InvalidEpisodeSupersession {
+                episode_id: corrected.episode_id,
+                reason: "episode correction must supply both supersedes_version and correction_rationale",
+            });
+        };
+        validate_text("episode.correction_rationale", rationale)?;
+
+        let history = self
+            .episode_versions_by_id
+            .get(&corrected.episode_id)
+            .ok_or_else(|| AnalogueError::InvalidEpisodeSupersession {
+                episode_id: corrected.episode_id.clone(),
+                reason: "episode_id does not exist in PrecedentLibrary",
+            })?;
+        if history.last() != Some(prior_ver) {
+            return Err(AnalogueError::InvalidEpisodeSupersession {
+                episode_id: corrected.episode_id,
+                reason: "supersedes_version must match the latest version of episode_id",
+            });
+        }
+        let prior = self.episodes_by_version.get(prior_ver).ok_or_else(|| {
+            AnalogueError::InvalidEpisodeSupersession {
+                episode_id: corrected.episode_id.clone(),
+                reason: "superseded episode version not found",
+            }
+        })?;
+        if corrected.recorded_at_utc_ms < prior.recorded_at_utc_ms {
+            return Err(AnalogueError::InvalidEpisodeSupersession {
+                episode_id: corrected.episode_id,
+                reason: "corrected episode recorded_at_utc_ms cannot precede superseded version",
+            });
+        }
+        if corrected.initiating_event_utc_ms != prior.initiating_event_utc_ms {
+            return Err(AnalogueError::InvalidEpisodeSupersession {
+                episode_id: corrected.episode_id,
+                reason: "corrected episode must preserve initiating_event_utc_ms",
+            });
+        }
+
+        validate_episode_record(
+            &corrected,
+            &self.episode_versions_by_id,
+            &self.sources_by_version,
+        )?;
+
+        let prior_versions: Vec<VersionId> = history.clone();
+        let affected_vintages = ledger.record_precedent_supersession(
+            &corrected.episode_id,
+            &prior_versions,
+            &corrected.version_id,
+        );
+
+        for src in &corrected.sources {
+            self.sources_by_version
+                .insert(src.source_version.clone(), src.clone());
+        }
+        let id = corrected.episode_id.clone();
+        let ver = corrected.version_id.clone();
+        self.used_versions.insert(ver.clone());
+        self.episode_versions_by_id
+            .entry(id)
+            .or_default()
+            .push(ver.clone());
+        self.episodes_by_version.insert(ver.clone(), corrected);
+        let stored =
+            self.episodes_by_version
+                .get(&ver)
+                .ok_or(AnalogueError::InvalidEpisodeSources(
+                    "internal episode lookup failed",
+                ))?;
+        Ok((stored, affected_vintages))
     }
 
-    /// Number of registered precedent episodes.
+    /// Retrieve the latest version of an episode by `episode_id`.
+    #[must_use]
+    pub fn get(&self, episode_id: &OpaqueId) -> Option<&PrecedentEpisodeRecord> {
+        let ver = self.episode_versions_by_id.get(episode_id)?.last()?;
+        self.episodes_by_version.get(ver)
+    }
+
+    /// Retrieve a specific immutable episode version by its [`VersionId`].
+    #[must_use]
+    pub fn episode_version(&self, version_id: &VersionId) -> Option<&PrecedentEpisodeRecord> {
+        self.episodes_by_version.get(version_id)
+    }
+
+    /// Return all registered versions of `episode_id` in chronological registration order.
+    #[must_use]
+    pub fn episode_history(&self, episode_id: &OpaqueId) -> Vec<&PrecedentEpisodeRecord> {
+        self.episode_versions_by_id
+            .get(episode_id)
+            .map(|vers| {
+                vers.iter()
+                    .filter_map(|v| self.episodes_by_version.get(v))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Retrieve the latest version of `episode_id` that was admissible at `cutoff_utc_ms`
+    /// under `cutoff_mode`.
+    #[must_use]
+    pub fn get_as_of_cutoff(
+        &self,
+        episode_id: &OpaqueId,
+        cutoff_utc_ms: i64,
+        cutoff_mode: &CutoffAdmissibilityMode,
+    ) -> Option<&PrecedentEpisodeRecord> {
+        let vers = self.episode_versions_by_id.get(episode_id)?;
+        match cutoff_mode {
+            CutoffAdmissibilityMode::ProspectiveStrict => vers
+                .iter()
+                .rev()
+                .filter_map(|v| self.episodes_by_version.get(v))
+                .find(|ep| ep.recorded_at_utc_ms <= cutoff_utc_ms)
+                .or_else(|| self.get(episode_id)),
+            CutoffAdmissibilityMode::RetrospectiveReconstructed { .. } => self.get(episode_id),
+        }
+    }
+
+    /// Number of distinct logical precedent episodes (`episode_id`s) in the library.
+    #[must_use]
     pub fn len(&self) -> usize {
-        self.episodes_by_id.len()
+        self.episode_versions_by_id.len()
     }
 
     /// True if no precedent episodes are registered.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.episodes_by_id.is_empty()
+        self.episode_versions_by_id.is_empty()
     }
 
-    /// Iterate over registered episodes in registration order.
+    /// Iterate over the latest version of each registered episode in initial registration order.
     pub fn episodes(&self) -> impl Iterator<Item = &PrecedentEpisodeRecord> {
-        self.episode_order
-            .iter()
-            .filter_map(|id| self.episodes_by_id.get(id))
+        self.episode_order.iter().filter_map(|id| self.get(id))
     }
 
     /// Retrieve an initial [`AnalogueComparisonSet`] matching `criteria` (`FORECAST-02`, `A15`).
     ///
-    /// Episodes whose initiating event or initiation evidence was not admissible at
-    /// `criteria.information_cutoff_utc_ms` are excluded and recorded in
-    /// `inadmissible_episode_ids`. Episodes that initiated before cutoff but resolved after
+    /// Episodes whose initiating event, record curation (under `ProspectiveStrict`), or initiation
+    /// evidence was not admissible at `criteria.information_cutoff_utc_ms` are excluded and recorded
+    /// in `inadmissible_episode_ids`. Episodes that initiated before cutoff but resolved after
     /// cutoff are retained as [`PrecedentRole::CensoredAtCutoff`] so post-cutoff outcomes
     /// cannot leak into point-in-time historical base rates (`FORECAST-01`, `FORECAST-04`).
     pub fn retrieve_comparison_set(
@@ -1222,13 +1213,20 @@ impl PrecedentLibrary {
         let mut active_entries = Vec::new();
         let mut inadmissible_episode_ids = Vec::new();
 
-        for episode in self.episodes() {
+        for episode_id in &self.episode_order {
+            let Some(episode) = self.get_as_of_cutoff(
+                episode_id,
+                criteria.information_cutoff_utc_ms,
+                &criteria.cutoff_mode,
+            ) else {
+                continue;
+            };
             let evaluated = evaluate_episode_against_target(
                 episode,
                 &criteria.target_profile,
                 criteria.information_cutoff_utc_ms,
                 &criteria.cutoff_mode,
-            );
+            )?;
             match &evaluated.point_in_time_status {
                 EpisodePointInTimeStatus::InadmissibleAtCutoff { reason } => {
                     inadmissible_episode_ids.push((episode.episode_id.clone(), reason.clone()));
@@ -1241,6 +1239,8 @@ impl PrecedentLibrary {
                 }
             }
         }
+
+        recompute_effective_cluster_keys(&mut active_entries);
 
         Ok(AnalogueComparisonSet {
             comparison_set_id: criteria.comparison_set_id,
@@ -1259,13 +1259,282 @@ impl PrecedentLibrary {
 }
 
 impl AnalogueComparisonSet {
-    /// Apply an auditable analyst edit (`IncludeEpisode`, `ExcludeEpisode`, or `AnnotateTransferLimits`)
-    /// to this comparison set, advancing `current_version_id` and preserving `edit_history` (`FORECAST-02`, `A15`).
+    /// Logical identifier of this comparison set.
+    #[must_use]
+    pub fn comparison_set_id(&self) -> &OpaqueId {
+        &self.comparison_set_id
+    }
+
+    /// Current immutable version identifier of this comparison set (updated on every edit or cutoff advance).
+    #[must_use]
+    pub fn current_version_id(&self) -> &VersionId {
+        &self.current_version_id
+    }
+
+    /// Strict information cutoff timestamp in UTC milliseconds for this comparison set.
+    #[must_use]
+    pub fn information_cutoff_utc_ms(&self) -> i64 {
+        self.information_cutoff_utc_ms
+    }
+
+    /// Active cutoff admissibility mode (`ProspectiveStrict` vs `RetrospectiveReconstructed`).
+    #[must_use]
+    pub fn cutoff_mode(&self) -> &CutoffAdmissibilityMode {
+        &self.cutoff_mode
+    }
+
+    /// Target scenario profile used for 7-dimension comparison.
+    #[must_use]
+    pub fn target_profile(&self) -> &AnalogueProfile {
+        &self.target_profile
+    }
+
+    /// Minimum matched dimensions (`1..=7`) configured for automatic retrieval.
+    #[must_use]
+    pub fn min_matched_dimensions(&self) -> usize {
+        self.min_matched_dimensions
+    }
+
+    /// Minimum independent resolved precedent clusters required before treating history as non-sparse.
+    #[must_use]
+    pub fn min_independent_clusters(&self) -> usize {
+        self.min_independent_clusters
+    }
+
+    /// Read-only slice of active precedent match entries in this comparison set.
+    #[must_use]
+    pub fn active_entries(&self) -> &[AnalogueMatchEntry] {
+        &self.active_entries
+    }
+
+    /// Read-only slice of excluded precedent entries retained for auditability (`FORECAST-02`).
+    #[must_use]
+    pub fn excluded_entries(&self) -> &[ExcludedAnalogueEntry] {
+        &self.excluded_entries
+    }
+
+    /// Read-only slice of all comparison-set edits and cutoff advances in chronological order.
+    #[must_use]
+    pub fn edit_history(&self) -> &[ComparisonSetEdit] {
+        &self.edit_history
+    }
+
+    /// Episodes rejected during retrieval because their initiating event, record curation, or
+    /// initiation sources were inadmissible at `information_cutoff_utc_ms`.
+    #[must_use]
+    pub fn inadmissible_episode_ids(&self) -> &[(OpaqueId, String)] {
+        &self.inadmissible_episode_ids
+    }
+
+    /// Return all immutable episode [`VersionId`]s frozen in this comparison set's `active_entries`,
+    /// prefixed by `current_version_id` so the exact comparison-set snapshot version is pinned
+    /// as a structured [`VersionId`] on every issued [`ForecastVintageRecord`] (`FORECAST-02`, `FORECAST-04`).
+    #[must_use]
+    pub fn pinned_comparison_versions(&self) -> Vec<VersionId> {
+        let mut versions = Vec::with_capacity(1 + self.active_entries.len());
+        versions.push(self.current_version_id.clone());
+        for entry in &self.active_entries {
+            if !versions.contains(&entry.episode_version) {
+                versions.push(entry.episode_version.clone());
+            }
+        }
+        versions
+    }
+
+    /// Re-retrieve and re-evaluate this comparison set against `library` at a non-decreasing
+    /// `new_cutoff_utc_ms`, producing a new [`AnalogueComparisonSet`] with `new_version_id` and
+    /// appending a [`ComparisonEditAction::AdvanceCutoff`] entry to `edit_history` (`FORECAST-02`, `FORECAST-04`, `B1`).
+    ///
+    /// - Re-computes point-in-time knowability for all episodes at `new_cutoff_utc_ms` (so an
+    ///   episode that was `CensoredAtCutoff` at the earlier cutoff and resolved before
+    ///   `new_cutoff_utc_ms` transitions to its resolved role at the new cutoff).
+    /// - Preserves manual exclusions (`excluded_entries`), manual inclusions, and transfer-limit
+    ///   annotations from earlier edits.
+    pub fn re_retrieve_at_cutoff(
+        &self,
+        library: &PrecedentLibrary,
+        new_version_id: VersionId,
+        actor: ActorId,
+        edited_at_utc_ms: i64,
+        new_cutoff_utc_ms: i64,
+        rationale: String,
+    ) -> Result<Self, AnalogueError> {
+        if self.edit_history.len() >= MAX_COMPARISON_EDITS {
+            return Err(AnalogueError::BudgetExceeded {
+                field: "edit_history",
+                actual: self.edit_history.len() + 1,
+                limit: MAX_COMPARISON_EDITS,
+            });
+        }
+        validate_ts("edited_at_utc_ms", edited_at_utc_ms)?;
+        validate_ts("new_cutoff_utc_ms", new_cutoff_utc_ms)?;
+        validate_text("AdvanceCutoff.rationale", &rationale)?;
+        if new_cutoff_utc_ms < self.information_cutoff_utc_ms {
+            return Err(AnalogueError::InvalidQueryCriteria(
+                "new_cutoff_utc_ms cannot regress before current information_cutoff_utc_ms",
+            ));
+        }
+        if edited_at_utc_ms < new_cutoff_utc_ms {
+            return Err(AnalogueError::InvalidQueryCriteria(
+                "edited_at_utc_ms must be >= new_cutoff_utc_ms",
+            ));
+        }
+        if new_version_id == self.current_version_id
+            || self
+                .edit_history
+                .iter()
+                .any(|e| e.edit_version == new_version_id)
+        {
+            return Err(AnalogueError::DuplicateIdentifier {
+                kind: "edit_version",
+                identifier: new_version_id.as_str().to_owned(),
+            });
+        }
+
+        let excluded_ids: BTreeSet<&OpaqueId> = self
+            .excluded_entries
+            .iter()
+            .map(|ex| &ex.entry.episode_id)
+            .collect();
+        let previously_active_ids: BTreeSet<&OpaqueId> =
+            self.active_entries.iter().map(|e| &e.episode_id).collect();
+        let prior_annotations: BTreeMap<&OpaqueId, (&Option<String>, &Vec<String>)> = self
+            .active_entries
+            .iter()
+            .map(|e| {
+                (
+                    &e.episode_id,
+                    (&e.institutional_difference_note, &e.transfer_limitations),
+                )
+            })
+            .collect();
+
+        let mut active_entries = Vec::new();
+        let mut inadmissible_episode_ids = Vec::new();
+
+        for episode_id in &library.episode_order {
+            let Some(episode) =
+                library.get_as_of_cutoff(episode_id, new_cutoff_utc_ms, &self.cutoff_mode)
+            else {
+                continue;
+            };
+            let mut evaluated = evaluate_episode_against_target(
+                episode,
+                &self.target_profile,
+                new_cutoff_utc_ms,
+                &self.cutoff_mode,
+            )?;
+            match &evaluated.point_in_time_status {
+                EpisodePointInTimeStatus::InadmissibleAtCutoff { reason } => {
+                    inadmissible_episode_ids.push((episode.episode_id.clone(), reason.clone()));
+                }
+                EpisodePointInTimeStatus::OutcomeKnowableAtCutoff { .. }
+                | EpisodePointInTimeStatus::InitiatedButOutcomeCensoredAtCutoff { .. } => {
+                    if excluded_ids.contains(&episode.episode_id) {
+                        continue;
+                    }
+                    if evaluated.matched_dimension_count >= self.min_matched_dimensions
+                        || previously_active_ids.contains(&episode.episode_id)
+                    {
+                        if let Some((prior_inst_note, prior_limits)) =
+                            prior_annotations.get(&episode.episode_id)
+                        {
+                            if let Some(note) = prior_inst_note {
+                                evaluated.institutional_difference_note = Some(note.clone());
+                            }
+                            for lim in *prior_limits {
+                                if !evaluated.transfer_limitations.contains(lim) {
+                                    evaluated.transfer_limitations.push(lim.clone());
+                                }
+                            }
+                        }
+                        active_entries.push(evaluated);
+                    }
+                }
+            }
+        }
+
+        recompute_effective_cluster_keys(&mut active_entries);
+
+        let mut excluded_entries = Vec::with_capacity(self.excluded_entries.len());
+        for ex in &self.excluded_entries {
+            if let Some(ep) =
+                library.get_as_of_cutoff(&ex.entry.episode_id, new_cutoff_utc_ms, &self.cutoff_mode)
+                && let Ok(re_eval) = evaluate_episode_against_target(
+                    ep,
+                    &self.target_profile,
+                    new_cutoff_utc_ms,
+                    &self.cutoff_mode,
+                )
+            {
+                excluded_entries.push(ExcludedAnalogueEntry {
+                    entry: re_eval,
+                    excluded_by_version: ex.excluded_by_version.clone(),
+                    exclusion_rationale: ex.exclusion_rationale.clone(),
+                });
+            } else {
+                excluded_entries.push(ex.clone());
+            }
+        }
+
+        let mut edit_history = self.edit_history.clone();
+        edit_history.push(ComparisonSetEdit {
+            edit_version: new_version_id.clone(),
+            actor,
+            edited_at_utc_ms,
+            action: ComparisonEditAction::AdvanceCutoff {
+                previous_cutoff_utc_ms: self.information_cutoff_utc_ms,
+                new_cutoff_utc_ms,
+                rationale,
+            },
+        });
+
+        Ok(Self {
+            comparison_set_id: self.comparison_set_id.clone(),
+            current_version_id: new_version_id,
+            information_cutoff_utc_ms: new_cutoff_utc_ms,
+            cutoff_mode: self.cutoff_mode.clone(),
+            target_profile: self.target_profile.clone(),
+            min_matched_dimensions: self.min_matched_dimensions,
+            min_independent_clusters: self.min_independent_clusters,
+            active_entries,
+            excluded_entries,
+            edit_history,
+            inadmissible_episode_ids,
+        })
+    }
+
+    /// Apply an auditable analyst edit (`IncludeEpisode`, `ExcludeEpisode`, `AnnotateTransferLimits`,
+    /// or `AdvanceCutoff`) to this comparison set, advancing `current_version_id` and preserving
+    /// `edit_history` (`FORECAST-02`, `A15`).
     pub fn apply_edit(
         &mut self,
         library: &PrecedentLibrary,
         edit: ComparisonSetEdit,
     ) -> Result<(), AnalogueError> {
+        if let ComparisonEditAction::AdvanceCutoff {
+            previous_cutoff_utc_ms,
+            new_cutoff_utc_ms,
+            rationale,
+        } = &edit.action
+        {
+            if *previous_cutoff_utc_ms != self.information_cutoff_utc_ms {
+                return Err(AnalogueError::InvalidQueryCriteria(
+                    "AdvanceCutoff.previous_cutoff_utc_ms does not match current information_cutoff_utc_ms",
+                ));
+            }
+            let updated = self.re_retrieve_at_cutoff(
+                library,
+                edit.edit_version,
+                edit.actor,
+                edit.edited_at_utc_ms,
+                *new_cutoff_utc_ms,
+                rationale.clone(),
+            )?;
+            *self = updated;
+            return Ok(());
+        }
+
         if self.edit_history.len() >= MAX_COMPARISON_EDITS {
             return Err(AnalogueError::BudgetExceeded {
                 field: "edit_history",
@@ -1318,18 +1587,22 @@ impl AnalogueComparisonSet {
                         reason: "episode is already in active_entries",
                     });
                 }
-                let episode = library.get(episode_id).ok_or_else(|| {
-                    AnalogueError::InvalidComparisonEdit {
+                let episode = library
+                    .get_as_of_cutoff(
+                        episode_id,
+                        self.information_cutoff_utc_ms,
+                        &self.cutoff_mode,
+                    )
+                    .ok_or_else(|| AnalogueError::InvalidComparisonEdit {
                         episode_id: episode_id.clone(),
                         reason: "episode not found in PrecedentLibrary",
-                    }
-                })?;
+                    })?;
                 let mut evaluated = evaluate_episode_against_target(
                     episode,
                     &self.target_profile,
                     self.information_cutoff_utc_ms,
                     &self.cutoff_mode,
-                );
+                )?;
                 if let EpisodePointInTimeStatus::InadmissibleAtCutoff { reason } =
                     &evaluated.point_in_time_status
                 {
@@ -1346,6 +1619,7 @@ impl AnalogueComparisonSet {
                 self.excluded_entries
                     .retain(|ex| &ex.entry.episode_id != episode_id);
                 self.active_entries.push(evaluated);
+                recompute_effective_cluster_keys(&mut self.active_entries);
             }
             ComparisonEditAction::ExcludeEpisode {
                 episode_id,
@@ -1366,6 +1640,7 @@ impl AnalogueComparisonSet {
                     excluded_by_version: edit.edit_version.clone(),
                     exclusion_rationale: rationale.clone(),
                 });
+                recompute_effective_cluster_keys(&mut self.active_entries);
             }
             ComparisonEditAction::AnnotateTransferLimits {
                 episode_id,
@@ -1404,6 +1679,7 @@ impl AnalogueComparisonSet {
                     }
                 }
             }
+            ComparisonEditAction::AdvanceCutoff { .. } => unreachable!(),
         }
 
         self.current_version_id = edit.edit_version.clone();
@@ -1414,13 +1690,14 @@ impl AnalogueComparisonSet {
     /// Compute the descriptive [`HistoricalFrequencySummary`] over the current comparison set (`FORECAST-02`, `FORECAST-03`).
     ///
     /// - Separates raw episode counts from cluster-deduplicated independent precedent counts.
-    /// - Keeps supportive target responses, divergent responses, documented non-responses, and
-    ///   cutoff-censored episodes distinct.
+    /// - Keeps unanimously supportive clusters, unanimously counterexample clusters, and
+    ///   mixed-outcome clusters distinct, weighting each resolved cluster by its within-cluster
+    ///   support fraction so deduplication never inflates apparent support (`B2`).
     /// - Explicitly flags `is_calibrated_probability == false` with [`UNCALIBRATED_HISTORICAL_FREQUENCY_CAVEAT`].
+    #[must_use]
     pub fn summarize_frequencies(&self) -> HistoricalFrequencySummary {
         let mut all_clusters = BTreeSet::new();
-        let mut resolved_clusters = BTreeSet::new();
-        let mut supportive_clusters = BTreeSet::new();
+        let mut cluster_counts: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
 
         let mut supportive_target_response_count = 0usize;
         let mut divergent_counterexample_count = 0usize;
@@ -1429,23 +1706,26 @@ impl AnalogueComparisonSet {
         let mut elapsed_samples = Vec::new();
 
         for entry in &self.active_entries {
-            all_clusters.insert(entry.independence_cluster_key.as_str());
+            let key = entry.independence_cluster_key.as_str();
+            all_clusters.insert(key);
             match entry.role {
                 PrecedentRole::SupportiveAnalogue => {
                     supportive_target_response_count += 1;
-                    resolved_clusters.insert(entry.independence_cluster_key.as_str());
-                    supportive_clusters.insert(entry.independence_cluster_key.as_str());
+                    let counts = cluster_counts.entry(key).or_insert((0, 0));
+                    counts.0 += 1;
                     if let Some(el) = entry.knowable_target_elapsed_ms {
                         elapsed_samples.push(el);
                     }
                 }
                 PrecedentRole::DivergentCounterexample => {
                     divergent_counterexample_count += 1;
-                    resolved_clusters.insert(entry.independence_cluster_key.as_str());
+                    let counts = cluster_counts.entry(key).or_insert((0, 0));
+                    counts.1 += 1;
                 }
                 PrecedentRole::DocumentedNonResponseCounterexample => {
                     documented_non_response_count += 1;
-                    resolved_clusters.insert(entry.independence_cluster_key.as_str());
+                    let counts = cluster_counts.entry(key).or_insert((0, 0));
+                    counts.1 += 1;
                 }
                 PrecedentRole::CensoredAtCutoff => {
                     censored_at_cutoff_count += 1;
@@ -1462,8 +1742,27 @@ impl AnalogueComparisonSet {
         let resolved_knowable_episode_count =
             supportive_target_response_count + total_counterexample_count;
 
-        let independent_supportive_cluster_count = supportive_clusters.len();
-        let independent_resolved_cluster_count = resolved_clusters.len();
+        let mut independent_supportive_cluster_count = 0usize;
+        let mut independent_counterexample_cluster_count = 0usize;
+        let mut mixed_outcome_cluster_count = 0usize;
+        let mut weighted_cluster_bps_sum = 0u128;
+
+        for (sup, counter) in cluster_counts.values().copied() {
+            let total_in_cluster = sup + counter;
+            if total_in_cluster == 0 {
+                continue;
+            }
+            if sup > 0 && counter == 0 {
+                independent_supportive_cluster_count += 1;
+            } else if counter > 0 && sup == 0 {
+                independent_counterexample_cluster_count += 1;
+            } else {
+                mixed_outcome_cluster_count += 1;
+            }
+            weighted_cluster_bps_sum += (sup as u128 * 10_000) / (total_in_cluster as u128);
+        }
+
+        let independent_resolved_cluster_count = cluster_counts.len();
 
         let raw_resolved_support_ratio_bps = (resolved_knowable_episode_count > 0).then(|| {
             ((supportive_target_response_count as u128 * 10_000)
@@ -1472,8 +1771,7 @@ impl AnalogueComparisonSet {
 
         let independent_cluster_support_ratio_bps =
             (independent_resolved_cluster_count > 0).then(|| {
-                ((independent_supportive_cluster_count as u128 * 10_000)
-                    / (independent_resolved_cluster_count as u128)) as u32
+                (weighted_cluster_bps_sum / (independent_resolved_cluster_count as u128)) as u32
             });
 
         elapsed_samples.sort_unstable();
@@ -1523,6 +1821,8 @@ impl AnalogueComparisonSet {
             excluded_episode_count: self.excluded_entries.len(),
             excluded_counterexample_count,
             independent_supportive_cluster_count,
+            independent_counterexample_cluster_count,
+            mixed_outcome_cluster_count,
             independent_resolved_cluster_count,
             raw_resolved_support_ratio_bps,
             independent_cluster_support_ratio_bps,
@@ -1534,6 +1834,7 @@ impl AnalogueComparisonSet {
 
     /// Evaluate whether the current comparison set provides an adequate or sparse/poorly
     /// transferable precedent basis for the target scenario (`FORECAST-03`, `A15`).
+    #[must_use]
     pub fn assess_transferability(&self) -> TransferabilityAssessment {
         let summary = self.summarize_frequencies();
         let mut reasons = Vec::new();
@@ -1611,8 +1912,9 @@ impl AnalogueComparisonSet {
     /// - Rejects quantitative issuance if `justification` is [`PredictionJustification::QualitativeScenarioOnly`]
     ///   or if `assess_transferability()` is [`TransferabilityAssessment::SparseOrPoorlyTransferable`]
     ///   without a non-empty `sparse_history_override_rationale`.
-    /// - Freezes the comparison set's active episode `VersionId`s into `ForecastDraft::comparison_set`
-    ///   and merges only cutoff-admissible precedent sources with `spec.scenario_sources`.
+    /// - Pins `self.current_version_id` as the first element of `ForecastDraft::comparison_set`
+    ///   followed by each active episode's `VersionId`, and merges cutoff-admissible precedent
+    ///   sources with `spec.scenario_sources` (rejecting conflicting source metadata).
     pub fn issue_forecast<'a>(
         &self,
         ledger: &'a mut ForecastLedger,
@@ -1668,22 +1970,32 @@ impl AnalogueComparisonSet {
             }
         };
 
-        let comparison_set: Vec<VersionId> = self
-            .active_entries
-            .iter()
-            .map(|e| e.episode_version.clone())
-            .collect();
+        let comparison_set = self.pinned_comparison_versions();
 
         let mut merged_sources_by_version: BTreeMap<VersionId, CutoffSourceInput> = BTreeMap::new();
         for entry in &self.active_entries {
             for src in &entry.cutoff_admissible_sources {
-                merged_sources_by_version
-                    .entry(src.source_version.clone())
-                    .or_insert_with(|| src.clone());
+                if let Some(existing) = merged_sources_by_version.get(&src.source_version) {
+                    if existing != src {
+                        return Err(AnalogueError::ConflictingSourceMetadata {
+                            source_version: src.source_version.clone(),
+                        });
+                    }
+                } else {
+                    merged_sources_by_version.insert(src.source_version.clone(), src.clone());
+                }
             }
         }
         for src in spec.scenario_sources {
-            merged_sources_by_version.insert(src.source_version.clone(), src);
+            if let Some(existing) = merged_sources_by_version.get(&src.source_version) {
+                if existing != &src {
+                    return Err(AnalogueError::ConflictingSourceMetadata {
+                        source_version: src.source_version,
+                    });
+                }
+            } else {
+                merged_sources_by_version.insert(src.source_version.clone(), src);
+            }
         }
         let sources: Vec<CutoffSourceInput> = merged_sources_by_version.into_values().collect();
 
@@ -1815,12 +2127,18 @@ impl AnalogueComparisonSet {
 
 /// Evaluate what was knowable about `episode` at `information_cutoff_utc_ms` under `cutoff_mode`,
 /// and compare its 7 dimensions against `target_profile` (`FORECAST-01`, `FORECAST-02`, `FORECAST-04`).
-pub fn evaluate_episode_against_target(
+///
+/// Validates `episode` structure and evidence references before evaluating point-in-time status (`B1`).
+pub(crate) fn evaluate_episode_against_target(
     episode: &PrecedentEpisodeRecord,
     target_profile: &AnalogueProfile,
     information_cutoff_utc_ms: i64,
     cutoff_mode: &CutoffAdmissibilityMode,
-) -> AnalogueMatchEntry {
+) -> Result<AnalogueMatchEntry, AnalogueError> {
+    validate_episode_standalone(episode)?;
+    validate_profile("target_profile", target_profile)?;
+    validate_ts("information_cutoff_utc_ms", information_cutoff_utc_ms)?;
+
     let source_by_ver: BTreeMap<&VersionId, &CutoffSourceInput> = episode
         .sources
         .iter()
@@ -1842,7 +2160,7 @@ pub fn evaluate_episode_against_target(
         transfer_limitations,
     ) = compare_profiles(&episode.profile, target_profile, &episode.dependency);
 
-    AnalogueMatchEntry {
+    Ok(AnalogueMatchEntry {
         episode_id: episode.episode_id.clone(),
         episode_version: episode.version_id.clone(),
         role,
@@ -1855,6 +2173,53 @@ pub fn evaluate_episode_against_target(
         dependency: episode.dependency.clone(),
         knowable_target_elapsed_ms,
         cutoff_admissible_sources,
+        cited_outcome_evidence_versions: episode.outcome.cited_evidence_versions().to_vec(),
+    })
+}
+
+/// Merge `independence_cluster_key`s across `active_entries` whenever two episodes declared as
+/// [`EpisodeDependencyKind::IndependentEpisode`] cite the exact same outcome evidence version (`AGENTS.md` §2).
+fn recompute_effective_cluster_keys(entries: &mut [AnalogueMatchEntry]) {
+    let mut source_to_episodes: BTreeMap<VersionId, Vec<usize>> = BTreeMap::new();
+    for (idx, entry) in entries.iter_mut().enumerate() {
+        entry.independence_cluster_key = match &entry.dependency {
+            EpisodeDependencyKind::IndependentEpisode => {
+                format!("episode:{}", entry.episode_id.as_str())
+            }
+            EpisodeDependencyKind::SharedCrisisOrCampaign { cluster_id, .. }
+            | EpisodeDependencyKind::PolicySpilloverOrRetaliation { cluster_id, .. } => {
+                format!("cluster:{}", cluster_id.as_str())
+            }
+            EpisodeDependencyKind::SharedSourceLineageOnly {
+                upstream_source_version,
+                ..
+            } => {
+                format!("lineage:{}", upstream_source_version.as_str())
+            }
+        };
+        for ver in &entry.cited_outcome_evidence_versions {
+            source_to_episodes.entry(ver.clone()).or_default().push(idx);
+        }
+    }
+
+    for (shared_ver, indices) in source_to_episodes {
+        if indices.len() > 1 {
+            let shared_key = format!("shared-outcome-source:{}", shared_ver.as_str());
+            let note = format!(
+                "shares outcome evidence source {shared_ver} with another active precedent episode; merged into {shared_key} for cluster deduplication"
+            );
+            for idx in indices {
+                if matches!(
+                    entries[idx].dependency,
+                    EpisodeDependencyKind::IndependentEpisode
+                ) {
+                    entries[idx].independence_cluster_key = shared_key.clone();
+                }
+                if !entries[idx].transfer_limitations.contains(&note) {
+                    entries[idx].transfer_limitations.push(note.clone());
+                }
+            }
+        }
     }
 }
 
@@ -1869,6 +2234,22 @@ fn evaluate_point_in_time_knowability(
     Option<i64>,
     Vec<CutoffSourceInput>,
 ) {
+    if matches!(cutoff_mode, CutoffAdmissibilityMode::ProspectiveStrict)
+        && episode.recorded_at_utc_ms > cutoff_utc_ms
+    {
+        return (
+            EpisodePointInTimeStatus::InadmissibleAtCutoff {
+                reason: format!(
+                    "episode recorded_at_utc_ms ({}) is after strict information_cutoff_utc_ms ({cutoff_utc_ms})",
+                    episode.recorded_at_utc_ms
+                ),
+            },
+            PrecedentRole::CensoredAtCutoff,
+            None,
+            Vec::new(),
+        );
+    }
+
     if episode.initiating_event_utc_ms > cutoff_utc_ms {
         return (
             EpisodePointInTimeStatus::InadmissibleAtCutoff {
@@ -1876,6 +2257,17 @@ fn evaluate_point_in_time_knowability(
                     "initiating_event_utc_ms ({}) is after information_cutoff_utc_ms ({cutoff_utc_ms})",
                     episode.initiating_event_utc_ms
                 ),
+            },
+            PrecedentRole::CensoredAtCutoff,
+            None,
+            Vec::new(),
+        );
+    }
+
+    if episode.initiation_evidence_versions.is_empty() {
+        return (
+            EpisodePointInTimeStatus::InadmissibleAtCutoff {
+                reason: "episode has no initiation_evidence_versions".to_owned(),
             },
             PrecedentRole::CensoredAtCutoff,
             None,
@@ -1894,10 +2286,10 @@ fn evaluate_point_in_time_knowability(
                 Vec::new(),
             );
         };
-        if let Err(reason) = check_source_admissible_at_cutoff(src, cutoff_utc_ms, cutoff_mode) {
+        if let Err(err) = validate_source_admissible_at_cutoff(src, cutoff_utc_ms, cutoff_mode) {
             return (
                 EpisodePointInTimeStatus::InadmissibleAtCutoff {
-                    reason: format!("initiation source {ev_ver} inadmissible at cutoff: {reason}"),
+                    reason: format!("initiation source {ev_ver} inadmissible at cutoff: {err}"),
                 },
                 PrecedentRole::CensoredAtCutoff,
                 None,
@@ -1916,9 +2308,10 @@ fn evaluate_point_in_time_knowability(
     let mut admissible_steps = 0usize;
     for step in &episode.response_steps {
         if step.action_utc_ms <= cutoff_utc_ms
+            && !step.evidence_versions.is_empty()
             && step.evidence_versions.iter().all(|v| {
                 source_by_ver.get(v).is_some_and(|s| {
-                    check_source_admissible_at_cutoff(s, cutoff_utc_ms, cutoff_mode).is_ok()
+                    validate_source_admissible_at_cutoff(s, cutoff_utc_ms, cutoff_mode).is_ok()
                 })
             })
         {
@@ -1935,7 +2328,7 @@ fn evaluate_point_in_time_knowability(
             {
                 for v in supporting_evidence_versions {
                     if let Some(src) = source_by_ver.get(v)
-                        && check_source_admissible_at_cutoff(src, cutoff_utc_ms, cutoff_mode)
+                        && validate_source_admissible_at_cutoff(src, cutoff_utc_ms, cutoff_mode)
                             .is_ok()
                     {
                         admissible_sources_map.insert((*v).clone(), (*src).clone());
@@ -1954,7 +2347,7 @@ fn evaluate_point_in_time_knowability(
         } => {
             for v in partial_evidence_versions {
                 if let Some(src) = source_by_ver.get(v)
-                    && check_source_admissible_at_cutoff(src, cutoff_utc_ms, cutoff_mode).is_ok()
+                    && validate_source_admissible_at_cutoff(src, cutoff_utc_ms, cutoff_mode).is_ok()
                 {
                     admissible_sources_map.insert((*v).clone(), (*src).clone());
                 }
@@ -2108,6 +2501,9 @@ fn check_outcome_knowable_at_cutoff(
     cutoff_utc_ms: i64,
     cutoff_mode: &CutoffAdmissibilityMode,
 ) -> Result<i64, String> {
+    if outcome_evidence_versions.is_empty() {
+        return Err("resolved outcome must cite at least one outcome_evidence_version".to_owned());
+    }
     if terminal_utc_ms > cutoff_utc_ms {
         return Err(format!(
             "terminal outcome timestamp ({terminal_utc_ms}) occurred after information_cutoff_utc_ms ({cutoff_utc_ms}); right-censored at cutoff"
@@ -2118,46 +2514,13 @@ fn check_outcome_knowable_at_cutoff(
         let Some(src) = source_by_ver.get(v) else {
             return Err(format!("missing outcome source {v}"));
         };
-        let pub_ms = check_source_admissible_at_cutoff(src, cutoff_utc_ms, cutoff_mode)?;
+        let pub_ms = validate_source_admissible_at_cutoff(src, cutoff_utc_ms, cutoff_mode)
+            .map_err(|e| e.to_string())?;
         if pub_ms > latest_pub_ms {
             latest_pub_ms = pub_ms;
         }
     }
     Ok(latest_pub_ms)
-}
-
-fn check_source_admissible_at_cutoff(
-    src: &CutoffSourceInput,
-    cutoff_utc_ms: i64,
-    cutoff_mode: &CutoffAdmissibilityMode,
-) -> Result<i64, String> {
-    let Some(pub_ms) = src.public_available_at_utc_ms else {
-        return Err(format!(
-            "source {} has unknown public_available_at_utc_ms",
-            src.source_version
-        ));
-    };
-    if pub_ms > cutoff_utc_ms {
-        return Err(format!(
-            "source {} became publicly available at {pub_ms} > cutoff {cutoff_utc_ms}",
-            src.source_version
-        ));
-    }
-    if matches!(cutoff_mode, CutoffAdmissibilityMode::ProspectiveStrict) {
-        let Some(ing_ms) = src.ingested_at_utc_ms else {
-            return Err(format!(
-                "source {} has unknown ingested_at_utc_ms under ProspectiveStrict",
-                src.source_version
-            ));
-        };
-        if ing_ms > cutoff_utc_ms {
-            return Err(format!(
-                "source {} was ingested at {ing_ms} > strict cutoff {cutoff_utc_ms}",
-                src.source_version
-            ));
-        }
-    }
-    Ok(pub_ms)
 }
 
 fn compare_profiles(
@@ -2403,6 +2766,328 @@ fn compare_profiles(
         institutional_difference_note,
         transfer_limitations,
     )
+}
+
+fn validate_episode_standalone(episode: &PrecedentEpisodeRecord) -> Result<(), AnalogueError> {
+    validate_text("episode.title", &episode.title)?;
+    validate_text(
+        "episode.initiating_condition",
+        &episode.initiating_condition,
+    )?;
+    validate_profile("episode.profile", &episode.profile)?;
+    validate_ts("initiating_event_utc_ms", episode.initiating_event_utc_ms)?;
+    validate_ts("recorded_at_utc_ms", episode.recorded_at_utc_ms)?;
+    if episode.recorded_at_utc_ms < episode.initiating_event_utc_ms {
+        return Err(AnalogueError::InvalidEpisodeChronology {
+            episode_id: episode.episode_id.clone(),
+            reason: "recorded_at_utc_ms cannot precede initiating_event_utc_ms",
+        });
+    }
+
+    if episode.sources.is_empty() || episode.sources.len() > MAX_FORECAST_COLLECTION_LEN {
+        return Err(AnalogueError::BudgetExceeded {
+            field: "episode.sources",
+            actual: episode.sources.len(),
+            limit: MAX_FORECAST_COLLECTION_LEN,
+        });
+    }
+
+    let mut source_map: BTreeMap<&VersionId, &CutoffSourceInput> = BTreeMap::new();
+    for src in &episode.sources {
+        if let Some(ev_ms) = src.event_utc_ms {
+            validate_ts("source.event_utc_ms", ev_ms)?;
+            if let Some(pub_ms) = src.public_available_at_utc_ms
+                && ev_ms > pub_ms
+            {
+                return Err(AnalogueError::InvalidEpisodeSources(
+                    "source event_utc_ms cannot exceed public_available_at_utc_ms",
+                ));
+            }
+        }
+        if let Some(pub_ms) = src.public_available_at_utc_ms {
+            validate_ts("source.public_available_at_utc_ms", pub_ms)?;
+        }
+        if let Some(ing_ms) = src.ingested_at_utc_ms {
+            validate_ts("source.ingested_at_utc_ms", ing_ms)?;
+        }
+        if source_map.insert(&src.source_version, src).is_some() {
+            return Err(AnalogueError::InvalidEpisodeSources(
+                "duplicate source_version in episode.sources",
+            ));
+        }
+    }
+
+    validate_evidence_refs(
+        "episode.initiation_evidence_versions",
+        &episode.initiation_evidence_versions,
+        &source_map,
+    )?;
+
+    match &episode.dependency {
+        EpisodeDependencyKind::IndependentEpisode => {}
+        EpisodeDependencyKind::SharedCrisisOrCampaign {
+            dependency_note, ..
+        } => {
+            validate_text("dependency.dependency_note", dependency_note)?;
+        }
+        EpisodeDependencyKind::PolicySpilloverOrRetaliation {
+            predecessor_episode_id,
+            dependency_note,
+            ..
+        } => {
+            validate_text("dependency.dependency_note", dependency_note)?;
+            if predecessor_episode_id == &episode.episode_id {
+                return Err(AnalogueError::InvalidEpisodeDependency {
+                    episode_id: episode.episode_id.clone(),
+                    reason: "episode cannot reference itself as predecessor_episode_id",
+                });
+            }
+        }
+        EpisodeDependencyKind::SharedSourceLineageOnly {
+            upstream_source_version,
+            dependency_note,
+        } => {
+            validate_text("dependency.dependency_note", dependency_note)?;
+            if !source_map.contains_key(upstream_source_version) {
+                return Err(AnalogueError::InvalidEpisodeDependency {
+                    episode_id: episode.episode_id.clone(),
+                    reason: "upstream_source_version must be present in episode.sources",
+                });
+            }
+        }
+    }
+
+    if episode.response_steps.len() > MAX_RESPONSE_STEPS_PER_EPISODE {
+        return Err(AnalogueError::BudgetExceeded {
+            field: "episode.response_steps",
+            actual: episode.response_steps.len(),
+            limit: MAX_RESPONSE_STEPS_PER_EPISODE,
+        });
+    }
+
+    let mut seen_step_ids = BTreeSet::new();
+    let mut prev_step_ms = episode.initiating_event_utc_ms;
+    for step in &episode.response_steps {
+        if !seen_step_ids.insert(&step.step_id) {
+            return Err(AnalogueError::DuplicateIdentifier {
+                kind: "step_id",
+                identifier: step.step_id.as_str().to_owned(),
+            });
+        }
+        validate_text("step.action_summary", &step.action_summary)?;
+        if let Some(intent) = &step.announced_intention {
+            validate_text("step.announced_intention", intent)?;
+        }
+        validate_ts("step.action_utc_ms", step.action_utc_ms)?;
+        if step.action_utc_ms < prev_step_ms {
+            return Err(AnalogueError::InvalidEpisodeChronology {
+                episode_id: episode.episode_id.clone(),
+                reason: "response_steps must be ordered non-decreasing in action_utc_ms and >= initiating_event_utc_ms",
+            });
+        }
+        if step.action_utc_ms > episode.recorded_at_utc_ms {
+            return Err(AnalogueError::InvalidEpisodeChronology {
+                episode_id: episode.episode_id.clone(),
+                reason: "step.action_utc_ms cannot exceed episode.recorded_at_utc_ms",
+            });
+        }
+        let expected_elapsed = step
+            .action_utc_ms
+            .checked_sub(episode.initiating_event_utc_ms)
+            .ok_or(AnalogueError::InvalidEpisodeChronology {
+                episode_id: episode.episode_id.clone(),
+                reason: "overflow computing step elapsed_from_initiation_ms",
+            })?;
+        if step.elapsed_from_initiation_ms != expected_elapsed {
+            return Err(AnalogueError::InvalidEpisodeChronology {
+                episode_id: episode.episode_id.clone(),
+                reason: "step.elapsed_from_initiation_ms must equal action_utc_ms - initiating_event_utc_ms",
+            });
+        }
+        validate_evidence_refs(
+            "step.evidence_versions",
+            &step.evidence_versions,
+            &source_map,
+        )?;
+        if let TemporalSequenceRelation::AssessedCausalLink {
+            rationale,
+            supporting_evidence_versions,
+        } = &step.sequence_relation
+        {
+            validate_text("step.sequence_relation.rationale", rationale)?;
+            validate_evidence_refs(
+                "step.sequence_relation.supporting_evidence_versions",
+                supporting_evidence_versions,
+                &source_map,
+            )?;
+        }
+        prev_step_ms = step.action_utc_ms;
+    }
+
+    match &episode.outcome {
+        PrecedentOutcomeDisposition::TargetResponseOccurred {
+            outcome_summary,
+            resolved_at_utc_ms,
+            elapsed_from_initiation_ms,
+            outcome_evidence_versions,
+        } => {
+            validate_text("outcome.outcome_summary", outcome_summary)?;
+            validate_ts("outcome.resolved_at_utc_ms", *resolved_at_utc_ms)?;
+            if *resolved_at_utc_ms < prev_step_ms
+                || *resolved_at_utc_ms > episode.recorded_at_utc_ms
+            {
+                return Err(AnalogueError::InvalidEpisodeChronology {
+                    episode_id: episode.episode_id.clone(),
+                    reason: "outcome resolved_at_utc_ms must lie within [last_step_or_initiation_utc_ms, recorded_at_utc_ms]",
+                });
+            }
+            let expected = resolved_at_utc_ms
+                .checked_sub(episode.initiating_event_utc_ms)
+                .ok_or(AnalogueError::InvalidEpisodeChronology {
+                    episode_id: episode.episode_id.clone(),
+                    reason: "overflow computing outcome elapsed_from_initiation_ms",
+                })?;
+            if *elapsed_from_initiation_ms != expected {
+                return Err(AnalogueError::InvalidEpisodeChronology {
+                    episode_id: episode.episode_id.clone(),
+                    reason: "outcome elapsed_from_initiation_ms must equal resolved_at_utc_ms - initiating_event_utc_ms",
+                });
+            }
+            validate_evidence_refs(
+                "outcome.outcome_evidence_versions",
+                outcome_evidence_versions,
+                &source_map,
+            )?;
+        }
+        PrecedentOutcomeDisposition::DivergentResponseOccurred {
+            divergent_action_summary,
+            resolved_at_utc_ms,
+            elapsed_from_initiation_ms,
+            outcome_evidence_versions,
+        } => {
+            validate_text("outcome.divergent_action_summary", divergent_action_summary)?;
+            validate_ts("outcome.resolved_at_utc_ms", *resolved_at_utc_ms)?;
+            if *resolved_at_utc_ms < prev_step_ms
+                || *resolved_at_utc_ms > episode.recorded_at_utc_ms
+            {
+                return Err(AnalogueError::InvalidEpisodeChronology {
+                    episode_id: episode.episode_id.clone(),
+                    reason: "outcome resolved_at_utc_ms must lie within [last_step_or_initiation_utc_ms, recorded_at_utc_ms]",
+                });
+            }
+            let expected = resolved_at_utc_ms
+                .checked_sub(episode.initiating_event_utc_ms)
+                .ok_or(AnalogueError::InvalidEpisodeChronology {
+                    episode_id: episode.episode_id.clone(),
+                    reason: "overflow computing outcome elapsed_from_initiation_ms",
+                })?;
+            if *elapsed_from_initiation_ms != expected {
+                return Err(AnalogueError::InvalidEpisodeChronology {
+                    episode_id: episode.episode_id.clone(),
+                    reason: "outcome elapsed_from_initiation_ms must equal resolved_at_utc_ms - initiating_event_utc_ms",
+                });
+            }
+            validate_evidence_refs(
+                "outcome.outcome_evidence_versions",
+                outcome_evidence_versions,
+                &source_map,
+            )?;
+        }
+        PrecedentOutcomeDisposition::DocumentedNonResponse {
+            observed_window_end_utc_ms,
+            observation_duration_ms,
+            non_response_rationale,
+            outcome_evidence_versions,
+        } => {
+            validate_text("outcome.non_response_rationale", non_response_rationale)?;
+            validate_ts(
+                "outcome.observed_window_end_utc_ms",
+                *observed_window_end_utc_ms,
+            )?;
+            if *observed_window_end_utc_ms <= episode.initiating_event_utc_ms
+                || *observed_window_end_utc_ms < prev_step_ms
+                || *observed_window_end_utc_ms > episode.recorded_at_utc_ms
+            {
+                return Err(AnalogueError::InvalidEpisodeChronology {
+                    episode_id: episode.episode_id.clone(),
+                    reason: "DocumentedNonResponse observed_window_end_utc_ms must exceed initiating_event_utc_ms and all steps and be <= recorded_at_utc_ms",
+                });
+            }
+            let expected = observed_window_end_utc_ms
+                .checked_sub(episode.initiating_event_utc_ms)
+                .ok_or(AnalogueError::InvalidEpisodeChronology {
+                    episode_id: episode.episode_id.clone(),
+                    reason: "overflow computing observation_duration_ms",
+                })?;
+            if *observation_duration_ms != expected {
+                return Err(AnalogueError::InvalidEpisodeChronology {
+                    episode_id: episode.episode_id.clone(),
+                    reason: "observation_duration_ms must equal observed_window_end_utc_ms - initiating_event_utc_ms",
+                });
+            }
+            validate_evidence_refs(
+                "outcome.outcome_evidence_versions",
+                outcome_evidence_versions,
+                &source_map,
+            )?;
+        }
+        PrecedentOutcomeDisposition::CensoredOrIncompleteFollowUp {
+            observed_until_utc_ms,
+            coverage_gap_note,
+            partial_evidence_versions,
+            ..
+        } => {
+            validate_text("outcome.coverage_gap_note", coverage_gap_note)?;
+            validate_ts("outcome.observed_until_utc_ms", *observed_until_utc_ms)?;
+            if *observed_until_utc_ms < prev_step_ms
+                || *observed_until_utc_ms > episode.recorded_at_utc_ms
+            {
+                return Err(AnalogueError::InvalidEpisodeChronology {
+                    episode_id: episode.episode_id.clone(),
+                    reason: "observed_until_utc_ms must lie within [last_step_or_initiation_utc_ms, recorded_at_utc_ms]",
+                });
+            }
+            validate_evidence_refs(
+                "outcome.partial_evidence_versions",
+                partial_evidence_versions,
+                &source_map,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_episode_record(
+    episode: &PrecedentEpisodeRecord,
+    registered_episodes: &BTreeMap<OpaqueId, Vec<VersionId>>,
+    library_sources: &BTreeMap<VersionId, CutoffSourceInput>,
+) -> Result<(), AnalogueError> {
+    validate_episode_standalone(episode)?;
+
+    for src in &episode.sources {
+        if let Some(existing) = library_sources.get(&src.source_version)
+            && existing != src
+        {
+            return Err(AnalogueError::ConflictingSourceMetadata {
+                source_version: src.source_version.clone(),
+            });
+        }
+    }
+
+    if let EpisodeDependencyKind::PolicySpilloverOrRetaliation {
+        predecessor_episode_id,
+        ..
+    } = &episode.dependency
+        && !registered_episodes.contains_key(predecessor_episode_id)
+    {
+        return Err(AnalogueError::InvalidEpisodeDependency {
+            episode_id: episode.episode_id.clone(),
+            reason: "predecessor_episode_id must already be registered in PrecedentLibrary",
+        });
+    }
+
+    Ok(())
 }
 
 fn validate_branches_and_indicators(

@@ -305,7 +305,7 @@ impl<'session, 'input> SearchSession<'session, 'input> {
 
 // start_byte is internal, either zero or the end of a successfully returned
 // match. Therefore it is a UTF-8 boundary in this immutable extraction.
-fn search_from<'input>(
+pub(crate) fn search_from<'input>(
     extraction: &Extraction<'input>,
     query: &str,
     limits: SearchLimits,

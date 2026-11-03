@@ -6,14 +6,22 @@
 //! that cite exact wording by byte range. The kernel reports shared, unique,
 //! conflicting and uncoded aspects; a pairwise lexical overlap matrix; drift
 //! between revisions of one account; and long exact shared word runs that suggest
-//! copying or quotation. Shared wording merges accounts into one independence
-//! group, so a copied account lowers the independent-source count instead of
-//! raising corroboration.
+//! copying or quotation.
+//!
+//! Two groupings are reported. The declared grouping merges accounts only through
+//! declared derivations; its reported-group count is an upper bound on independent
+//! reported sources, provided the declarations are correct. The candidate-adjusted
+//! grouping also merges accounts through undismissed copy candidates, so a copied
+//! account lowers the count instead of raising corroboration. A false candidate
+//! can push that count below the true value, so it is not a bound; a reviewer can
+//! dismiss a candidate. Simulated accounts, and reported accounts whose declared
+//! lineage is only simulated, never count as reported support.
 //!
 //! Inputs and results are transient analysis: no I/O, persistence, extraction,
 //! model inference or normalization of the source text. Overlap is lexical. It is
 //! never agreement about events, a probability, or proof of independence.
 
+pub use crate::multilingual::StopReason;
 use oia_domain::text::is_format_control;
 use oia_domain::witness::AccountOrigin;
 use oia_domain::{ActorId, OpaqueId, VersionId};
@@ -22,15 +30,26 @@ use std::fmt;
 use std::ops::Range;
 
 /// Pin this identifier and the parameters in [`MethodRecord`] with any persisted result.
-pub const METHOD_ID: &str = "word-shingle-jaccard+exact-word-run-v1";
+pub const METHOD_ID: &str = "word-shingle-jaccard+exact-word-run-v2";
 /// How text is split into the words that both measures compare.
 pub const TOKENIZATION: &str = "maximal runs of Unicode alphanumeric characters, compared after \
-     char::to_lowercase; every other character separates words";
+     char::to_lowercase; every other character separates words. No Unicode normalization is \
+     applied, so composed and decomposed forms of the same text (NFC/NFD) do not match. Scripts \
+     written without word separators (for example Han, Kana, Thai, Lao, Khmer, Myanmar) form \
+     very long words; such sources are marked UnsegmentedText and their overlap and copy \
+     results are unreliable.";
 pub const OVERLAP_CAVEAT: &str = "Overlap measures shared wording in the captured text. It is not \
      agreement about what happened, not evidence of independence, and not a probability.";
-pub const INDEPENDENCE_CAVEAT: &str = "Independence groups are an upper bound. Paraphrase, shared \
-     briefings, interviews or a common outside source can make accounts dependent without \
-     shared wording.";
+pub const DECLARED_GROUPS_CAVEAT: &str = "The declared reported-group count is an upper bound on \
+     independent reported sources only if the declared derivations are correct. Paraphrase, \
+     shared briefings, interviews or a common outside source can make accounts dependent \
+     without any declaration or shared wording.";
+pub const CANDIDATE_GROUPS_CAVEAT: &str = "The candidate-adjusted count also merges accounts that \
+     share a long exact word run. A candidate can be a legitimate quotation of a common public \
+     text, so this count can fall below the true number of independent sources. It is not a \
+     bound; review or dismiss candidates before relying on it.";
+pub const SIMULATED_CAVEAT: &str = "Simulated accounts, and reported accounts whose declared \
+     in-set lineage is only simulated, never count as reported support or as reported groups.";
 pub const CODING_CAVEAT: &str = "Aspects and coded values are analyst coding over cited wording, \
      not observations or measurements. An uncoded aspect is not an observed absence.";
 
@@ -40,6 +59,7 @@ pub const MAX_TEXT_BYTES: usize = 262_144;
 pub const MAX_TOTAL_TEXT_BYTES: usize = 2_097_152;
 pub const MAX_ASSERTIONS_PER_SOURCE: usize = 256;
 pub const MAX_DERIVATIONS_PER_SOURCE: usize = 32;
+pub const MAX_DISMISSALS: usize = 256;
 pub const MAX_LABEL_BYTES: usize = 256;
 pub const MAX_DESCRIPTION_BYTES: usize = 4_096;
 pub const SHINGLE_WORDS_RANGE: Range<usize> = 2..17;
@@ -47,6 +67,8 @@ pub const COPY_RUN_WORDS_RANGE: Range<usize> = 6..257;
 /// Per cross-account pair; reaching either bound marks that pair's search truncated.
 pub const MAX_COPY_CANDIDATES_PER_PAIR: usize = 64;
 pub const MAX_COPY_PROBES_PER_PAIR: usize = 4_000_000;
+/// A word longer than this many characters marks its source `UnsegmentedText`.
+pub const UNSEGMENTED_WORD_CHARS: usize = 40;
 const CONTROL_INTERVAL: usize = 1_024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -99,7 +121,8 @@ pub enum CodedValue<'a> {
     StatedUnknown,
 }
 
-/// One analyst-coded detail citing a non-empty UTF-8 byte range of the source text.
+/// One analyst-coded detail citing a UTF-8 byte range of the source text that
+/// contains non-whitespace characters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetailAssertion<'a> {
     pub aspect: &'a str,
@@ -135,7 +158,22 @@ pub struct StatementSource<'a> {
     pub derived_from: &'a [OpaqueId],
 }
 
-/// Which version represents each account in the aspect table.
+/// A reviewer's decision that one copy candidate is not evidence of dependence,
+/// for example both accounts quote the same public appeal. The candidate stays
+/// listed with this dismissal but no longer merges candidate-adjusted groups.
+/// Candidates are identified by their version pair and byte ranges, in either order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateDismissal<'a> {
+    pub a_version: VersionId,
+    pub a_range: Range<usize>,
+    pub b_version: VersionId,
+    pub b_range: Range<usize>,
+    pub reviewed_by: ActorId,
+    pub reason: &'a str,
+}
+
+/// Which version represents each account in the aspect table. The default is
+/// `Initial`, the account preserved before any explanations (FIELD-02).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Representative {
     Initial,
@@ -156,7 +194,7 @@ impl Default for ComparisonParameters {
         Self {
             shingle_words: 5,
             copy_run_words: 12,
-            representative: Representative::Latest,
+            representative: Representative::Initial,
         }
     }
 }
@@ -168,32 +206,67 @@ pub struct ComparisonRequest<'a> {
     pub coded_by: ActorId,
     pub parameters: ComparisonParameters,
     pub sources: &'a [StatementSource<'a>],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StopReason {
-    Cancelled,
-    DeadlineExceeded,
+    pub dismissals: &'a [CandidateDismissal<'a>],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComparisonError {
     TooFewSources(usize),
     TooManySources(usize),
+    TooManyDismissals(usize),
     InvalidParameter(&'static str),
-    DuplicateVersion { source: usize },
-    DuplicateRevision { source: usize },
-    InconsistentAccount { source: usize, field: &'static str },
-    EmptyField { source: usize, field: &'static str },
-    FieldTooLong { source: usize, field: &'static str },
-    InvalidCharacter { source: usize, field: &'static str },
-    TextTooLarge { source: usize, bytes: usize },
-    TotalTextTooLarge { bytes: usize },
-    TooManyAssertions { source: usize, count: usize },
-    TooManyDerivations { source: usize, count: usize },
-    SelfDerivation { source: usize },
-    WordingWithoutText { source: usize, assertion: usize },
-    InvalidWording { source: usize, assertion: usize },
+    DuplicateVersion {
+        source: usize,
+    },
+    DuplicateRevision {
+        source: usize,
+    },
+    InconsistentAccount {
+        source: usize,
+        field: &'static str,
+    },
+    EmptyField {
+        source: usize,
+        field: &'static str,
+    },
+    FieldTooLong {
+        source: usize,
+        field: &'static str,
+    },
+    InvalidCharacter {
+        source: usize,
+        field: &'static str,
+    },
+    TextTooLarge {
+        source: usize,
+        bytes: usize,
+    },
+    TotalTextTooLarge {
+        bytes: usize,
+    },
+    TooManyAssertions {
+        source: usize,
+        count: usize,
+    },
+    TooManyDerivations {
+        source: usize,
+        count: usize,
+    },
+    SelfDerivation {
+        source: usize,
+    },
+    WordingWithoutText {
+        source: usize,
+        assertion: usize,
+    },
+    InvalidWording {
+        source: usize,
+        assertion: usize,
+    },
+    InvalidDismissal {
+        dismissal: usize,
+        field: &'static str,
+    },
     Stopped(StopReason),
 }
 
@@ -202,6 +275,9 @@ impl fmt::Display for ComparisonError {
         match self {
             Self::TooFewSources(n) => write!(f, "{n} source versions; at least 2 are required"),
             Self::TooManySources(n) => write!(f, "{n} source versions; limit is {MAX_SOURCES}"),
+            Self::TooManyDismissals(n) => {
+                write!(f, "{n} candidate dismissals; limit is {MAX_DISMISSALS}")
+            }
             Self::InvalidParameter(name) => write!(f, "parameter {name} is outside its range"),
             Self::DuplicateVersion { source } => {
                 write!(f, "source {source} repeats an earlier version id")
@@ -259,9 +335,12 @@ impl fmt::Display for ComparisonError {
             ),
             Self::InvalidWording { source, assertion } => write!(
                 f,
-                "source {source} assertion {assertion} cites an empty, out-of-range or \
-                 non-character-boundary byte range"
+                "source {source} assertion {assertion} cites an empty, whitespace-only, \
+                 out-of-range or non-character-boundary byte range"
             ),
+            Self::InvalidDismissal { dismissal, field } => {
+                write!(f, "candidate dismissal {dismissal}: invalid {field}")
+            }
             Self::Stopped(reason) => write!(f, "statement comparison stopped: {reason:?}"),
         }
     }
@@ -278,7 +357,9 @@ pub struct MethodRecord {
     pub coding_version: VersionId,
     pub coded_by: ActorId,
     pub overlap_caveat: &'static str,
-    pub independence_caveat: &'static str,
+    pub declared_groups_caveat: &'static str,
+    pub candidate_groups_caveat: &'static str,
+    pub simulated_caveat: &'static str,
     pub coding_caveat: &'static str,
 }
 
@@ -294,11 +375,17 @@ pub struct SourceSummary<'a> {
     pub attribution: &'a str,
     pub coverage: TextCoverage,
     pub word_count: usize,
+    pub longest_word_chars: usize,
     pub assertion_count: usize,
     /// Whether this version represents its account in the aspect table.
     pub representative: bool,
-    /// Index into [`StatementComparison::groups`].
-    pub independence_group: usize,
+    /// False for simulated accounts and for reported accounts whose declared
+    /// in-set lineage is only simulated.
+    pub counts_as_reported: bool,
+    /// Indices into [`StatementComparison::declared`] and
+    /// [`StatementComparison::candidate_adjusted`] groups.
+    pub declared_group: usize,
+    pub candidate_adjusted_group: usize,
 }
 
 /// Exact rational; no floating-point rounding enters the result.
@@ -319,7 +406,7 @@ impl Ratio {
 pub enum OverlapMeasure {
     /// Jaccard index of distinct word shingles: shared / union.
     ShingleJaccard(Ratio),
-    /// Neither text has enough words for one shingle.
+    /// At least one text has fewer words than one shingle; not measurable.
     TooShort,
     /// At least one text is unavailable.
     Unavailable,
@@ -332,6 +419,8 @@ pub enum CopySearch {
     Complete,
     /// A per-pair bound was reached; further shared runs may exist.
     Truncated,
+    /// The search ran, but a text lacks word separators, so runs are unreliable.
+    UnsegmentedText,
     Unavailable,
 }
 
@@ -358,6 +447,8 @@ pub struct CopyCandidate<'a> {
     pub words: usize,
     pub a_text: &'a str,
     pub b_text: &'a str,
+    /// Index into the request's dismissals when a reviewer dismissed it.
+    pub dismissal: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -375,6 +466,16 @@ pub enum DependencyReason<'a> {
 pub struct IndependenceGroup<'a> {
     pub accounts: Vec<&'a OpaqueId>,
     pub reasons: Vec<DependencyReason<'a>>,
+    /// At least one member counts as reported support.
+    pub counts_as_reported: bool,
+    pub includes_simulated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Grouping<'a> {
+    pub groups: Vec<IndependenceGroup<'a>>,
+    /// Groups with `counts_as_reported`.
+    pub reported_group_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -383,24 +484,36 @@ pub struct AspectReport<'a> {
     pub value: CodedValue<'a>,
     pub wording: Range<usize>,
     pub wording_text: &'a str,
+    pub origin: AccountOrigin,
+    pub exposure: ExplanationExposure,
 }
 
+/// Support for one coded value. Group counts include only accounts that count
+/// as reported support.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Variant<'a> {
     pub value: &'a str,
     pub sources: Vec<usize>,
     pub accounts: usize,
-    pub independence_groups: usize,
+    pub reported_accounts: usize,
+    pub simulated_accounts: usize,
+    pub declared_groups: usize,
+    pub candidate_adjusted_groups: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AspectStatus {
-    /// One coded value, reported from at least two independence groups.
+    /// One coded value, with reported support from at least two
+    /// candidate-adjusted groups.
     Converging,
-    /// One coded value, repeated only by accounts in one dependent group.
+    /// One coded value from two or more reported accounts that fall in one
+    /// candidate-adjusted group; see the variant's declared group count.
     RepeatedWithinOneGroup,
-    /// One coded value from one account.
+    /// One coded value from one reported account.
     Unique,
+    /// One coded value with no reported support (simulated only, or lineage
+    /// declared only from simulated accounts).
+    NoReportedSupport,
     /// Two or more coded values. Variants stay separate; none is preferred.
     Conflicting,
     /// Every report states the detail is unknown.
@@ -448,10 +561,26 @@ pub struct DriftStep<'a> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Limitation {
-    TextPartial { source: usize },
-    TextUnavailable { source: usize },
-    TooShortForShingles { source: usize },
-    CopySearchTruncated { a: usize, b: usize },
+    TextPartial {
+        source: usize,
+    },
+    TextUnavailable {
+        source: usize,
+    },
+    TooShortForShingles {
+        source: usize,
+    },
+    UnsegmentedText {
+        source: usize,
+        longest_word_chars: usize,
+    },
+    CopySearchTruncated {
+        a: usize,
+        b: usize,
+    },
+    UnmatchedDismissal {
+        dismissal: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -459,9 +588,13 @@ pub struct StatementComparison<'a> {
     pub method: MethodRecord,
     pub sources: Vec<SourceSummary<'a>>,
     pub account_count: usize,
-    /// Equals `groups.len()`; an upper bound (see [`INDEPENDENCE_CAVEAT`]).
-    pub independence_group_upper_bound: usize,
-    pub groups: Vec<IndependenceGroup<'a>>,
+    pub reported_account_count: usize,
+    /// Declared derivations only. Its reported-group count is an upper bound
+    /// under [`DECLARED_GROUPS_CAVEAT`].
+    pub declared: Grouping<'a>,
+    /// Declared derivations plus undismissed copy candidates. Not a bound
+    /// ([`CANDIDATE_GROUPS_CAVEAT`]).
+    pub candidate_adjusted: Grouping<'a>,
     pub pairs: Vec<PairOverlap>,
     pub copy_candidates: Vec<CopyCandidate<'a>>,
     pub aspects: Vec<AspectComparison<'a>>,
@@ -486,6 +619,8 @@ struct Prepared<'a> {
     text: Option<&'a str>,
     words: Vec<Word>,
     account: usize,
+    longest_word_chars: usize,
+    unsegmented: bool,
 }
 
 struct Control<F> {
@@ -507,6 +642,29 @@ impl<F: FnMut() -> Result<(), StopReason>> Control<F> {
     }
 }
 
+enum FieldProblem {
+    TooLong,
+    Empty,
+    Character,
+}
+
+fn check_text_field(value: &str, limit: usize, structural: bool) -> Result<(), FieldProblem> {
+    if value.len() > limit {
+        return Err(FieldProblem::TooLong);
+    }
+    if value.trim().is_empty() {
+        return Err(FieldProblem::Empty);
+    }
+    if structural
+        && value
+            .chars()
+            .any(|c| c.is_control() || is_format_control(c))
+    {
+        return Err(FieldProblem::Character);
+    }
+    Ok(())
+}
+
 fn validate_text_field(
     source: usize,
     field: &'static str,
@@ -514,20 +672,11 @@ fn validate_text_field(
     limit: usize,
     structural: bool,
 ) -> Result<(), ComparisonError> {
-    if value.len() > limit {
-        return Err(ComparisonError::FieldTooLong { source, field });
-    }
-    if value.trim().is_empty() {
-        return Err(ComparisonError::EmptyField { source, field });
-    }
-    if structural
-        && value
-            .chars()
-            .any(|c| c.is_control() || is_format_control(c))
-    {
-        return Err(ComparisonError::InvalidCharacter { source, field });
-    }
-    Ok(())
+    check_text_field(value, limit, structural).map_err(|problem| match problem {
+        FieldProblem::TooLong => ComparisonError::FieldTooLong { source, field },
+        FieldProblem::Empty => ComparisonError::EmptyField { source, field },
+        FieldProblem::Character => ComparisonError::InvalidCharacter { source, field },
+    })
 }
 
 fn validate(request: &ComparisonRequest<'_>) -> Result<(), ComparisonError> {
@@ -537,6 +686,9 @@ fn validate(request: &ComparisonRequest<'_>) -> Result<(), ComparisonError> {
     }
     if sources.len() > MAX_SOURCES {
         return Err(ComparisonError::TooManySources(sources.len()));
+    }
+    if request.dismissals.len() > MAX_DISMISSALS {
+        return Err(ComparisonError::TooManyDismissals(request.dismissals.len()));
     }
     let p = request.parameters;
     if !SHINGLE_WORDS_RANGE.contains(&p.shingle_words) {
@@ -626,12 +778,8 @@ fn validate(request: &ComparisonRequest<'_>) -> Result<(), ComparisonError> {
                     assertion: a,
                 });
             };
-            let w = &assertion.wording;
-            if w.start >= w.end
-                || w.end > text.len()
-                || !text.is_char_boundary(w.start)
-                || !text.is_char_boundary(w.end)
-            {
+            let cited = text.get(assertion.wording.clone());
+            if !cited.is_some_and(|w| !w.trim().is_empty()) {
                 return Err(ComparisonError::InvalidWording {
                     source: index,
                     assertion: a,
@@ -642,30 +790,73 @@ fn validate(request: &ComparisonRequest<'_>) -> Result<(), ComparisonError> {
     if total > MAX_TOTAL_TEXT_BYTES {
         return Err(ComparisonError::TotalTextTooLarge { bytes: total });
     }
+    for (dismissal, d) in request.dismissals.iter().enumerate() {
+        check_text_field(d.reason, MAX_DESCRIPTION_BYTES, false).map_err(|_| {
+            ComparisonError::InvalidDismissal {
+                dismissal,
+                field: "reason",
+            }
+        })?;
+        if d.a_range.start >= d.a_range.end || d.b_range.start >= d.b_range.end {
+            return Err(ComparisonError::InvalidDismissal {
+                dismissal,
+                field: "range",
+            });
+        }
+    }
     Ok(())
+}
+
+/// Scripts conventionally written without spaces between words.
+fn is_unsegmented_script(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{0E00}'..='\u{0EFF}'
+            | '\u{1000}'..='\u{109F}'
+            | '\u{1780}'..='\u{17FF}'
+            | '\u{3040}'..='\u{30FF}'
+            | '\u{31F0}'..='\u{31FF}'
+            | '\u{3400}'..='\u{4DBF}'
+            | '\u{4E00}'..='\u{9FFF}'
+            | '\u{F900}'..='\u{FAFF}'
+            | '\u{20000}'..='\u{3134F}'
+    )
+}
+
+struct Tokens {
+    words: Vec<Word>,
+    longest_word_chars: usize,
+    unsegmented_script: bool,
 }
 
 fn tokenize<F: FnMut() -> Result<(), StopReason>>(
     text: &str,
     control: &mut Control<F>,
-) -> Result<Vec<Word>, ComparisonError> {
-    let mut words = Vec::new();
+) -> Result<Tokens, ComparisonError> {
+    let mut tokens = Tokens {
+        words: Vec::new(),
+        longest_word_chars: 0,
+        unsegmented_script: false,
+    };
     let mut start: Option<usize> = None;
+    let mut chars = 0usize;
     for (offset, ch) in text.char_indices() {
         control.tick()?;
-        match (ch.is_alphanumeric(), start) {
-            (true, None) => start = Some(offset),
-            (false, Some(begin)) => {
-                words.push(word(text, begin..offset));
-                start = None;
-            }
-            _ => {}
+        if ch.is_alphanumeric() {
+            tokens.unsegmented_script |= is_unsegmented_script(ch);
+            chars += 1;
+            start.get_or_insert(offset);
+        } else if let Some(begin) = start.take() {
+            tokens.words.push(word(text, begin..offset));
+            tokens.longest_word_chars = tokens.longest_word_chars.max(chars);
+            chars = 0;
         }
     }
     if let Some(begin) = start {
-        words.push(word(text, begin..text.len()));
+        tokens.words.push(word(text, begin..text.len()));
+        tokens.longest_word_chars = tokens.longest_word_chars.max(chars);
     }
-    Ok(words)
+    Ok(tokens)
 }
 
 fn word(text: &str, range: Range<usize>) -> Word {
@@ -678,11 +869,19 @@ fn word(text: &str, range: Range<usize>) -> Word {
     Word { norm, range }
 }
 
-fn shingles<'w>(norms: &'w [&'w str], k: usize) -> HashSet<&'w [&'w str]> {
-    if norms.len() < k {
-        return HashSet::new();
+fn shingles<'w, F: FnMut() -> Result<(), StopReason>>(
+    norms: &'w [&'w str],
+    k: usize,
+    control: &mut Control<F>,
+) -> Result<HashSet<&'w [&'w str]>, ComparisonError> {
+    let mut set = HashSet::new();
+    if norms.len() >= k {
+        for window in norms.windows(k) {
+            control.tick()?;
+            set.insert(window);
+        }
     }
-    norms.windows(k).collect()
+    Ok(set)
 }
 
 fn jaccard<F: FnMut() -> Result<(), StopReason>>(
@@ -690,6 +889,9 @@ fn jaccard<F: FnMut() -> Result<(), StopReason>>(
     b: &HashSet<&[&str]>,
     control: &mut Control<F>,
 ) -> Result<OverlapMeasure, ComparisonError> {
+    if a.is_empty() || b.is_empty() {
+        return Ok(OverlapMeasure::TooShort);
+    }
     let (small, large) = if a.len() <= b.len() { (a, b) } else { (b, a) };
     let mut shared = 0u64;
     for shingle in small {
@@ -699,22 +901,18 @@ fn jaccard<F: FnMut() -> Result<(), StopReason>>(
         }
     }
     let union = (a.len() + b.len()) as u64 - shared;
-    Ok(if union == 0 {
-        OverlapMeasure::TooShort
-    } else {
-        OverlapMeasure::ShingleJaccard(Ratio {
-            numerator: shared,
-            denominator: union,
-        })
-    })
+    Ok(OverlapMeasure::ShingleJaccard(Ratio {
+        numerator: shared,
+        denominator: union,
+    }))
 }
+
+/// `(start in a, start in b, words)` per run, and whether the search was truncated.
+type SharedRuns = (Vec<(usize, usize, usize)>, bool);
 
 /// Maximal exact runs of at least `m` words. A run starting where the previous
 /// words also match is a suffix of a longer run and is skipped. Probes and
 /// candidates are bounded per pair; the bool reports truncation.
-/// `(start in a, start in b, words)` per run, and whether the search was truncated.
-type SharedRuns = (Vec<(usize, usize, usize)>, bool);
-
 fn shared_runs<F: FnMut() -> Result<(), StopReason>>(
     a: &[&str],
     b: &[&str],
@@ -759,11 +957,17 @@ fn shared_runs<F: FnMut() -> Result<(), StopReason>>(
     Ok((runs, false))
 }
 
-struct Groups {
+struct UnionFind {
     parent: Vec<usize>,
 }
 
-impl Groups {
+impl UnionFind {
+    fn new(n: usize) -> Self {
+        Self {
+            parent: (0..n).collect(),
+        }
+    }
+
     fn find(&mut self, mut x: usize) -> usize {
         while let Some(&p) = self.parent.get(x) {
             if p == x {
@@ -787,14 +991,62 @@ impl Groups {
     }
 }
 
+/// Build groups in order of first account appearance; returns the grouping and
+/// each account's group index.
+fn build_grouping<'a>(
+    mut sets: UnionFind,
+    account_ids: &[&'a OpaqueId],
+    counts: &[bool],
+    simulated: &[bool],
+    edges: &[(usize, DependencyReason<'a>)],
+) -> (Grouping<'a>, Vec<usize>) {
+    let mut group_of_root: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut groups: Vec<IndependenceGroup<'a>> = Vec::new();
+    let mut account_group = vec![0usize; account_ids.len()];
+    for (account, id) in account_ids.iter().enumerate() {
+        let root = sets.find(account);
+        let next = group_of_root.len();
+        let g = *group_of_root.entry(root).or_insert(next);
+        if g == groups.len() {
+            groups.push(IndependenceGroup {
+                accounts: Vec::new(),
+                reasons: Vec::new(),
+                counts_as_reported: false,
+                includes_simulated: false,
+            });
+        }
+        if let Some(group) = groups.get_mut(g) {
+            group.accounts.push(id);
+            group.counts_as_reported |= counts[account];
+            group.includes_simulated |= simulated[account];
+        }
+        account_group[account] = g;
+    }
+    for (account, reason) in edges {
+        if let Some(group) = groups.get_mut(account_group[*account]) {
+            group.reasons.push(reason.clone());
+        }
+    }
+    let reported_group_count = groups.iter().filter(|g| g.counts_as_reported).count();
+    (
+        Grouping {
+            groups,
+            reported_group_count,
+        },
+        account_group,
+    )
+}
+
 fn weaker(a: TextCoverage, b: TextCoverage) -> TextCoverage {
     a.max(b)
 }
 
 /// Compare a validated, bounded set of pinned source versions. Work is bounded by
 /// the input limits and per-pair copy-search budgets; control is checked before
-/// and after work and every 1,024 steps. A stop returns no result. The caller
-/// must fence stale completions before persisting or displaying a result.
+/// and after work, per pair and drift step, and every 1,024 steps of tokenizing,
+/// shingle construction, shingle comparison and copy search. A stop returns no
+/// result. The caller must fence stale completions before persisting or
+/// displaying a result.
 pub fn compare_statements<'a>(
     request: &ComparisonRequest<'a>,
     check_control: impl FnMut() -> Result<(), StopReason>,
@@ -817,14 +1069,19 @@ pub fn compare_statements<'a>(
             account_ids.len() - 1
         });
     }
+    let n_accounts = account_ids.len();
 
     let mut prepared = Vec::with_capacity(sources.len());
     let mut limitations = Vec::new();
     for (index, source) in sources.iter().enumerate() {
         let text = source.text.text();
-        let words = match text {
+        let tokens = match text {
             Some(text) => tokenize(text, &mut control)?,
-            None => Vec::new(),
+            None => Tokens {
+                words: Vec::new(),
+                longest_word_chars: 0,
+                unsegmented_script: false,
+            },
         };
         match source.text {
             TextCapture::Partial { .. } => {
@@ -835,29 +1092,36 @@ pub fn compare_statements<'a>(
             }
             TextCapture::Complete(_) => {}
         }
-        if text.is_some() && words.len() < params.shingle_words {
+        let unsegmented =
+            tokens.unsegmented_script || tokens.longest_word_chars > UNSEGMENTED_WORD_CHARS;
+        if unsegmented {
+            limitations.push(Limitation::UnsegmentedText {
+                source: index,
+                longest_word_chars: tokens.longest_word_chars,
+            });
+        }
+        if text.is_some() && tokens.words.len() < params.shingle_words {
             limitations.push(Limitation::TooShortForShingles { source: index });
         }
         let account = account_of.get(&source.account).copied().unwrap_or_default();
         prepared.push(Prepared {
             text,
-            words,
+            words: tokens.words,
             account,
+            longest_word_chars: tokens.longest_word_chars,
+            unsegmented,
         });
     }
     let norms: Vec<Vec<&str>> = prepared
         .iter()
         .map(|p| p.words.iter().map(|w| w.norm.as_str()).collect())
         .collect();
-    let shingle_sets: Vec<HashSet<&[&str]>> = norms
-        .iter()
-        .map(|n| shingles(n, params.shingle_words))
-        .collect();
+    let mut shingle_sets: Vec<HashSet<&[&str]>> = Vec::with_capacity(norms.len());
+    for n in &norms {
+        shingle_sets.push(shingles(n, params.shingle_words, &mut control)?);
+    }
 
     // Pairwise matrix and cross-account copy candidates.
-    let mut groups = Groups {
-        parent: (0..account_ids.len()).collect(),
-    };
     let mut pairs = Vec::new();
     let mut copy_candidates = Vec::new();
     for a in 0..sources.len() {
@@ -897,11 +1161,14 @@ pub fn compare_statements<'a>(
                         a_range,
                         b_range,
                         words: len,
+                        dismissal: None,
                     });
                 }
                 if truncated {
                     limitations.push(Limitation::CopySearchTruncated { a, b });
                     (CopySearch::Truncated, found)
+                } else if pa.unsegmented || pb.unsegmented {
+                    (CopySearch::UnsegmentedText, found)
                 } else {
                     (CopySearch::Complete, found)
                 }
@@ -918,14 +1185,39 @@ pub fn compare_statements<'a>(
         }
     }
 
-    // Independence: declared derivations and shared wording merge accounts.
-    let mut edges: Vec<(usize, DependencyReason<'a>)> = Vec::new();
+    // Reviewer dismissals, matched by version pair and byte ranges in either order.
+    for (index, d) in request.dismissals.iter().enumerate() {
+        let matched = copy_candidates.iter_mut().find(|c| {
+            let (va, vb) = (&sources[c.a].version, &sources[c.b].version);
+            (va == &d.a_version
+                && vb == &d.b_version
+                && c.a_range == d.a_range
+                && c.b_range == d.b_range)
+                || (va == &d.b_version
+                    && vb == &d.a_version
+                    && c.a_range == d.b_range
+                    && c.b_range == d.a_range)
+        });
+        match matched {
+            Some(candidate) if candidate.dismissal.is_none() => candidate.dismissal = Some(index),
+            _ => limitations.push(Limitation::UnmatchedDismissal { dismissal: index }),
+        }
+    }
+
+    // Account origin and declared lineage.
+    let mut simulated = vec![false; n_accounts];
+    let mut derivations: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); n_accounts];
+    let mut declared_edges: Vec<(usize, DependencyReason<'a>)> = Vec::new();
+    let mut declared_sets = UnionFind::new(n_accounts);
     for (index, source) in sources.iter().enumerate() {
+        let account = prepared[index].account;
+        simulated[account] = source.origin == AccountOrigin::Simulated;
         for derived in source.derived_from {
             if let Some(&other) = account_of.get(derived) {
-                groups.union(prepared[index].account, other);
-                edges.push((
-                    prepared[index].account,
+                derivations[account].insert(other);
+                declared_sets.union(account, other);
+                declared_edges.push((
+                    account,
                     DependencyReason::DeclaredDerivation {
                         source: index,
                         derived_from: derived,
@@ -934,39 +1226,59 @@ pub fn compare_statements<'a>(
             }
         }
     }
+    // Least fixpoint: an account is anchored only in simulation if it is
+    // simulated, or every in-set account it declares it draws on is.
+    let mut anchored_only_simulated = simulated.clone();
+    for _ in 0..n_accounts {
+        let mut changed = false;
+        for account in 0..n_accounts {
+            if !anchored_only_simulated[account]
+                && !derivations[account].is_empty()
+                && derivations[account]
+                    .iter()
+                    .all(|&d| anchored_only_simulated[d])
+            {
+                anchored_only_simulated[account] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let counts: Vec<bool> = anchored_only_simulated.iter().map(|&s| !s).collect();
+
+    let mut candidate_sets = UnionFind::new(n_accounts);
+    let mut candidate_edges = declared_edges.clone();
+    for (account, derived) in derivations.iter().enumerate() {
+        for &other in derived {
+            candidate_sets.union(account, other);
+        }
+    }
     for (candidate, c) in copy_candidates.iter().enumerate() {
-        groups.union(prepared[c.a].account, prepared[c.b].account);
-        edges.push((
-            prepared[c.a].account,
-            DependencyReason::SharedWording { candidate },
-        ));
-    }
-    let mut group_of_root: BTreeMap<usize, usize> = BTreeMap::new();
-    let mut group_list: Vec<IndependenceGroup<'a>> = Vec::new();
-    let mut account_group = vec![0usize; account_ids.len()];
-    for (account, id) in account_ids.iter().enumerate() {
-        let root = groups.find(account);
-        let next = group_of_root.len();
-        let g = *group_of_root.entry(root).or_insert(next);
-        if g == group_list.len() {
-            group_list.push(IndependenceGroup {
-                accounts: Vec::new(),
-                reasons: Vec::new(),
-            });
-        }
-        if let Some(group) = group_list.get_mut(g) {
-            group.accounts.push(*id);
-        }
-        account_group[account] = g;
-    }
-    for (account, reason) in edges {
-        if let Some(group) = group_list.get_mut(account_group[account]) {
-            group.reasons.push(reason);
+        if c.dismissal.is_none() {
+            let (x, y) = (prepared[c.a].account, prepared[c.b].account);
+            candidate_sets.union(x, y);
+            candidate_edges.push((x, DependencyReason::SharedWording { candidate }));
         }
     }
+    let (declared, declared_group) = build_grouping(
+        declared_sets,
+        &account_ids,
+        &counts,
+        &simulated,
+        &declared_edges,
+    );
+    let (candidate_adjusted, candidate_group) = build_grouping(
+        candidate_sets,
+        &account_ids,
+        &counts,
+        &simulated,
+        &candidate_edges,
+    );
 
     // Representative version per account.
-    let mut representative: Vec<Option<usize>> = vec![None; account_ids.len()];
+    let mut representative: Vec<Option<usize>> = vec![None; n_accounts];
     for (index, source) in sources.iter().enumerate() {
         let slot = &mut representative[prepared[index].account];
         let better = match *slot {
@@ -1001,6 +1313,8 @@ pub fn compare_statements<'a>(
                     value: assertion.value,
                     wording: assertion.wording.clone(),
                     wording_text,
+                    origin: source.origin,
+                    exposure: source.exposure,
                 });
         }
     }
@@ -1028,24 +1342,32 @@ pub fn compare_statements<'a>(
             .map(|(value, members)| {
                 let accounts: BTreeSet<usize> =
                     members.iter().map(|&s| prepared[s].account).collect();
-                let independence_groups = accounts
-                    .iter()
-                    .map(|&acc| account_group[acc])
-                    .collect::<BTreeSet<_>>()
-                    .len();
+                let reported: Vec<usize> =
+                    accounts.iter().copied().filter(|&a| counts[a]).collect();
+                let distinct = |groups: &[usize]| {
+                    reported
+                        .iter()
+                        .map(|&a| groups[a])
+                        .collect::<BTreeSet<_>>()
+                        .len()
+                };
                 Variant {
                     value,
                     sources: members.into_iter().collect(),
                     accounts: accounts.len(),
-                    independence_groups,
+                    reported_accounts: reported.len(),
+                    simulated_accounts: accounts.iter().filter(|&&a| simulated[a]).count(),
+                    declared_groups: distinct(&declared_group),
+                    candidate_adjusted_groups: distinct(&candidate_group),
                 }
             })
             .collect();
         let status = match variants.as_slice() {
             [] => AspectStatus::StatedUnknownOnly,
-            [only] if only.accounts == 1 => AspectStatus::Unique,
-            [only] if only.independence_groups >= 2 => AspectStatus::Converging,
-            [_] => AspectStatus::RepeatedWithinOneGroup,
+            [only] if only.reported_accounts == 0 => AspectStatus::NoReportedSupport,
+            [only] if only.candidate_adjusted_groups >= 2 => AspectStatus::Converging,
+            [only] if only.reported_accounts >= 2 => AspectStatus::RepeatedWithinOneGroup,
+            [_] => AspectStatus::Unique,
             _ => AspectStatus::Conflicting,
         };
         let not_coded_in = representatives
@@ -1119,20 +1441,26 @@ pub fn compare_statements<'a>(
     let summaries = sources
         .iter()
         .enumerate()
-        .map(|(index, source)| SourceSummary {
-            index,
-            account: &source.account,
-            version: &source.version,
-            revision: source.revision,
-            class: source.class,
-            origin: source.origin,
-            exposure: source.exposure,
-            attribution: source.attribution,
-            coverage: source.text.coverage(),
-            word_count: prepared[index].words.len(),
-            assertion_count: source.assertions.len(),
-            representative: representatives.contains(&index),
-            independence_group: account_group[prepared[index].account],
+        .map(|(index, source)| {
+            let account = prepared[index].account;
+            SourceSummary {
+                index,
+                account: &source.account,
+                version: &source.version,
+                revision: source.revision,
+                class: source.class,
+                origin: source.origin,
+                exposure: source.exposure,
+                attribution: source.attribution,
+                coverage: source.text.coverage(),
+                word_count: prepared[index].words.len(),
+                longest_word_chars: prepared[index].longest_word_chars,
+                assertion_count: source.assertions.len(),
+                representative: representatives.contains(&index),
+                counts_as_reported: counts[account],
+                declared_group: declared_group[account],
+                candidate_adjusted_group: candidate_group[account],
+            }
         })
         .collect();
     control.now()?;
@@ -1144,19 +1472,22 @@ pub fn compare_statements<'a>(
             coding_version: request.coding_version.clone(),
             coded_by: request.coded_by.clone(),
             overlap_caveat: OVERLAP_CAVEAT,
-            independence_caveat: INDEPENDENCE_CAVEAT,
+            declared_groups_caveat: DECLARED_GROUPS_CAVEAT,
+            candidate_groups_caveat: CANDIDATE_GROUPS_CAVEAT,
+            simulated_caveat: SIMULATED_CAVEAT,
             coding_caveat: CODING_CAVEAT,
         },
         sources: summaries,
-        account_count: account_ids.len(),
-        independence_group_upper_bound: group_list.len(),
-        groups: group_list,
+        account_count: n_accounts,
+        reported_account_count: counts.iter().filter(|&&c| c).count(),
+        declared,
+        candidate_adjusted,
         pairs,
         copy_candidates,
         aspects,
         drift,
         limitations,
-        contains_simulated: sources.iter().any(|s| s.origin == AccountOrigin::Simulated),
+        contains_simulated: simulated.iter().any(|&s| s),
     })
 }
 

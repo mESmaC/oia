@@ -109,6 +109,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         coded_by: ActorId::new("example")?,
         parameters: ComparisonParameters::default(),
         sources: &sources,
+        dismissals: &[],
     };
     let started = Instant::now();
     let result = compare_statements(&request, || Ok(()))?;
@@ -120,16 +121,25 @@ fn main() -> Result<(), Box<dyn Error>> {
         m.id, m.parameters.shingle_words, m.parameters.copy_run_words
     );
     println!("tokenization: {}", m.tokenization);
-    println!("{}\n{}", m.overlap_caveat, m.independence_caveat);
+    for caveat in [
+        m.overlap_caveat,
+        m.declared_groups_caveat,
+        m.candidate_groups_caveat,
+    ] {
+        println!("{caveat}");
+    }
     for s in &result.sources {
         println!(
-            "[{}] {} r{} {:?} {} words, group {}",
+            "[{}] {} r{} {:?} {} words (longest {} chars), declared group {}, \
+             candidate-adjusted group {}",
             s.index,
             s.account.as_str(),
             s.revision,
             s.class,
             s.word_count,
-            s.independence_group
+            s.longest_word_chars,
+            s.declared_group,
+            s.candidate_adjusted_group
         );
     }
     println!("pairs:");
@@ -138,6 +148,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             CopySearch::SameAccount => "same account".to_owned(),
             CopySearch::Complete => format!("{} copy candidates", p.copy_candidates),
             CopySearch::Truncated => format!("{}+ copy candidates (truncated)", p.copy_candidates),
+            CopySearch::UnsegmentedText => {
+                format!(
+                    "{} copy candidates (unsegmented text, unreliable)",
+                    p.copy_candidates
+                )
+            }
             CopySearch::Unavailable => "copy search unavailable".to_owned(),
         };
         println!("  {}-{}: {}; {}", p.a, p.b, measure(p.overlap), copy);
@@ -154,8 +170,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
     }
     println!(
-        "{} accounts, at most {} independence groups; limitations: {:?}",
-        result.account_count, result.independence_group_upper_bound, result.limitations
+        "{} accounts; reported groups: {} declared (upper bound if declarations hold), \
+         {} candidate-adjusted (not a bound); limitations: {:?}",
+        result.account_count,
+        result.declared.reported_group_count,
+        result.candidate_adjusted.reported_group_count,
+        result.limitations
     );
     eprintln!("compared in {elapsed:?}");
     Ok(())

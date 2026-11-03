@@ -1,12 +1,14 @@
-//! Synthetic accounts (all `AccountOrigin::Simulated`) establish the #138 kernel
-//! contract: copied wording lowers the independent-source count, conflicting
-//! variants and omissions are preserved, drift is reported per revision and the
-//! method is printed. They are not measured performance on real accounts.
+//! Synthetic fixture texts stand in for reported accounts to establish the #138
+//! kernel contract: copied wording lowers only the candidate-adjusted count, a
+//! dismissal restores it, conflicting variants and omissions are preserved,
+//! drift is reported per revision, simulated support is not counted as reported,
+//! unsegmented text is not presented as a complete copy search, and the method
+//! is printed. They are not measured performance on real accounts.
 use oia_analysis::statement_comparison::{
-    AspectStatus, CodedValue, ComparisonError, ComparisonParameters, ComparisonRequest, CopySearch,
-    DependencyReason, DetailAssertion, ExplanationExposure, Limitation, METHOD_ID, OverlapMeasure,
-    Representative, SourceClass, StatementSource, StopReason, TextCapture, TextCoverage,
-    compare_statements,
+    AspectStatus, CandidateDismissal, CodedValue, ComparisonError, ComparisonParameters,
+    ComparisonRequest, CopySearch, DependencyReason, DetailAssertion, ExplanationExposure,
+    Limitation, METHOD_ID, OverlapMeasure, Representative, SourceClass, StatementSource,
+    StopReason, TextCapture, TextCoverage, compare_statements,
 };
 use oia_domain::witness::AccountOrigin;
 use oia_domain::{ActorId, OpaqueId, VersionId};
@@ -123,7 +125,7 @@ fn source<'a>(
         revision,
         version: VersionId::new(format!("{account}-r{revision}"))?,
         class,
-        origin: AccountOrigin::Simulated,
+        origin: AccountOrigin::Reported,
         exposure,
         attribution: "Synthetic #138 fixture",
         text,
@@ -199,6 +201,7 @@ fn sources(f: &Fixture) -> Result<Vec<StatementSource<'_>>, Box<dyn Error>> {
 fn request<'a>(
     sources: &'a [StatementSource<'a>],
     representative: Representative,
+    dismissals: &'a [CandidateDismissal<'a>],
 ) -> Result<ComparisonRequest<'a>, Box<dyn Error>> {
     Ok(ComparisonRequest {
         coding_version: VersionId::new("coding-scheme-v1")?,
@@ -208,6 +211,7 @@ fn request<'a>(
             ..ComparisonParameters::default()
         },
         sources,
+        dismissals,
     })
 }
 
@@ -216,16 +220,27 @@ fn copied_wording_lowers_independence_and_variants_omissions_and_drift_stay_visi
 -> Result<(), Box<dyn Error>> {
     let f = fixture()?;
     let sources = sources(&f)?;
-    let req = request(&sources, Representative::Latest)?;
+    let req = request(&sources, Representative::Latest, &[])?;
     let result = compare_statements(&req, || Ok(()))?;
 
     assert_eq!(result.method.id, METHOD_ID);
     assert!(result.method.overlap_caveat.contains("not a probability"));
-    assert!(result.contains_simulated);
+    assert!(
+        result
+            .method
+            .candidate_groups_caveat
+            .contains("not a bound")
+    );
+    assert!(!result.contains_simulated);
 
-    // News copied by witness-c; news declares it draws on the police report.
-    assert_eq!(result.account_count, 5);
-    assert_eq!(result.independence_group_upper_bound, 3);
+    // News declares it draws on the police report; witness-c copies the news.
+    // Only the candidate-adjusted grouping merges the copy.
+    assert_eq!(
+        (result.account_count, result.reported_account_count),
+        (5, 5)
+    );
+    assert_eq!(result.declared.reported_group_count, 4);
+    assert_eq!(result.candidate_adjusted.reported_group_count, 3);
     let [copy] = result.copy_candidates.as_slice() else {
         return Err("expected exactly one copy candidate".into());
     };
@@ -234,7 +249,8 @@ fn copied_wording_lowers_independence_and_variants_omissions_and_drift_stay_visi
     assert_eq!(&NEWS[copy.a_range.clone()], copy.a_text);
     assert_eq!(&COPIED[copy.b_range.clone()], copy.b_text);
     assert!(copy.a_text.starts_with("Residents reported"));
-    let news_group = &result.groups[result.sources[0].independence_group];
+    assert_eq!(copy.dismissal, None);
+    let news_group = &result.candidate_adjusted.groups[result.sources[0].candidate_adjusted_group];
     assert_eq!(news_group.accounts.len(), 3);
     assert!(
         news_group
@@ -268,15 +284,13 @@ fn copied_wording_lowers_independence_and_variants_omissions_and_drift_stay_visi
             .find(|a| a.aspect == key)
             .ok_or("aspect")
     };
-    // Location: all five accounts, but only three independence groups.
+    // Location: five accounts, four declared groups, three after the copy.
     let location = aspect("location")?;
     assert_eq!(location.status, AspectStatus::Converging);
+    let v = &location.variants[0];
     assert_eq!(
-        (
-            location.variants[0].accounts,
-            location.variants[0].independence_groups
-        ),
-        (5, 3)
+        (v.accounts, v.declared_groups, v.candidate_adjusted_groups),
+        (5, 4, 3)
     );
     // Motion appears only in the news report and its copy.
     assert_eq!(
@@ -292,9 +306,16 @@ fn copied_wording_lowers_independence_and_variants_omissions_and_drift_stay_visi
     let values: Vec<_> = colour
         .variants
         .iter()
-        .map(|v| (v.value, v.accounts, v.independence_groups))
+        .map(|v| {
+            (
+                v.value,
+                v.accounts,
+                v.declared_groups,
+                v.candidate_adjusted_groups,
+            )
+        })
         .collect();
-    assert_eq!(values, [("orange", 3, 2), ("red", 1, 1)]);
+    assert_eq!(values, [("orange", 3, 3, 2), ("red", 1, 1, 1)]);
     assert_eq!(colour.stated_unknown_by, [5]);
     assert!(colour.not_coded_in.is_empty());
     // Police never mention sound: an omission in a partial text, not silence.
@@ -349,8 +370,31 @@ fn copied_wording_lowers_independence_and_variants_omissions_and_drift_stay_visi
     assert!(result.is_partial());
     assert_eq!(result.limitations, [Limitation::TextPartial { source: 5 }]);
 
+    // A reviewer dismisses the candidate (say, both quote one public notice): it
+    // stays listed but no longer merges groups, so motion now converges.
+    let dismissal = [CandidateDismissal {
+        a_version: VersionId::new("witness-c-r1")?,
+        a_range: copy.b_range.clone(),
+        b_version: VersionId::new("news-1-r1")?,
+        b_range: copy.a_range.clone(),
+        reviewed_by: ActorId::new("reviewer-fixture")?,
+        reason: "both quote the same public appeal",
+    }];
+    let dismissed = compare_statements(
+        &request(&sources, Representative::Latest, &dismissal)?,
+        || Ok(()),
+    )?;
+    assert_eq!(dismissed.copy_candidates[0].dismissal, Some(0));
+    assert_eq!(dismissed.candidate_adjusted.reported_group_count, 4);
+    let motion = dismissed
+        .aspects
+        .iter()
+        .find(|a| a.aspect == "motion")
+        .ok_or("aspect")?;
+    assert_eq!(motion.status, AspectStatus::Converging);
+
     // The initial account is selectable; colour then has one variant across groups.
-    let initial = compare_statements(&request(&sources, Representative::Initial)?, || Ok(()))?;
+    let initial = compare_statements(&request(&sources, Representative::Initial, &[])?, || Ok(()))?;
     let colour = initial
         .aspects
         .iter()
@@ -373,7 +417,21 @@ fn malformed_citations_and_cancellation_return_no_result() -> Result<(), Box<dyn
     sources[4].text = TextCapture::Complete("é orange");
     sources[4].assertions = &accented;
     assert_eq!(
-        compare_statements(&request(&sources, Representative::Latest)?, || Ok(())),
+        compare_statements(&request(&sources, Representative::Latest, &[])?, || Ok(())),
+        Err(ComparisonError::InvalidWording {
+            source: 4,
+            assertion: 0
+        })
+    );
+    // A whitespace-only citation is refused as coded wording.
+    let blank = [DetailAssertion {
+        aspect: "colour",
+        value: CodedValue::Reported("orange"),
+        wording: 2..3,
+    }];
+    sources[4].assertions = &blank;
+    assert_eq!(
+        compare_statements(&request(&sources, Representative::Latest, &[])?, || Ok(())),
         Err(ComparisonError::InvalidWording {
             source: 4,
             assertion: 0
@@ -384,7 +442,7 @@ fn malformed_citations_and_cancellation_return_no_result() -> Result<(), Box<dyn
         reason: "restricted after retrieval",
     };
     assert_eq!(
-        compare_statements(&request(&sources, Representative::Latest)?, || Ok(())),
+        compare_statements(&request(&sources, Representative::Latest, &[])?, || Ok(())),
         Err(ComparisonError::WordingWithoutText {
             source: 4,
             assertion: 0
@@ -392,10 +450,54 @@ fn malformed_citations_and_cancellation_return_no_result() -> Result<(), Box<dyn
     );
     let sources = self::sources(&f)?;
     assert_eq!(
-        compare_statements(&request(&sources, Representative::Latest)?, || Err(
+        compare_statements(&request(&sources, Representative::Latest, &[])?, || Err(
             StopReason::Cancelled
         )),
         Err(ComparisonError::Stopped(StopReason::Cancelled))
     );
+    Ok(())
+}
+
+#[test]
+fn simulated_support_and_unsegmented_text_are_not_presented_as_corroboration()
+-> Result<(), Box<dyn Error>> {
+    let f = fixture()?;
+    let mut sources = sources(&f)?;
+    // A simulated police report: the news report declares it draws only on it,
+    // so neither counts as reported support.
+    sources[5].origin = AccountOrigin::Simulated;
+    let result = compare_statements(&request(&sources, Representative::Latest, &[])?, || Ok(()))?;
+    assert!(result.contains_simulated);
+    assert_eq!(result.reported_account_count, 3);
+    assert!(!result.sources[0].counts_as_reported);
+    assert_eq!(result.declared.reported_group_count, 3);
+    let location = result
+        .aspects
+        .iter()
+        .find(|a| a.aspect == "location")
+        .ok_or("aspect")?;
+    let v = &location.variants[0];
+    assert_eq!(
+        (v.accounts, v.reported_accounts, v.simulated_accounts),
+        (5, 3, 1)
+    );
+
+    // Identical text without word separators: not a silent complete miss.
+    const HAN: &str = "\u{76ee}\u{51fb}\u{8005}\u{8bf4}\u{4ed6}\u{5728}\u{6c34}\u{5e93}\u{4e0a}\u{7a7a}\u{770b}\u{5230}\u{4e00}\u{4e2a}\u{6a59}\u{8272}\u{7684}\u{5149}\u{70b9}\u{9759}\u{6b62}\u{4e0d}\u{52a8}";
+    let mut pair = sources[1..3].to_vec();
+    pair[0].text = TextCapture::Complete(HAN);
+    pair[1].text = TextCapture::Complete(HAN);
+    pair[0].assertions = &[];
+    pair[1].assertions = &[];
+    let result = compare_statements(&request(&pair, Representative::Latest, &[])?, || Ok(()))?;
+    assert!(result.is_partial());
+    assert!(
+        result
+            .limitations
+            .iter()
+            .any(|l| matches!(l, Limitation::UnsegmentedText { source: 0, .. }))
+    );
+    assert_eq!(result.pairs[0].copy_search, CopySearch::UnsegmentedText);
+    assert_eq!(result.pairs[0].overlap, OverlapMeasure::TooShort);
     Ok(())
 }

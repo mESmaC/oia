@@ -52,39 +52,53 @@ The `oia_analysis::space_imagery` module enforces six analytical and evidence in
    Without raster pixel detectors or pinned empirical evidence, status is reported as `RasterDetectorNotPerformed` and
    the candidate collection remains strictly empty. No synthetic detections, placeholder candidates, or uncalibrated anomaly
    scores are fabricated.
-6. **Multi-Source Globe Composite Stitching & De-Censoring (`GEO-02`, `GEO-04`, `SPACE-01`, `SPACE-02`, `MEDIA-02`, `MEDIA-03`, `FIELD-03`, `A04`, `A05`):**
-   `plan_globe_composite` synthesizes gridded globe composites across heterogeneous public tiers (`CompositeSourcePlatform`):
+6. **Multi-Source Globe Composite Planning & Unredacted Source Selection (`GEO-02`, `GEO-04`, `SPACE-01`, `SPACE-02`, `MEDIA-02`, `MEDIA-03`, `FIELD-03`, `A04`, `A05`):**
+   `plan_globe_composite` produces a metadata composite plan across heterogeneous public tiers (`CompositeSourcePlatform`):
    - **Orbital Earth Observation (`SatelliteEarthObservation`):** Global open baselines (ESA Copernicus Sentinel-2 10 m,
      USGS/NASA Landsat-8/9 15 m pansharpened / 30 m multispectral, Planet NICFI 4.77 m tropical mosaics, Maxar/Capella/Umbra
      Open Data 0.30–0.50 m event releases).
-   - **Space-Station Crew & Handheld Frames (`SpacecraftHandheldOrCrewFrame`):** Uncensored NASA Gateway to Astronaut
-     Photography of Earth (ISS crew Nikon raw frames down to ~1.5–5 m native GSD).
+   - **Space-Station Crew & Handheld Frames (`SpacecraftHandheldOrCrewFrame`):** NASA Gateway to Astronaut
+     Photography of Earth (ISS crew handheld camera frames down to ~1.5–5 m native GSD when orthorectified against a DEM).
    - **National & Regional Aerial Orthophotos (`AerialOrthophoto`):** Public photogrammetric surveys (USGS NAIP / 3DEP
      0.07–0.60 m, Swisstopo SWISSIMAGE 0.10 m, IGN France BD ORTHO 0.15–0.20 m, BKG Germany DOP, PDOK Netherlands, LINZ NZ).
    - **Calibrated UAV / Drone Orthomosaics (`CalibratedUavOrDroneOrtho`):** OpenAerialMap community photogrammetry (0.02–0.10 m).
    - **3D-Posed Ground / Street Frames (`CalibratedGroundOrStreetFrame`):** Mapillary, Panoramax, and KartaView street-level
-     or field frames with calibrated 6-DoF pose intersected with terrain.
+     or field frames with calibrated 6-DoF pose intersected with an orthometric DEM.
 
-   To produce an unblurred, unedited composite at the finest verifiable optical resolution, `plan_globe_composite` enforces:
-   - **Localized De-Censoring & Cloud Repair (`LocalizedPatchDefect`, `PatchIntegrityState`):** When a high-resolution
-     domestic aerial orthophoto contains a statutory blur/pixelation polygon (`DeliberatelyBlurredOrRedacted`), a cloud
-     shadow (`ObscuredByCloudShadowOrSmoke`), or a sensor wedge gap (`SensorSwathGapOrArtifact`) over specific grid cells,
-     only the affected cells are demoted and replaced by the sharpest unedited satellite, ISS crew, or UAV pass covering
-     those cells (`repaired_defect_patch_ids`), while surrounding crisp aerial cells remain intact.
-   - **Upsampling Defense (`effective_verifiable_gsd_m`):** Effective optical resolution is computed as
-     $\max(\text{native\_gsd\_m}, \text{served\_grid\_spacing\_m})$ so a 10 m satellite scene bicubic-upsampled onto a
-     0.05 m tile pyramid never outranks genuine 0.15 m or 0.50 m native pixels.
-   - **Strict Epistemic Filtering:** Outreach renderings (`OutreachOrSimulatedPresentation`), generative AI super-resolution
+   **Explicit Scope Exclusions:**
+   - **No Pixel Restoration or Synthesis:** No deblurring, super-resolution, or inpainting of redacted or low-resolution
+     patches is ever performed.
+   - **No Restricted or Credentialed Access:** No restricted, credentialed, or higher-tier access requests are modeled or issued;
+     planning operates strictly over publicly available open-archive metadata.
+
+   When selecting per-cell source assignments at the finest verifiable optical resolution, `plan_globe_composite` enforces:
+   - **Localized Unredacted & Cloud-Free Source Selection (`LocalizedPatchDefect`, `PatchIntegrityState`):** Every applicable
+     defect overlapping a grid cell is preserved simultaneously (`applicable_cell_states`) and all coarsening floors are applied
+     independently. When a high-resolution aerial orthophoto contains a statutory blur/pixelation polygon
+     (`DeliberatelyBlurredOrRedacted`), a cloud shadow (`ObscuredByCloudShadowOrSmoke`), or a sensor wedge gap
+     (`SensorSwathGapOrArtifact`) over specific grid cells, only the affected cells are demoted and filled from an alternate
+     unedited satellite, ISS crew, or UAV pass (`bypassed_degraded_patch_ids`, counted separately in
+     `cells_filled_from_alternate_optical_source` and `cells_filled_from_radar_over_degraded_source`), while surrounding crisp
+     aerial cells remain intact.
+   - **Upsampling Defense (`effective_verifiable_gsd_m`):** Effective optical resolution is computed across all applicable cell
+     states as $\max(\text{native\_gsd\_m}, \text{served\_grid\_spacing\_m}, \text{coarse\_effective\_gsd\_m})$ so a 10 m
+     satellite scene bicubic-upsampled onto a 0.05 m tile pyramid never outranks genuine 0.15 m or 0.50 m native pixels, and
+     an upsampled patch without a measured cloud fraction (`measured_cloud_or_haze_fraction: None`) is never assumed cloud-free.
+   - **Strict Epistemic, Spectral & Geometric Filtering:** Spectral regime vs. radiometric class mismatches
+     (`InvalidRadiometricModality`), outreach renderings (`OutreachOrSimulatedPresentation`), generative AI super-resolution
      or inpainting (`PredictiveOrInpaintedContent`), uncalibrated manual placements (`UncalibratedSpatialCorrespondence`),
-     oblique views lacking DEM orthorectification (`MissingTerrainOrthorectificationForObliqueView`), and partial cell
-     footprints (`InsufficientCellFootprintCoverage`) are rejected with auditable `RejectedCandidateReceipt` records.
+     platform-incompatible correspondence methods (`IncompatiblePlatformCorrespondence`), oblique/crew/street frames lacking
+     orthometric DEM terrain rectification (`MissingTerrainOrthorectificationForObliqueView`), and partial cell footprints
+     (`InsufficientCellFootprintCoverage`) are rejected with bounded, provenance-complete `RejectedCandidateReceipt` records.
    - **Modality Isolation (`AssignedModality`):** Active microwave SAR (`SyntheticApertureRadar`, e.g. Sentinel-1 / Capella
      Open Data) is disabled unless `allow_sar_cloud_penetration_fallback` is enabled, only fills cells lacking clean optical
      coverage, and is strictly labeled `AssignedModality::RadarBackscatterFallback` (`CompositeCellOutcome::AssignedRadarFallback`).
    - **Multi-Temporal Seam & Single-Instant Accounting (`CompositeSeamSegment`):** Every cell boundary between distinct
-     patches records a `CompositeSeamSegment` with checked `i64` capture timestamp delta (`capture_time_delta_ms`),
-     effective GSD ratio, and modality/platform crossing flags. `is_single_instant_observation` is `false` whenever multiple
-     passes are stitched or any cell remains uncovered.
+     patches (including the full-globe $\pm 180^\circ$ wraparound seam) records a `CompositeSeamSegment` with checked `i64`
+     capture timestamp delta (`capture_time_delta_ms`), effective GSD ratio, and modality/platform crossing flags.
+     `is_single_instant_observation` is `false` whenever multiple passes are stitched, any cell remains uncovered, or the
+     assigned patch is a multi-frame stack, `Level3GriddedComposite`/`Level4ModelAssimilated` product, or exceeds
+     `max_single_instant_duration_ms`.
 
 ## Multi-Criteria Catalog Filtering (`SPACE-01`, `GEO-02`)
 
@@ -113,7 +127,7 @@ cargo +1.99.0 test -p oia-analysis --test space_imagery_contract --locked
 cargo +1.99.0 run -p oia-analysis --example inspect-space-observations --locked
 ```
 
-Fourteen contract tests in `space_imagery_contract.rs` verify:
+Seventeen contract tests in `space_imagery_contract.rs` verify:
 1. `scientific_provenance_and_outreach_rendering_integrity`: FITS metadata preservation, Level-1B calibration, stacking
    residuals, outreach preview labeling, and strict outreach exclusion in queries.
 2. `mosaic_coverage_and_absence_without_seamless_illusion`: Evaluation of empty, partial, four-corner disconnected, and complete
@@ -136,12 +150,21 @@ Fourteen contract tests in `space_imagery_contract.rs` verify:
 11. `delay_float_to_i64_exclusive_bound_overflow`: Enforces strict exclusive $2^{63}$ upper boundary check on floating-point
     delay conversion before `i64` cast, preventing saturation overflow.
 12. `multi_source_composite_stitching_deblurs_repairs_clouds_and_defends_against_upsampling`: Verifies localized statutory
-    blur polygon and cloud repair across aerial orthophoto, commercial open-data satellite, and UAV orthomosaics while clamping
-    bicubic-upsampled grids to their true native GSD.
+    blur polygon and cloud alternate-source selection across aerial orthophoto, commercial open-data satellite, and UAV
+    orthomosaics while clamping bicubic-upsampled grids to their true native GSD.
 13. `composite_rejects_outreach_predictive_uncalibrated_and_isolates_sar_fallback`: Verifies rejection of outreach, AI-inpainted,
     uncalibrated ground, unrectified oblique, and partial-footprint candidates, plus explicit SAR backscatter modality isolation.
 14. `composite_antimeridian_grid_and_boundary_revalidation`: Verifies antimeridian-straddling composite grid cell generation,
     wrapped footprint containment, boundary revalidation of bypassed invalid defects, and checked seam timestamp delta overflow.
+15. `overlapping_blur_and_cloud_preserve_both_reasons_and_coarsening_floor`: Verifies that overlapping blur and cloud defects
+    preserve all defect reasons and coarsening floors simultaneously, and that `UpsampledBeyondNative` with unknown cloud cover
+    never enters `CleanOptical`.
+16. `spectral_modality_validation_and_oblique_crew_street_orthorectification`: Verifies rejection of SAR/optical spectral mismatches,
+    preservation of non-outreach preview color mapping, and enforcement of platform-compatible correspondence and orthometric DEMs
+    for crew and street frames.
+17. `single_instant_mosaic_history_total_order_permutations_and_receipt_budget`: Verifies `is_single_instant_observation = false`
+    for multi-day/multi-frame mosaics, deterministic winner selection across all 6 permutations of sub-nanometre GSD ties, and
+    bounded rejected-candidate receipts.
 
 ## Limitations and Remaining Scope
 

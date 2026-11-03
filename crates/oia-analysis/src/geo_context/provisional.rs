@@ -357,6 +357,70 @@ impl GeoBoundingBoxWgs84 {
         }
     }
 
+    /// True if `self` and `other` share a positive 2D interior area overlap exceeding `min_span_deg`
+    /// in both latitude and longitude (excluding zero-area edge or corner contact), respecting
+    /// antimeridian wrap on both bounding boxes.
+    #[must_use]
+    pub fn overlaps_interior(&self, other: &GeoBoundingBoxWgs84, min_span_deg: f64) -> bool {
+        let s = self.south_lat_deg.max(other.south_lat_deg);
+        let n = self.north_lat_deg.min(other.north_lat_deg);
+        if n - s <= min_span_deg {
+            return false;
+        }
+        let decompose = |w: f64, e: f64| -> [(f64, f64); 2] {
+            if w <= e {
+                [(w, e), (f64::NAN, f64::NAN)]
+            } else {
+                [(w, 180.0), (-180.0, e)]
+            }
+        };
+        let l1 = decompose(self.west_lon_deg, self.east_lon_deg);
+        let l2 = decompose(other.west_lon_deg, other.east_lon_deg);
+        for (w1, e1) in l1 {
+            if w1.is_nan() {
+                continue;
+            }
+            for (w2, e2) in l2 {
+                if w2.is_nan() {
+                    continue;
+                }
+                if e1.min(e2) - w1.max(w2) > min_span_deg {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// True if `self` completely covers `other` within `tol_deg` angular tolerance,
+    /// respecting antimeridian wrap on both bounding boxes.
+    #[must_use]
+    pub fn contains_box_with_tolerance(&self, other: &GeoBoundingBoxWgs84, tol_deg: f64) -> bool {
+        if self.south_lat_deg > other.south_lat_deg + tol_deg
+            || self.north_lat_deg + tol_deg < other.north_lat_deg
+        {
+            return false;
+        }
+        let decompose = |w: f64, e: f64| -> [(f64, f64); 2] {
+            if w <= e {
+                [(w, e), (f64::NAN, f64::NAN)]
+            } else {
+                [(w, 180.0), (-180.0, e)]
+            }
+        };
+        let outer_pieces = decompose(self.west_lon_deg, self.east_lon_deg);
+        let inner_pieces = decompose(other.west_lon_deg, other.east_lon_deg);
+        inner_pieces
+            .into_iter()
+            .filter(|(iw, _)| !iw.is_nan())
+            .all(|(iw, ie)| {
+                outer_pieces
+                    .into_iter()
+                    .filter(|(ow, _)| !ow.is_nan())
+                    .any(|(ow, oe)| ow <= iw + tol_deg && oe + tol_deg >= ie)
+            })
+    }
+
     /// Approximate center point of the bounding box.
     #[must_use]
     pub fn center_point(&self) -> GeoPointWgs84 {

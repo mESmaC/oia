@@ -214,8 +214,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         mosaic_report.footprints.len()
     );
 
-    // 6. Multi-Source Globe Composite Stitching & De-Censoring (GEO-02, GEO-04, SPACE-01, SPACE-02)
-    println!("\n=== Multi-Source Globe Composite Stitching & De-Censoring (GEO-02, GEO-04) ===");
+    // 6. Multi-Source Globe Composite Planning & Unredacted Source Selection (GEO-02, GEO-04, SPACE-01, SPACE-02)
+    println!(
+        "\n=== Multi-Source Globe Composite Planning & Unredacted Source Selection (GEO-02, GEO-04) ==="
+    );
     let composite_envelope = GeoBoundingBoxWgs84::new(43.0, 43.2, 5.0, 5.2)?;
 
     // Candidate A: National aerial orthophoto (0.15 m native GSD) covering full envelope,
@@ -230,11 +232,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         instrument_or_sensor: "Leica DMC-III".into(),
         footprint: composite_envelope,
         time_window: TimeWindow::new(1_718_000_000_000, 1_718_003_600_000)?,
-        native_gsd_m: 0.15,
+        native_gsd_m: Some(0.15),
         served_grid_spacing_m: 0.15,
         radiometric_class: SurfaceRadiometricClass::OpticalTrueColor,
         calibration_level: CalibrationLevel::Level3GriddedComposite,
-        color_mapping: ColorMapping::TrueColor,
+        stacking_history: None,
+        color_mapping: Some(ColorMapping::TrueColor),
         base_integrity: PatchIntegrityState::UneditedClearNative {
             cloud_or_haze_fraction: 0.01,
         },
@@ -256,7 +259,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             GeoBoundingBoxWgs84::new(43.0, 43.1, 5.0, 5.1)?,
             PatchIntegrityState::DeliberatelyBlurredOrRedacted {
                 reason: "Host-nation statutory aerial security redaction polygon".into(),
-                coarse_effective_gsd_m: 25.0,
+                coarse_effective_gsd_m: Some(25.0),
             },
         )?);
     aerial_ortho
@@ -269,7 +272,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         )?);
 
-    // Candidate B: Uncensored commercial open-data satellite pass (0.50 m native GSD)
+    // Candidate B: Unredacted commercial open-data satellite pass (0.50 m native GSD)
     // covering the entire envelope without blur or clouds.
     let open_sat_patch = CompositeCandidatePatch {
         patch_id: "patch:worldview:open_data_50cm".into(),
@@ -280,11 +283,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         instrument_or_sensor: "WV110".into(),
         footprint: composite_envelope,
         time_window: TimeWindow::new(1_719_000_000_000, 1_719_000_060_000)?,
-        native_gsd_m: 0.50,
+        native_gsd_m: Some(0.50),
         served_grid_spacing_m: 0.50,
         radiometric_class: SurfaceRadiometricClass::OpticalPansharpenedTrueColor,
         calibration_level: CalibrationLevel::Level2Geophysical,
-        color_mapping: ColorMapping::TrueColor,
+        stacking_history: None,
+        color_mapping: Some(ColorMapping::TrueColor),
         base_integrity: PatchIntegrityState::UneditedClearNative {
             cloud_or_haze_fraction: 0.02,
         },
@@ -310,11 +314,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         instrument_or_sensor: "DJI Zenmuse P1".into(),
         footprint: GeoBoundingBoxWgs84::new(43.0, 43.1, 5.1, 5.2)?,
         time_window: TimeWindow::new(1_719_500_000_000, 1_719_501_800_000)?,
-        native_gsd_m: 0.04,
+        native_gsd_m: Some(0.04),
         served_grid_spacing_m: 0.04,
         radiometric_class: SurfaceRadiometricClass::OpticalTrueColor,
         calibration_level: CalibrationLevel::Level3GriddedComposite,
-        color_mapping: ColorMapping::TrueColor,
+        stacking_history: None,
+        color_mapping: Some(ColorMapping::TrueColor),
         base_integrity: PatchIntegrityState::UneditedClearNative {
             cloud_or_haze_fraction: 0.0,
         },
@@ -340,24 +345,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let composite_plan = catalog.plan_globe_composite(&stitch_req, &limits, None)?;
     println!(
-        "Composite grid: {}x{} ({} clean optical, {} repaired/de-blurred, {} seams, single-instant: {})",
+        "Composite grid: {}x{} ({} clean optical, {} filled from alternate optical source, {} seams, single-instant: {})",
         composite_plan.grid_rows,
         composite_plan.grid_cols,
         composite_plan.clean_optical_cells_count,
-        composite_plan.deblurred_or_repaired_cells_count,
+        composite_plan.cells_filled_from_alternate_optical_source,
         composite_plan.seams.len(),
         composite_plan.is_single_instant_observation
     );
     for cell in &composite_plan.cells {
         if let Some(a) = cell.outcome.assignment() {
             println!(
-                " - Cell ({}, {}): Winner '{}' ({}) | Verifiable GSD: {:.2} m | Repaired defects: {:?}",
+                " - Cell ({}, {}): Winner '{}' ({}) | Verifiable GSD: {:?} m | Bypassed degraded patches: {:?}",
                 cell.row,
                 cell.col,
                 a.patch_id,
                 a.platform,
                 a.effective_verifiable_gsd_m,
-                a.repaired_defect_patch_ids
+                a.bypassed_degraded_patch_ids
             );
         }
     }

@@ -124,3 +124,48 @@ fn cleaned_copy_is_reinspected_and_never_replaces_an_existing_file()
     }
     Ok(())
 }
+
+// MEDIA-01/A10: the desktop adapter must keep the kernel's derivative labels,
+// retained source identity, uncertainty and non-destructive publication behavior.
+#[test]
+fn residual_export_preserves_labels_and_source() -> std::result::Result<(), Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("synthetic.jpg");
+    let original = decode(include_str!("fixtures/synthetic-texture-jpeg.hex"))?;
+    fs::write(&path, &original)?;
+    let control = Control::default();
+    let snapshot = open_file(&path, FileKind::Image, &control)?;
+    fs::write(&path, "later source revision")?;
+    let bytes = residual_map(&snapshot, &control)?;
+    let contains = |text: &str| bytes.windows(text.len()).any(|b| b == text.as_bytes());
+    assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+    assert!(contains(&snapshot.info.sha256));
+    assert!(contains(
+        "derived JPEG recompression residual; not an observation or authenticity verdict"
+    ));
+    assert!(contains(
+        "JPEG entropy completeness unverified; decoder recovery possible"
+    ));
+    assert!(contains("quality=90,gain=8"));
+    assert_eq!(snapshot.bytes(), original);
+    assert_eq!(fs::read_to_string(&path)?, "later source revision");
+    assert!(PreparedExport::prepare(&path, &bytes, &control).is_err());
+    let destination = dir.path().join("diagnostic.png");
+    PreparedExport::prepare(&destination, &bytes, &control)?.commit(&control)?;
+    assert_eq!(fs::read(&destination)?, bytes);
+    let png = open_file(&destination, FileKind::Image, &control)?;
+    assert_eq!(
+        residual_map(&png, &control).err().map(|e| e.code),
+        Some("forensic_unsupported")
+    );
+    let cancelled = dir.path().join("cancelled.png");
+    let staged = PreparedExport::prepare(&cancelled, &bytes, &control)?;
+    control.cancel();
+    assert!(staged.commit(&control).is_err());
+    assert!(!cancelled.exists());
+    assert_eq!(
+        residual_map(&snapshot, &control).err().map(|e| e.code),
+        Some("cancelled")
+    );
+    Ok(())
+}

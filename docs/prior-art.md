@@ -1,4 +1,4 @@
-# God's Eye View: selective reuse notes
+# Reference projects: selective reuse notes
 
 Status: initial source inspection supporting OIA's [product specification](spec.md) and [architecture](architecture.md). This is not a complete audit, a runtime validation, or a commitment to feature parity.
 
@@ -101,6 +101,14 @@ The checkout's `LICENSE` grants MIT terms for source code, with copyright attrib
 The same license explicitly excludes third-party datasets and assets. Examples include separately licensed submarine cable data, OSM-derived datasets, event imagery, and 3D models. Review `DATA_SOURCES.md`, `THIRD_PARTY_NOTICES.md`, and asset-specific notices before carrying material over. Reusing an integration does not grant permission to redistribute its upstream data.
 
 ## Candidate port workflow
+
+### Local News desk reference study (2026-11-03)
+
+For [#156](https://github.com/mESmaC/oia/issues/156), inspected World Monitor at `fb266469d595b4626e420236bbfa57fed4587263`, local checkout `C:\Users\engin\Desktop\New folder\worldmonitor`: `src/components/NewsPanel.ts`, `src/components/news/source-provenance.ts`, and `src/components/news/publisher-roster.ts`. Publisher rosters and inspectable provenance are useful design ideas; OIA does not adopt source-tier credibility scores, automatic independence claims, providers or datasets. World Monitor is AGPL-3.0; no source code/assets are copied into OIA.
+
+Also inspected God's Eye View `src/data/lifecycle.js` at the revision above for cancellation and unavailable-state distinctions (MIT, Bilawal Sidhu); no code/assets copied. The [local News desk](implementation/news-desk.md) independently implements OIA's session-only import/filter/inspection path. Neither reference app nor its tests were run for this slice. Synthetic demonstration material is newly authored and explicitly loaded, never passed off as live news.
+
+### Port checklist
 
 1. Choose one capability that supports an OIA investigation workflow.
 2. Record its source revision, relevant files, attribution, behavior, assumptions, and known limitations.

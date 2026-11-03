@@ -6,8 +6,10 @@
 <title>OIA — Local workbench</title>
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="globe.css">
+<link rel="stylesheet" href="news.css">
 <script src="globe.js" defer></script>
 <script src="witness.js" defer></script>
+<script src="news.js" defer></script>
 <script src="app.js" defer></script>
 </head>
 <body>
@@ -48,7 +50,7 @@
     <button type="button" data-instrument="witness"><svg viewBox="0 0 24 24"><path d="M4 5h16v12H9l-5 4z"/><path d="M8 9h8M8 13h5"/></svg><span>Witness</span></button>
     <button type="button" data-instrument="privacy"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg><span>Privacy</span></button>
     <hr>
-    <button type="button" aria-disabled="true" title="Not in this build"><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4z"/><path d="M8 10h8M8 14h5"/></svg><span>News</span></button>
+    <button type="button" data-instrument="news"><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4z"/><path d="M8 10h8M8 14h5"/></svg><span>News</span></button>
     <button type="button" data-instrument="globe" title="Ctrl+G"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c3 3 3 13 0 16M12 4c-3 3-3 13 0 16"/></svg><span>Globe</span></button>
     <button type="button" aria-disabled="true" title="Not in this build"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="13" height="10" rx="1"/><path d="M16 11l5-2v6l-5-2z"/></svg><span>Cameras</span></button>
     <button type="button" data-instrument="media" title="Ctrl+M"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="1"/><path d="M3 15l5-5 4 4 3-3 6 6"/><circle cx="16" cy="9" r="1.5"/></svg><span>Media</span></button>
@@ -85,6 +87,50 @@
         <h2 id="session-title">No source loaded</h2>
         <p id="session-prompt">Open a UTF-8 document or a PNG/JPEG image. Files stay in memory for this session.</p>
         <div class="tray" id="session-tray"></div>
+      </div>
+    </section>
+
+    <section class="view news-view" id="view-news" hidden aria-label="Local News desk">
+      <header class="news-heading">
+        <div><span class="k">News desk / local dossiers</span><h1 id="news-title">Inspect the reporting, not just the headline.</h1></div>
+        <span class="chip warn" id="news-origin">No dossier loaded</span>
+      </header>
+      <div class="news-actions">
+        <button type="button" class="btn primary" id="news-open">Import news JSON</button>
+        <button type="button" class="btn" id="news-example">Load synthetic example</button>
+        <button type="button" class="btn" id="news-clear" disabled>Unload dossier</button>
+        <button type="button" class="btn" id="news-cancel" disabled>Cancel operation</button>
+      </div>
+      <p class="note">Local, session-only inspection. No feeds are connected, no links are fetched, and imported declarations are not independently verified. Original dossier bytes remain in memory until replaced, unloaded or exit.</p>
+      <form id="news-filter" class="news-filter glass" aria-label="Filter imported news">
+        <label>Exact text<input type="search" id="news-query" maxlength="256" placeholder="Title, publisher or retained text" disabled></label>
+        <label>Declared region<select id="news-region" disabled><option value="">All regions, including unreported</option></select></label>
+        <label>Report category<select id="news-kind" disabled>
+          <option value="">All categories</option><option value="plan">Plan</option><option value="reported_observation">Reported observation</option>
+          <option value="allegation">Allegation</option><option value="arrest">Arrest</option><option value="charge">Charge</option>
+          <option value="judgment">Judgment</option><option value="attributed_statement">Attributed statement</option>
+        </select></label>
+        <button type="submit" class="btn" id="news-apply" disabled>Apply filters</button>
+        <button type="button" class="btn" id="news-reset" disabled>Reset filters</button>
+        <p class="note">Case-sensitive substring search, at most 256 UTF-8 bytes. File order, not chronological order. No automatic grouping or truth assessment.</p>
+      </form>
+      <p id="news-status" class="coverage" role="status">Import a dossier or explicitly load the fictional example. JSON schema and limits: docs/implementation/news-desk.md.</p>
+      <p id="news-pending" class="note" hidden>Filters changed; apply them to update the displayed results.</p>
+      <div id="news-counts" class="news-counts" aria-label="Visible news accounting"></div>
+      <p id="news-coverage" class="note"></p>
+      <div class="news-columns" id="news-loaded" hidden>
+        <section class="news-results glass" aria-labelledby="news-results-heading">
+          <h2 id="news-results-heading">Article versions</h2>
+          <p class="note" id="news-results-note"></p>
+          <ul id="news-list" class="news-list"></ul>
+        </section>
+        <article class="news-reader glass" aria-labelledby="news-reader-title">
+          <span class="k">Retained article text / read-only</span>
+          <h2 id="news-reader-title">Select an article version</h2>
+          <p id="news-reader-meta" class="note"></p>
+          <pre id="news-text" tabindex="0" aria-label="Selected article text"></pre>
+          <p class="note">Text is imported, not fetched or authenticated. Hidden controls are displayed as Unicode escapes. A text hash establishes byte identity only.</p>
+        </article>
       </div>
     </section>
 
@@ -295,6 +341,17 @@
         <section class="sec"><span class="k">Not in this build</span><p class="note">Persistent cases, PDF and OCR, remote document sources, AI summaries, and reports. Windows WebView2 may contact Microsoft on its own; this interface contacts only the imagery origin shown in the Globe inspector.</p></section>
       </div>
     </div>
+    <div class="ipanel" id="insp-news" hidden>
+      <div class="head"><span class="k">Inspect / news provenance</span><h2>Declarations, not endorsements</h2><span class="chip warn">Memory only / unreviewed</span></div>
+      <div class="body" tabindex="0">
+        <section class="sec"><span class="k">Selected version</span><dl class="kv" id="news-record"></dl></section>
+        <section class="sec"><span class="k">Dossier snapshot</span><dl class="kv" id="news-snapshot"></dl></section>
+        <section class="sec"><span class="k">Visible source roster / declared</span><ul id="news-sources" class="news-source-list"></ul></section>
+        <section class="sec"><span class="k">Accounting limits</span><p class="note">Publishers are declared source IDs, not independent witnesses. Shared origin IDs mark declared common sourcing, not proven independence. Proposed event IDs are grouping suggestions, not verified incidents. Neither article volume nor group count is an incident frequency or crime rate.</p></section>
+        <section class="sec"><span class="k">Time and corrections</span><p class="note">Publication, update and event times are separate imported strings; OIA does not normalize, sort or infer freshness from them. Correction, retraction and availability are imported declarations. Missing text or an unavailable page does not establish retraction. All versions stay retained; dependent-report invalidation and durable cases remain unimplemented.</p></section>
+      </div>
+    </div>
+
     <!-- Document inspector -->
     <div class="ipanel" id="insp-documents" hidden>
       <div class="head"><span class="k">Inspect · document</span><h2 id="insp-doc-name">No document</h2><div class="chips"><span class="chip">▣ Source</span><span class="chip">▮ Read-only snapshot</span><span class="chip" id="insp-doc-corpus" hidden></span></div></div>

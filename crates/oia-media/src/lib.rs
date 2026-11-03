@@ -15,6 +15,7 @@
 
 pub mod camera_anomaly;
 pub mod camera_frame_diff;
+pub mod frame_timing;
 pub mod recreation;
 
 /// Crate boundary marker for `oia-media` (`docs/architecture.md` §1.2, `#9`).

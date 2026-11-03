@@ -232,6 +232,55 @@ fn conflicting_accounts_and_imported_recreation_preserve_separation_and_labels()
     Ok(())
 }
 
+/// Risk addressed (`MEDIA-04`, PR #83 review): legitimate multilingual text and emoji must not be
+/// rejected, while invisible formatting/tag characters must remain visible to prompt reviewers and
+/// downstream model users rather than disappearing into exported text.
+#[test]
+fn preserves_joiners_and_visibly_escapes_invisible_formatting() -> Result<(), RecreationError> {
+    let limits = RecreationLimits::new(16, 8, 8, 4, 8, 8192, 16_384)?;
+    let multilingual = "Persian می\u{200C}خواهم; Devanagari क्\u{200D}ष; emoji 👨\u{200D}👩\u{200D}👧 and 🏳️\u{200D}🌈";
+    let mut joined_text = sample_prompt_input()?;
+    if let Some(first) = joined_text.assumptions.first_mut() {
+        first.assumption = multilingual.to_owned();
+    }
+    let exported =
+        export_recreation_prompt(&joined_text, limits, AssetExportPolicy::OmitWithNotice)?;
+    assert!(exported.portable_prompt_text().contains(multilingual));
+
+    for invisible in [
+        '\u{180E}',
+        '\u{200E}',
+        '\u{200F}',
+        '\u{3164}',
+        '\u{FFF9}',
+        '\u{FFFA}',
+        '\u{FFFB}',
+        '\u{E0000}',
+        '\u{E007F}',
+    ] {
+        let mut invisible_text = sample_prompt_input()?;
+        if let Some(first) = invisible_text.assumptions.first_mut() {
+            first.assumption = invisible.to_string();
+        }
+        let exported =
+            export_recreation_prompt(&invisible_text, limits, AssetExportPolicy::OmitWithNotice)?;
+        let text = exported.portable_prompt_text();
+        let expected = format!("assumption=\"{}\"", invisible.escape_unicode());
+        assert!(
+            text.contains(&expected),
+            "missing visible escape for U+{:04X}",
+            invisible as u32
+        );
+        assert!(
+            !text.contains(invisible),
+            "raw invisible character U+{:04X} was exported",
+            invisible as u32
+        );
+    }
+
+    Ok(())
+}
+
 /// Risk addressed (`MEDIA-04`, `AGENTS.md` §§2, 5): unattributed details, undeclared assumptions,
 /// asymmetric or single-variant conflict graphs, Unicode line-break/bidi/zero-width injection,
 /// quote-escaping in manifest fields, oversized `source_versions` lists, and output-budget limits

@@ -263,17 +263,30 @@ fn identity_calendar_and_delayed_quote_cutoffs() -> Result<(), Box<dyn Error>> {
     )?;
     assert_eq!(complete.selected(), Some(&quote));
     assert_eq!(complete.eligible_count(), 1);
-    let mut tied = quote.clone();
-    tied.version = version("quote-tied-version")?;
-    assert!(matches!(
-        select_quote_as_of(
-            &[quote.clone(), tied],
-            query(&instrument, &source, &unit, 1_200, &strict)?,
-            limits,
-            || Ok(()),
-        ),
-        Err(MarketError::InvalidQuote(_))
-    ));
+    let mut tied_one = make_quote(50)?;
+    tied_one.availability = available(60, 60);
+    let mut tied_two = tied_one.clone();
+    tied_two.version = version("quote-tied-two")?;
+    let mut later = make_quote(70)?;
+    later.version = version("quote-later")?;
+    later.availability = available(70, 70);
+    let permutations = [
+        vec![tied_one.clone(), tied_two.clone(), later.clone()],
+        vec![later.clone(), tied_one.clone(), tied_two.clone()],
+        vec![tied_one.clone(), later.clone(), tied_two.clone()],
+        vec![tied_two.clone(), later.clone(), tied_one.clone()],
+    ];
+    for records in permutations {
+        assert!(matches!(
+            select_quote_as_of(
+                &records,
+                query(&instrument, &source, &unit, 100, &strict)?,
+                limits,
+                || Ok(()),
+            ),
+            Err(MarketError::InvalidQuote(_))
+        ));
+    }
     let empty = select_quote_as_of(
         &[],
         query(&instrument, &source, &unit, 1_200, &strict)?,

@@ -71,8 +71,8 @@ observation at or before the cutoff. It returns the selected immutable quote,
 supplied/eligible counts, the cutoff instant, the complete cutoff mode, and
 per-version exclusion reasons. Empty supplied input is distinguishable from input
 whose records were all excluded. Selection is deterministic by observation time
-and public availability; exact ties between distinct versions are rejected rather
-than resolved by lexical ID. Mixed scopes and duplicate versions reject the
+and public availability; an exact tie between any two eligible versions is
+rejected independently of input order rather than resolved by lexical ID. Mixed scopes and duplicate versions reject the
 request rather than silently merging providers or units.
 
 ## Release vintages and disclosures

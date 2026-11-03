@@ -101,6 +101,7 @@ pub fn select_quote_as_of<'a>(
     validate_timestamp("quote cutoff_utc_ms", query.cutoff_utc_ms)?;
     validate_cutoff_mode(query.mode)?;
     let mut versions = BTreeSet::new();
+    let mut eligible_instants = BTreeSet::new();
     let mut exclusions = Vec::new();
     exclusions
         .try_reserve_exact(quotes.len())
@@ -136,6 +137,14 @@ pub fn select_quote_as_of<'a>(
                 reason,
             });
             continue;
+        }
+        if !eligible_instants.insert((
+            quote.observed_at_utc_ms,
+            quote.availability.public_available_at_utc_ms,
+        )) {
+            return Err(MarketError::InvalidQuote(
+                "multiple eligible quote versions share observation and public availability",
+            ));
         }
         eligible_count += 1;
         let replace = match selected {

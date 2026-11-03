@@ -56,7 +56,7 @@ The constructor requires finite values, `a > 0`, `mu > 0`, `0 <= e < 1`, and
 inputs must be within [-360, 360] degrees and are normalized to [0, 360).
 Propagation rejects an absolute element age above 36,525 days (100 Julian
 years) and an absolute unwrapped mean anomaly above 1e6 radians. At the phase
-bound, one `f64` ulp is about 2.3e-10 radians (0.035 m at 1 AU), so an already
+bound, one `f64` ulp is about 1.2e-10 radians (17 m at 1 AU), so an already
 rounded Kepler residual cannot disguise unbounded phase loss. Hyperbolic,
 parabolic, N-body, relativistic, collision, and TLE/SGP4 propagation are not
 implemented. In particular, fitting osculating elements at one instant does
@@ -84,8 +84,9 @@ Zero range, non-finite derived values, epoch/frame/center mismatches, and
 iteration exhaustion are typed errors rather than fallback measurements.
 
 `LightTimeLimits` requires 1–10,000 target evaluations and a finite positive
-tolerance in days. Range is limited to 1e9 AU. Every successful solve performs
-at least one update, so a coarse tolerance cannot return the initial `tau = 0`
+tolerance in days. A limit of one is accepted for budget-failure probing but
+cannot succeed. Range is limited to 1e9 AU. Every successful solve performs at
+least one update, so a coarse tolerance cannot return the initial `tau = 0`
 guess as a correction. A result contains reception/emission epochs, the
 corrected relative position, light time, range, iterations, absolute residual,
 and the caller-selected tolerance. A loose tolerance can therefore be inspected
@@ -96,8 +97,13 @@ an error of approximately `v_center * tau`; the original heliocentric Mars
 reference exhibited about 10.1 km from this effect. Tight reference checks use
 the solar-system barycenter instead.
 
+Within the 1900–2100 JD window, the emission-epoch bound actually limits a
+successful range to about 1.26e7 AU before the 1e9 AU outer range check binds.
+A reception at `MIN_JD_TDB` cannot accept any positive light time because its
+emission would precede the supported window.
+
 Absolute TDB epochs are `f64` Julian dates. Near 2024 their spacing is about
-43 microseconds, so subtracting absolute epochs cannot reproduce a much smaller
+40.2 microseconds, so subtracting absolute epochs cannot reproduce a much smaller
 light-time tolerance exactly. Retain the returned duration for fine timing.
 Higher-precision time-scale and uncertainty primitives belong to #12.
 
@@ -172,7 +178,12 @@ is about 18,231.3 km, and both cases converged in three target evaluations.
 | 2460409.291666667 | 0.25 km | 0.092063 km | 2.281e-12 day |
 
 The independent SSB check is tight enough to catch sub-kilometre regressions.
-These two close epochs still do not establish a general light-time accuracy
+The 92 m position residual comes from the two-body SSB sampler: the SSB is
+inertial but is not Mars's force center. Thus the position/range bound mostly
+checks that sampler, while the light-time-duration bound checks the kernel's
+retarded-epoch wiring. An independent cubic-Hermite sampler reviewed against
+the same rows gives sub-metre agreement, but that sampler is not part of this
+PR. These two close epochs still do not establish a general light-time accuracy
 bound, absolute planetary accuracy, or accuracy outside the explicitly
 supported numerical domains.
 

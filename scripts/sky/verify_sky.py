@@ -76,7 +76,8 @@ def verify(root: Path) -> list[str]:
             try:
                 case_date = dt.date.fromisoformat(stamp)
             except ValueError:
-                continue  # The timestamp shape check below reports malformed values.
+                errors.append(f"{case.get('id', 'case')}: invalid retrieval date {stamp!r}")
+                continue  # The timestamp shape check below also reports malformed values.
             if case_date != retrieved_on:
                 expected = provider_block(case_date)
                 for key in ("citation", "ssd_citation"):

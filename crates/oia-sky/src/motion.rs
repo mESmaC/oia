@@ -20,7 +20,7 @@ pub const MAX_JD_TDB: f64 = 2_488_069.5;
 /// Maximum absolute propagation age from the element epoch (100 Julian years).
 pub const MAX_ELEMENT_AGE_DAYS: f64 = 36_525.0;
 /// Maximum absolute unwrapped mean anomaly. At this bound, one `f64` ulp is
-/// about 2.3e-10 rad (0.035 m at 1 AU), rather than an unbounded phase error.
+/// about 1.2e-10 rad (17 m at 1 AU), rather than an unbounded phase error.
 pub const MAX_UNWRAPPED_MEAN_ANOMALY_RAD: f64 = 1.0e6;
 /// Largest accepted observer-to-target range for light-time correction.
 pub const MAX_LIGHT_TIME_RANGE_AU: f64 = 1.0e9;
@@ -178,7 +178,7 @@ fn metadata(field: MotionField, value: &str) -> Result<&str, MotionError> {
 /// conversion is performed. **Provisional pending #12:** this type will move to
 /// or be replaced by shared higher-precision time and uncertainty primitives.
 ///
-/// The absolute date is an `f64`; near 2024 its spacing is about 43 µs. Use a
+/// The absolute date is an `f64`; near 2024 its spacing is about 40.2 µs. Use a
 /// returned light-time duration rather than subtracting absolute epochs when
 /// microsecond-scale timing matters.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -405,6 +405,9 @@ pub struct EllipticalElements<'a> {
 }
 
 impl<'a> EllipticalElements<'a> {
+    /// Validates parameters and normalizes the bounded node, periapsis, and
+    /// mean-anomaly angles to [0, 360). `parameters()` returns those normalized
+    /// angles, not the original unnormalized representation.
     pub fn new(
         provenance: ElementProvenance<'a>,
         center: CenterId<'a>,
@@ -468,6 +471,7 @@ impl<'a> EllipticalElements<'a> {
         self.epoch
     }
 
+    /// Returns the validated parameters, with angles normalized to [0, 360).
     pub fn parameters(self) -> KeplerianParameters {
         self.parameters
     }
@@ -700,7 +704,9 @@ fn solve_kepler(
     })
 }
 
-/// Iteration bound and light-time residual tolerance, in days.
+/// Iteration bound and light-time residual tolerance, in days. Because every
+/// successful solve requires an initial evaluation and at least one update, a
+/// limit of one is accepted for budget-failure probing but cannot succeed.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LightTimeLimits {
     max_iterations: u32,

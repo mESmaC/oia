@@ -912,8 +912,58 @@ pub enum MarketReassessmentReason {
     BinaryLedgerReassessment(ReassessmentReason),
 }
 
+#[derive(Debug, Default)]
+struct ReassessmentSnapshotChain {
+    head: std::sync::OnceLock<Box<ReassessmentSnapshotNode>>,
+}
+
+#[derive(Debug)]
+struct ReassessmentSnapshotNode {
+    reasons: Vec<MarketReassessmentReason>,
+    next: std::sync::OnceLock<Box<ReassessmentSnapshotNode>>,
+}
+
+impl Clone for ReassessmentSnapshotChain {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for ReassessmentSnapshotChain {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for ReassessmentSnapshotChain {}
+
+impl ReassessmentSnapshotChain {
+    fn intern(&self, desired: Vec<MarketReassessmentReason>) -> &[MarketReassessmentReason] {
+        let mut current_lock = &self.head;
+        loop {
+            if let Some(node) = current_lock.get() {
+                if node.reasons == desired {
+                    return &node.reasons;
+                }
+                current_lock = &node.next;
+            } else {
+                let node = current_lock.get_or_init(|| {
+                    Box::new(ReassessmentSnapshotNode {
+                        reasons: desired.clone(),
+                        next: std::sync::OnceLock::new(),
+                    })
+                });
+                if node.reasons == desired {
+                    return &node.reasons;
+                }
+                current_lock = &node.next;
+            }
+        }
+    }
+}
+
 /// Immutable evaluation record over a cohort of market-effect forecast vintages (`MARKET-05`, `A14`).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub struct MarketEffectEvaluationRecord {
     evaluation_version: VersionId,
     binary_evaluation_version: Option<VersionId>,
@@ -934,6 +984,62 @@ pub struct MarketEffectEvaluationRecord {
     misses: Vec<MarketPredictionMissRecord>,
     needs_reassessment: bool,
     reassessment_reasons: Vec<MarketReassessmentReason>,
+    binary_reassessment_handle: Option<crate::issuance::SharedReassessmentHandle>,
+    reassessment_snapshot_chain: ReassessmentSnapshotChain,
+}
+
+impl Clone for MarketEffectEvaluationRecord {
+    fn clone(&self) -> Self {
+        let reasons = self.reassessment_reasons().to_vec();
+        let needs = !reasons.is_empty() || self.needs_reassessment;
+        Self {
+            evaluation_version: self.evaluation_version.clone(),
+            binary_evaluation_version: self.binary_evaluation_version.clone(),
+            evaluated_at_utc_ms: self.evaluated_at_utc_ms,
+            vintages: self.vintages.clone(),
+            quantitative_count: self.quantitative_count,
+            qualitative_or_insufficient_count: self.qualitative_or_insufficient_count,
+            resolved_scalar_count: self.resolved_scalar_count,
+            unresolved_scalar_count: self.unresolved_scalar_count,
+            invalidated_scalar_count: self.invalidated_scalar_count,
+            forecast_interval_covered_count: self.forecast_interval_covered_count,
+            baseline_interval_covered_count: self.baseline_interval_covered_count,
+            mean_brier_scores: self.mean_brier_scores,
+            mean_forecast_interval_score: self.mean_forecast_interval_score,
+            mean_baseline_interval_score: self.mean_baseline_interval_score,
+            mean_abs_error: self.mean_abs_error,
+            mean_baseline_abs_error: self.mean_baseline_abs_error,
+            misses: self.misses.clone(),
+            needs_reassessment: needs,
+            reassessment_reasons: reasons,
+            binary_reassessment_handle: self.binary_reassessment_handle.clone(),
+            reassessment_snapshot_chain: ReassessmentSnapshotChain::default(),
+        }
+    }
+}
+
+impl PartialEq for MarketEffectEvaluationRecord {
+    fn eq(&self, other: &Self) -> bool {
+        self.evaluation_version == other.evaluation_version
+            && self.binary_evaluation_version == other.binary_evaluation_version
+            && self.evaluated_at_utc_ms == other.evaluated_at_utc_ms
+            && self.vintages == other.vintages
+            && self.quantitative_count == other.quantitative_count
+            && self.qualitative_or_insufficient_count == other.qualitative_or_insufficient_count
+            && self.resolved_scalar_count == other.resolved_scalar_count
+            && self.unresolved_scalar_count == other.unresolved_scalar_count
+            && self.invalidated_scalar_count == other.invalidated_scalar_count
+            && self.forecast_interval_covered_count == other.forecast_interval_covered_count
+            && self.baseline_interval_covered_count == other.baseline_interval_covered_count
+            && self.mean_brier_scores == other.mean_brier_scores
+            && self.mean_forecast_interval_score == other.mean_forecast_interval_score
+            && self.mean_baseline_interval_score == other.mean_baseline_interval_score
+            && self.mean_abs_error == other.mean_abs_error
+            && self.mean_baseline_abs_error == other.mean_baseline_abs_error
+            && self.misses == other.misses
+            && self.needs_reassessment() == other.needs_reassessment()
+            && self.reassessment_reasons() == other.reassessment_reasons()
+    }
 }
 
 impl MarketEffectEvaluationRecord {
@@ -1030,36 +1136,83 @@ impl MarketEffectEvaluationRecord {
         &self.misses
     }
 
-    /// True if any pinned scalar outcome resolution or binary outcome resolution was superseded
-    /// by a later correction (`MARKET-05`, `A14`).
+    /// True if any pinned scalar outcome resolution or paired binary outcome resolution was
+    /// superseded by a later correction (`MARKET-05`, `A14`).
     #[must_use]
     pub fn needs_reassessment(&self) -> bool {
-        self.needs_reassessment
+        self.needs_reassessment || !self.reassessment_reasons().is_empty()
     }
 
-    /// Reassessment reasons accumulated on this evaluation record without mutating its scores.
+    /// Reassessment reasons accumulated on this evaluation record (including later corrections
+    /// recorded in the paired [`ForecastLedger`]) without mutating its historical scores.
     #[must_use]
     pub fn reassessment_reasons(&self) -> &[MarketReassessmentReason] {
+        if let Some(handle) = &self.binary_reassessment_handle {
+            let live_bin_reasons = handle.snapshot();
+            let has_unmerged = live_bin_reasons.iter().any(|r| {
+                !self.reassessment_reasons.contains(
+                    &MarketReassessmentReason::BinaryLedgerReassessment(r.clone()),
+                )
+            });
+            if has_unmerged {
+                let mut combined = self.reassessment_reasons.clone();
+                for r in live_bin_reasons {
+                    let wrapped = MarketReassessmentReason::BinaryLedgerReassessment(r);
+                    if !combined.contains(&wrapped) {
+                        combined.push(wrapped);
+                    }
+                }
+                return self.reassessment_snapshot_chain.intern(combined);
+            }
+        }
         &self.reassessment_reasons
+    }
+
+    fn materialize_live_binary_reassessments(&mut self) {
+        if let Some(handle) = &self.binary_reassessment_handle {
+            for r in handle.snapshot() {
+                let wrapped = MarketReassessmentReason::BinaryLedgerReassessment(r);
+                if !self.reassessment_reasons.contains(&wrapped) {
+                    self.reassessment_reasons.push(wrapped);
+                }
+            }
+            if !self.reassessment_reasons.is_empty() {
+                self.needs_reassessment = true;
+            }
+        }
     }
 }
 
-/// Dimensional basis for converting a forecast and realized market effect into basis points (`bps`)
-/// before deducting round-trip transaction frictions (`MARKET-05`, `A14`).
+/// Dimensional basis for converting a forecast and realized market effect into arithmetic
+/// basis points (`bps`) before deducting round-trip transaction frictions (`MARKET-05`, `A14`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SimulatedReturnBasis {
-    /// Effect unit is already denominated in basis points of return (`1.0` unit = `1.0` bps).
+    /// Effect unit is denominated in arithmetic basis points of return (`1.0` unit = `1.0` bps).
     /// Supported unit identifiers: `"unit:bps"`, `"unit:return_bps"`, `"unit:car_bps"`,
-    /// `"unit:excess_return_bps"`, `"unit:log_return_bps"`, `"bps"`, `"return_bps"`, `"car_bps"`.
+    /// `"unit:excess_return_bps"`, `"bps"`, `"return_bps"`, `"car_bps"`.
     BasisPoints,
-    /// Effect unit is denominated in percentage points of return (`1.0` unit = `100.0` bps).
+    /// Effect unit is denominated in logarithmic basis points (`r_log_bps = 10_000 * ln(P_1 / P_0)`),
+    /// converted to arithmetic basis points via `expm1(r_log_bps / 10_000) * 10_000` before
+    /// deducting arithmetic basis-point transaction costs.
+    /// Supported unit identifiers: `"unit:log_return_bps"`, `"log_return_bps"`.
+    LogBasisPoints,
+    /// Effect unit is denominated in arithmetic percentage points of return (`1.0` unit = `100.0` bps).
     /// Supported unit identifiers: `"unit:pct"`, `"unit:return_pct"`, `"unit:car_pct"`,
     /// `"unit:excess_return_pct"`, `"pct"`, `"return_pct"`, `"car_pct"`.
     PercentagePoints,
-    /// Effect unit is denominated in decimal/fractional return (`1.0` unit = `10_000.0` bps).
+    /// Effect unit is denominated in logarithmic percentage points (`r_log_pct = 100 * ln(P_1 / P_0)`),
+    /// converted to arithmetic basis points via `expm1(r_log_pct / 100) * 10_000`.
+    /// Supported unit identifiers: `"unit:log_return_pct"`, `"log_return_pct"`.
+    LogPercentagePoints,
+    /// Effect unit is denominated in arithmetic decimal/fractional return (`1.0` unit = `10_000.0` bps).
     /// Supported unit identifiers: `"unit:decimal_return"`, `"unit:fractional_return"`,
     /// `"decimal_return"`, `"fractional_return"`.
     DecimalReturn,
+    /// Effect unit is denominated in dimensionless natural logarithmic return (`r_log = ln(P_1 / P_0)`),
+    /// converted to arithmetic basis points via `expm1(r_log) * 10_000`.
+    /// Supported unit identifiers: `"unit:log_return"`, `"unit:log_decimal_return"`,
+    /// `"log_return"`, `"log_decimal_return"`.
+    LogDecimalReturn,
 }
 
 impl SimulatedReturnBasis {
@@ -1072,10 +1225,10 @@ impl SimulatedReturnBasis {
             | "unit:return_bps"
             | "unit:car_bps"
             | "unit:excess_return_bps"
-            | "unit:log_return_bps"
             | "bps"
             | "return_bps"
             | "car_bps" => Some(Self::BasisPoints),
+            "unit:log_return_bps" | "log_return_bps" => Some(Self::LogBasisPoints),
             "unit:pct"
             | "unit:return_pct"
             | "unit:car_pct"
@@ -1083,21 +1236,28 @@ impl SimulatedReturnBasis {
             | "pct"
             | "return_pct"
             | "car_pct" => Some(Self::PercentagePoints),
+            "unit:log_return_pct" | "log_return_pct" => Some(Self::LogPercentagePoints),
             "unit:decimal_return"
             | "unit:fractional_return"
             | "decimal_return"
             | "fractional_return" => Some(Self::DecimalReturn),
+            "unit:log_return" | "unit:log_decimal_return" | "log_return" | "log_decimal_return" => {
+                Some(Self::LogDecimalReturn)
+            }
             _ => None,
         }
     }
 
-    /// Multiplicative factor converting one unit in this return basis to basis points (`bps`).
+    /// Convert a realized value in `self` into arithmetic simple return in basis points (`bps`).
     #[must_use]
-    pub const fn bps_per_unit(self) -> f64 {
+    pub fn to_arithmetic_bps(self, value_in_unit: f64) -> f64 {
         match self {
-            Self::BasisPoints => 1.0,
-            Self::PercentagePoints => 100.0,
-            Self::DecimalReturn => 10_000.0,
+            Self::BasisPoints => value_in_unit,
+            Self::PercentagePoints => value_in_unit * 100.0,
+            Self::DecimalReturn => value_in_unit * 10_000.0,
+            Self::LogBasisPoints => (value_in_unit / 10_000.0).exp_m1() * 10_000.0,
+            Self::LogPercentagePoints => (value_in_unit / 100.0).exp_m1() * 10_000.0,
+            Self::LogDecimalReturn => value_in_unit.exp_m1() * 10_000.0,
         }
     }
 }
@@ -1386,6 +1546,7 @@ pub struct MarketEffectForecastBook {
     series_vintages: BTreeMap<OpaqueId, Vec<VersionId>>,
     scalar_resolutions: BTreeMap<VersionId, MarketScalarResolutionRecord>,
     scalar_resolution_history_by_id: BTreeMap<OpaqueId, Vec<VersionId>>,
+    scalar_resolution_alias_to_canonical: BTreeMap<OpaqueId, OpaqueId>,
     scalar_target_key_to_resolution_id: BTreeMap<(OpaqueId, OpaqueId, i64, i64), OpaqueId>,
     evaluations_by_version: BTreeMap<VersionId, MarketEffectEvaluationRecord>,
     evaluation_order: Vec<VersionId>,
@@ -1408,6 +1569,7 @@ impl MarketEffectForecastBook {
             series_vintages: BTreeMap::new(),
             scalar_resolutions: BTreeMap::new(),
             scalar_resolution_history_by_id: BTreeMap::new(),
+            scalar_resolution_alias_to_canonical: BTreeMap::new(),
             scalar_target_key_to_resolution_id: BTreeMap::new(),
             evaluations_by_version: BTreeMap::new(),
             evaluation_order: Vec::new(),
@@ -2554,11 +2716,14 @@ impl MarketEffectForecastBook {
             draft.horizon_end_utc_ms,
         );
 
-        let canonical_resolution_id = if let Some(existing_history) = self
-            .scalar_resolution_history_by_id
+        let canonical_resolution_id = if let Some(existing_canonical_id) = self
+            .scalar_resolution_alias_to_canonical
             .get(&draft.resolution_id)
         {
-            if let Some(first_ver) = existing_history.first()
+            if let Some(existing_history) = self
+                .scalar_resolution_history_by_id
+                .get(existing_canonical_id)
+                && let Some(first_ver) = existing_history.first()
                 && let Some(first_rec) = self.scalar_resolutions.get(first_ver)
                 && (first_rec.target_instrument_id != draft.target_instrument_id
                     || first_rec.effect_unit != draft.effect_unit
@@ -2569,7 +2734,7 @@ impl MarketEffectForecastBook {
                     "scalar resolution_id is already registered for a different target, unit, or horizon",
                 ));
             }
-            draft.resolution_id.clone()
+            existing_canonical_id.clone()
         } else if let Some(existing_res_id) =
             self.scalar_target_key_to_resolution_id.get(&target_key)
         {
@@ -2599,6 +2764,7 @@ impl MarketEffectForecastBook {
 
             let prior_versions: BTreeSet<&VersionId> = history.iter().collect();
             for eval in self.evaluations_by_version.values_mut() {
+                eval.materialize_live_binary_reassessments();
                 let mut pinned_prior_versions = Vec::new();
                 for v in &eval.vintages {
                     if let Some(pinned_ver) = &v.scalar_resolution_version
@@ -2640,19 +2806,15 @@ impl MarketEffectForecastBook {
         self.scalar_target_key_to_resolution_id
             .entry(target_key)
             .or_insert_with(|| canonical_resolution_id.clone());
-        self.scalar_resolution_history_by_id
+        self.scalar_resolution_alias_to_canonical
+            .insert(draft.resolution_id, canonical_resolution_id.clone());
+        self.scalar_resolution_alias_to_canonical
             .entry(canonical_resolution_id.clone())
+            .or_insert_with(|| canonical_resolution_id.clone());
+        self.scalar_resolution_history_by_id
+            .entry(canonical_resolution_id)
             .or_default()
             .push(ver_key.clone());
-        if draft.resolution_id != canonical_resolution_id {
-            let full_lineage = self
-                .scalar_resolution_history_by_id
-                .get(&canonical_resolution_id)
-                .cloned()
-                .unwrap_or_else(|| vec![ver_key.clone()]);
-            self.scalar_resolution_history_by_id
-                .insert(draft.resolution_id, full_lineage);
-        }
         self.scalar_resolutions.insert(ver_key.clone(), record);
         self.scalar_resolutions
             .get(&ver_key)
@@ -2700,13 +2862,13 @@ impl MarketEffectForecastBook {
                 id: evaluation_version.as_str().to_owned(),
             });
         }
-        if let Some(bin_eval_ver) = &binary_evaluation_version {
-            if *bin_eval_ver == evaluation_version || self.used_versions.contains(bin_eval_ver) {
-                return Err(MarketEffectError::DuplicateIdentifier {
-                    field: "binary_evaluation_version",
-                    id: bin_eval_ver.as_str().to_owned(),
-                });
-            }
+        if let Some(bin_eval_ver) = &binary_evaluation_version
+            && (*bin_eval_ver == evaluation_version || self.used_versions.contains(bin_eval_ver))
+        {
+            return Err(MarketEffectError::DuplicateIdentifier {
+                field: "binary_evaluation_version",
+                id: bin_eval_ver.as_str().to_owned(),
+            });
         }
         validate_timestamp("evaluated_at_utc_ms", evaluated_at_utc_ms)?;
         if !(1..=MAX_EVALUATION_ROWS).contains(&row_limit) {
@@ -3189,6 +3351,10 @@ impl MarketEffectForecastBook {
         let mean_baseline_abs_error = (resolved_scalar_count > 0)
             .then(|| baseline_abs_error_sum / resolved_scalar_count as f64);
 
+        let binary_reassessment_handle = binary_evaluation_version
+            .as_ref()
+            .and_then(|ver| ledger.shared_evaluation_reassessment_handle(ver));
+
         let record = MarketEffectEvaluationRecord {
             evaluation_version: evaluation_version.clone(),
             binary_evaluation_version,
@@ -3209,6 +3375,8 @@ impl MarketEffectForecastBook {
             misses,
             needs_reassessment: !reassessment_reasons.is_empty(),
             reassessment_reasons,
+            binary_reassessment_handle,
+            reassessment_snapshot_chain: ReassessmentSnapshotChain::default(),
         };
 
         self.used_versions.insert(evaluation_version.clone());
@@ -3226,8 +3394,8 @@ impl MarketEffectForecastBook {
     /// deductions (`MARKET-05`, `AGENTS.md` §6, `B2`).
     ///
     /// Requires a supported return `effect_unit` ([`SimulatedReturnBasis`]), converts the realized
-    /// scalar return into basis points before deducting round-trip friction, preserves the original
-    /// `effect_unit` and raw value, refuses zero-friction simulations, and guarantees
+    /// scalar return into arithmetic basis points before deducting round-trip friction, preserves
+    /// the original `effect_unit` and raw value, refuses zero-friction simulations, and guarantees
     /// `is_observed_market_return() == false` and `can_execute_orders() == false`.
     pub fn evaluate_simulated_strategy(
         &self,
@@ -3308,7 +3476,7 @@ impl MarketEffectForecastBook {
             ));
         }
 
-        let realized_return_bps = realized_value * return_basis.bps_per_unit();
+        let realized_return_bps = return_basis.to_arithmetic_bps(realized_value);
         if !realized_return_bps.is_finite() {
             return Err(MarketEffectError::InvalidStrategySimulation(
                 "realized return conversion to basis points overflowed finite bounds",
@@ -3373,20 +3541,57 @@ impl MarketEffectForecastBook {
         self.scalar_resolutions.get(version_id)
     }
 
-    /// Return all scalar resolution versions recorded for `resolution_id` in recording order (`B4`).
+    /// Return all scalar resolution versions recorded for `resolution_id` (or its canonical
+    /// target/unit/horizon series) in recording order (`B4`).
     #[must_use]
     pub fn scalar_resolution_lineage(
         &self,
         resolution_id: &OpaqueId,
     ) -> Vec<&MarketScalarResolutionRecord> {
-        self.scalar_resolution_history_by_id
+        let canonical_id = self
+            .scalar_resolution_alias_to_canonical
             .get(resolution_id)
+            .unwrap_or(resolution_id);
+        self.scalar_resolution_history_by_id
+            .get(canonical_id)
             .map(|vers| {
                 vers.iter()
                     .filter_map(|v| self.scalar_resolutions.get(v))
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Synchronize any reassessment flags from `ledger` into all recorded [`MarketEffectEvaluationRecord`]s
+    /// without altering their historical scores (`B4`).
+    pub fn sync_ledger_reassessments(&mut self, ledger: &ForecastLedger) {
+        for eval in self.evaluations_by_version.values_mut() {
+            eval.materialize_live_binary_reassessments();
+            if let Some(bin_eval_ver) = &eval.binary_evaluation_version
+                && let Some(bin_eval) = ledger.evaluation(bin_eval_ver)
+            {
+                for r in &bin_eval.reassessment_reasons {
+                    let wrapped = MarketReassessmentReason::BinaryLedgerReassessment(r.clone());
+                    if !eval.reassessment_reasons.contains(&wrapped) {
+                        eval.reassessment_reasons.push(wrapped);
+                    }
+                }
+                if bin_eval.needs_reassessment || !eval.reassessment_reasons.is_empty() {
+                    eval.needs_reassessment = true;
+                }
+            }
+        }
+    }
+
+    /// Synchronize paired binary reassessment state from `ledger` and look up a market-effect
+    /// evaluation run by its immutable [`VersionId`] (`B4`).
+    pub fn evaluation_with_ledger(
+        &mut self,
+        ledger: &ForecastLedger,
+        version_id: &VersionId,
+    ) -> Option<&MarketEffectEvaluationRecord> {
+        self.sync_ledger_reassessments(ledger);
+        self.evaluations_by_version.get(version_id)
     }
 
     /// Look up a market-effect evaluation run by its immutable [`VersionId`].

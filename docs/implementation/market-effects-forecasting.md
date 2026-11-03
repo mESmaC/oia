@@ -91,14 +91,18 @@ and compose with [`oia_forecast::issuance`](../../crates/oia-forecast/src/issuan
      validates scalar resolution target, series `effect_unit`, horizon, and
      chronology across both quantitative and qualitative vintages, retains
      resolution version and evidence lineage on `EvaluatedMarketVintageSummary`,
-     and flags existing evaluations with `MarketReassessmentReason` when a scalar
-     or binary resolution is superseded without mutating cached historical scores.
+     maintains a single canonical scalar resolution history across alias
+     `resolution_id`s for the same `(target, unit, horizon)`, and flags existing
+     evaluations with `MarketReassessmentReason` when a scalar or paired binary
+     resolution is superseded without mutating cached historical scores.
    - `evaluate_simulated_strategy` enforces a return-expressible `effect_unit`
-     via `SimulatedReturnBasis` (`BasisPoints`, `PercentagePoints`,
-     `DecimalReturn`), refuses non-return/level/volatility units, converts
-     realized returns into basis points before deducting strictly positive
-     round-trip transaction frictions (`commission_bps_per_side`,
-     `half_spread_bps_per_side`, `slippage_bps_per_side`), and guarantees
+     via `SimulatedReturnBasis` (`BasisPoints`, `LogBasisPoints`,
+     `PercentagePoints`, `LogPercentagePoints`, `DecimalReturn`,
+     `LogDecimalReturn`), refuses non-return/level/volatility units, converts
+     arithmetic and logarithmic returns (`expm1(r_log) * 10_000`) into arithmetic
+     basis points before deducting strictly positive round-trip transaction
+     frictions (`commission_bps_per_side`, `half_spread_bps_per_side`,
+     `slippage_bps_per_side`), and guarantees
      `is_observed_market_return() == false` and `can_execute_orders() == false`.
 
 ## Limitations and remaining `#44` scope

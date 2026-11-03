@@ -4,7 +4,7 @@ use oia_domain::{ActorId, OpaqueId, SchemaVersion, VersionId};
 use oia_forecast::interval::{IntervalError, IntervalSide, PredictionInterval};
 use oia_forecast::issuance::{
     CutoffAdmissibilityMode, CutoffSourceInput, ForecastLedger, IssuanceError, OutcomeDefinition,
-    OutcomeResolutionRecord, ResolutionState, RevisionRationale,
+    OutcomeResolutionRecord, ReassessmentReason, ResolutionState, RevisionRationale,
 };
 use oia_forecast::market_effects::{
     AssumptionSensitivityPoint, CatalystDomain, CatalystInputRecord, ConditionalBranchResponse,
@@ -923,7 +923,7 @@ fn preserves_mixed_qual_quant_revisions_return_basis_atomic_eval_and_scalar_prov
             observed_at_utc_ms: base_draft.horizon_end_utc_ms - 10_000,
         },
     })?;
-    let flagged_eval = book.evaluation(&eval_ver).unwrap();
+    let flagged_eval = book.evaluation(&eval_ver).ok_or("missing eval_ver")?;
     assert!(flagged_eval.needs_reassessment());
     assert_eq!(
         flagged_eval.reassessment_reasons(),
@@ -1042,7 +1042,7 @@ fn preserves_mixed_qual_quant_revisions_return_basis_atomic_eval_and_scalar_prov
     ));
 
     // Percentage return unit (unit:return_pct) converts -2.05% -> 205.0 bps gross -> 199.0 bps net after 6 bps friction.
-    let mut pct_draft = base_draft;
+    let mut pct_draft = base_draft.clone();
     pct_draft.forecast_id = OpaqueId::new("forecast:pct-return")?;
     pct_draft.version_id = VersionId::new("market-vintage:pct-v1")?;
     pct_draft.sensitivity_points[0].base_case_effect = -1.10;
@@ -1092,6 +1092,255 @@ fn preserves_mixed_qual_quant_revisions_return_basis_atomic_eval_and_scalar_prov
     assert!((pct_sim.gross_simulated_return_bps() - 205.0).abs() < 1e-12);
     assert!((pct_sim.round_trip_friction_deducted_bps() - 6.0).abs() < 1e-12);
     assert!((pct_sim.net_simulated_return_bps() - 199.0).abs() < 1e-12);
+
+    // Log return unit (unit:log_return_bps) converts 1000 log-bps via expm1(1000/10000)*10000 = 1051.7091807564764 bps gross.
+    let mut log_draft = base_draft.clone();
+    log_draft.forecast_id = OpaqueId::new("forecast:log-return")?;
+    log_draft.version_id = VersionId::new("market-vintage:log-v1")?;
+    log_draft.exposure_pathways[0].expected_direction = MarketDirection::Positive;
+    log_draft.sensitivity_points[0].base_case_effect = 800.0;
+    log_draft.sensitivity_points[0].low_case_effect = -50.0;
+    log_draft.sensitivity_points[0].high_case_effect = 1400.0;
+    if let MarketEffectPrediction::Quantitative(ref mut q) = log_draft.prediction {
+        q.effect_unit = OpaqueId::new("unit:log_return_bps")?;
+        q.expected_direction = MarketDirection::Positive;
+        q.point_estimate = 800.0;
+        q.prediction_interval = PredictionInterval::new(200.0, 1400.0, 0.80)?;
+        q.baseline_point_estimate = 50.0;
+        q.baseline_interval = PredictionInterval::new(-200.0, 300.0, 0.80)?;
+        q.outcome_definition.outcome_id = OpaqueId::new("outcome:log-test")?;
+    }
+    book.issue_market_effect_forecast(&mut ledger, log_draft.clone())?;
+    let log_res_ver = VersionId::new("resolution:log-v1")?;
+    book.record_scalar_resolution(MarketScalarResolutionDraft {
+        resolution_id: OpaqueId::new("res-series:log")?,
+        version_id: log_res_ver.clone(),
+        target_instrument_id: log_draft.target_instrument_id,
+        effect_unit: OpaqueId::new("unit:log_return_bps")?,
+        horizon_start_utc_ms: log_draft.horizon_start_utc_ms,
+        horizon_end_utc_ms: log_draft.horizon_end_utc_ms,
+        actor: ActorId::new("actor:eval")?,
+        recorded_at_utc_ms: log_draft.horizon_end_utc_ms + 60_000,
+        evidence_versions: vec![VersionId::new("source:market-close-log")?],
+        state: MarketScalarResolutionState::Resolved {
+            realized_value: 1000.0,
+            observed_at_utc_ms: log_draft.horizon_end_utc_ms - 10_000,
+        },
+    })?;
+    let log_sim = book.evaluate_simulated_strategy(
+        VersionId::new("sim:log-converted")?,
+        &log_draft.version_id,
+        &log_res_ver,
+        SimulatedFrictionConfig {
+            commission_bps_per_side: 1.0,
+            half_spread_bps_per_side: 1.0,
+            slippage_bps_per_side: 1.0,
+        },
+    )?;
+    let expected_arith_bps = (1000.0_f64 / 10_000.0_f64).exp_m1() * 10_000.0_f64;
+    assert_eq!(log_sim.return_basis(), SimulatedReturnBasis::LogBasisPoints);
+    assert!((log_sim.gross_simulated_return_bps() - expected_arith_bps).abs() < 1e-9);
+    assert!((log_sim.net_simulated_return_bps() - (expected_arith_bps - 6.0)).abs() < 1e-9);
+
+    // --- B4: Alias scalar resolution IDs share one canonical history without forking ---
+    let res_a = OpaqueId::new("res-series:alias-a")?;
+    let res_b = OpaqueId::new("res-series:alias-b")?;
+    let alias_target = OpaqueId::new("instrument:alias-target")?;
+    let alias_unit = OpaqueId::new("unit:car_bps")?;
+    let alias_v1 = VersionId::new("resolution:alias-v1")?;
+    let alias_v2 = VersionId::new("resolution:alias-v2")?;
+    let alias_v3 = VersionId::new("resolution:alias-v3")?;
+    let alias_v4 = VersionId::new("resolution:alias-v4")?;
+
+    let rec_a1 = book
+        .record_scalar_resolution(MarketScalarResolutionDraft {
+            resolution_id: res_a.clone(),
+            version_id: alias_v1.clone(),
+            target_instrument_id: alias_target.clone(),
+            effect_unit: alias_unit.clone(),
+            horizon_start_utc_ms: base_draft.horizon_start_utc_ms,
+            horizon_end_utc_ms: base_draft.horizon_end_utc_ms,
+            actor: ActorId::new("actor:eval")?,
+            recorded_at_utc_ms: base_draft.horizon_end_utc_ms + 10_000,
+            evidence_versions: vec![VersionId::new("source:alias-ev1")?],
+            state: MarketScalarResolutionState::Resolved {
+                realized_value: -100.0,
+                observed_at_utc_ms: base_draft.horizon_end_utc_ms - 5_000,
+            },
+        })?
+        .clone();
+    assert_eq!(rec_a1.supersedes_version(), None);
+
+    let rec_b2 = book
+        .record_scalar_resolution(MarketScalarResolutionDraft {
+            resolution_id: res_b.clone(),
+            version_id: alias_v2.clone(),
+            target_instrument_id: alias_target.clone(),
+            effect_unit: alias_unit.clone(),
+            horizon_start_utc_ms: base_draft.horizon_start_utc_ms,
+            horizon_end_utc_ms: base_draft.horizon_end_utc_ms,
+            actor: ActorId::new("actor:eval")?,
+            recorded_at_utc_ms: base_draft.horizon_end_utc_ms + 20_000,
+            evidence_versions: vec![VersionId::new("source:alias-ev2")?],
+            state: MarketScalarResolutionState::Resolved {
+                realized_value: -110.0,
+                observed_at_utc_ms: base_draft.horizon_end_utc_ms - 5_000,
+            },
+        })?
+        .clone();
+    assert_eq!(rec_b2.supersedes_version(), Some(&alias_v1));
+
+    let rec_b3 = book
+        .record_scalar_resolution(MarketScalarResolutionDraft {
+            resolution_id: res_b.clone(),
+            version_id: alias_v3.clone(),
+            target_instrument_id: alias_target.clone(),
+            effect_unit: alias_unit.clone(),
+            horizon_start_utc_ms: base_draft.horizon_start_utc_ms,
+            horizon_end_utc_ms: base_draft.horizon_end_utc_ms,
+            actor: ActorId::new("actor:eval")?,
+            recorded_at_utc_ms: base_draft.horizon_end_utc_ms + 30_000,
+            evidence_versions: vec![VersionId::new("source:alias-ev3")?],
+            state: MarketScalarResolutionState::Resolved {
+                realized_value: -120.0,
+                observed_at_utc_ms: base_draft.horizon_end_utc_ms - 5_000,
+            },
+        })?
+        .clone();
+    assert_eq!(rec_b3.supersedes_version(), Some(&alias_v2));
+
+    let rec_a4 = book
+        .record_scalar_resolution(MarketScalarResolutionDraft {
+            resolution_id: res_a.clone(),
+            version_id: alias_v4.clone(),
+            target_instrument_id: alias_target,
+            effect_unit: alias_unit,
+            horizon_start_utc_ms: base_draft.horizon_start_utc_ms,
+            horizon_end_utc_ms: base_draft.horizon_end_utc_ms,
+            actor: ActorId::new("actor:eval")?,
+            recorded_at_utc_ms: base_draft.horizon_end_utc_ms + 40_000,
+            evidence_versions: vec![VersionId::new("source:alias-ev4")?],
+            state: MarketScalarResolutionState::Resolved {
+                realized_value: -130.0,
+                observed_at_utc_ms: base_draft.horizon_end_utc_ms - 5_000,
+            },
+        })?
+        .clone();
+    assert_eq!(rec_a4.supersedes_version(), Some(&alias_v3));
+
+    let lineage_a: Vec<VersionId> = book
+        .scalar_resolution_lineage(&res_a)
+        .into_iter()
+        .map(|r| r.version_id().clone())
+        .collect();
+    let lineage_b: Vec<VersionId> = book
+        .scalar_resolution_lineage(&res_b)
+        .into_iter()
+        .map(|r| r.version_id().clone())
+        .collect();
+    assert_eq!(
+        lineage_a,
+        vec![alias_v1, alias_v2, alias_v3, alias_v4.clone()]
+    );
+    assert_eq!(lineage_a, lineage_b);
+
+    // --- B4: Later binary resolution correction in ForecastLedger flags already-saved market evaluation ---
+    let bin_corr_eval_ver = VersionId::new("eval:bin-corr-market-v1")?;
+    let bin_corr_ledger_eval_ver = VersionId::new("eval:bin-corr-ledger-v1")?;
+    assert!(matches!(
+        book.evaluate_market_effect_cohort(
+            &mut ledger,
+            bin_corr_eval_ver.clone(),
+            Some(bin_corr_ledger_eval_ver.clone()),
+            log_draft.horizon_end_utc_ms + 120_000,
+            &[MarketCohortEvaluationItem {
+                market_vintage_version: log_draft.version_id.clone(),
+                binary_resolution_version: None,
+                scalar_resolution_version: Some(log_res_ver.clone()),
+            }],
+            16,
+        ),
+        Err(MarketEffectError::InvalidEvaluationCohort(_))
+    ));
+
+    let log_bin_res_v1 = VersionId::new("resolution:log-bin-v1")?;
+    ledger.record_outcome_resolution(OutcomeResolutionRecord {
+        resolution_id: OpaqueId::new("res-series:log-bin")?,
+        version_id: log_bin_res_v1.clone(),
+        outcome_id: OpaqueId::new("outcome:log-test")?,
+        actor: ActorId::new("actor:eval")?,
+        recorded_at_utc_ms: log_draft.horizon_end_utc_ms + 60_000,
+        evidence_versions: vec![VersionId::new("source:log-bin-ev1")?],
+        state: ResolutionState::Resolved {
+            occurred: true,
+            observed_event_utc_ms: Some(log_draft.horizon_end_utc_ms - 10_000),
+        },
+        supersedes_version: None,
+        correction_rationale: None,
+    })?;
+    book.evaluate_market_effect_cohort(
+        &mut ledger,
+        bin_corr_eval_ver.clone(),
+        Some(bin_corr_ledger_eval_ver.clone()),
+        log_draft.horizon_end_utc_ms + 120_000,
+        &[MarketCohortEvaluationItem {
+            market_vintage_version: log_draft.version_id,
+            binary_resolution_version: Some(log_bin_res_v1.clone()),
+            scalar_resolution_version: Some(log_res_ver),
+        }],
+        16,
+    )?;
+    assert!(
+        !ledger
+            .evaluation(&bin_corr_ledger_eval_ver)
+            .ok_or("missing ledger eval")?
+            .needs_reassessment
+    );
+    assert!(
+        !book
+            .evaluation(&bin_corr_eval_ver)
+            .ok_or("missing market eval")?
+            .needs_reassessment()
+    );
+
+    let log_bin_res_v2 = VersionId::new("resolution:log-bin-v2")?;
+    ledger.record_outcome_resolution(OutcomeResolutionRecord {
+        resolution_id: OpaqueId::new("res-series:log-bin")?,
+        version_id: log_bin_res_v2.clone(),
+        outcome_id: OpaqueId::new("outcome:log-test")?,
+        actor: ActorId::new("actor:eval")?,
+        recorded_at_utc_ms: log_draft.horizon_end_utc_ms + 180_000,
+        evidence_versions: vec![VersionId::new("source:log-bin-ev2")?],
+        state: ResolutionState::Resolved {
+            occurred: false,
+            observed_event_utc_ms: None,
+        },
+        supersedes_version: Some(log_bin_res_v1.clone()),
+        correction_rationale: Some("Corrected binary event window audit.".to_owned()),
+    })?;
+    assert!(
+        ledger
+            .evaluation(&bin_corr_ledger_eval_ver)
+            .ok_or("missing ledger eval")?
+            .needs_reassessment
+    );
+    assert!(
+        book.evaluation(&bin_corr_eval_ver)
+            .ok_or("missing market eval")?
+            .needs_reassessment()
+    );
+    assert_eq!(
+        book.evaluation(&bin_corr_eval_ver)
+            .ok_or("missing market eval")?
+            .reassessment_reasons(),
+        &[MarketReassessmentReason::BinaryLedgerReassessment(
+            ReassessmentReason::OutcomeResolutionSuperseded {
+                outcome_id: OpaqueId::new("outcome:log-test")?,
+                previous_resolution_version: log_bin_res_v1,
+                new_resolution_version: log_bin_res_v2,
+            }
+        )]
+    );
 
     Ok(())
 }

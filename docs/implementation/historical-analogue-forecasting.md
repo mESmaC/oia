@@ -62,16 +62,18 @@ compose with [`oia_forecast::issuance`](../../crates/oia-forecast/src/issuance.r
      edit history. `AnalogueComparisonSet::apply_edit` and
      `AnalogueComparisonSet::re_retrieve_at_cutoff` record auditable
      `ComparisonSetEdit` entries (`IncludeEpisode`, `ExcludeEpisode`,
-     `AnnotateTransferLimits`, and `AdvanceCutoff`). Excluding a counterexample
-     retains the removed record in `excluded_entries` with its rationale and
-     increments `excluded_counterexample_count`.
+     `AnnotateTransferLimits`, and `AdvanceCutoff`), enforce monotonic edit
+     timestamps, and reserve every previously used comparison-set version
+     (including `initial_version_id`) so no version identifier can be reused.
+     Excluding a counterexample retains the removed record in `excluded_entries`
+     with its rationale and increments `excluded_counterexample_count`.
    - `EpisodeDependencyKind` (`IndependentEpisode`, `SharedCrisisOrCampaign`,
-     `PolicySpilloverOrRetaliation`, `SharedSourceLineageOnly`) assigns a
-     shared `independence_cluster_key` to related episodes, and any active
-     episodes declared as `IndependentEpisode` that cite the exact same outcome
-     evidence source version are automatically merged into a shared cluster key
-     (`shared-outcome-source:<version>`) so repeated sources or coordinated
-     waves cannot inflate `independent_cluster_count`.
+     `PolicySpilloverOrRetaliation`, `SharedSourceLineageOnly`) and shared
+     outcome evidence versions (`cited_outcome_evidence_versions`) are merged via
+     connected-component union-find across all active entries so transitive
+     shared-source chains and mixed-dependency episodes sharing an outcome
+     source or predecessor link always collapse into a single
+     `independence_cluster_key` and cannot inflate `independent_cluster_count`.
    - `PrecedentOutcomeDisposition::DocumentedNonResponse` represents verified
      observation windows where no action was taken, distinct from
      `CensoredOrIncompleteFollowUp`.
@@ -103,13 +105,15 @@ compose with [`oia_forecast::issuance`](../../crates/oia-forecast/src/issuance.r
 
 4. **`ForecastLedger` integration and timing evaluation (`FORECAST-04`, `A15`):**
    - `AnalogueComparisonSet::issue_forecast` bridges a validated comparison set
-     and `AnalogueForecastIssuanceSpec` into `ForecastLedger::issue_forecast`,
-     pinning `current_version_id` as the first element of
-     `ForecastDraft::comparison_set` followed by each active episode's
-     `VersionId`, and merging cutoff-admissible precedent sources with
-     `scenario_sources`. Quantitative issuance is refused when
-     `PredictionJustification` is `QualitativeScenarioOnly` or when history is
-     `SparseOrPoorlyTransferable` without an explicit
+     and `AnalogueForecastIssuanceSpec` into `ForecastLedger`, pinning
+     `current_version_id` as the first element of `ForecastDraft::comparison_set`
+     followed by each active episode's `VersionId`, merging cutoff-admissible
+     precedent sources with `scenario_sources`, and freezing an immutable
+     `IssuedAnalogueScenarioSnapshot` (`branches`, `indicators`,
+     `transferability`, and `justification`) onto
+     `ForecastVintageRecord::analogue_scenario`. Quantitative issuance is
+     refused when `PredictionJustification` is `QualitativeScenarioOnly` or when
+     history is `SparseOrPoorlyTransferable` without an explicit
      `sparse_history_override_rationale`.
    - `AnalogueComparisonSet::evaluate_resolution_timing` compares an observed
      resolution timestamp against the precedent `ElapsedTimeRangeMs`

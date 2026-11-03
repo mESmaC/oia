@@ -168,6 +168,9 @@ pub struct ForecastVintageRecord {
     pub assumptions: Vec<String>,
     pub predecessor_version: Option<VersionId>,
     pub revision_rationale: Option<RevisionRationale>,
+    /// Immutable conditional scenario and monitoring specification frozen at issuance when
+    /// issued via [`crate::analogues::AnalogueComparisonSet::issue_forecast`] (`FORECAST-03`, `FORECAST-04`, `A15`, `P1`).
+    pub analogue_scenario: Option<crate::analogues::IssuedAnalogueScenarioSnapshot>,
 }
 
 /// Outcome resolution state keeping resolved, unresolved/censored, and invalidated outcomes
@@ -960,6 +963,7 @@ impl ForecastLedger {
             assumptions: draft.assumptions,
             predecessor_version: draft.predecessor_version,
             revision_rationale: draft.revision_rationale,
+            analogue_scenario: None,
         };
 
         self.used_versions.insert(version_key.clone());
@@ -974,6 +978,25 @@ impl ForecastLedger {
                 version_id: version_key,
             },
         )
+    }
+
+    /// Issue an immutable forecast vintage with a frozen [`crate::analogues::IssuedAnalogueScenarioSnapshot`] (`FORECAST-03`, `FORECAST-04`, `A15`, `P1`).
+    pub(crate) fn issue_forecast_with_analogue_scenario(
+        &mut self,
+        draft: ForecastDraft,
+        analogue_scenario: crate::analogues::IssuedAnalogueScenarioSnapshot,
+    ) -> Result<&ForecastVintageRecord, IssuanceError> {
+        let ver_key = draft.version_id.clone();
+        self.issue_forecast(draft)?;
+        if let Some(record) = self.vintages_by_version.get_mut(&ver_key) {
+            record.analogue_scenario = Some(analogue_scenario);
+        }
+        self.vintages_by_version
+            .get(&ver_key)
+            .ok_or(IssuanceError::UnknownEvaluationReference {
+                kind: "forecast",
+                version_id: ver_key,
+            })
     }
 
     /// Record an independent outcome resolution version (`docs/architecture.md` §6.4).
@@ -1493,7 +1516,7 @@ impl ForecastLedger {
     ///
     /// Returns the list of issued forecast vintage [`VersionId`]s whose frozen `comparison_set`
     /// cited any of `prior_episode_versions`.
-    pub fn record_precedent_supersession(
+    pub(crate) fn record_precedent_supersession(
         &mut self,
         episode_id: &OpaqueId,
         prior_episode_versions: &[VersionId],

@@ -626,7 +626,9 @@ pub enum TransferabilityAssessment {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnalogueComparisonSet {
     comparison_set_id: OpaqueId,
+    initial_version_id: VersionId,
     current_version_id: VersionId,
+    created_at_utc_ms: i64,
     information_cutoff_utc_ms: i64,
     cutoff_mode: CutoffAdmissibilityMode,
     target_profile: AnalogueProfile,
@@ -698,6 +700,18 @@ pub enum PredictionJustification {
     },
     /// Precedent history is too sparse or poorly transferable to justify numerical probability issuance.
     QualitativeScenarioOnly { reason: String },
+}
+
+/// Immutable snapshot of the conditional response branches, monitoring indicators, transferability
+/// assessment, and justification frozen onto an issued [`ForecastVintageRecord`] (`FORECAST-03`, `FORECAST-04`, `A15`, `P1`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct IssuedAnalogueScenarioSnapshot {
+    pub comparison_set_id: OpaqueId,
+    pub comparison_set_version: VersionId,
+    pub branches: Vec<ConditionalResponseBranch>,
+    pub indicators: Vec<MonitoringIndicator>,
+    pub transferability: TransferabilityAssessment,
+    pub justification: PredictionJustification,
 }
 
 /// Specification for issuing or revising an analogue-backed forecast in [`ForecastLedger`] (`FORECAST-04`, `A15`).
@@ -1072,6 +1086,21 @@ impl PrecedentLibrary {
             });
         }
 
+        if corrected.title == prior.title
+            && corrected.initiating_condition == prior.initiating_condition
+            && corrected.initiation_evidence_versions == prior.initiation_evidence_versions
+            && corrected.profile == prior.profile
+            && corrected.dependency == prior.dependency
+            && corrected.response_steps == prior.response_steps
+            && corrected.outcome == prior.outcome
+            && corrected.sources == prior.sources
+        {
+            return Err(AnalogueError::InvalidEpisodeSupersession {
+                episode_id: corrected.episode_id,
+                reason: "corrected episode must differ in at least one substantive field from the superseded version",
+            });
+        }
+
         validate_episode_record(
             &corrected,
             &self.episode_versions_by_id,
@@ -1133,7 +1162,8 @@ impl PrecedentLibrary {
     }
 
     /// Retrieve the latest version of `episode_id` that was admissible at `cutoff_utc_ms`
-    /// under `cutoff_mode`.
+    /// under `cutoff_mode`. Returns `None` under `ProspectiveStrict` if no version had
+    /// `recorded_at_utc_ms <= cutoff_utc_ms` so callers never receive a hindsight-curated version.
     #[must_use]
     pub fn get_as_of_cutoff(
         &self,
@@ -1147,8 +1177,7 @@ impl PrecedentLibrary {
                 .iter()
                 .rev()
                 .filter_map(|v| self.episodes_by_version.get(v))
-                .find(|ep| ep.recorded_at_utc_ms <= cutoff_utc_ms)
-                .or_else(|| self.get(episode_id)),
+                .find(|ep| ep.recorded_at_utc_ms <= cutoff_utc_ms),
             CutoffAdmissibilityMode::RetrospectiveReconstructed { .. } => self.get(episode_id),
         }
     }
@@ -1219,6 +1248,15 @@ impl PrecedentLibrary {
                 criteria.information_cutoff_utc_ms,
                 &criteria.cutoff_mode,
             ) else {
+                if let Some(latest_ep) = self.get(episode_id) {
+                    inadmissible_episode_ids.push((
+                        episode_id.clone(),
+                        format!(
+                            "episode recorded_at_utc_ms ({}) is after strict information_cutoff_utc_ms ({})",
+                            latest_ep.recorded_at_utc_ms, criteria.information_cutoff_utc_ms
+                        ),
+                    ));
+                }
                 continue;
             };
             let evaluated = evaluate_episode_against_target(
@@ -1244,7 +1282,9 @@ impl PrecedentLibrary {
 
         Ok(AnalogueComparisonSet {
             comparison_set_id: criteria.comparison_set_id,
+            initial_version_id: criteria.initial_version_id.clone(),
             current_version_id: criteria.initial_version_id,
+            created_at_utc_ms: criteria.created_at_utc_ms,
             information_cutoff_utc_ms: criteria.information_cutoff_utc_ms,
             cutoff_mode: criteria.cutoff_mode,
             target_profile: criteria.target_profile,
@@ -1263,6 +1303,12 @@ impl AnalogueComparisonSet {
     #[must_use]
     pub fn comparison_set_id(&self) -> &OpaqueId {
         &self.comparison_set_id
+    }
+
+    /// Initial immutable version identifier assigned when this comparison set was retrieved (`P2`).
+    #[must_use]
+    pub fn initial_version_id(&self) -> &VersionId {
+        &self.initial_version_id
     }
 
     /// Current immutable version identifier of this comparison set (updated on every edit or cutoff advance).
@@ -1341,9 +1387,24 @@ impl AnalogueComparisonSet {
         versions
     }
 
+    fn has_used_version(&self, candidate: &VersionId) -> bool {
+        candidate == &self.initial_version_id
+            || candidate == &self.current_version_id
+            || self
+                .edit_history
+                .iter()
+                .any(|e| &e.edit_version == candidate)
+    }
+
+    fn latest_edit_or_creation_utc_ms(&self) -> i64 {
+        self.edit_history
+            .last()
+            .map_or(self.created_at_utc_ms, |e| e.edited_at_utc_ms)
+    }
+
     /// Re-retrieve and re-evaluate this comparison set against `library` at a non-decreasing
     /// `new_cutoff_utc_ms`, producing a new [`AnalogueComparisonSet`] with `new_version_id` and
-    /// appending a [`ComparisonEditAction::AdvanceCutoff`] entry to `edit_history` (`FORECAST-02`, `FORECAST-04`, `B1`).
+    /// appending a [`ComparisonEditAction::AdvanceCutoff`] entry to `edit_history` (`FORECAST-02`, `FORECAST-04`, `B1`, `P2`).
     ///
     /// - Re-computes point-in-time knowability for all episodes at `new_cutoff_utc_ms` (so an
     ///   episode that was `CensoredAtCutoff` at the earlier cutoff and resolved before
@@ -1379,12 +1440,12 @@ impl AnalogueComparisonSet {
                 "edited_at_utc_ms must be >= new_cutoff_utc_ms",
             ));
         }
-        if new_version_id == self.current_version_id
-            || self
-                .edit_history
-                .iter()
-                .any(|e| e.edit_version == new_version_id)
-        {
+        if edited_at_utc_ms < self.latest_edit_or_creation_utc_ms() {
+            return Err(AnalogueError::InvalidQueryCriteria(
+                "edited_at_utc_ms cannot regress before created_at_utc_ms or the previous edit timestamp",
+            ));
+        }
+        if self.has_used_version(&new_version_id) {
             return Err(AnalogueError::DuplicateIdentifier {
                 kind: "edit_version",
                 identifier: new_version_id.as_str().to_owned(),
@@ -1416,6 +1477,15 @@ impl AnalogueComparisonSet {
             let Some(episode) =
                 library.get_as_of_cutoff(episode_id, new_cutoff_utc_ms, &self.cutoff_mode)
             else {
+                if let Some(latest_ep) = library.get(episode_id) {
+                    inadmissible_episode_ids.push((
+                        episode_id.clone(),
+                        format!(
+                            "episode recorded_at_utc_ms ({}) is after strict information_cutoff_utc_ms ({new_cutoff_utc_ms})",
+                            latest_ep.recorded_at_utc_ms
+                        ),
+                    ));
+                }
                 continue;
             };
             let mut evaluated = evaluate_episode_against_target(
@@ -1460,13 +1530,13 @@ impl AnalogueComparisonSet {
         for ex in &self.excluded_entries {
             if let Some(ep) =
                 library.get_as_of_cutoff(&ex.entry.episode_id, new_cutoff_utc_ms, &self.cutoff_mode)
-                && let Ok(re_eval) = evaluate_episode_against_target(
+            {
+                let re_eval = evaluate_episode_against_target(
                     ep,
                     &self.target_profile,
                     new_cutoff_utc_ms,
                     &self.cutoff_mode,
-                )
-            {
+                )?;
                 excluded_entries.push(ExcludedAnalogueEntry {
                     entry: re_eval,
                     excluded_by_version: ex.excluded_by_version.clone(),
@@ -1491,7 +1561,9 @@ impl AnalogueComparisonSet {
 
         Ok(Self {
             comparison_set_id: self.comparison_set_id.clone(),
+            initial_version_id: self.initial_version_id.clone(),
             current_version_id: new_version_id,
+            created_at_utc_ms: self.created_at_utc_ms,
             information_cutoff_utc_ms: new_cutoff_utc_ms,
             cutoff_mode: self.cutoff_mode.clone(),
             target_profile: self.target_profile.clone(),
@@ -1548,12 +1620,12 @@ impl AnalogueComparisonSet {
                 "edited_at_utc_ms must be >= information_cutoff_utc_ms",
             ));
         }
-        if edit.edit_version == self.current_version_id
-            || self
-                .edit_history
-                .iter()
-                .any(|e| e.edit_version == edit.edit_version)
-        {
+        if edit.edited_at_utc_ms < self.latest_edit_or_creation_utc_ms() {
+            return Err(AnalogueError::InvalidQueryCriteria(
+                "edited_at_utc_ms cannot regress before created_at_utc_ms or the previous edit timestamp",
+            ));
+        }
+        if self.has_used_version(&edit.edit_version) {
             return Err(AnalogueError::DuplicateIdentifier {
                 kind: "edit_version",
                 identifier: edit.edit_version.as_str().to_owned(),
@@ -1587,16 +1659,25 @@ impl AnalogueComparisonSet {
                         reason: "episode is already in active_entries",
                     });
                 }
-                let episode = library
-                    .get_as_of_cutoff(
-                        episode_id,
-                        self.information_cutoff_utc_ms,
-                        &self.cutoff_mode,
-                    )
-                    .ok_or_else(|| AnalogueError::InvalidComparisonEdit {
+                let Some(episode) = library.get_as_of_cutoff(
+                    episode_id,
+                    self.information_cutoff_utc_ms,
+                    &self.cutoff_mode,
+                ) else {
+                    if let Some(latest_ep) = library.get(episode_id) {
+                        return Err(AnalogueError::EpisodeInadmissibleAtCutoff {
+                            episode_id: episode_id.clone(),
+                            reason: format!(
+                                "episode recorded_at_utc_ms ({}) is after strict information_cutoff_utc_ms ({})",
+                                latest_ep.recorded_at_utc_ms, self.information_cutoff_utc_ms
+                            ),
+                        });
+                    }
+                    return Err(AnalogueError::InvalidComparisonEdit {
                         episode_id: episode_id.clone(),
                         reason: "episode not found in PrecedentLibrary",
-                    })?;
+                    });
+                };
                 let mut evaluated = evaluate_episode_against_target(
                     episode,
                     &self.target_profile,
@@ -1679,7 +1760,7 @@ impl AnalogueComparisonSet {
                     }
                 }
             }
-            ComparisonEditAction::AdvanceCutoff { .. } => unreachable!(),
+            ComparisonEditAction::AdvanceCutoff { .. } => {}
         }
 
         self.current_version_id = edit.edit_version.clone();
@@ -1905,7 +1986,7 @@ impl AnalogueComparisonSet {
     }
 
     /// Issue an immutable forecast vintage (or linked revision) into [`ForecastLedger`] backed
-    /// by this comparison set and a validated [`AnalogueForecastIssuanceSpec`] (`FORECAST-03`, `FORECAST-04`, `A15`).
+    /// by this comparison set and a validated [`AnalogueForecastIssuanceSpec`] (`FORECAST-03`, `FORECAST-04`, `A15`, `P1`).
     ///
     /// - Validates conditional response branches, step dependencies, chained probabilities, and
     ///   monitoring indicators.
@@ -1913,8 +1994,9 @@ impl AnalogueComparisonSet {
     ///   or if `assess_transferability()` is [`TransferabilityAssessment::SparseOrPoorlyTransferable`]
     ///   without a non-empty `sparse_history_override_rationale`.
     /// - Pins `self.current_version_id` as the first element of `ForecastDraft::comparison_set`
-    ///   followed by each active episode's `VersionId`, and merges cutoff-admissible precedent
-    ///   sources with `spec.scenario_sources` (rejecting conflicting source metadata).
+    ///   followed by each active episode's `VersionId`, merges cutoff-admissible precedent
+    ///   sources with `spec.scenario_sources` (rejecting conflicting source metadata), and
+    ///   retains an immutable [`IssuedAnalogueScenarioSnapshot`] on the issued [`ForecastVintageRecord`].
     pub fn issue_forecast<'a>(
         &self,
         ledger: &'a mut ForecastLedger,
@@ -2008,6 +2090,15 @@ impl AnalogueComparisonSet {
             assumptions.push(format!("sparse_history_override: {override_note}"));
         }
 
+        let scenario_snapshot = IssuedAnalogueScenarioSnapshot {
+            comparison_set_id: self.comparison_set_id.clone(),
+            comparison_set_version: self.current_version_id.clone(),
+            branches: spec.branches,
+            indicators: spec.indicators,
+            transferability,
+            justification: spec.justification,
+        };
+
         let draft = ForecastDraft {
             forecast_id: spec.forecast_id,
             version_id: spec.version_id,
@@ -2033,7 +2124,7 @@ impl AnalogueComparisonSet {
             revision_rationale: spec.revision_rationale,
         };
 
-        let record = ledger.issue_forecast(draft)?;
+        let record = ledger.issue_forecast_with_analogue_scenario(draft, scenario_snapshot)?;
         Ok(record)
     }
 
@@ -2177,12 +2268,44 @@ pub(crate) fn evaluate_episode_against_target(
     })
 }
 
-/// Merge `independence_cluster_key`s across `active_entries` whenever two episodes declared as
-/// [`EpisodeDependencyKind::IndependentEpisode`] cite the exact same outcome evidence version (`AGENTS.md` §2).
+/// Compute connected components across `active_entries` using union-find over declared cluster keys,
+/// `PolicySpilloverOrRetaliation` predecessor links, `SharedSourceLineageOnly` upstream sources, and
+/// any shared `cited_outcome_evidence_versions` so chained or mixed-kind shared-source dependencies
+/// always collapse into a single `independence_cluster_key` (`FORECAST-02`, `N2`, `AGENTS.md` §2).
 fn recompute_effective_cluster_keys(entries: &mut [AnalogueMatchEntry]) {
+    let n = entries.len();
+    if n == 0 {
+        return;
+    }
+
+    fn find(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+
+    fn union(parent: &mut [usize], i: usize, j: usize) {
+        let ri = find(parent, i);
+        let rj = find(parent, j);
+        if ri != rj {
+            if ri < rj {
+                parent[rj] = ri;
+            } else {
+                parent[ri] = rj;
+            }
+        }
+    }
+
+    let mut parent: Vec<usize> = (0..n).collect();
+    let mut base_keys: Vec<String> = Vec::with_capacity(n);
+    let mut key_to_first_idx: BTreeMap<String, usize> = BTreeMap::new();
+    let mut episode_id_to_idx: BTreeMap<OpaqueId, usize> = BTreeMap::new();
     let mut source_to_episodes: BTreeMap<VersionId, Vec<usize>> = BTreeMap::new();
-    for (idx, entry) in entries.iter_mut().enumerate() {
-        entry.independence_cluster_key = match &entry.dependency {
+
+    for (idx, entry) in entries.iter().enumerate() {
+        let base_key = match &entry.dependency {
             EpisodeDependencyKind::IndependentEpisode => {
                 format!("episode:{}", entry.episode_id.as_str())
             }
@@ -2197,26 +2320,92 @@ fn recompute_effective_cluster_keys(entries: &mut [AnalogueMatchEntry]) {
                 format!("lineage:{}", upstream_source_version.as_str())
             }
         };
+        if let Some(&first_idx) = key_to_first_idx.get(&base_key) {
+            union(&mut parent, idx, first_idx);
+        } else {
+            key_to_first_idx.insert(base_key.clone(), idx);
+        }
+        base_keys.push(base_key);
+        episode_id_to_idx.insert(entry.episode_id.clone(), idx);
+
         for ver in &entry.cited_outcome_evidence_versions {
             source_to_episodes.entry(ver.clone()).or_default().push(idx);
         }
+        if let EpisodeDependencyKind::SharedSourceLineageOnly {
+            upstream_source_version,
+            ..
+        } = &entry.dependency
+        {
+            let list = source_to_episodes
+                .entry(upstream_source_version.clone())
+                .or_default();
+            if !list.contains(&idx) {
+                list.push(idx);
+            }
+        }
     }
 
+    for (idx, entry) in entries.iter().enumerate() {
+        if let EpisodeDependencyKind::PolicySpilloverOrRetaliation {
+            predecessor_episode_id,
+            ..
+        } = &entry.dependency
+            && let Some(&pred_idx) = episode_id_to_idx.get(predecessor_episode_id)
+        {
+            union(&mut parent, idx, pred_idx);
+        }
+    }
+
+    let mut shared_sources_by_entry: Vec<Vec<VersionId>> = vec![Vec::new(); n];
     for (shared_ver, indices) in source_to_episodes {
         if indices.len() > 1 {
-            let shared_key = format!("shared-outcome-source:{}", shared_ver.as_str());
-            let note = format!(
-                "shares outcome evidence source {shared_ver} with another active precedent episode; merged into {shared_key} for cluster deduplication"
-            );
+            let first = indices[0];
+            for &idx in &indices[1..] {
+                union(&mut parent, first, idx);
+            }
             for idx in indices {
-                if matches!(
-                    entries[idx].dependency,
-                    EpisodeDependencyKind::IndependentEpisode
-                ) {
-                    entries[idx].independence_cluster_key = shared_key.clone();
+                shared_sources_by_entry[idx].push(shared_ver.clone());
+            }
+        }
+    }
+
+    let mut component_members: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for idx in 0..n {
+        let root = find(&mut parent, idx);
+        component_members.entry(root).or_default().push(idx);
+    }
+
+    for members in component_members.values() {
+        let canonical_key = if members.len() == 1 {
+            base_keys[members[0]].clone()
+        } else {
+            let unique_base_keys: BTreeSet<&str> =
+                members.iter().map(|&i| base_keys[i].as_str()).collect();
+            if unique_base_keys.len() == 1 {
+                base_keys[members[0]].clone()
+            } else {
+                let mut component_shared_sources: BTreeSet<&str> = BTreeSet::new();
+                for &i in members {
+                    for ver in &shared_sources_by_entry[i] {
+                        component_shared_sources.insert(ver.as_str());
+                    }
                 }
+                if let Some(min_src) = component_shared_sources.first() {
+                    format!("shared-outcome-source:{min_src}")
+                } else {
+                    base_keys[members[0]].clone()
+                }
+            }
+        };
+
+        for &idx in members {
+            entries[idx].independence_cluster_key = canonical_key.clone();
+            for shared_ver in &shared_sources_by_entry[idx] {
+                let note = format!(
+                    "shares outcome evidence source {shared_ver} with another active precedent episode; merged into {canonical_key} for cluster deduplication"
+                );
                 if !entries[idx].transfer_limitations.contains(&note) {
-                    entries[idx].transfer_limitations.push(note.clone());
+                    entries[idx].transfer_limitations.push(note);
                 }
             }
         }

@@ -438,6 +438,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         .clone();
     corrected_ep1.version_id = VersionId::new("ep-synth-day05-corridor:v2")?;
     corrected_ep1.recorded_at_utc_ms = observed_event_ms + 10_800_000;
+    corrected_ep1.outcome = PrecedentOutcomeDisposition::TargetResponseOccurred {
+        outcome_summary:
+            "Published mandatory NOTAM sensor-reporting directive within 6 days (corrected)."
+                .to_owned(),
+        resolved_at_utc_ms: corrected_ep1.initiating_event_utc_ms + 6 * DAY_MS,
+        elapsed_from_initiation_ms: 6 * DAY_MS,
+        outcome_evidence_versions: vec![VersionId::new("src:synth-d05-out:v1")?],
+    };
     corrected_ep1.supersedes_version = Some(VersionId::new("ep-synth-day05-corridor:v1")?);
     corrected_ep1.correction_rationale = Some(
         "Archival erratum updated elapsed time of synthetic day-05 precedent from 5d to 6d."

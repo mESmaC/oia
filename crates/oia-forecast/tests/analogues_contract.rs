@@ -1264,3 +1264,294 @@ fn rejects_invalid_chronology_unjustified_sparse_issuance_and_inconsistent_branc
 
     Ok(())
 }
+
+/// Risk / Requirements: `FORECAST-02`, `FORECAST-03`, `FORECAST-04`, `A15`, `P1`, `P2`, `N2`.
+///
+/// Verifies:
+/// 1. `N2` (transitive & mixed-kind shared-source union-find): When episode A cites source X,
+///    episode B cites sources X and Y, and episode C (`SharedCrisisOrCampaign`) cites source Y,
+///    all three active episodes collapse into a single connected evidence component (`independent_cluster_count == 1`).
+/// 2. `P2` (initial comparison-set version reservation): After editing `cs:v1` -> `cs:v2`,
+///    attempting to reuse `cs:v1` in `apply_edit` or `re_retrieve_at_cutoff` is rejected with
+///    `AnalogueError::DuplicateIdentifier`, and regressing `edited_at_utc_ms` is rejected.
+/// 3. `P1` (issued scenario snapshot preservation): `ForecastVintageRecord::analogue_scenario`
+///    retains the exact `ConditionalResponseBranch`es, `MonitoringIndicator`s, `TransferabilityAssessment`,
+///    and `PredictionJustification` frozen at issuance so distinct conditional scenario models
+///    produce distinct `ForecastVintageRecord`s.
+#[test]
+fn transitive_shared_source_union_initial_version_reservation_and_scenario_snapshot_contract()
+-> Result<(), Box<dyn Error>> {
+    let mut lib = PrecedentLibrary::new(16)?;
+    let profile = sample_profile(InstitutionalRegime::RegulatoryAgency);
+    let t1 = T0_MS + 2 * DAY_MS;
+    let cutoff_ms = T0_MS + 10 * DAY_MS;
+
+    let src_x = source_at("src:chain-x:v1", t1, t1 + 1_000, t1 + 2_000)?;
+    let src_y = source_at("src:chain-y:v1", t1, t1 + 1_000, t1 + 2_000)?;
+
+    // Episode A (IndependentEpisode): cites X
+    lib.register_episode(PrecedentEpisodeRecord {
+        episode_id: OpaqueId::new("ep-chain-a")?,
+        version_id: VersionId::new("ep-chain-a:v1")?,
+        schema_version: SchemaVersion::new(1)?,
+        recorded_by: ActorId::new("curator:a")?,
+        recorded_at_utc_ms: t1 + 3 * DAY_MS,
+        title: "Chain episode A citing X".to_owned(),
+        initiating_condition: "Anomaly A".to_owned(),
+        initiating_event_utc_ms: t1,
+        initiation_evidence_versions: vec![VersionId::new("src:chain-x:v1")?],
+        profile: profile.clone(),
+        dependency: EpisodeDependencyKind::IndependentEpisode,
+        response_steps: Vec::new(),
+        outcome: PrecedentOutcomeDisposition::TargetResponseOccurred {
+            outcome_summary: "Directive A".to_owned(),
+            resolved_at_utc_ms: t1 + DAY_MS,
+            elapsed_from_initiation_ms: DAY_MS,
+            outcome_evidence_versions: vec![VersionId::new("src:chain-x:v1")?],
+        },
+        sources: vec![src_x.clone()],
+        supersedes_version: None,
+        correction_rationale: None,
+    })?;
+
+    // Episode B (IndependentEpisode): cites X and Y
+    lib.register_episode(PrecedentEpisodeRecord {
+        episode_id: OpaqueId::new("ep-chain-b")?,
+        version_id: VersionId::new("ep-chain-b:v1")?,
+        schema_version: SchemaVersion::new(1)?,
+        recorded_by: ActorId::new("curator:a")?,
+        recorded_at_utc_ms: t1 + 3 * DAY_MS,
+        title: "Chain episode B citing X and Y".to_owned(),
+        initiating_condition: "Anomaly B".to_owned(),
+        initiating_event_utc_ms: t1,
+        initiation_evidence_versions: vec![VersionId::new("src:chain-x:v1")?],
+        profile: profile.clone(),
+        dependency: EpisodeDependencyKind::IndependentEpisode,
+        response_steps: Vec::new(),
+        outcome: PrecedentOutcomeDisposition::TargetResponseOccurred {
+            outcome_summary: "Directive B".to_owned(),
+            resolved_at_utc_ms: t1 + 2 * DAY_MS,
+            elapsed_from_initiation_ms: 2 * DAY_MS,
+            outcome_evidence_versions: vec![
+                VersionId::new("src:chain-x:v1")?,
+                VersionId::new("src:chain-y:v1")?,
+            ],
+        },
+        sources: vec![src_x, src_y.clone()],
+        supersedes_version: None,
+        correction_rationale: None,
+    })?;
+
+    // Episode C (SharedCrisisOrCampaign): cites Y (tests mixed-kind + transitive chain A-B-C)
+    lib.register_episode(PrecedentEpisodeRecord {
+        episode_id: OpaqueId::new("ep-chain-c")?,
+        version_id: VersionId::new("ep-chain-c:v1")?,
+        schema_version: SchemaVersion::new(1)?,
+        recorded_by: ActorId::new("curator:a")?,
+        recorded_at_utc_ms: t1 + 3 * DAY_MS,
+        title: "Chain episode C in campaign citing Y".to_owned(),
+        initiating_condition: "Anomaly C".to_owned(),
+        initiating_event_utc_ms: t1,
+        initiation_evidence_versions: vec![VersionId::new("src:chain-y:v1")?],
+        profile: profile.clone(),
+        dependency: EpisodeDependencyKind::SharedCrisisOrCampaign {
+            cluster_id: OpaqueId::new("cluster-campaign-c")?,
+            dependency_note: "Coordinated regional campaign".to_owned(),
+        },
+        response_steps: Vec::new(),
+        outcome: PrecedentOutcomeDisposition::TargetResponseOccurred {
+            outcome_summary: "Directive C".to_owned(),
+            resolved_at_utc_ms: t1 + 3 * DAY_MS,
+            elapsed_from_initiation_ms: 3 * DAY_MS,
+            outcome_evidence_versions: vec![VersionId::new("src:chain-y:v1")?],
+        },
+        sources: vec![src_y],
+        supersedes_version: None,
+        correction_rationale: None,
+    })?;
+
+    let mut comp_set = lib.retrieve_comparison_set(AnalogueQueryCriteria {
+        comparison_set_id: OpaqueId::new("cs-chain")?,
+        initial_version_id: VersionId::new("cs-chain:v1")?,
+        actor: ActorId::new("analyst:1")?,
+        created_at_utc_ms: cutoff_ms,
+        information_cutoff_utc_ms: cutoff_ms,
+        cutoff_mode: CutoffAdmissibilityMode::ProspectiveStrict,
+        target_profile: profile,
+        min_matched_dimensions: 5,
+        min_independent_clusters: 2,
+    })?;
+
+    // N2: All 3 episodes form a single connected component via X and Y.
+    let freq = comp_set.summarize_frequencies();
+    assert_eq!(freq.active_episode_count, 3);
+    assert_eq!(freq.independent_cluster_count, 1);
+    assert_eq!(freq.independent_resolved_cluster_count, 1);
+    assert!(matches!(
+        comp_set.assess_transferability(),
+        TransferabilityAssessment::SparseOrPoorlyTransferable { .. }
+    ));
+
+    // P2: Exclude ep-chain-c as cs-chain:v2, then attempt to reuse cs-chain:v1 in re_retrieve_at_cutoff and apply_edit.
+    comp_set.apply_edit(
+        &lib,
+        ComparisonSetEdit {
+            edit_version: VersionId::new("cs-chain:v2")?,
+            actor: ActorId::new("analyst:1")?,
+            edited_at_utc_ms: cutoff_ms + 1_000,
+            action: ComparisonEditAction::ExcludeEpisode {
+                episode_id: OpaqueId::new("ep-chain-c")?,
+                rationale: "Testing initial version reservation".to_owned(),
+            },
+        },
+    )?;
+    assert_eq!(
+        comp_set.initial_version_id(),
+        &VersionId::new("cs-chain:v1")?
+    );
+    assert_eq!(
+        comp_set.current_version_id(),
+        &VersionId::new("cs-chain:v2")?
+    );
+
+    let reuse_initial_in_re_retrieve = comp_set.re_retrieve_at_cutoff(
+        &lib,
+        VersionId::new("cs-chain:v1")?,
+        ActorId::new("analyst:1")?,
+        cutoff_ms + 2_000,
+        cutoff_ms + 1_500,
+        "Attempt to reuse initial_version_id".to_owned(),
+    );
+    assert!(matches!(
+        reuse_initial_in_re_retrieve,
+        Err(AnalogueError::DuplicateIdentifier {
+            kind: "edit_version",
+            ..
+        })
+    ));
+
+    let reuse_initial_in_edit = comp_set.apply_edit(
+        &lib,
+        ComparisonSetEdit {
+            edit_version: VersionId::new("cs-chain:v1")?,
+            actor: ActorId::new("analyst:1")?,
+            edited_at_utc_ms: cutoff_ms + 2_000,
+            action: ComparisonEditAction::IncludeEpisode {
+                episode_id: OpaqueId::new("ep-chain-c")?,
+                rationale: "Attempt to reuse initial_version_id in apply_edit".to_owned(),
+                transfer_limitations: Vec::new(),
+            },
+        },
+    );
+    assert!(matches!(
+        reuse_initial_in_edit,
+        Err(AnalogueError::DuplicateIdentifier {
+            kind: "edit_version",
+            ..
+        })
+    ));
+
+    // Non-monotonic edit timestamp is also rejected.
+    let regressed_edit_ts = comp_set.apply_edit(
+        &lib,
+        ComparisonSetEdit {
+            edit_version: VersionId::new("cs-chain:v3")?,
+            actor: ActorId::new("analyst:1")?,
+            edited_at_utc_ms: cutoff_ms + 500, // earlier than cutoff_ms + 1_000!
+            action: ComparisonEditAction::IncludeEpisode {
+                episode_id: OpaqueId::new("ep-chain-c")?,
+                rationale: "Regressed edit timestamp".to_owned(),
+                transfer_limitations: Vec::new(),
+            },
+        },
+    );
+    assert!(matches!(
+        regressed_edit_ts,
+        Err(AnalogueError::InvalidQueryCriteria(_))
+    ));
+
+    // P1: Issue two specs differing only in branch probability / indicator signal into separate ledgers
+    // and verify that `ForecastVintageRecord::analogue_scenario` preserves the full scenario snapshot.
+    let make_spec =
+        |step_prob: f64, signal: &str| -> Result<AnalogueForecastIssuanceSpec, Box<dyn Error>> {
+            Ok(AnalogueForecastIssuanceSpec {
+                forecast_id: OpaqueId::new("fc-snap")?,
+                version_id: VersionId::new("fc-snap:v1")?,
+                schema_version: SchemaVersion::new(1)?,
+                actor: ActorId::new("analyst:1")?,
+                issued_at_utc_ms: cutoff_ms + 2_000,
+                origin_utc_ms: cutoff_ms,
+                horizon_start_utc_ms: cutoff_ms + DAY_MS,
+                horizon_end_utc_ms: cutoff_ms + 10 * DAY_MS,
+                target_id: OpaqueId::new("target:caa")?,
+                outcome_definition: OutcomeDefinition {
+                    outcome_id: OpaqueId::new("out-snap")?,
+                    proposition: "Directive issued".to_owned(),
+                    resolution_rules: "Official register".to_owned(),
+                },
+                baseline_version: VersionId::new("base:snap:v1")?,
+                baseline_probability: Probability::new(0.50)?,
+                forecast_probability: Probability::new(0.60)?,
+                model_version: VersionId::new("model:snap:v1")?,
+                model_knowledge_cutoff_utc_ms: Some(cutoff_ms),
+                branches: vec![ConditionalResponseBranch {
+                    branch_id: OpaqueId::new("b-snap")?,
+                    branch_label: "Primary branch".to_owned(),
+                    is_non_response_or_divergent: false,
+                    steps: vec![ConditionalResponseStep {
+                        step_number: 1,
+                        actor_sector: PrecedentSector::Government,
+                        action_description: "Issue directive".to_owned(),
+                        conditional_probability: Probability::new(step_prob)?,
+                        dependency_rationale: "Trigger".to_owned(),
+                        expected_step_window_ms: Some((DAY_MS, 3 * DAY_MS)),
+                    }],
+                    chained_probability: Probability::new(step_prob)?,
+                    expected_elapsed_range_ms: None,
+                    supporting_episode_versions: vec![VersionId::new("ep-chain-a:v1")?],
+                }],
+                indicators: vec![MonitoringIndicator {
+                    indicator_id: OpaqueId::new("ind-snap")?,
+                    observable_signal: signal.to_owned(),
+                    target_branch_id: OpaqueId::new("b-snap")?,
+                    direction: IndicatorDirection::ConfirmsBranch,
+                    source_coverage_limits: "Public register".to_owned(),
+                    false_positive_caveat: "Routine notices".to_owned(),
+                }],
+                justification: PredictionJustification::JustifiedQuantitativeForecast {
+                    calibration_and_adjustment_rationale: "Calibrated from connected cluster"
+                        .to_owned(),
+                    sparse_history_override_rationale: Some(
+                        "Explicit sparse-cluster override".to_owned(),
+                    ),
+                },
+                scenario_sources: Vec::new(),
+                assumptions: Vec::new(),
+                predecessor_version: None,
+                revision_rationale: None,
+            })
+        };
+
+    let mut ledger_a = ForecastLedger::new(16)?;
+    let mut ledger_b = ForecastLedger::new(16)?;
+    let rec_a = comp_set.issue_forecast(&mut ledger_a, make_spec(0.50, "Signal Alpha")?)?;
+    let rec_b = comp_set.issue_forecast(&mut ledger_b, make_spec(0.90, "Signal Beta")?)?;
+
+    assert!(rec_a.analogue_scenario.is_some());
+    assert_ne!(rec_a, rec_b);
+    let snap_a = rec_a
+        .analogue_scenario
+        .as_ref()
+        .ok_or("missing analogue_scenario")?;
+    assert_eq!(
+        snap_a.comparison_set_version,
+        VersionId::new("cs-chain:v2")?
+    );
+    assert_eq!(
+        snap_a.branches[0].chained_probability,
+        Probability::new(0.50)?
+    );
+    assert_eq!(snap_a.indicators[0].observable_signal, "Signal Alpha");
+
+    Ok(())
+}

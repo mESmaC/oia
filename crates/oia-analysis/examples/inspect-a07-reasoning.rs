@@ -202,7 +202,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             spatial_tolerance_km: 5.0,
             attribute_matching_rule: "Azimuth difference <= 15 deg and timestamp delta <= 120 s"
                 .to_owned(),
-            evaluated_pair_count: 18,
+            evaluated_pair_count: 6,
             matched_pairs: vec![CorrelationPair {
                 left_version: p_radar_v1.clone(),
                 right_version: p_witness_v1.clone(),

@@ -25,6 +25,10 @@
 //! runtime. An `AssertedUnverifiedLeanRef` tier records a caller-asserted theorem
 //! identifier, Lean toolchain, and model revision without claiming runtime verification
 //! or formal Rust implementation correspondence (`AGENTS.md` §3).
+//!
+//! Consolidation note (`AGENTS.md` §4, `#10`): `EvidenceOriginClass` and `MeasuredQuantity`
+//! are local to `oia-analysis` pending `#10` (`oia-domain` shared origin classes and common
+//! envelope) and `#12` (`oia-time-geo` shared unit/uncertainty primitives).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -166,6 +170,13 @@ pub enum ReasoningError {
         expected_latest: VersionId,
         supplied: Option<VersionId>,
     },
+    PremiseOriginClassChangeForbidden {
+        premise_id: OpaqueId,
+        expected: EvidenceOriginClass,
+        supplied: EvidenceOriginClass,
+    },
+    PremiseSourceReferencesGraphNode(VersionId),
+    UnexpectedInitialRevisionRationale,
     StepPredecessorMismatch {
         step_id: OpaqueId,
         expected_latest: VersionId,
@@ -185,17 +196,39 @@ pub enum ReasoningError {
         step_id: OpaqueId,
     },
     AbstractionMissingContent,
+    AbstractionSourceVersionNotInInputs(VersionId),
+    ConflictingFieldSameSourceVersion(VersionId),
     DecisionReversalMissingRationale(&'static str),
     InvalidTolerance(&'static str),
     InvalidCoverageFraction,
     InvalidRateOrCount(&'static str),
     EmptyCorrelationPairs,
+    SelfCorrelationPair(VersionId),
+    DuplicateCorrelationPair {
+        left_version: VersionId,
+        right_version: VersionId,
+    },
+    SharedSourceClaimedIndependent {
+        left_version: VersionId,
+        right_version: VersionId,
+        shared_source_version: VersionId,
+    },
+    InvalidSharedUpstreamSource {
+        left_version: VersionId,
+        right_version: VersionId,
+        claimed_common_source: VersionId,
+    },
     InvalidMultipleComparisonCount {
         tested_hypotheses: u32,
+        evaluated_pairs: u64,
         reported_matches: u32,
     },
     EmptyDeductionPremises,
     EmptyDeductionSteps,
+    NonSequentialDerivationStep {
+        expected: u32,
+        actual: u32,
+    },
     InvalidVerificationMetadata(&'static str),
     InvalidNumericValue(&'static str),
     InvalidObservedDomain,
@@ -203,6 +236,11 @@ pub enum ReasoningError {
         observed_max: String,
         horizon_start: String,
         horizon_end: String,
+    },
+    InvalidUncertaintyBounds {
+        lower: String,
+        projected: String,
+        upper: String,
     },
     UnitMismatch {
         expected_unit: String,
@@ -220,6 +258,7 @@ pub enum ReasoningError {
 }
 
 impl fmt::Display for ReasoningError {
+    #[allow(clippy::too_many_lines)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ZeroLimit(kind) => write!(f, "reasoning limit {kind} must be >= 1"),
@@ -265,6 +304,21 @@ impl fmt::Display for ReasoningError {
                 f,
                 "premise {premise_id} revision must cite latest version {expected_latest}, got {supplied:?}"
             ),
+            Self::PremiseOriginClassChangeForbidden {
+                premise_id,
+                expected,
+                supplied,
+            } => write!(
+                f,
+                "premise {premise_id} revision cannot change origin class from {expected} to {supplied}"
+            ),
+            Self::PremiseSourceReferencesGraphNode(version) => write!(
+                f,
+                "premise source_version {version} cannot reference a reasoning step or hypothesis version in the graph"
+            ),
+            Self::UnexpectedInitialRevisionRationale => {
+                f.write_str("initial registration without a predecessor must have revision_rationale = None")
+            }
             Self::StepPredecessorMismatch {
                 step_id,
                 expected_latest,
@@ -298,6 +352,14 @@ impl fmt::Display for ReasoningError {
             Self::AbstractionMissingContent => f.write_str(
                 "abstraction step must normalize at least one field, entity match, relationship, conflict, or omission",
             ),
+            Self::AbstractionSourceVersionNotInInputs(version) => write!(
+                f,
+                "abstraction item cites source_version {version} that is not backed by declared step inputs"
+            ),
+            Self::ConflictingFieldSameSourceVersion(version) => write!(
+                f,
+                "conflicting abstraction field cannot cite the same source_version {version} on both sides"
+            ),
             Self::DecisionReversalMissingRationale(context) => {
                 write!(f, "reversible {context} decision requires a non-empty rationale")
             }
@@ -305,7 +367,7 @@ impl fmt::Display for ReasoningError {
                 write!(f, "{field} must be finite and strictly positive")
             }
             Self::InvalidCoverageFraction => {
-                f.write_str("coverage fraction must be finite and within [0.0, 1.0]")
+                f.write_str("coverage fraction must be finite and within (0.0, 1.0] when pairs are matched")
             }
             Self::InvalidRateOrCount(field) => {
                 write!(f, "{field} is out of valid range")
@@ -313,12 +375,39 @@ impl fmt::Display for ReasoningError {
             Self::EmptyCorrelationPairs => {
                 f.write_str("correlation step must record at least one matched pair")
             }
+            Self::SelfCorrelationPair(version) => {
+                write!(f, "correlation pair cannot match node {version} with itself")
+            }
+            Self::DuplicateCorrelationPair {
+                left_version,
+                right_version,
+            } => write!(
+                f,
+                "duplicate correlation pair ({left_version}, {right_version})"
+            ),
+            Self::SharedSourceClaimedIndependent {
+                left_version,
+                right_version,
+                shared_source_version,
+            } => write!(
+                f,
+                "correlation pair ({left_version}, {right_version}) shares source_version {shared_source_version} and cannot claim IndependentSources"
+            ),
+            Self::InvalidSharedUpstreamSource {
+                left_version,
+                right_version,
+                claimed_common_source,
+            } => write!(
+                f,
+                "correlation pair ({left_version}, {right_version}) cites unverified common_source_version {claimed_common_source}"
+            ),
             Self::InvalidMultipleComparisonCount {
                 tested_hypotheses,
+                evaluated_pairs,
                 reported_matches,
             } => write!(
                 f,
-                "tested_hypotheses ({tested_hypotheses}) must be >= 1 and >= reported_matches ({reported_matches})"
+                "tested_hypotheses ({tested_hypotheses}) must be >= 1, >= reported_matches ({reported_matches}), and >= evaluated_pairs ({evaluated_pairs})"
             ),
             Self::EmptyDeductionPremises => {
                 f.write_str("deduction step must cite at least one input premise or step")
@@ -326,6 +415,10 @@ impl fmt::Display for ReasoningError {
             Self::EmptyDeductionSteps => {
                 f.write_str("deduction step must contain at least one derivation step")
             }
+            Self::NonSequentialDerivationStep { expected, actual } => write!(
+                f,
+                "derivation step_number must be sequential starting at 1 (expected {expected}, got {actual})"
+            ),
             Self::InvalidVerificationMetadata(field) => {
                 write!(f, "invalid verification metadata for {field}")
             }
@@ -342,6 +435,14 @@ impl fmt::Display for ReasoningError {
             } => write!(
                 f,
                 "projection horizon [{horizon_start}, {horizon_end}] must satisfy observed_max ({observed_max}) <= horizon_start < horizon_end"
+            ),
+            Self::InvalidUncertaintyBounds {
+                lower,
+                projected,
+                upper,
+            } => write!(
+                f,
+                "extrapolation uncertainty bounds [{lower}, {upper}] must bracket projected_value ({projected}) with non-zero width (lower < upper)"
             ),
             Self::UnitMismatch {
                 expected_unit,
@@ -379,6 +480,8 @@ impl std::error::Error for ReasoningError {}
 ///
 /// Feeding an [`EvidenceOriginClass::AnalyticalInference`] into another reasoning step
 /// preserves its inference origin and never promotes it to [`EvidenceOriginClass::NormalizedObservation`].
+///
+/// Consolidation note: to be unified in `oia-domain` under `#10`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EvidenceOriginClass {
     /// Retained source document, dataset, or media record.
@@ -562,7 +665,7 @@ impl PremiseRecord {
     }
 }
 
-/// How an normalized abstraction field value is represented (`REASON-03`).
+/// How a normalized abstraction field value is represented (`REASON-03`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AbstractionFieldState {
     /// Normalized value with a non-empty verbatim phrase from the cited source.
@@ -634,9 +737,20 @@ pub enum AbstractionRelationType {
 }
 
 impl AbstractionRelationType {
-    /// Co-occurrence and proximity edges must not be presented as established affiliation or causation.
+    /// Returns `true` only when the relationship type represents an explicit organizational
+    /// affiliation or contractual relationship (`OrganizationalAffiliation` or `ContractualAward`).
+    /// Co-occurrence, proximity, sequence, and candidate-event edges return `false` (`docs/architecture.md` §2.3).
     #[must_use]
-    pub const fn asserts_affiliation_or_causation(self) -> bool {
+    pub const fn is_affiliation_or_contract_relation(self) -> bool {
+        matches!(
+            self,
+            Self::OrganizationalAffiliation | Self::ContractualAward
+        )
+    }
+
+    /// No relationship edge in an abstraction step asserts established causation (`AGENTS.md` §2).
+    #[must_use]
+    pub const fn asserts_causation(self) -> bool {
         false
     }
 }
@@ -1162,6 +1276,12 @@ fn validate_finite(field: &'static str, value: f64) -> Result<(), ReasoningError
     Ok(())
 }
 
+fn has_placeholder_token(identifier: &str) -> bool {
+    identifier
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|tok| tok.eq_ignore_ascii_case("sorry") || tok.eq_ignore_ascii_case("admit"))
+}
+
 /// Bounded, acyclic composed-reasoning graph (`REASON-01`..=`REASON-04`, `A07`).
 #[derive(Debug, Clone)]
 pub struct ReasoningGraph {
@@ -1226,7 +1346,7 @@ impl ReasoningGraph {
         self.hypotheses_by_version.values()
     }
 
-    /// Registers an initial premise (`predecessor_version: None`).
+    /// Registers an initial premise (`predecessor_version: None`, `revision_rationale: None`).
     pub fn register_premise(&mut self, draft: PremiseDraft) -> Result<VersionId, ReasoningError> {
         if self.premise_history.contains_key(&draft.premise_id) {
             return Err(ReasoningError::DuplicatePremiseId(draft.premise_id));
@@ -1238,12 +1358,17 @@ impl ReasoningGraph {
                 supplied: draft.predecessor_version,
             });
         }
+        if draft.revision_rationale.is_some() {
+            return Err(ReasoningError::UnexpectedInitialRevisionRationale);
+        }
         self.insert_premise_internal(draft, 1)
     }
 
     /// Revises an existing premise, preserving all prior premise versions and transitively
     /// marking every dependent reasoning step and competing hypothesis `needs_reassessment = true`
     /// without mutating their historical outputs (`REASON-04`, `A07`).
+    ///
+    /// A premise revision must preserve the original premise's [`EvidenceOriginClass`].
     pub fn revise_premise(&mut self, draft: PremiseDraft) -> Result<VersionId, ReasoningError> {
         let Some(history) = self.premise_history.get(&draft.premise_id) else {
             return Err(ReasoningError::UnknownPremiseVersion(
@@ -1256,6 +1381,14 @@ impl ReasoningGraph {
                 premise_id: draft.premise_id,
                 expected_latest: latest_version,
                 supplied: draft.predecessor_version,
+            });
+        }
+        let latest_record = &self.premises_by_version[&latest_version];
+        if draft.origin_class != latest_record.origin_class {
+            return Err(ReasoningError::PremiseOriginClassChangeForbidden {
+                premise_id: draft.premise_id,
+                expected: latest_record.origin_class,
+                supplied: draft.origin_class,
             });
         }
         let Some(ref rationale) = draft.revision_rationale else {
@@ -1297,6 +1430,19 @@ impl ReasoningGraph {
         if self.all_versions.contains(&draft.version_id) {
             return Err(ReasoningError::DuplicateVersionId(draft.version_id));
         }
+        // Prevent a premise from laundering a reasoning step, hypothesis, or its own version ID
+        // as an external `source_version` (`AGENTS.md` §2, `A07`, `REASON-04`).
+        if draft.source_version == draft.version_id
+            || self.steps_by_version.contains_key(&draft.source_version)
+            || self
+                .hypotheses_by_version
+                .contains_key(&draft.source_version)
+        {
+            return Err(ReasoningError::PremiseSourceReferencesGraphNode(
+                draft.source_version,
+            ));
+        }
+
         validate_text(
             "citation_anchor",
             &draft.citation_anchor,
@@ -1379,8 +1525,9 @@ impl ReasoningGraph {
         Ok(version_id)
     }
 
-    /// Adds a new reasoning step (`predecessor_version: None`) or a revised reasoning step
-    /// (`predecessor_version: Some(latest)`).
+    /// Adds a new reasoning step (`predecessor_version: None`, `revision_rationale: None`)
+    /// or a revised reasoning step (`predecessor_version: Some(latest)`).
+    #[allow(clippy::too_many_lines)]
     pub fn add_step(&mut self, draft: ReasoningStepDraft) -> Result<VersionId, ReasoningError> {
         if self.steps_by_version.len() >= self.limits.max_steps {
             return Err(ReasoningError::BudgetExceeded {
@@ -1392,6 +1539,14 @@ impl ReasoningGraph {
         if self.all_versions.contains(&draft.version_id) {
             return Err(ReasoningError::DuplicateVersionId(draft.version_id));
         }
+        // Also forbid a step from reusing a version ID already cited as a premise's external `source_version`.
+        if self
+            .premises_by_version
+            .values()
+            .any(|p| p.source_version() == &draft.version_id)
+        {
+            return Err(ReasoningError::DuplicateVersionId(draft.version_id));
+        }
 
         let vintage_number = match self.step_history.get(&draft.step_id) {
             None => {
@@ -1401,6 +1556,9 @@ impl ReasoningGraph {
                         expected_latest: draft.version_id,
                         supplied: draft.predecessor_version,
                     });
+                }
+                if draft.revision_rationale.is_some() {
+                    return Err(ReasoningError::UnexpectedInitialRevisionRationale);
                 }
                 1
             }
@@ -1470,7 +1628,7 @@ impl ReasoningGraph {
                     let newest_ver = history[history.len() - 1].clone();
                     let newest_rec = &self.premises_by_version[&newest_ver];
                     upstream_needs_reassessment = true;
-                    inherited_triggers.push(ReassessmentTrigger::PremiseRevised {
+                    let trig = ReassessmentTrigger::PremiseRevised {
                         premise_id: premise.premise_id().clone(),
                         old_version: input.node_version.clone(),
                         new_version: newest_ver,
@@ -1478,7 +1636,10 @@ impl ReasoningGraph {
                             .revision_rationale()
                             .unwrap_or("superseded premise")
                             .to_owned(),
-                    });
+                    };
+                    if !inherited_triggers.contains(&trig) {
+                        inherited_triggers.push(trig);
+                    }
                 }
             } else if let Some(step) = self.steps_by_version.get(&input.node_version) {
                 let actual = step.output_origin_class();
@@ -1499,6 +1660,25 @@ impl ReasoningGraph {
                         if !inherited_triggers.contains(trig) {
                             inherited_triggers.push(trig.clone());
                         }
+                    }
+                }
+                if let Some(history) = self.step_history.get(step.step_id())
+                    && history.last() != Some(&input.node_version)
+                {
+                    let newest_ver = history[history.len() - 1].clone();
+                    let newest_rec = &self.steps_by_version[&newest_ver];
+                    upstream_needs_reassessment = true;
+                    let trig = ReassessmentTrigger::UpstreamStepRevised {
+                        step_id: step.step_id().clone(),
+                        old_version: input.node_version.clone(),
+                        new_version: newest_ver,
+                        rationale: newest_rec
+                            .revision_rationale()
+                            .unwrap_or("superseded step")
+                            .to_owned(),
+                    };
+                    if !inherited_triggers.contains(&trig) {
+                        inherited_triggers.push(trig);
                     }
                 }
             } else {
@@ -1575,7 +1755,12 @@ impl ReasoningGraph {
                 max: self.limits.max_steps,
             });
         }
-        if self.all_versions.contains(&new_version_id) {
+        if self.all_versions.contains(&new_version_id)
+            || self
+                .premises_by_version
+                .values()
+                .any(|p| p.source_version() == &new_version_id)
+        {
             return Err(ReasoningError::DuplicateVersionId(new_version_id));
         }
         let rationale = validate_decision_state(&new_decision, self.limits.max_text_bytes)?;
@@ -1664,7 +1849,12 @@ impl ReasoningGraph {
                 max: self.limits.max_steps,
             });
         }
-        if self.all_versions.contains(&new_version_id) {
+        if self.all_versions.contains(&new_version_id)
+            || self
+                .premises_by_version
+                .values()
+                .any(|p| p.source_version() == &new_version_id)
+        {
             return Err(ReasoningError::DuplicateVersionId(new_version_id));
         }
         let rationale = validate_decision_state(&new_decision, self.limits.max_text_bytes)?;
@@ -1752,7 +1942,12 @@ impl ReasoningGraph {
         if self.hypothesis_ids.contains(&draft.hypothesis_id) {
             return Err(ReasoningError::DuplicateHypothesisId(draft.hypothesis_id));
         }
-        if self.all_versions.contains(&draft.version_id) {
+        if self.all_versions.contains(&draft.version_id)
+            || self
+                .premises_by_version
+                .values()
+                .any(|p| p.source_version() == &draft.version_id)
+        {
             return Err(ReasoningError::DuplicateVersionId(draft.version_id));
         }
 
@@ -2007,6 +2202,55 @@ impl ReasoningGraph {
         }
     }
 
+    /// Collects all admissible `source_version` / node-version identifiers backed by `seen_inputs`
+    /// (including transitive upstream premises).
+    fn collect_backed_source_versions(
+        &self,
+        seen_inputs: &BTreeSet<VersionId>,
+    ) -> BTreeSet<VersionId> {
+        let mut backed = BTreeSet::new();
+        let mut queue: Vec<VersionId> = seen_inputs.iter().cloned().collect();
+        let mut visited = BTreeSet::new();
+        while let Some(ver) = queue.pop() {
+            if !visited.insert(ver.clone()) {
+                continue;
+            }
+            backed.insert(ver.clone());
+            if let Some(premise) = self.premises_by_version.get(&ver) {
+                backed.insert(premise.source_version().clone());
+            } else if let Some(step) = self.steps_by_version.get(&ver) {
+                for inp in step.inputs() {
+                    queue.push(inp.node_version.clone());
+                }
+            }
+        }
+        backed
+    }
+
+    /// Collects the backing external `source_version`s for a single node version in the graph.
+    fn node_source_versions(&self, node_version: &VersionId) -> BTreeSet<VersionId> {
+        let mut single = BTreeSet::new();
+        single.insert(node_version.clone());
+        let mut out = BTreeSet::new();
+        let mut queue = vec![node_version.clone()];
+        let mut visited = BTreeSet::new();
+        while let Some(ver) = queue.pop() {
+            if !visited.insert(ver.clone()) {
+                continue;
+            }
+            if let Some(premise) = self.premises_by_version.get(&ver) {
+                out.insert(premise.source_version().clone());
+            } else if let Some(step) = self.steps_by_version.get(&ver) {
+                for inp in step.inputs() {
+                    queue.push(inp.node_version.clone());
+                }
+            }
+        }
+        let _ = single;
+        out
+    }
+
+    #[allow(clippy::too_many_lines)]
     fn validate_step_kind(
         &self,
         inputs: &[StepInputRef],
@@ -2015,6 +2259,7 @@ impl ReasoningGraph {
     ) -> Result<(), ReasoningError> {
         let max_items = self.limits.max_items_per_step;
         let max_bytes = self.limits.max_text_bytes;
+        let backed_sources = self.collect_backed_source_versions(seen_inputs);
 
         match kind {
             ReasoningStepKind::Abstraction(spec) => {
@@ -2056,26 +2301,36 @@ impl ReasoningGraph {
                         AbstractionFieldState::Normalized {
                             normalized_value,
                             verbatim_wording,
-                            source_version: _,
+                            source_version,
                         } => {
                             validate_text("normalized_value", normalized_value, max_bytes, false)?;
                             validate_text("verbatim_wording", verbatim_wording, max_bytes, true)?;
+                            if !backed_sources.contains(source_version) {
+                                return Err(ReasoningError::AbstractionSourceVersionNotInInputs(
+                                    source_version.clone(),
+                                ));
+                            }
                         }
                         AbstractionFieldState::ExplicitUnknown {
                             reason,
                             verbatim_context,
-                            source_version: _,
+                            source_version,
                         } => {
                             validate_text("unknown_reason", reason, max_bytes, true)?;
                             validate_text("verbatim_context", verbatim_context, max_bytes, true)?;
+                            if !backed_sources.contains(source_version) {
+                                return Err(ReasoningError::AbstractionSourceVersionNotInInputs(
+                                    source_version.clone(),
+                                ));
+                            }
                         }
                         AbstractionFieldState::Conflicting {
                             primary_value,
                             primary_verbatim,
-                            primary_source_version: _,
+                            primary_source_version,
                             competing_value,
                             competing_verbatim,
-                            competing_source_version: _,
+                            competing_source_version,
                             conflict_note,
                         } => {
                             validate_text("primary_value", primary_value, max_bytes, false)?;
@@ -2088,6 +2343,21 @@ impl ReasoningGraph {
                                 true,
                             )?;
                             validate_text("conflict_note", conflict_note, max_bytes, true)?;
+                            if !backed_sources.contains(primary_source_version) {
+                                return Err(ReasoningError::AbstractionSourceVersionNotInInputs(
+                                    primary_source_version.clone(),
+                                ));
+                            }
+                            if !backed_sources.contains(competing_source_version) {
+                                return Err(ReasoningError::AbstractionSourceVersionNotInInputs(
+                                    competing_source_version.clone(),
+                                ));
+                            }
+                            if primary_source_version == competing_source_version {
+                                return Err(ReasoningError::ConflictingFieldSameSourceVersion(
+                                    primary_source_version.clone(),
+                                ));
+                            }
                         }
                     }
                 }
@@ -2112,6 +2382,11 @@ impl ReasoningGraph {
                         max_bytes,
                         false,
                     )?;
+                    if !backed_sources.contains(&candidate.source_version) {
+                        return Err(ReasoningError::AbstractionSourceVersionNotInInputs(
+                            candidate.source_version.clone(),
+                        ));
+                    }
                     validate_decision_state(&candidate.decision, max_bytes)?;
                 }
 
@@ -2124,6 +2399,11 @@ impl ReasoningGraph {
                         });
                     }
                     validate_text("verbatim_basis", &rel.verbatim_basis, max_bytes, true)?;
+                    if !backed_sources.contains(&rel.source_version) {
+                        return Err(ReasoningError::AbstractionSourceVersionNotInInputs(
+                            rel.source_version.clone(),
+                        ));
+                    }
                     validate_decision_state(&rel.decision, max_bytes)?;
                 }
 
@@ -2166,7 +2446,7 @@ impl ReasoningGraph {
                     return Err(ReasoningError::InvalidRateOrCount("evaluated_pair_count"));
                 }
                 validate_finite("coverage_fraction", spec.coverage_fraction)?;
-                if !(0.0..=1.0).contains(&spec.coverage_fraction) {
+                if spec.coverage_fraction <= 0.0 || spec.coverage_fraction > 1.0 {
                     return Err(ReasoningError::InvalidCoverageFraction);
                 }
                 validate_text(
@@ -2193,9 +2473,11 @@ impl ReasoningGraph {
                 let reported_matches = u32::try_from(spec.matched_pairs.len()).unwrap_or(u32::MAX);
                 if spec.tested_hypotheses_count == 0
                     || spec.tested_hypotheses_count < reported_matches
+                    || u64::from(spec.tested_hypotheses_count) < spec.evaluated_pair_count
                 {
                     return Err(ReasoningError::InvalidMultipleComparisonCount {
                         tested_hypotheses: spec.tested_hypotheses_count,
+                        evaluated_pairs: spec.evaluated_pair_count,
                         reported_matches,
                     });
                 }
@@ -2212,6 +2494,7 @@ impl ReasoningGraph {
                     true,
                 )?;
 
+                let mut seen_pairs: BTreeSet<(VersionId, VersionId)> = BTreeSet::new();
                 for pair in &spec.matched_pairs {
                     if !seen_inputs.contains(&pair.left_version) {
                         return Err(ReasoningError::UnknownInputNodeVersion(
@@ -2222,6 +2505,22 @@ impl ReasoningGraph {
                         return Err(ReasoningError::UnknownInputNodeVersion(
                             pair.right_version.clone(),
                         ));
+                    }
+                    if pair.left_version == pair.right_version {
+                        return Err(ReasoningError::SelfCorrelationPair(
+                            pair.left_version.clone(),
+                        ));
+                    }
+                    let canonical_pair = if pair.left_version <= pair.right_version {
+                        (pair.left_version.clone(), pair.right_version.clone())
+                    } else {
+                        (pair.right_version.clone(), pair.left_version.clone())
+                    };
+                    if !seen_pairs.insert(canonical_pair) {
+                        return Err(ReasoningError::DuplicateCorrelationPair {
+                            left_version: pair.left_version.clone(),
+                            right_version: pair.right_version.clone(),
+                        });
                     }
                     validate_finite(
                         "observed_temporal_delta_seconds",
@@ -2248,10 +2547,65 @@ impl ReasoningGraph {
                             domain_max: format!("{}", spec.spatial_tolerance_km),
                         });
                     }
-                    if let SourceDependencyStatus::UnverifiedIndependence { limitation_note } =
-                        &pair.source_dependency
-                    {
-                        validate_text("limitation_note", limitation_note, max_bytes, true)?;
+
+                    let left_sources = self.node_source_versions(&pair.left_version);
+                    let right_sources = self.node_source_versions(&pair.right_version);
+                    let shared_source = left_sources.intersection(&right_sources).next().cloned();
+
+                    match &pair.source_dependency {
+                        SourceDependencyStatus::IndependentSources => {
+                            if let Some(shared) = shared_source {
+                                return Err(ReasoningError::SharedSourceClaimedIndependent {
+                                    left_version: pair.left_version.clone(),
+                                    right_version: pair.right_version.clone(),
+                                    shared_source_version: shared,
+                                });
+                            }
+                        }
+                        SourceDependencyStatus::SharedUpstreamSource {
+                            common_source_version,
+                        } => {
+                            // `common_source_version` must be a known backing source version of at
+                            // least one side (or if both sides already share a direct source in the
+                            // graph, it must match that shared source) and cannot be a step/hypothesis ID.
+                            if self.steps_by_version.contains_key(common_source_version)
+                                || self
+                                    .hypotheses_by_version
+                                    .contains_key(common_source_version)
+                            {
+                                return Err(ReasoningError::InvalidSharedUpstreamSource {
+                                    left_version: pair.left_version.clone(),
+                                    right_version: pair.right_version.clone(),
+                                    claimed_common_source: common_source_version.clone(),
+                                });
+                            }
+                            if let Some(ref exact_shared) = shared_source
+                                && common_source_version != exact_shared
+                            {
+                                return Err(ReasoningError::InvalidSharedUpstreamSource {
+                                    left_version: pair.left_version.clone(),
+                                    right_version: pair.right_version.clone(),
+                                    claimed_common_source: common_source_version.clone(),
+                                });
+                            }
+                            if !backed_sources.contains(common_source_version) {
+                                return Err(ReasoningError::InvalidSharedUpstreamSource {
+                                    left_version: pair.left_version.clone(),
+                                    right_version: pair.right_version.clone(),
+                                    claimed_common_source: common_source_version.clone(),
+                                });
+                            }
+                        }
+                        SourceDependencyStatus::UnverifiedIndependence { limitation_note } => {
+                            if let Some(shared) = shared_source {
+                                return Err(ReasoningError::SharedSourceClaimedIndependent {
+                                    left_version: pair.left_version.clone(),
+                                    right_version: pair.right_version.clone(),
+                                    shared_source_version: shared,
+                                });
+                            }
+                            validate_text("limitation_note", limitation_note, max_bytes, true)?;
+                        }
                     }
                 }
                 Ok(())
@@ -2281,7 +2635,10 @@ impl ReasoningGraph {
                 for (idx, dstep) in spec.derivation_steps.iter().enumerate() {
                     let expected_num = u32::try_from(idx + 1).unwrap_or(u32::MAX);
                     if dstep.step_number != expected_num {
-                        return Err(ReasoningError::InvalidRateOrCount("step_number"));
+                        return Err(ReasoningError::NonSequentialDerivationStep {
+                            expected: expected_num,
+                            actual: dstep.step_number,
+                        });
                     }
                     validate_text("rule_name", &dstep.rule_name, max_bytes, false)?;
                     if dstep.cited_input_versions.is_empty() {
@@ -2343,7 +2700,9 @@ impl ReasoningGraph {
                         validate_text("lean_toolchain", lean_toolchain, max_bytes, false)?;
                         validate_text("model_revision", model_revision, max_bytes, false)?;
                         validate_text("assumptions_summary", assumptions_summary, max_bytes, true)?;
-                        if theorem_id.contains("sorry") || theorem_id.contains("admit") {
+                        // Token-level identifier filter rejecting `sorry` or `admit` segments
+                        // (case-insensitive) without rejecting legitimate words like `admittedEvidence`.
+                        if has_placeholder_token(theorem_id) {
                             return Err(ReasoningError::InvalidVerificationMetadata("theorem_id"));
                         }
                     }
@@ -2380,10 +2739,13 @@ impl ReasoningGraph {
                 validate_finite("uncertainty_upper", spec.uncertainty_upper)?;
                 if spec.uncertainty_lower > spec.projected_value
                     || spec.projected_value > spec.uncertainty_upper
+                    || spec.uncertainty_lower >= spec.uncertainty_upper
                 {
-                    return Err(ReasoningError::InvalidNumericValue(
-                        "uncertainty bounds must bracket projected_value",
-                    ));
+                    return Err(ReasoningError::InvalidUncertaintyBounds {
+                        lower: format!("{}", spec.uncertainty_lower),
+                        projected: format!("{}", spec.projected_value),
+                        upper: format!("{}", spec.uncertainty_upper),
+                    });
                 }
                 validate_text("model_name", &spec.model_name, max_bytes, false)?;
                 validate_text(

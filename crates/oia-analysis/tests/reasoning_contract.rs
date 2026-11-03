@@ -5,14 +5,16 @@
 //!    and extrapolation preserve verbatim wording, explicit unknowns, conflicts, tolerances,
 //!    baseline rates, verification tiers (`AiProposed`, `HumanReviewed`,
 //!    `AssertedUnverifiedLeanRef`), and non-observational inference origin classes
-//!    (`AnalyticalInference` never becomes `NormalizedObservation`).
+//!    (`AnalyticalInference` never becomes `NormalizedObservation`, including through
+//!    premise `source_version` laundering or premise revision).
 //! 2. `REASON-04` / `A07` non-destructive reassessment propagation: modifying an upstream
-//!    premise or reversing an abstraction entity/relationship decision preserves the original
-//!    vintages and transitively flags dependent steps and competing hypotheses
-//!    `needs_reassessment = true`.
-//! 3. `REASON-02` / `A07` domain/unit and malformed-input guards: incompatible units,
-//!    out-of-domain values, invalid horizons/tolerances, support/contradiction overlap, and
-//!    bidi/control characters are rejected before corrupting graph state.
+//!    premise, reversing an abstraction entity/relationship decision, or adding a new step on top
+//!    of a superseded step version preserves the original vintages and transitively flags
+//!    dependent steps and competing hypotheses `needs_reassessment = true`.
+//! 3. `REASON-02` / `A07` domain/unit, corroboration independence, and malformed-input guards:
+//!    incompatible units, out-of-domain values, invalid horizons/tolerances, zero-width
+//!    uncertainty bounds, self/duplicate/shared-source correlation pairs, unbacked abstraction
+//!    source versions, and bidi/control characters are rejected before corrupting graph state.
 
 use oia_analysis::reasoning::{
     AbstractionField, AbstractionFieldState, AbstractionRelationType, AbstractionRelationship,
@@ -157,6 +159,34 @@ fn composed_reasoning_preserves_origins_and_propagates_reassessment()
     );
     assert!(!abs_rec.can_serve_as_observation());
     assert!(!abs_rec.contains_non_observational_inputs());
+    assert!(!AbstractionRelationType::ObservedCoOccurrence.is_affiliation_or_contract_relation());
+    assert!(
+        AbstractionRelationType::OrganizationalAffiliation.is_affiliation_or_contract_relation()
+    );
+    assert!(!AbstractionRelationType::OrganizationalAffiliation.asserts_causation());
+
+    // B3: Attempting to launder `s_abs_v1` as a premise `source_version` is rejected.
+    let laundered_premise = graph.register_premise(PremiseDraft {
+        premise_id: OpaqueId::new("premise:laundered-step")?,
+        version_id: VersionId::new("ver:p-laundered")?,
+        predecessor_version: None,
+        schema_version: SchemaVersion::V1,
+        actor: actor.clone(),
+        origin_class: EvidenceOriginClass::NormalizedObservation,
+        source_version: s_abs_v1.clone(),
+        citation_anchor: "step=abs".to_owned(),
+        verbatim_excerpt: "laundered".to_owned(),
+        proposition: "laundered step output".to_owned(),
+        quantity: None,
+        uncertainty_note: "none".to_owned(),
+        revision_rationale: None,
+    });
+    assert_eq!(
+        laundered_premise,
+        Err(ReasoningError::PremiseSourceReferencesGraphNode(
+            s_abs_v1.clone()
+        ))
+    );
 
     // Feeding `s_abs_v1` into Correlation must declare `AnalyticalInference`, not `NormalizedObservation`.
     let promoted_err = graph.add_step(ReasoningStepDraft {
@@ -225,14 +255,14 @@ fn composed_reasoning_preserves_origins_and_propagates_reassessment()
             temporal_tolerance_seconds: 60.0,
             spatial_tolerance_km: 2.5,
             attribute_matching_rule: "azimuth <= 10 deg".to_owned(),
-            evaluated_pair_count: 12,
+            evaluated_pair_count: 4,
             matched_pairs: vec![CorrelationPair {
                 left_version: p1_v1.clone(),
                 right_version: p2_v1.clone(),
                 observed_temporal_delta_seconds: 18.0,
                 observed_spatial_delta_km: 1.1,
                 source_dependency: SourceDependencyStatus::SharedUpstreamSource {
-                    common_source_version: VersionId::new("ver:src-dispatch-hub")?,
+                    common_source_version: VersionId::new("ver:src-radar-1")?,
                 },
             }],
             coverage_fraction: 0.85,
@@ -243,7 +273,7 @@ fn composed_reasoning_preserves_origins_and_propagates_reassessment()
             },
             tested_hypotheses_count: 4,
             multiple_comparison_method: "Bonferroni (m=4)".to_owned(),
-            correlation_summary: "Spatiotemporal match with shared dispatch origin noted"
+            correlation_summary: "Spatiotemporal match with shared upstream radar log noted"
                 .to_owned(),
         }),
         revision_rationale: None,
@@ -256,6 +286,8 @@ fn composed_reasoning_preserves_origins_and_propagates_reassessment()
         CORRELATION_NON_CAUSATION_NOTICE
     );
 
+    // Note: theorem_id uses "admittedEvidence_bound" to verify that legitimate identifiers
+    // containing "admit" as a substring are accepted while standalone `sorry`/`admit` tokens fail.
     let s_ded_v1 = graph.add_step(ReasoningStepDraft {
         step_id: OpaqueId::new("step:ded")?,
         version_id: VersionId::new("ver:s-ded-v1")?,
@@ -280,7 +312,7 @@ fn composed_reasoning_preserves_origins_and_propagates_reassessment()
                 "Conditional on constant wind, object speed is consistent with passive drift"
                     .to_owned(),
             verification_tier: ReasoningVerificationTier::AssertedUnverifiedLeanRef {
-                theorem_id: "AssertedModelRef.Kinematics.passive_drift_bound".to_owned(),
+                theorem_id: "AssertedModelRef.Kinematics.admittedEvidence_bound".to_owned(),
                 lean_toolchain: "leanprover/lean4:v4.35.0".to_owned(),
                 model_revision: "unverified-fixture-ref".to_owned(),
                 assumptions_summary: "Caller-asserted model reference; not verified at runtime"
@@ -296,7 +328,7 @@ fn composed_reasoning_preserves_origins_and_propagates_reassessment()
     let ded_rec = graph.step(&s_ded_v1).ok_or("missing ded step")?;
     assert_eq!(ded_rec.mandatory_notice(), DEDUCTION_CONDITIONALITY_NOTICE);
     let ReasoningStepKind::Deduction(ded_spec) = ded_rec.kind() else {
-        panic!("expected deduction step");
+        return Err("expected deduction step".into());
     };
     assert_eq!(
         ded_spec.verification_tier.tier_label(),
@@ -386,6 +418,31 @@ fn composed_reasoning_preserves_origins_and_propagates_reassessment()
         }],
     })?;
 
+    // B3: Attempting to change a premise's origin_class on revision is rejected.
+    let origin_change_err = graph.revise_premise(PremiseDraft {
+        premise_id: OpaqueId::new("premise:witness-log")?,
+        version_id: VersionId::new("ver:p2-v2-bad")?,
+        predecessor_version: Some(p2_v1.clone()),
+        schema_version: SchemaVersion::V1,
+        actor: actor.clone(),
+        origin_class: EvidenceOriginClass::NormalizedObservation,
+        source_version: VersionId::new("ver:src-witness-2")?,
+        citation_anchor: "line=4".to_owned(),
+        verbatim_excerpt: "Silent white light drifting east".to_owned(),
+        proposition: "Promoted witness account to observation".to_owned(),
+        quantity: None,
+        uncertainty_note: "none".to_owned(),
+        revision_rationale: Some("Attempted promotion".to_owned()),
+    });
+    assert_eq!(
+        origin_change_err,
+        Err(ReasoningError::PremiseOriginClassChangeForbidden {
+            premise_id: OpaqueId::new("premise:witness-log")?,
+            expected: EvidenceOriginClass::UserTestimony,
+            supplied: EvidenceOriginClass::NormalizedObservation,
+        })
+    );
+
     // Revise premise p1_v1 -> p1_v2 and verify non-destructive transitive reassessment!
     let p1_v2 = graph.revise_premise(PremiseDraft {
         premise_id: OpaqueId::new("premise:sensor-speed")?,
@@ -461,7 +518,7 @@ fn composed_reasoning_preserves_origins_and_propagates_reassessment()
         &s_abs_v2,
         &rel_id,
         VersionId::new("ver:s-abs-v3")?,
-        actor,
+        actor.clone(),
         DecisionState::Reversed {
             actor: ActorId::new("actor:reviewer-02")?,
             reversal_rationale: "Co-occurrence invalidated after speed correction".to_owned(),
@@ -483,25 +540,71 @@ fn composed_reasoning_preserves_origins_and_propagates_reassessment()
             .contains(&ReassessmentTrigger::AbstractionDecisionUpdated {
                 step_id: OpaqueId::new("step:abs")?,
                 old_version: s_abs_v1,
-                new_version: s_abs_v2,
+                new_version: s_abs_v2.clone(),
                 target_id: candidate_id,
                 rationale: "34.0 m/s exceeds balloon drift envelope".to_owned(),
             })
     );
     let ReasoningStepKind::Abstraction(abs_v3_spec) = graph.step(&s_abs_v3).ok_or("abs_v3")?.kind()
     else {
-        panic!("expected abstraction step");
+        return Err("expected abstraction step".into());
     };
     assert!(matches!(
         abs_v3_spec.relationships[0].decision,
         DecisionState::Reversed { .. }
     ));
 
+    // B5: Adding a new step that consumes a superseded step version (`s_abs_v2` when `s_abs_v3`
+    // is the latest) immediately marks the new step `needs_reassessment = true` with
+    // `UpstreamStepRevised`.
+    let s_late_consumer = graph.add_step(ReasoningStepDraft {
+        step_id: OpaqueId::new("step:late-consumer")?,
+        version_id: VersionId::new("ver:s-late-v1")?,
+        predecessor_version: None,
+        schema_version: SchemaVersion::V1,
+        actor,
+        inputs: vec![StepInputRef {
+            node_version: s_abs_v2.clone(),
+            declared_origin_class: EvidenceOriginClass::AnalyticalInference,
+        }],
+        kind: ReasoningStepKind::Deduction(DeductionSpec {
+            rule_system: "oia.followup.v1".to_owned(),
+            explicit_assumptions: vec![],
+            derivation_steps: vec![DerivationStep {
+                step_number: 1,
+                rule_name: "consume_superseded_step".to_owned(),
+                cited_input_versions: vec![s_abs_v2.clone()],
+                required_assumptions: vec![],
+                inferred_statement: "Built on superseded abstraction vintage v2".to_owned(),
+            }],
+            conditional_conclusion: "Follow-up conclusion".to_owned(),
+            verification_tier: ReasoningVerificationTier::AiProposed {
+                model_id: "model:test".to_owned(),
+                prompt_template_version: VersionId::new("ver:prompt-1")?,
+            },
+            contradictions_noted: vec![],
+        }),
+        revision_rationale: None,
+    })?;
+    let late_rec = graph.step(&s_late_consumer).ok_or("late step")?;
+    assert!(late_rec.needs_reassessment());
+    assert!(
+        late_rec
+            .reassessment_triggers()
+            .contains(&ReassessmentTrigger::UpstreamStepRevised {
+                step_id: OpaqueId::new("step:abs")?,
+                old_version: s_abs_v2,
+                new_version: s_abs_v3,
+                rationale: "Co-occurrence invalidated after speed correction".to_owned(),
+            })
+    );
+
     Ok(())
 }
 
 #[test]
-fn rejects_unsupported_units_domains_horizons_and_malformed_inputs()
+#[allow(clippy::too_many_lines)]
+fn rejects_unsupported_units_domains_corroboration_overstatements_and_malformed_inputs()
 -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(
         ReasoningLimits::new(0, 10, 10, 10, 1024),
@@ -511,6 +614,27 @@ fn rejects_unsupported_units_domains_horizons_and_malformed_inputs()
     let limits = ReasoningLimits::new(16, 16, 8, 8, 4_096)?;
     let mut graph = ReasoningGraph::new(limits);
     let actor = ActorId::new("actor:validator")?;
+
+    // Initial premise with non-None revision_rationale is rejected.
+    let unexpected_rationale = graph.register_premise(PremiseDraft {
+        premise_id: OpaqueId::new("premise:unexpected-rationale")?,
+        version_id: VersionId::new("ver:p-unexp")?,
+        predecessor_version: None,
+        schema_version: SchemaVersion::V1,
+        actor: actor.clone(),
+        origin_class: EvidenceOriginClass::NormalizedObservation,
+        source_version: VersionId::new("ver:src-1")?,
+        citation_anchor: "row=1".to_owned(),
+        verbatim_excerpt: "10 m/s".to_owned(),
+        proposition: "10 m/s".to_owned(),
+        quantity: None,
+        uncertainty_note: "none".to_owned(),
+        revision_rationale: Some("Should not be present on v1".to_owned()),
+    });
+    assert_eq!(
+        unexpected_rationale,
+        Err(ReasoningError::UnexpectedInitialRevisionRationale)
+    );
 
     // Out-of-domain premise quantity is rejected.
     let bad_premise = graph.register_premise(PremiseDraft {
@@ -539,7 +663,7 @@ fn rejects_unsupported_units_domains_horizons_and_malformed_inputs()
         Err(ReasoningError::UnsupportedDomainValue { .. })
     ));
 
-    // Register a valid premise in "knots" and verify Extrapolation rejects a unit mismatch ("m/s").
+    // Register two premises sharing `ver:src-shared` to test B4 corroboration checks.
     let p_knots = graph.register_premise(PremiseDraft {
         premise_id: OpaqueId::new("premise:knots")?,
         version_id: VersionId::new("ver:p-knots")?,
@@ -547,7 +671,7 @@ fn rejects_unsupported_units_domains_horizons_and_malformed_inputs()
         schema_version: SchemaVersion::V1,
         actor: actor.clone(),
         origin_class: EvidenceOriginClass::NormalizedObservation,
-        source_version: VersionId::new("ver:src-1")?,
+        source_version: VersionId::new("ver:src-shared")?,
         citation_anchor: "row=2".to_owned(),
         verbatim_excerpt: "40 knots".to_owned(),
         proposition: "40 knots speed".to_owned(),
@@ -562,6 +686,150 @@ fn rejects_unsupported_units_domains_horizons_and_malformed_inputs()
         revision_rationale: None,
     })?;
 
+    let p_same_src = graph.register_premise(PremiseDraft {
+        premise_id: OpaqueId::new("premise:same-src")?,
+        version_id: VersionId::new("ver:p-same-src")?,
+        predecessor_version: None,
+        schema_version: SchemaVersion::V1,
+        actor: actor.clone(),
+        origin_class: EvidenceOriginClass::ExtractedClaim,
+        source_version: VersionId::new("ver:src-shared")?,
+        citation_anchor: "row=3".to_owned(),
+        verbatim_excerpt: "40 knots repeated".to_owned(),
+        proposition: "Repeated claim from same source".to_owned(),
+        quantity: None,
+        uncertainty_note: "Same source".to_owned(),
+        revision_rationale: None,
+    })?;
+
+    // B4: Self-correlation (`a ~ a`) is rejected.
+    let self_pair_err = graph.add_step(ReasoningStepDraft {
+        step_id: OpaqueId::new("step:corr-self")?,
+        version_id: VersionId::new("ver:corr-self")?,
+        predecessor_version: None,
+        schema_version: SchemaVersion::V1,
+        actor: actor.clone(),
+        inputs: vec![StepInputRef {
+            node_version: p_knots.clone(),
+            declared_origin_class: EvidenceOriginClass::NormalizedObservation,
+        }],
+        kind: ReasoningStepKind::Correlation(CorrelationSpec {
+            temporal_tolerance_seconds: 10.0,
+            spatial_tolerance_km: 1.0,
+            attribute_matching_rule: "exact".to_owned(),
+            evaluated_pair_count: 1,
+            matched_pairs: vec![CorrelationPair {
+                left_version: p_knots.clone(),
+                right_version: p_knots.clone(),
+                observed_temporal_delta_seconds: 0.0,
+                observed_spatial_delta_km: 0.0,
+                source_dependency: SourceDependencyStatus::IndependentSources,
+            }],
+            coverage_fraction: 1.0,
+            coverage_limitations: "none".to_owned(),
+            baseline_rate: BaselineRateSpec::Unavailable {
+                reason: "none".to_owned(),
+            },
+            tested_hypotheses_count: 1,
+            multiple_comparison_method: "none".to_owned(),
+            correlation_summary: "self".to_owned(),
+        }),
+        revision_rationale: None,
+    });
+    assert_eq!(
+        self_pair_err,
+        Err(ReasoningError::SelfCorrelationPair(p_knots.clone()))
+    );
+
+    // B4: Two premises sharing `source_version` cannot claim `IndependentSources`.
+    let shared_claimed_indep = graph.add_step(ReasoningStepDraft {
+        step_id: OpaqueId::new("step:corr-shared-indep")?,
+        version_id: VersionId::new("ver:corr-shared-indep")?,
+        predecessor_version: None,
+        schema_version: SchemaVersion::V1,
+        actor: actor.clone(),
+        inputs: vec![
+            StepInputRef {
+                node_version: p_knots.clone(),
+                declared_origin_class: EvidenceOriginClass::NormalizedObservation,
+            },
+            StepInputRef {
+                node_version: p_same_src.clone(),
+                declared_origin_class: EvidenceOriginClass::ExtractedClaim,
+            },
+        ],
+        kind: ReasoningStepKind::Correlation(CorrelationSpec {
+            temporal_tolerance_seconds: 10.0,
+            spatial_tolerance_km: 1.0,
+            attribute_matching_rule: "exact".to_owned(),
+            evaluated_pair_count: 1,
+            matched_pairs: vec![CorrelationPair {
+                left_version: p_knots.clone(),
+                right_version: p_same_src.clone(),
+                observed_temporal_delta_seconds: 0.0,
+                observed_spatial_delta_km: 0.0,
+                source_dependency: SourceDependencyStatus::IndependentSources,
+            }],
+            coverage_fraction: 1.0,
+            coverage_limitations: "none".to_owned(),
+            baseline_rate: BaselineRateSpec::Unavailable {
+                reason: "none".to_owned(),
+            },
+            tested_hypotheses_count: 1,
+            multiple_comparison_method: "none".to_owned(),
+            correlation_summary: "shared source".to_owned(),
+        }),
+        revision_rationale: None,
+    });
+    assert_eq!(
+        shared_claimed_indep,
+        Err(ReasoningError::SharedSourceClaimedIndependent {
+            left_version: p_knots.clone(),
+            right_version: p_same_src.clone(),
+            shared_source_version: VersionId::new("ver:src-shared")?,
+        })
+    );
+
+    // Abstraction Conflicting field citing the same source_version on both sides is rejected.
+    let same_conflict_src = graph.add_step(ReasoningStepDraft {
+        step_id: OpaqueId::new("step:abs-same-src")?,
+        version_id: VersionId::new("ver:abs-same-src")?,
+        predecessor_version: None,
+        schema_version: SchemaVersion::V1,
+        actor: actor.clone(),
+        inputs: vec![StepInputRef {
+            node_version: p_knots.clone(),
+            declared_origin_class: EvidenceOriginClass::NormalizedObservation,
+        }],
+        kind: ReasoningStepKind::Abstraction(AbstractionSpec {
+            event_schema: "oia.event.v1".to_owned(),
+            taxonomy_version: VersionId::new("ver:tax-1")?,
+            fields: vec![AbstractionField {
+                field_name: "speed".to_owned(),
+                state: AbstractionFieldState::Conflicting {
+                    primary_value: "40 kt".to_owned(),
+                    primary_verbatim: "40 knots".to_owned(),
+                    primary_source_version: VersionId::new("ver:src-shared")?,
+                    competing_value: "42 kt".to_owned(),
+                    competing_verbatim: "40 knots".to_owned(),
+                    competing_source_version: VersionId::new("ver:src-shared")?,
+                    conflict_note: "Same source on both sides".to_owned(),
+                },
+            }],
+            entity_matches: vec![],
+            relationships: vec![],
+            explicit_omissions: vec![],
+        }),
+        revision_rationale: None,
+    });
+    assert_eq!(
+        same_conflict_src,
+        Err(ReasoningError::ConflictingFieldSameSourceVersion(
+            VersionId::new("ver:src-shared")?
+        ))
+    );
+
+    // Extrapolation rejects unit mismatch ("m/s" vs "knots") and zero-width uncertainty bounds.
     let unit_err = graph.add_step(ReasoningStepDraft {
         step_id: OpaqueId::new("step:ext-unit-mismatch")?,
         version_id: VersionId::new("ver:ext-unit-mismatch")?,
@@ -600,7 +868,46 @@ fn rejects_unsupported_units_domains_horizons_and_malformed_inputs()
         })
     );
 
-    // Reject bidi override control characters and Lean `sorry` theorem identifiers.
+    let zero_width_err = graph.add_step(ReasoningStepDraft {
+        step_id: OpaqueId::new("step:ext-zero-width")?,
+        version_id: VersionId::new("ver:ext-zero-width")?,
+        predecessor_version: None,
+        schema_version: SchemaVersion::V1,
+        actor: actor.clone(),
+        inputs: vec![StepInputRef {
+            node_version: p_knots.clone(),
+            declared_origin_class: EvidenceOriginClass::NormalizedObservation,
+        }],
+        kind: ReasoningStepKind::Extrapolation(ExtrapolationSpec {
+            domain_variable: "time".to_owned(),
+            domain_unit: "s".to_owned(),
+            observed_domain_min: 0.0,
+            observed_domain_max: 60.0,
+            observed_sample_count: 5,
+            projection_horizon_start: 60.0,
+            projection_horizon_end: 120.0,
+            value_unit: "knots".to_owned(),
+            projected_value: 40.0,
+            uncertainty_lower: 40.0,
+            uncertainty_upper: 40.0,
+            model_name: "linear".to_owned(),
+            model_version: VersionId::new("ver:m1")?,
+            uncertainty_method: "bounds".to_owned(),
+            sensitivity_summary: "linear".to_owned(),
+            explicit_assumptions: vec!["steady".to_owned()],
+        }),
+        revision_rationale: None,
+    });
+    assert_eq!(
+        zero_width_err,
+        Err(ReasoningError::InvalidUncertaintyBounds {
+            lower: "40".to_owned(),
+            projected: "40".to_owned(),
+            upper: "40".to_owned(),
+        })
+    );
+
+    // Reject case-insensitive `Sorry` / `admit` tokens in theorem_id.
     let sorry_err = graph.add_step(ReasoningStepDraft {
         step_id: OpaqueId::new("step:ded-sorry")?,
         version_id: VersionId::new("ver:ded-sorry")?,
@@ -623,7 +930,7 @@ fn rejects_unsupported_units_domains_horizons_and_malformed_inputs()
             }],
             conditional_conclusion: "conclusion".to_owned(),
             verification_tier: ReasoningVerificationTier::AssertedUnverifiedLeanRef {
-                theorem_id: "AssertedModelRef.sorry_placeholder".to_owned(),
+                theorem_id: "AssertedModelRef.Sorry.placeholder".to_owned(),
                 lean_toolchain: "leanprover/lean4:v4.35.0".to_owned(),
                 model_revision: "unverified-fixture-ref".to_owned(),
                 assumptions_summary: "none".to_owned(),

@@ -22,17 +22,34 @@ competing hypotheses:
      `domain_max`), and `uncertainty_note`.
    - Rejects non-finite numeric values, negative uncertainty, and values outside
      `[domain_min, domain_max]`.
+   - Initial premise registrations reject `Some(_)` `revision_rationale`
+     (`ReasoningError::UnexpectedInitialRevisionRationale`), while revisions
+     require a non-empty rationale.
+   - Prevents inference laundering: a premise `source_version` cannot reference
+     any reasoning step, hypothesis, or the premise's own `version_id`
+     (`ReasoningError::PremiseSourceReferencesGraphNode`), steps and hypotheses
+     cannot reuse an existing premise `source_version`, and revising a premise
+     cannot change its `origin_class`
+     (`ReasoningError::PremiseOriginClassChangeForbidden`).
 
 2. **Abstraction (`REASON-03`, `ReasoningStepKind::Abstraction`):**
    - Normalizes reports into versioned event schemas and taxonomy concepts while
      preserving verbatim wording (`AbstractionFieldState::Normalized`), explicit
      unknowns (`AbstractionFieldState::ExplicitUnknown`), and conflicting
      source accounts (`AbstractionFieldState::Conflicting`).
+   - Validates that every `source_version` cited on normalized/conflicting
+     fields, entity-match candidates (`candidate_source_version` and
+     `target_source_version`), and relationships (`source_version`) is backed by
+     the step's declared inputs (`ReasoningError::AbstractionSourceVersionNotInInputs`),
+     and rejects `Conflicting` fields where `primary_source_version == competing_source_version`
+     (`ReasoningError::ConflictingFieldSameSourceVersion`).
    - Records explicit source/sensor omissions (`explicit_omissions`).
    - Keeps entity-match candidates (`EntityMatchCandidate`) and typed
      relationships (`AbstractionRelationship` with `AbstractionRelationType`)
      explicit and reversible via `DecisionState` (`Proposed`, `Confirmed`,
-     `Reversed`).
+     `Reversed`). `AbstractionRelationType::is_affiliation_or_contract_relation()`
+     returns `true` for `OrganizationalAffiliation | ContractualAward`, while
+     `asserts_causation()` is always `false`.
    - Reversing or updating an entity match (`update_entity_match_decision`) or
      relationship (`update_relationship_decision`) requires a non-empty
      rationale, creates a new immutable step vintage, preserves prior vintages,
@@ -42,28 +59,37 @@ competing hypotheses:
    - Requires positive finite `temporal_tolerance_seconds` and
      `spatial_tolerance_km`, explicit `attribute_matching_rule`,
      `evaluated_pair_count >= matched_pairs.len()`, `coverage_fraction` in
-     `[0.0, 1.0]`, `coverage_limitations`, `BaselineRateSpec` (`EmpiricalRate`
-     or `Unavailable { reason }`), `tested_hypotheses_count >= matched_pairs.len()`,
+     `(0.0, 1.0]`, `coverage_limitations`, `BaselineRateSpec` (`EmpiricalRate`
+     or `Unavailable { reason }`), `tested_hypotheses_count >= evaluated_pair_count`,
      and `multiple_comparison_method`.
-   - Every `CorrelationPair` must reference declared step inputs, satisfy the
-     declared temporal and spatial tolerances, and record
+   - Every `CorrelationPair` must reference distinct declared step inputs
+     (`ReasoningError::SelfCorrelationPair`), avoid duplicate pair combinations
+     in either direction (`ReasoningError::DuplicateCorrelationPair`), satisfy
+     the declared temporal and spatial tolerances, and record
      `SourceDependencyStatus` (`IndependentSources`, `SharedUpstreamSource`, or
      `UnverifiedIndependence`).
+   - Verifies source-independence claims against the graph's upstream
+     `source_version` lineage: if `left_node_version` and `right_node_version`
+     share an upstream `source_version`, claiming `IndependentSources` is
+     rejected (`ReasoningError::SharedSourceClaimedIndependent`), and
+     `SharedUpstreamSource` must cite a real upstream `source_version` present
+     in the step's inputs (`ReasoningError::InvalidSharedUpstreamSource`).
    - Attaches `CORRELATION_NON_CAUSATION_NOTICE` so correlation never silently
      asserts causation or independent corroboration.
 
 4. **Deduction (`REASON-01`, `ReasoningStepKind::Deduction`):**
    - Requires a named `rule_system`, explicit assumptions, sequential
-     `DerivationStep` records citing declared step input versions, a
-     `conditional_conclusion`, and explicit contradictions noted.
+     `DerivationStep` records (`ReasoningError::NonSequentialDerivationStep`)
+     citing declared step input versions, a `conditional_conclusion`, and
+     explicit contradictions noted.
    - Keeps `ReasoningVerificationTier` variants distinct:
      - `AiProposed { model_id, prompt_template_version }`
      - `HumanReviewed { reviewer, review_note }`
      - `AssertedUnverifiedLeanRef { theorem_id, lean_toolchain, model_revision, assumptions_summary }`
        (records a caller-asserted theorem/model reference without claiming runtime
        Lean verification or formal Rust implementation correspondence; rejects
-       placeholder `sorry`/`admit` theorem identifiers, and
-       `establishes_lean_proof_or_correspondence()` returns `false`).
+       placeholder `sorry`/`admit` tokens via case-insensitive token inspection,
+       and `establishes_lean_proof_or_correspondence()` returns `false`).
    - Attaches `DEDUCTION_CONDITIONALITY_NOTICE` stating that validity is
      conditional on the stated premises and assumptions.
 
@@ -71,9 +97,10 @@ competing hypotheses:
    - Requires finite `observed_domain_min < observed_domain_max`,
      `observed_sample_count >= 2`, projection horizon
      `observed_domain_max <= projection_horizon_start < projection_horizon_end`,
-     uncertainty bounds bracketing `projected_value`, pinned `model_name` and
-     `model_version`, `uncertainty_method`, `sensitivity_summary`, and
-     non-empty `explicit_assumptions`.
+     strict uncertainty bounds `uncertainty_lower < uncertainty_upper` bracketing
+     `projected_value` (`ReasoningError::InvalidUncertaintyBounds`), pinned
+     `model_name` and `model_version`, `uncertainty_method`,
+     `sensitivity_summary`, and non-empty `explicit_assumptions`.
    - Validates unit and domain compatibility against quantitative premise inputs
      (`ReasoningError::UnitMismatch` and `UnsupportedDomainValue`).
    - Attaches `EXTRAPOLATION_PROJECTION_NOTICE`.
@@ -91,12 +118,20 @@ competing hypotheses:
      answer.
    - Revising a premise or upstream step preserves all prior versions and
      transitively marks dependent steps and hypotheses `needs_reassessment = true`
-     with a structured `ReassessmentTrigger` audit trail.
+     with a structured `ReassessmentTrigger` audit trail (`PremiseRevised` or
+     `UpstreamStepRevised`). Registering a new step or hypothesis that cites an
+     already-superseded premise or step vintage immediately marks the new record
+     `needs_reassessment = true` with the corresponding trigger.
 
 ## Limitations and remaining `#35` scope
 
 - **In-memory kernel only:** `ReasoningGraph` does not persist records to SQLite
   (`oia-store`, `#11`) or schedule background worker jobs (`oia-app`, `#14`).
+- **Cross-crate type consolidation (`#10` / `#12`):** `EvidenceOriginClass` and
+  `MeasuredQuantity` are defined locally in `oia_analysis::reasoning` while
+  `oia-domain` (`#10`) and `oia-time-geo` (`#12`) are still pending; once those
+  foundation crates land, these types should be unified with the canonical
+  provenance/origin-class and unit/quantity models and re-exported here.
 - **Asserted, unverified Lean reference tier:** `ReasoningVerificationTier::AssertedUnverifiedLeanRef`
   records a caller-asserted theorem identifier, toolchain, and model revision;
   because `proofs/` (`#15`) is not yet on `main` and a Lean model proof does not

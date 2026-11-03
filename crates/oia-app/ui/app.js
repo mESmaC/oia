@@ -6,6 +6,7 @@ const $ = id => document.getElementById(id);
 const invoke = (command, args) => window.__TAURI__.core.invoke(command, args);
 const SCHEMA = 'oia-local-tools/1';
 const PAGE_SIZE = 100;
+const QUERY_BYTE_LIMIT = 512; // Rust measures UTF-8 bytes, not characters.
 const INSTRUMENTS = ['session', 'documents', 'witness', 'privacy', 'globe', 'media'];
 const SNAPSHOT_SCHEME = 'oia-snapshot'; // Rust-owned read-only scheme serving the held image by its hash
 const TARGETS = {
@@ -90,6 +91,18 @@ function effectiveScope() {
 function activeResults() {
   return effectiveScope() === 'corpus' ? corpusSearchView : searchView;
 }
+function matchingDescription(mode) {
+  return mode === 'whitespace_token'
+    ? 'Whole-token matching at Unicode whitespace or line edges; case-sensitive, punctuation literal. No language-based word segmentation.'
+    : 'Exact substring matching; case-sensitive, within lines.';
+}
+function updateQueryState() {
+  const bytes = new TextEncoder().encode($('query').value).length;
+  const over = bytes > QUERY_BYTE_LIMIT;
+  $('query').setCustomValidity(over ? `Query is ${fmt(bytes)} bytes; the limit is ${QUERY_BYTE_LIMIT} UTF-8 bytes.` : '');
+  $('search-submit').disabled = busy || !(documentView || corpusView) || over || bytes === 0;
+  return over;
+}
 function renderShell() {
   const names = { session: '', documents: 'Documents', witness: 'Witness', privacy: 'Privacy', globe: 'Globe', media: 'Media' };
   const view = currentView();
@@ -145,7 +158,11 @@ function renderShell() {
   scopeControl.classList.toggle('off', !searchable);
   scopeControl.disabled = busy || !(documentView && corpusView);
   $('query').placeholder = inCorpus ? `Exact text across ${corpusView.files.length} held ${corpusView.files.length === 1 ? 'file' : 'files'}` : documentView ? `Exact text in ${documentView.file.name}` : 'Open a document or corpus to search exact text';
-  for (const id of ['query', 'search-submit', 'clear-search']) $(id).disabled = busy || !searchable;
+  for (const id of ['query', 'search-mode', 'clear-search']) $(id).disabled = busy || !searchable;
+  updateQueryState();
+  $('search-mode-note').textContent = $('search-mode').value === 'whitespace_token'
+    ? 'Enter one token without whitespace. Case-sensitive; punctuation stays attached: “light” does not match “light,”. Use Exact substring for phrases or parts of tokens.'
+    : 'Case-sensitive text within a line; matches inside longer tokens too.';
   $('cite-selection').disabled = busy || !selectedMatch;
   $('check-citation').disabled = busy || !documentView;
   $('cite-note').textContent = selectedMatch ? `Selected: ${selectedMatch.file.name}, line ${selectedMatch.line}, bytes ${selectedMatch.start}–${selectedMatch.end}. The quote is copied from the retained bytes and checked structurally by the citation kernel.` : 'Select a search match to cite its exact bytes. The quote is copied from the retained bytes and checked structurally by the citation kernel.';
@@ -388,7 +405,7 @@ function renderSearch() {
     setText('search-count', `${s.match_count} ${s.match_count === 1 ? 'match' : 'matches'} across ${s.documents.length} ${s.documents.length === 1 ? 'file' : 'files'} · “${s.query}”`);
     setText('search-chip', s.complete ? 'Complete search' : 'Partial search', s.complete ? 'chip' : 'chip warn');
     const unsearched = s.documents.filter(d => d.outcome !== 'searched').length;
-    setText('search-coverage', `Exact, case-sensitive, within lines; one ${s.match_limit}-match limit shared across the selection, in selection order then byte order.${unsearched ? ` ${unsearched} ${unsearched === 1 ? 'file was' : 'files were'} not searched after the limit; see the Corpus tab.` : ''}${s.match_count ? '' : ' No matches in the searched bytes; this says nothing about other files.'}`, s.complete ? 'coverage' : 'coverage partial');
+    setText('search-coverage', `${matchingDescription(s.mode)} One ${s.match_limit}-match limit shared across the selection, in selection order then byte order.${unsearched ? ` ${unsearched} ${unsearched === 1 ? 'file was' : 'files were'} not searched after the limit; see the Corpus tab.` : ''}${s.match_count ? '' : ' No matches in the searched bytes; this says nothing about other files.'}`, s.complete ? 'coverage' : 'coverage partial');
     let n = 0;
     for (const d of s.documents) {
       const head = node('div', undefined, 'match-file');
@@ -406,7 +423,7 @@ function renderSearch() {
   $('search-panel').hidden = false;
   setText('search-count', `${s.matches.length} ${s.matches.length === 1 ? 'match' : 'matches'} · “${s.query}”`);
   setText('search-chip', s.complete ? 'Complete search' : 'Partial search', s.complete ? 'chip' : 'chip warn');
-  setText('search-coverage', `Searched ${fmt(s.searched_bytes)} of ${fmt(s.input_bytes)} bytes${s.complete ? '' : ' before a limit was reached'}. Exact, case-sensitive, within lines, up to ${s.match_limit} matches.${s.matches.length ? '' : ' No matches in the searched bytes; this says nothing about other files.'}`, s.complete ? 'coverage' : 'coverage partial');
+  setText('search-coverage', `Searched ${fmt(s.searched_bytes)} of ${fmt(s.input_bytes)} bytes${s.complete ? '' : ' before a limit was reached'}. ${matchingDescription(s.mode)} Up to ${s.match_limit} matches.${s.matches.length ? '' : ' No matches in the searched bytes; this says nothing about other files.'}`, s.complete ? 'coverage' : 'coverage partial');
   s.matches.forEach((m, i) => list.append(matchButton(m, i, documentView.file)));
 }
 function clearSearch(focusQuery) {
@@ -765,8 +782,11 @@ window.addEventListener('resize', () => { if (instrument === 'media') positionBl
 new ResizeObserver(() => { if (instrument === 'media') positionBlocks(); }).observe($('media-stage'));
 $('search-form').onsubmit = event => {
   event.preventDefault();
+  updateQueryState();
+  if ($('search-submit').disabled) return;
+  const mode = $('search-mode').value;
   if (effectiveScope() === 'corpus' && corpusView) {
-    operation('search_corpus', { query: $('query').value }, `Searching ${corpusView.files.length} held ${corpusView.files.length === 1 ? 'file' : 'files'}`, data => {
+    operation('search_corpus', { query: $('query').value, mode }, `Searching ${corpusView.files.length} held ${corpusView.files.length === 1 ? 'file' : 'files'}`, data => {
       corpusSearchView = data; selectedLine = null; selectedMatch = null;
       renderPassages(); renderDocuments();
       showInstrument('documents');
@@ -775,20 +795,21 @@ $('search-form').onsubmit = event => {
     return;
   }
   if (!documentView) return;
-  operation('search_document', { query: $('query').value, ...textInput(documentView.file) }, 'Searching the loaded snapshot', data => {
+  operation('search_document', { query: $('query').value, mode, ...textInput(documentView.file) }, 'Searching the loaded snapshot', data => {
     searchView = data; selectedLine = null; selectedMatch = null;
     renderSearch(); renderPassages(); renderDocumentCoverage(); renderShell();
     showInstrument('documents');
     return `${data.matches.length} ${data.matches.length === 1 ? 'match' : 'matches'} · ${data.complete ? 'complete search' : 'partial search, see coverage'}`;
   });
 };
-const QUERY_BYTE_LIMIT = 512; // the Rust side caps the query in UTF-8 bytes, not characters
 $('query').oninput = () => {
   if (activeResults()) clearSearch(false);
-  const bytes = new TextEncoder().encode($('query').value).length;
-  const over = bytes > QUERY_BYTE_LIMIT;
-  $('search-submit').disabled = busy || !(documentView || corpusView) || over;
-  if (over) setText('status', `Query is ${fmt(bytes)} bytes; the limit is ${QUERY_BYTE_LIMIT} UTF-8 bytes`, 'count bad');
+  if (updateQueryState()) setText('status', $('query').validationMessage, 'count bad');
+};
+$('search-mode').onchange = () => {
+  // Both scopes used the previous mode; never relabel their old matches as a new search.
+  searchView = null; corpusSearchView = null;
+  clearSearch(false);
 };
 $('clear-search').onclick = () => { $('query').value = ''; clearSearch(true); };
 $('previous-page').onclick = () => { page--; renderPassages(); };

@@ -211,6 +211,7 @@ async fn open_image(
 async fn search_document(
     state: State<'_, Services>,
     query: String,
+    mode: tools::SearchMode,
     snapshot_ref: String,
     sha256: String,
 ) -> Result<Envelope<SearchView>> {
@@ -223,7 +224,7 @@ async fn search_document(
                 "The reader snapshot changed.",
             ));
         }
-        let result = tools::search(&snapshot, &query, &operation.control)?;
+        let result = tools::search(&snapshot, &query, mode, &operation.control)?;
         operation.publish(|_| Ok(envelope(result)))
     })
     .await
@@ -256,12 +257,13 @@ async fn open_corpus(
 async fn search_corpus(
     state: State<'_, Services>,
     query: String,
+    mode: tools::SearchMode,
 ) -> Result<Envelope<CorpusSearchView>> {
     let mut operation = state.begin()?;
     worker(move || {
         let corpus = operation.corpus()?;
         operation.control = operation.control.processing();
-        let result = tools::search_corpus(&corpus, &query, &operation.control)?;
+        let result = tools::search_corpus(&corpus, &query, mode, &operation.control)?;
         operation.publish(|_| Ok(envelope(result)))
     })
     .await
@@ -763,7 +765,8 @@ mod tests {
         let second = &corpus[1];
         assert_eq!(first.info.sha256, second.info.sha256);
         assert_ne!(first.info.snapshot_ref, second.info.snapshot_ref);
-        let results = tools::search_corpus(&corpus, "hit", &control)?;
+        let results =
+            tools::search_corpus(&corpus, "hit", tools::SearchMode::ExactSubstring, &control)?;
         assert_eq!(
             results.documents[1].file.snapshot_ref,
             second.info.snapshot_ref

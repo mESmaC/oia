@@ -167,6 +167,24 @@ fn refuses_degenerate_geometry_and_unsupported_numbers() -> Result<(), Box<dyn s
         reconstruct(invalid),
         Err(TriangulationError::CoincidentOrigins)
     );
+    // A nonzero baseline must exceed both origin-error balls and the numerical
+    // allowances; exact nominal intersections cannot rescue unresolved origins.
+    let mut unresolved = input.clone();
+    unresolved.views[1].origin_m = [1e-300, 0.0, 0.0];
+    assert!(matches!(
+        reconstruct(unresolved.clone()),
+        Err(TriangulationError::BaselineNotResolved { .. })
+    ));
+    for view in &mut unresolved.views {
+        view.origin_error_bound_m = Some(1.0);
+    }
+    unresolved.views[1].origin_m = [2.0 + 2.0 * NUMERICAL_ALLOWANCE_M, 0.0, 0.0];
+    assert!(matches!(
+        reconstruct(unresolved.clone()),
+        Err(TriangulationError::BaselineNotResolved { .. })
+    ));
+    unresolved.views[1].origin_m[0] += 2.0 * NUMERICAL_ALLOWANCE_M;
+    assert!(reconstruct(unresolved).is_ok());
     let mut invalid = input.clone();
     invalid.views[0].direction = [-1.0, -2.0, 0.0];
     assert!(matches!(

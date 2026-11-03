@@ -15,7 +15,8 @@ references. Supply absolute camera-position, angular and timing-displacement
 error bounds for each view, plus explicit range, crossing-angle and output-radius
 limits. `reconstruct` returns a nominal closest approach, residual separation,
 and a conditional outer position sphere, retaining the exact input and method ID
-`oia-two-view-closest-approach-v1`.
+`oia-two-view-closest-approach-v2`. Version 2 adds the resolved-baseline gate
+described below; it preserves version 1's closest-approach and radius formulas.
 
 These are caller-supplied references and assertions. The kernel does not resolve
 records, inspect images, verify review conclusions, establish clock alignment,
@@ -74,13 +75,34 @@ of radius `e + R sin(alpha) + d`. Unknown bounds are rejected; `Some(0.0)` is an
 explicit caller assertion of zero error, not a default. Standard deviations and
 classifier scores must not be supplied as absolute bounds.
 
+The baseline must strictly exceed `e1 + e2 + 2 * 0.001 m`, so the two origin
+error balls remain disjoint after the per-view numerical allowance. A smaller
+nonzero baseline is refused as `BaselineNotResolved`, even if the nominal rays
+intersect. Thus a tiny nominal baseline with zero stated errors cannot produce
+an apparently resolved range. The gate uses worst-case absolute bounds; it does
+not model correlated camera-position errors that could cancel in a relative
+baseline measurement.
+
 The implementation adds a declared `0.001 m` numerical allowance to each tube
 radius, producing `h1` and `h2`. If the closest-line separation exceeds
 `h1 + h2`, it rejects the pair as inconsistent with those bounds.
 
-For the line-normal projectors `P1 = I - u uᵀ`, `P2 = I - v vᵀ`, the midpoint
-above minimizes the sum of squared line distances. Its normal-equation residual
-vanishes. Thus, in exact arithmetic, for any feasible point `x`:
+For the line-normal projectors `P1 = I - u uᵀ`, `P2 = I - v vᵀ`, let
+`g = (b - a) / 2` be the half-gap between the closest points and
+`y = x - center`. The closest-approach construction makes `g` perpendicular to
+both lines, so `P1 g = P2 g = g`. Since `center - a = g` and
+`center - b = -g`, the two squared line distances expand as:
+
+```text
+|P1(x - p)|² + |P2(x - q)|²
+    = |P1 y + g|² + |P2 y - g|²
+    = |P1 y|² + |P2 y|² + 2|g|²
+```
+
+The cross terms cancel because `g·P1 y = g·y = g·P2 y`. A feasible point has
+line distances at most `h1` and `h2`, so the sum of the two projected `y`
+norms squared is at most `h1² + h2² - 2|g|²`. Dropping the nonnegative gap
+term gives the deliberately looser bound used by the implementation:
 
 ```text
 lambda_min = 1 - |u·v| = |u×v|² / (1 + |u·v|)
@@ -115,8 +137,8 @@ minimum crossing angle is in `[1 degree, 90 degrees]`; narrower crossings are
 outside this implementation's numerical domain.
 
 Typed errors distinguish missing prerequisites, stale or moved calibration,
-frame/source/version conflicts, unknown error bounds, invalid numbers, degenerate
-geometry, nominal ranges outside limits, inconsistent sightlines and excessive
+frame/source/version conflicts, unknown error bounds, invalid numbers, unresolved
+baselines, degenerate geometry, nominal ranges outside limits, inconsistent sightlines and excessive
 output uncertainty. Nothing is clamped into a plausible range or replaced with
 an invented observation. A changed calibration requires a new call with new
 references; already returned results retain their original inputs. Automatic
@@ -154,7 +176,7 @@ unique range, unjustified precision and evidence-class/version loss:
   and containment of a known feasible target under declared perturbations.
   A large-coordinate, eight-million-metre, approximately one-degree crossing
   fixture is checked against its constructed target within `0.001 m`.
-- Parallel, antiparallel, nearly parallel, co-located, behind-camera,
+- Parallel, antiparallel, nearly parallel, co-located, unresolved-baseline, behind-camera,
   out-of-range, inconsistent, overly uncertain, non-finite and zero-direction
   inputs must not return a candidate.
 - Moved/expired calibration, missing timing and review prerequisites, different
@@ -167,6 +189,12 @@ The delivery PR records the checked revision and any rebase validation.
 No hosted CI, live-camera tests,
 hardware/physical-accuracy measurements or formal proofs were run.
 
+The follow-up to [PR #89's review](https://github.com/mESmaC/oia/pull/89#pullrequestreview-5745012691)
+adds a `1e-300 m` nonzero-baseline refusal and checks the origin-uncertainty gate
+at its threshold and just above it within the existing geometry test. Error
+messages use readable view/prerequisite names; typed error variants remain
+available for callers.
+
 ## Remaining scope
 
 Issue #37 stays open for reference-based camera/lens/time calibration and
@@ -176,3 +204,9 @@ uncertainty visualization, persistence/jobs/UI and full A13/A04/A10 acceptance.
 Those still require the issue's #27/#30/#25/#24 prerequisites and shared P0
 contracts. This slice selects no provider, camera, renderer, timing service or
 new architecture dependency.
+
+When #14 exposes this kernel through a service, the response and inspection
+view must retain the caller-asserted status of calibration validity, pose-version
+equality, metre-frame interpretation, source independence, timing/displacement
+bounds and maximum true range. Resolving references does not itself verify these
+claims. This is an integration requirement, not an implemented service feature.

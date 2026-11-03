@@ -1,5 +1,5 @@
-//! `oia-query` — Permission-filtered search, geographic coverage envelopes,
-//! reversible event clustering, footprint mosaics, and cross-view navigation (`#9`, `#23`).
+//! `oia-query` — Permission-filtered search and reversible event clustering with
+//! lineage-adjusted distinct evidence counts (`#9`, `#23`).
 //!
 //! Full service and persistence integration follows in `#14`, `#18`, and `#23`.
 

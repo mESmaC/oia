@@ -11,6 +11,7 @@ pub mod desktop;
 pub(crate) mod globe;
 pub mod local_tools;
 pub(crate) mod recreation;
+pub mod recreation_composer;
 pub(crate) mod witness;
 
 /// Canonical application binary name.

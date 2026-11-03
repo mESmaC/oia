@@ -69,9 +69,14 @@ domain/replay subset of `A12` in [the product specification](../spec.md),
 
 ## Local verification
 
-During the PR #95 takeover on 2026-11-02 (America/New_York), Windows x86_64 MSVC / pinned Rust 1.99.0:
+Executed on 2026-11-02 (America/New_York), Windows x86_64 MSVC / pinned Rust 1.99.0, at `70a00e312e001bfd97eec2a0609d21630117cc65` after integrating `main` at `92c0511`. This record is a subsequent documentation-only commit.
 
-- `cargo +1.99.0 test -p oia-devices --test uav_contract --locked --offline`: 5 passed.
-- `cargo +1.99.0 clippy -p oia-devices --all-targets --locked --offline -- -D warnings`: passed.
+- `cargo +1.99.0 fmt --all -- --check`: exit 0.
+- `cargo +1.99.0 clippy --workspace --all-targets --locked --offline -- -D warnings`: exit 0, including the default desktop feature.
+- `cargo +1.99.0 test --workspace --locked --offline`: exit 0; 134 passed, none failed or ignored, including 5 UAV contract tests and the existing Lean cutoff correspondence fixture.
+- `cargo +1.99.0 test -p oia-devices --test uav_contract --release --locked --offline`: exit 0; 5 passed.
+- `cargo +1.99.0 run -p oia-devices --example replay-uav-flight --locked --offline`: exit 0; simulated handoff, stale gimbal diagnostic, and non-destructive onboard link inspected.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 proofs`: exit 0; Lean build, 263-declaration axiom audit, and cutoff fixture byte check passed. These existing models do not prove this UAV algorithm.
+- Branch diff, relative documentation links, and code fences checked.
 
-The PR records final workspace verification after integration with current `main`. These synthetic checks do not establish live-flight support or full A12 acceptance.
+No hosted CI, Linux/macOS execution, live hardware, end-to-end A12 acceptance, or UAV Rust-to-Lean correspondence claim is made.

@@ -148,25 +148,13 @@ pub fn evaluate_sensor_coverage(
             continue;
         }
 
-        // Freshness / staleness check:
-        // - Archived window (ended before evaluation instant): log completeness through window end
-        //   is required and sufficient, regardless of how old the archive is at evaluation time.
-        // - Live / ongoing window (reaches into or beyond evaluation instant): telemetry up to future
-        //   window.end is not physically available yet, so feed age relative to evaluation instant
-        //   is evaluated against max_sensor_staleness_ms.
-        if envelope.time_window.end_utc_ms() < evaluation_instant_utc_ms {
-            if mask.last_feed_update_utc_ms < envelope.time_window.end_utc_ms() {
-                any_sensor_stale = true;
-                continue;
-            }
-        } else {
-            let max_staleness = limits.max_sensor_staleness_ms.min(i64::MAX as u64) as i64;
-            if evaluation_instant_utc_ms.saturating_sub(mask.last_feed_update_utc_ms)
-                > max_staleness
-            {
-                any_sensor_stale = true;
-                continue;
-            }
+        // Telemetry completeness check: feed must have reported through the entire query envelope time window.
+        // If last update is before the window's end (including when the window extends beyond the evaluation
+        // instant, or when a feed stopped reporting mid-window), telemetry inside the window is incomplete.
+        // Absence can only be claimed for intervals the sensor feed has actually reported through.
+        if mask.last_feed_update_utc_ms < envelope.time_window.end_utc_ms() {
+            any_sensor_stale = true;
+            continue;
         }
 
         // Horizontal spatial containment check: mask must completely contain the envelope box

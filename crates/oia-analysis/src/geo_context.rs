@@ -50,7 +50,7 @@ pub struct ContextLimits {
     pub max_notices: usize,
     pub max_weather_records: usize,
     pub max_interpolation_gap_ms: u64,
-    /// Base observation uncertainty in metres (default 15.0m nominal radius / 1-sigma,
+    /// Base observation uncertainty in metres (default 15.0m nominal baseline uncertainty,
     /// derived from RTCA DO-260B / FAA AC 20-165B Table 2-2 NACp >= 9 95% horizontal accuracy bound of < 30m;
     /// note 14 CFR 91.227(c)(1)(i) operational minimum for ADS-B Out is NACp >= 8 / < 92.6m).
     pub base_observation_uncertainty_m: f64,

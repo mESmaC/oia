@@ -1415,65 +1415,86 @@ fn test_v1_vessel_altitude_basis_disclosure_conditions() -> Result<(), Box<dyn s
     Ok(())
 }
 
-/// Live Sensor Staleness Tolerance: For in-progress/live windows (window.end >= eval),
-/// feeds reporting within max_sensor_staleness_ms are active and covering.
+/// L1 Contract: Absence can only be claimed for intervals the feed has actually reported through.
+/// A window extending beyond evaluation instant or past feed update fails closed to SensorFeedDownOrStale.
 #[test]
-fn test_live_sensor_feed_staleness_tolerance() -> Result<(), Box<dyn std::error::Error>> {
-    let limits = ContextLimits {
-        max_sensor_staleness_ms: 300_000, // 5 minutes
-        ..ContextLimits::default()
-    };
+fn test_l1_window_completeness_and_unobserved_time_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
+    let limits = ContextLimits::default();
     let bbox = GeoBoundingBoxWgs84::new(10.0, 12.0, 20.0, 22.0)?;
-    // Live window ending 10 seconds into the future relative to eval instant
     let eval_instant = 1_700_000_000_000;
-    let live_window = TimeWindow::new(eval_instant - 60_000, eval_instant + 10_000)?;
-    let envelope = SpatioTemporalEnvelope::new(bbox, None, live_window);
 
-    // Feed updated 1 second before eval instant (well within 5 minute staleness limit)
-    let fresh_sensor = SensorCoverageMask {
+    let base_sensor = SensorCoverageMask {
         sensor_id: OpaqueId::new("sensor:synth-radar-01")?,
         source_id: OpaqueId::new("synth:source:provider-01")?,
         coverage_bounds: GeoBoundingBoxWgs84::new(9.0, 13.0, 19.0, 23.0)?,
         altitude_band: None,
-        operational_window: TimeWindow::new(eval_instant - 100_000, eval_instant + 100_000)?,
+        operational_window: TimeWindow::new(eval_instant - 200_000, eval_instant + 200_000)?,
         sensor_type: PositionSource::PrimaryRadar,
         is_operational: true,
-        last_feed_update_utc_ms: eval_instant - 1_000, // 1 sec ago
+        last_feed_update_utc_ms: eval_instant,
     };
-    let inputs_fresh = ContextReconstructionInputs {
-        weather_records: &[],
-        aircraft_tracks: &[],
-        vessel_tracks: &[],
-        notices: &[],
-        sensor_masks: &[fresh_sensor],
-    };
-    let res_fresh =
-        reconstruct_geographic_context(&envelope, &inputs_fresh, &limits, eval_instant, None)?;
-    assert!(matches!(
-        res_fresh.traffic_assessment,
-        SceneTrafficAssessment::ObservedAbsenceWithinCoverage { .. }
-    ));
 
-    // Feed updated 6 minutes before eval instant (exceeds 5 minute limit)
-    let stale_sensor = SensorCoverageMask {
-        last_feed_update_utc_ms: eval_instant - 360_000,
-        ..inputs_fresh.sensor_masks[0].clone()
-    };
-    let inputs_stale = ContextReconstructionInputs {
+    // Case 1: Window extending into the future beyond evaluation instant [eval - 60s, eval + 10s)
+    // Feed last update is at eval_instant. The 10 seconds into the future have no telemetry!
+    // Must fail closed with SensorFeedDownOrStale, NEVER claiming absence for unobserved future!
+    let future_window = TimeWindow::new(eval_instant - 60_000, eval_instant + 10_000)?;
+    let future_envelope = SpatioTemporalEnvelope::new(bbox, None, future_window);
+    let inputs1 = ContextReconstructionInputs {
         weather_records: &[],
         aircraft_tracks: &[],
         vessel_tracks: &[],
         notices: &[],
-        sensor_masks: &[stale_sensor],
+        sensor_masks: std::slice::from_ref(&base_sensor),
     };
-    let res_stale =
-        reconstruct_geographic_context(&envelope, &inputs_stale, &limits, eval_instant, None)?;
+    let res1 =
+        reconstruct_geographic_context(&future_envelope, &inputs1, &limits, eval_instant, None)?;
     assert_eq!(
-        res_stale.traffic_assessment,
+        res1.traffic_assessment,
         SceneTrafficAssessment::InconclusiveUnobserved {
             reason: UnobservedReason::SensorFeedDownOrStale,
         }
     );
+
+    // Case 2: Window [eval - 60s, eval] where feed died before window start (last = eval - 200s)
+    // Feed has zero telemetry inside the window -> SensorFeedDownOrStale
+    let live_window = TimeWindow::new(eval_instant - 60_000, eval_instant)?;
+    let live_envelope = SpatioTemporalEnvelope::new(bbox, None, live_window);
+    let dead_sensor = SensorCoverageMask {
+        last_feed_update_utc_ms: eval_instant - 200_000,
+        ..base_sensor.clone()
+    };
+    let inputs2 = ContextReconstructionInputs {
+        weather_records: &[],
+        aircraft_tracks: &[],
+        vessel_tracks: &[],
+        notices: &[],
+        sensor_masks: std::slice::from_ref(&dead_sensor),
+    };
+    let res2 =
+        reconstruct_geographic_context(&live_envelope, &inputs2, &limits, eval_instant, None)?;
+    assert_eq!(
+        res2.traffic_assessment,
+        SceneTrafficAssessment::InconclusiveUnobserved {
+            reason: UnobservedReason::SensorFeedDownOrStale,
+        }
+    );
+
+    // Case 3: Window [eval - 60s, eval] with complete feed through eval_instant
+    // Feed has reported through window.end -> ObservedAbsenceWithinCoverage
+    let inputs3 = ContextReconstructionInputs {
+        weather_records: &[],
+        aircraft_tracks: &[],
+        vessel_tracks: &[],
+        notices: &[],
+        sensor_masks: std::slice::from_ref(&base_sensor),
+    };
+    let res3 =
+        reconstruct_geographic_context(&live_envelope, &inputs3, &limits, eval_instant, None)?;
+    assert!(matches!(
+        res3.traffic_assessment,
+        SceneTrafficAssessment::ObservedAbsenceWithinCoverage { .. }
+    ));
 
     Ok(())
 }

@@ -88,7 +88,7 @@ impl UavSessionLimits {
             max_bookmarks,
             max_hud_derivatives,
             max_onboard_links,
-            max_calibration_updates: max_hud_derivatives,
+            max_calibration_updates: 64,
             max_text_bytes,
             max_output_bytes,
             stale_telemetry_after_ms,
@@ -994,13 +994,14 @@ pub struct VideoFrameInput {
 }
 
 /// Validated video frame metadata record in a [`UavFlightSession`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct VideoFrameRecord {
     frame_index: u64,
     frame_version: VersionId,
     device_clock_ms: i64,
     receipt_utc_ms: i64,
     time_alignment: TimeAlignment,
+    camera_calibration_state_at_capture: CameraCalibrationState,
     exposure_duration_us: Option<u32>,
     sha256_hex: String,
 }
@@ -1029,6 +1030,11 @@ impl VideoFrameRecord {
     /// Clock alignment status for this frame.
     pub fn time_alignment(&self) -> &TimeAlignment {
         &self.time_alignment
+    }
+
+    /// Camera calibration state pinned when this frame was ingested (`docs/architecture.md` §8).
+    pub fn camera_calibration_state_at_capture(&self) -> &CameraCalibrationState {
+        &self.camera_calibration_state_at_capture
     }
 
     /// Optional shutter exposure duration in microseconds.
@@ -1233,7 +1239,7 @@ pub struct CalibratedFootprint {
     pub along_look_span_m: f64,
     /// Approximate cross-look ground span in meters (`> 0.0`).
     pub cross_look_span_m: f64,
-    /// Conservative linear horizontal footprint center uncertainty bound in meters (`>= 0.0`),
+    /// First-order linear horizontal footprint center uncertainty bound in meters (`>= 0.0`),
     /// combining horizontal GNSS uncertainty, vertical AGL uncertainty projected by `|cot(dep)|`,
     /// and angular calibration uncertainty projected along-track by `slant_range / sin(dep)`.
     pub horizontal_uncertainty_m: f64,
@@ -1868,9 +1874,8 @@ struct ClockAlignmentEntry {
 
 #[derive(Debug, Clone, PartialEq)]
 struct CameraCalibrationEntry {
-    calibration: CameraCalibration,
+    state: CameraCalibrationState,
     effective_from_device_ms: i64,
-    invalidation_reason: Option<String>,
 }
 
 /// Bounded UAV flight session tracking capability-scoped telemetry, video frames, clock alignment,
@@ -1897,7 +1902,7 @@ pub struct UavFlightSession {
 }
 
 impl UavFlightSession {
-    /// Creates a new bounded [`UavFlightSession`] for a registered UAV and original flight stream.
+    /// Creates a new bounded [`UavFlightSession`] for a registered UAV and original flight stream.\r
     pub fn new(
         session_id: OpaqueId,
         device: RegisteredUavDevice,
@@ -2015,40 +2020,34 @@ impl UavFlightSession {
         }
     }
 
+    fn calibration_update_count(&self) -> usize {
+        let valid_calibrations = self
+            .calibration_history
+            .iter()
+            .filter(|e| matches!(e.state, CameraCalibrationState::Valid(_)))
+            .count();
+        self.clock_alignments
+            .len()
+            .saturating_add(valid_calibrations)
+    }
+
     /// Current camera calibration state (`Uncalibrated`, `Valid`, or `Invalidated`).
     pub fn camera_calibration_state(&self) -> CameraCalibrationState {
-        match self.calibration_history.last() {
-            None => CameraCalibrationState::Uncalibrated,
-            Some(entry) => match &entry.invalidation_reason {
-                Some(reason) => CameraCalibrationState::Invalidated {
-                    calibration_version: entry.calibration.calibration_version.clone(),
-                    reason: reason.clone(),
-                },
-                None => CameraCalibrationState::Valid(entry.calibration.clone()),
-            },
-        }
+        self.calibration_history
+            .last()
+            .map_or(CameraCalibrationState::Uncalibrated, |e| e.state.clone())
     }
 
     /// Camera calibration state in force at `device_clock_ms` (`docs/architecture.md` §8).
     ///
-    /// Preserves prior calibration versions and invalidations for earlier frames even if a new
-    /// calibration is later attached to the session.
+    /// Preserves prior calibration versions and dated invalidation events for earlier frames even
+    /// if a new calibration or invalidation is later recorded on the session.
     pub fn camera_calibration_state_at(&self, device_clock_ms: i64) -> CameraCalibrationState {
-        let entry = self
-            .calibration_history
+        self.calibration_history
             .iter()
             .rev()
-            .find(|e| e.effective_from_device_ms <= device_clock_ms);
-        match entry {
-            None => CameraCalibrationState::Uncalibrated,
-            Some(e) => match &e.invalidation_reason {
-                Some(reason) => CameraCalibrationState::Invalidated {
-                    calibration_version: e.calibration.calibration_version.clone(),
-                    reason: reason.clone(),
-                },
-                None => CameraCalibrationState::Valid(e.calibration.clone()),
-            },
-        }
+            .find(|e| e.effective_from_device_ms <= device_clock_ms)
+            .map_or(CameraCalibrationState::Uncalibrated, |e| e.state.clone())
     }
 
     /// Full chronological history of camera calibration states recorded in the session, preserving
@@ -2056,23 +2055,13 @@ impl UavFlightSession {
     pub fn camera_calibration_history(&self) -> Vec<CameraCalibrationState> {
         self.calibration_history
             .iter()
-            .map(|e| match &e.invalidation_reason {
-                Some(reason) => CameraCalibrationState::Invalidated {
-                    calibration_version: e.calibration.calibration_version.clone(),
-                    reason: reason.clone(),
-                },
-                None => CameraCalibrationState::Valid(e.calibration.clone()),
-            })
+            .map(|e| e.state.clone())
             .collect()
     }
 
     /// Configures or updates the session's documented clock-alignment record (`DEVICE-04`).
     pub fn set_clock_alignment(&mut self, record: ClockAlignmentRecord) -> Result<(), UavError> {
-        let total_updates = self
-            .clock_alignments
-            .len()
-            .saturating_add(self.calibration_history.len());
-        if total_updates >= self.limits.max_calibration_updates() {
+        if self.calibration_update_count() >= self.limits.max_calibration_updates() {
             return Err(UavError::LimitExceeded {
                 kind: UavLimitKind::CalibrationUpdates,
                 limit: self.limits.max_calibration_updates(),
@@ -2103,6 +2092,7 @@ impl UavFlightSession {
             });
         }
         let mut budget_preview = self.remaining_text_budget;
+        // `VersionId::new` already enforces non-empty single-line visible ASCII; charge byte budget.
         charge_text_budget(record.alignment_version.as_str(), &mut budget_preview)?;
         validate_single_line_text(
             "reference_clock_label",
@@ -2111,12 +2101,15 @@ impl UavFlightSession {
         )?;
         validate_single_line_text("method_label", &record.method_label, &mut budget_preview)?;
 
-        let effective_from_device_ms =
-            if self.clock_alignments.is_empty() && self.video_frames.is_empty() {
-                i64::MIN
-            } else {
-                self.latest_ingested_device_ms().unwrap_or(i64::MIN)
-            };
+        let was_first_alignment = self.clock_alignments.is_empty();
+        let effective_from_device_ms = if was_first_alignment {
+            record.valid_from_device_ms
+        } else {
+            let after_ingested = self
+                .latest_ingested_device_ms()
+                .map_or(i64::MIN, |t| t.saturating_add(1));
+            record.valid_from_device_ms.max(after_ingested)
+        };
 
         self.remaining_text_budget = budget_preview;
         self.known_versions.insert(record.alignment_version.clone());
@@ -2124,6 +2117,24 @@ impl UavFlightSession {
             record,
             effective_from_device_ms,
         });
+
+        if was_first_alignment {
+            for idx in 0..self.telemetry_samples.len() {
+                let (t_ms, r_ms) = (
+                    self.telemetry_samples[idx].device_clock_ms,
+                    self.telemetry_samples[idx].receipt_utc_ms,
+                );
+                self.telemetry_samples[idx].time_alignment =
+                    self.align_device_timestamp(t_ms, r_ms);
+            }
+            for idx in 0..self.video_frames.len() {
+                let (t_ms, r_ms) = (
+                    self.video_frames[idx].device_clock_ms,
+                    self.video_frames[idx].receipt_utc_ms,
+                );
+                self.video_frames[idx].time_alignment = self.align_device_timestamp(t_ms, r_ms);
+            }
+        }
         Ok(())
     }
 
@@ -2132,11 +2143,7 @@ impl UavFlightSession {
         &mut self,
         calibration: CameraCalibration,
     ) -> Result<(), UavError> {
-        let total_updates = self
-            .clock_alignments
-            .len()
-            .saturating_add(self.calibration_history.len());
-        if total_updates >= self.limits.max_calibration_updates() {
+        if self.calibration_update_count() >= self.limits.max_calibration_updates() {
             return Err(UavError::LimitExceeded {
                 kind: UavLimitKind::CalibrationUpdates,
                 limit: self.limits.max_calibration_updates(),
@@ -2164,48 +2171,83 @@ impl UavFlightSession {
             });
         }
         let mut budget_preview = self.remaining_text_budget;
+        // `VersionId::new` already enforces non-empty single-line visible ASCII; charge byte budget.
         charge_text_budget(
             calibration.calibration_version.as_str(),
             &mut budget_preview,
         )?;
 
-        let effective_from_device_ms =
-            if self.calibration_history.is_empty() && self.video_frames.is_empty() {
-                i64::MIN
-            } else {
-                self.latest_ingested_device_ms().unwrap_or(i64::MIN)
-            };
+        let was_first_calibration = self.calibration_history.is_empty();
+        let effective_from_device_ms = if was_first_calibration {
+            i64::MIN
+        } else {
+            let after_ingested = self
+                .latest_ingested_device_ms()
+                .map_or(i64::MIN, |t| t.saturating_add(1));
+            self.calibration_history
+                .last()
+                .map_or(after_ingested, |last| {
+                    after_ingested.max(last.effective_from_device_ms)
+                })
+        };
 
         self.remaining_text_budget = budget_preview;
         self.known_versions
             .insert(calibration.calibration_version.clone());
+        let state = CameraCalibrationState::Valid(calibration);
         self.calibration_history.push(CameraCalibrationEntry {
-            calibration,
+            state: state.clone(),
             effective_from_device_ms,
-            invalidation_reason: None,
         });
+        if was_first_calibration {
+            for frame in &mut self.video_frames {
+                if matches!(
+                    frame.camera_calibration_state_at_capture,
+                    CameraCalibrationState::Uncalibrated
+                ) {
+                    frame.camera_calibration_state_at_capture = state.clone();
+                }
+            }
+        }
         Ok(())
     }
 
     /// Marks the active camera calibration as invalidated due to mount movement, shock, or lens
     /// change (`A12`, `A13`).
     ///
-    /// Validates `reason` and text budget before mutating session state so rejected calls preserve
-    /// the prior [`CameraCalibrationState`] unchanged.
+    /// Appends a dated [`CameraCalibrationState::Invalidated`] event after any already-ingested
+    /// frames/telemetry so earlier frames retain the [`CameraCalibrationState::Valid`] state that
+    /// was in force when they were captured. Validates `reason` and text budget before mutating
+    /// session state so rejected calls preserve the prior state unchanged.
     pub fn invalidate_camera_calibration(&mut self, reason: &str) -> Result<(), UavError> {
-        let has_active = self
-            .calibration_history
-            .last()
-            .is_some_and(|e| e.invalidation_reason.is_none());
-        if !has_active {
-            return Err(UavError::NoActiveCalibrationToInvalidate);
-        }
+        let active_version = match self.calibration_history.last() {
+            Some(CameraCalibrationEntry {
+                state: CameraCalibrationState::Valid(cal),
+                ..
+            }) => cal.calibration_version.clone(),
+            _ => return Err(UavError::NoActiveCalibrationToInvalidate),
+        };
         let mut budget_preview = self.remaining_text_budget;
         validate_single_line_text("invalidation_reason", reason, &mut budget_preview)?;
         self.remaining_text_budget = budget_preview;
-        if let Some(last) = self.calibration_history.last_mut() {
-            last.invalidation_reason = Some(reason.to_owned());
-        }
+
+        let after_ingested = self
+            .latest_ingested_device_ms()
+            .map_or(i64::MIN, |t| t.saturating_add(1));
+        let effective_from_device_ms = self
+            .calibration_history
+            .last()
+            .map_or(after_ingested, |last| {
+                after_ingested.max(last.effective_from_device_ms)
+            });
+
+        self.calibration_history.push(CameraCalibrationEntry {
+            state: CameraCalibrationState::Invalidated {
+                calibration_version: active_version,
+                reason: reason.to_owned(),
+            },
+            effective_from_device_ms,
+        });
         Ok(())
     }
 
@@ -2450,6 +2492,8 @@ impl UavFlightSession {
 
         let time_alignment =
             self.align_device_timestamp(input.device_clock_ms, input.receipt_utc_ms);
+        let camera_calibration_state_at_capture =
+            self.camera_calibration_state_at(input.device_clock_ms);
         self.known_versions.insert(input.frame_version.clone());
         self.video_frames.push(VideoFrameRecord {
             frame_index: input.frame_index,
@@ -2457,6 +2501,7 @@ impl UavFlightSession {
             device_clock_ms: input.device_clock_ms,
             receipt_utc_ms: input.receipt_utc_ms,
             time_alignment,
+            camera_calibration_state_at_capture,
             exposure_duration_us: input.exposure_duration_us,
             sha256_hex: input.sha256_hex,
         });
@@ -2521,6 +2566,20 @@ impl UavFlightSession {
         &self,
         inspect_device_ms: i64,
         inspect_receipt_utc_ms: i64,
+    ) -> UavHudSnapshot {
+        let calibration_state = self.camera_calibration_state_at(inspect_device_ms);
+        self.project_hud_snapshot_with_calibration(
+            inspect_device_ms,
+            inspect_receipt_utc_ms,
+            &calibration_state,
+        )
+    }
+
+    fn project_hud_snapshot_with_calibration(
+        &self,
+        inspect_device_ms: i64,
+        inspect_receipt_utc_ms: i64,
+        calibration_state: &CameraCalibrationState,
     ) -> UavHudSnapshot {
         let time_alignment = self.align_device_timestamp(inspect_device_ms, inspect_receipt_utc_ms);
         let cumulative_dropped_frames: u64 = self
@@ -2641,8 +2700,8 @@ impl UavFlightSession {
             qualify_field(Some(sample.motion_flags), sample_ms, age_ms, stale_reason);
 
         let look_direction_marker = derive_look_marker(&heading, &attitude, &gimbal);
-        let footprint_status = self.evaluate_footprint(
-            inspect_device_ms,
+        let footprint_status = Self::evaluate_footprint(
+            calibration_state,
             &heading,
             &attitude,
             &position,
@@ -2675,10 +2734,8 @@ impl UavFlightSession {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn evaluate_footprint(
-        &self,
-        inspect_device_ms: i64,
+        calibration_state: &CameraCalibrationState,
         heading: &HudFieldState<HeadingSample>,
         attitude: &HudFieldState<AttitudeDeg>,
         position: &HudFieldState<Wgs84Position>,
@@ -2686,7 +2743,7 @@ impl UavFlightSession {
         gimbal: &HudFieldState<GimbalOrientation>,
         navigation_health: &HudFieldState<NavigationHealth>,
     ) -> FootprintStatus {
-        let cal = match self.camera_calibration_state_at(inspect_device_ms) {
+        let cal = match calibration_state {
             CameraCalibrationState::Uncalibrated => {
                 return FootprintStatus::UncalibratedViewingRayOnly;
             }
@@ -2695,22 +2752,36 @@ impl UavFlightSession {
                 reason,
             } => {
                 return FootprintStatus::CalibrationInvalidated {
-                    calibration_version,
-                    reason,
+                    calibration_version: calibration_version.clone(),
+                    reason: reason.clone(),
                 };
             }
-            CameraCalibrationState::Valid(cal) => cal,
+            CameraCalibrationState::Valid(cal) => cal.clone(),
         };
 
-        let Some(hdg) = heading.fresh_value() else {
-            return FootprintStatus::InsufficientFreshTelemetry {
-                missing_or_stale_field: "heading",
+        let world_locked = matches!(
+            gimbal.fresh_value(),
+            Some(gim) if gim.mode == GimbalMode::IndependentWorldLocked
+        );
+        let hdg = if world_locked {
+            None
+        } else {
+            let Some(hdg) = heading.fresh_value() else {
+                return FootprintStatus::InsufficientFreshTelemetry {
+                    missing_or_stale_field: "heading",
+                };
             };
+            Some(hdg)
         };
-        let Some(att) = attitude.fresh_value() else {
-            return FootprintStatus::InsufficientFreshTelemetry {
-                missing_or_stale_field: "attitude",
+        let att = if world_locked {
+            None
+        } else {
+            let Some(att) = attitude.fresh_value() else {
+                return FootprintStatus::InsufficientFreshTelemetry {
+                    missing_or_stale_field: "attitude",
+                };
             };
+            Some(att)
         };
         let Some(pos) = position.fresh_value() else {
             return FootprintStatus::InsufficientFreshTelemetry {
@@ -2722,16 +2793,6 @@ impl UavFlightSession {
                 missing_or_stale_field: "position.horizontal_uncertainty_m",
             };
         };
-        if let Some(nav) = navigation_health.fresh_value()
-            && matches!(
-                nav.fix_kind,
-                GnssFixKind::NoFix | GnssFixKind::DeadReckoningEstimate
-            )
-        {
-            return FootprintStatus::InsufficientFreshTelemetry {
-                missing_or_stale_field: "navigation_health.fix_kind",
-            };
-        }
         let Some(alt) = altitude.fresh_value() else {
             return FootprintStatus::InsufficientFreshTelemetry {
                 missing_or_stale_field: "altitude",
@@ -2759,28 +2820,50 @@ impl UavFlightSession {
             };
         }
 
-        if gim.mode == GimbalMode::FollowHeading && hdg.reference != HeadingReference::TrueNorth {
-            return FootprintStatus::IncompatibleHeadingReference {
-                actual: hdg.reference,
-            };
-        }
-
-        let effective_roll_deg = match gim.mode {
-            GimbalMode::FollowHeading => gim.roll_deg + att.roll_deg,
-            GimbalMode::IndependentWorldLocked => gim.roll_deg,
-        };
-        if effective_roll_deg.abs() > 1e-6 {
-            return FootprintStatus::NonZeroRollUnsupported { effective_roll_deg };
-        }
-
-        let (raw_azimuth_deg, raw_depression_deg) = match gim.mode {
+        let (world_azimuth_deg, depression_deg) = match gim.mode {
             GimbalMode::FollowHeading => {
-                (hdg.degrees + gim.yaw_deg, -gim.pitch_deg - att.pitch_deg)
+                let Some(hdg) = hdg else {
+                    return FootprintStatus::InsufficientFreshTelemetry {
+                        missing_or_stale_field: "heading",
+                    };
+                };
+                let Some(att) = att else {
+                    return FootprintStatus::InsufficientFreshTelemetry {
+                        missing_or_stale_field: "attitude",
+                    };
+                };
+                if hdg.reference != HeadingReference::TrueNorth {
+                    return FootprintStatus::IncompatibleHeadingReference {
+                        actual: hdg.reference,
+                    };
+                }
+                if att.roll_deg.abs() > 1e-6 {
+                    return FootprintStatus::NonZeroRollUnsupported {
+                        effective_roll_deg: att.roll_deg,
+                    };
+                }
+                if gim.roll_deg.abs() > 1e-6 {
+                    return FootprintStatus::NonZeroRollUnsupported {
+                        effective_roll_deg: gim.roll_deg,
+                    };
+                }
+                compose_follow_heading_ray(
+                    hdg.degrees,
+                    att.pitch_deg,
+                    att.roll_deg,
+                    gim.yaw_deg,
+                    gim.pitch_deg,
+                )
             }
-            GimbalMode::IndependentWorldLocked => (gim.yaw_deg, -gim.pitch_deg),
+            GimbalMode::IndependentWorldLocked => {
+                if gim.roll_deg.abs() > 1e-6 {
+                    return FootprintStatus::NonZeroRollUnsupported {
+                        effective_roll_deg: gim.roll_deg,
+                    };
+                }
+                fold_past_nadir(gim.yaw_deg, -gim.pitch_deg)
+            }
         };
-        let (world_azimuth_deg, depression_deg) =
-            fold_past_nadir(raw_azimuth_deg, raw_depression_deg);
 
         let half_vfov_deg = cal.vertical_fov_deg * 0.5;
         let far_dep_deg = depression_deg - half_vfov_deg;
@@ -2793,6 +2876,20 @@ impl UavFlightSession {
             return FootprintStatus::UnresolvableGeometry {
                 depression_deg: min_clearance_deg,
                 min_required_depression_deg: MIN_FOOTPRINT_DEPRESSION_DEG,
+            };
+        }
+
+        let Some(nav) = navigation_health.fresh_value() else {
+            return FootprintStatus::InsufficientFreshTelemetry {
+                missing_or_stale_field: "navigation_health",
+            };
+        };
+        if matches!(
+            nav.fix_kind,
+            GnssFixKind::NoFix | GnssFixKind::DeadReckoningEstimate
+        ) {
+            return FootprintStatus::InsufficientFreshTelemetry {
+                missing_or_stale_field: "navigation_health.fix_kind",
             };
         }
 
@@ -2931,12 +3028,14 @@ impl UavFlightSession {
             }
         }
 
-        let mut hud_snapshot_at_frame =
-            self.project_hud_snapshot(frame.device_clock_ms, frame.receipt_utc_ms);
+        let camera_calibration_state_at_frame = frame.camera_calibration_state_at_capture.clone();
+        let mut hud_snapshot_at_frame = self.project_hud_snapshot_with_calibration(
+            frame.device_clock_ms,
+            frame.receipt_utc_ms,
+            &camera_calibration_state_at_frame,
+        );
         hud_snapshot_at_frame.time_alignment = frame.time_alignment.clone();
 
-        let camera_calibration_state_at_frame =
-            self.camera_calibration_state_at(frame.device_clock_ms);
         let frame_drops_at_or_before_frame = self
             .frame_drops
             .iter()
@@ -2996,6 +3095,7 @@ impl UavFlightSession {
         validate_sha256_hex("derivative.sha256_hex", &input.sha256_hex)?;
 
         let mut budget_preview = self.remaining_text_budget;
+        // `VersionId::new` already enforces non-empty single-line visible ASCII; charge byte budget.
         charge_text_budget(input.derivative_version.as_str(), &mut budget_preview)?;
         validate_single_line_text(
             "derivative.media_type",
@@ -3078,6 +3178,7 @@ impl UavFlightSession {
         }
 
         let mut budget_preview = self.remaining_text_budget;
+        // `VersionId::new` already enforces non-empty single-line visible ASCII; charge byte budget.
         charge_text_budget(input.onboard_stream_version.as_str(), &mut budget_preview)?;
         validate_single_line_text("onboard.media_type", &input.media_type, &mut budget_preview)?;
         validate_single_line_text(
@@ -3190,6 +3291,55 @@ fn fold_past_nadir(raw_azimuth_deg: f64, raw_depression_deg: f64) -> (f64, f64) 
     }
 }
 
+/// Composes the camera optical axis in the local horizontal/azimuth frame for
+/// [`GimbalMode::FollowHeading`] using intrinsic ZYX 3D rotations:
+/// `R_world_body(hdg_deg, att_pitch_deg, att_roll_deg) * R_body_cam(gim_yaw_deg, gim_pitch_deg, 0)`.
+fn compose_follow_heading_ray(
+    hdg_deg: f64,
+    att_pitch_deg: f64,
+    att_roll_deg: f64,
+    gim_yaw_deg: f64,
+    gim_pitch_deg: f64,
+) -> (f64, f64) {
+    if gim_yaw_deg.abs() <= 1e-9 && att_roll_deg.abs() <= 1e-9 {
+        return fold_past_nadir(hdg_deg, -gim_pitch_deg - att_pitch_deg);
+    }
+
+    let (sin_gy, cos_gy) = gim_yaw_deg.to_radians().sin_cos();
+    let (sin_gp, cos_gp) = gim_pitch_deg.to_radians().sin_cos();
+
+    // Optical axis unit vector in airframe body frame (X=forward, Y=right, Z=down).
+    let xb = cos_gy * cos_gp;
+    let yb = sin_gy * cos_gp;
+    let zb = -sin_gp;
+
+    // Apply airframe roll R_x(att_roll_deg), then airframe pitch R_y(att_pitch_deg),
+    // then airframe heading R_z(hdg_deg).
+    let (sin_ar, cos_ar) = att_roll_deg.to_radians().sin_cos();
+    let x1 = xb;
+    let y1 = yb * cos_ar - zb * sin_ar;
+    let z1 = yb * sin_ar + zb * cos_ar;
+
+    let (sin_ap, cos_ap) = att_pitch_deg.to_radians().sin_cos();
+    let x2 = x1 * cos_ap + z1 * sin_ap;
+    let y2 = y1;
+    let z2 = -x1 * sin_ap + z1 * cos_ap;
+
+    let (sin_h, cos_h) = hdg_deg.to_radians().sin_cos();
+    let fn_world = x2 * cos_h - y2 * sin_h;
+    let fe_world = x2 * sin_h + y2 * cos_h;
+    let fd_world = z2.clamp(-1.0, 1.0);
+
+    let depression_deg = fd_world.asin().to_degrees();
+    let horiz_norm = fn_world.hypot(fe_world);
+    let world_azimuth_deg = if horiz_norm <= 1e-12 {
+        (hdg_deg + gim_yaw_deg).rem_euclid(360.0)
+    } else {
+        fe_world.atan2(fn_world).to_degrees().rem_euclid(360.0)
+    };
+    (world_azimuth_deg, depression_deg)
+}
+
 fn derive_look_marker(
     heading: &HudFieldState<HeadingSample>,
     attitude: &HudFieldState<AttitudeDeg>,
@@ -3219,13 +3369,18 @@ fn derive_look_marker(
                 HudFieldState::Stale { value, .. } => (value, true),
                 HudFieldState::Unavailable { .. } => return None,
             };
-            let (att_pitch, att_stale) = match attitude {
-                HudFieldState::Fresh { value, .. } => (value.pitch_deg, false),
-                HudFieldState::Stale { value, .. } => (value.pitch_deg, true),
+            let (att, att_stale) = match attitude {
+                HudFieldState::Fresh { value, .. } => (value, false),
+                HudFieldState::Stale { value, .. } => (value, true),
                 HudFieldState::Unavailable { .. } => return None,
             };
-            let (world_azimuth_deg, depression_deg) =
-                fold_past_nadir(hdg.degrees + gim.yaw_deg, -gim.pitch_deg - att_pitch);
+            let (world_azimuth_deg, depression_deg) = compose_follow_heading_ray(
+                hdg.degrees,
+                att.pitch_deg,
+                att.roll_deg,
+                gim.yaw_deg,
+                gim.pitch_deg,
+            );
             Some(LookDirectionMarker {
                 world_azimuth_deg,
                 depression_deg,

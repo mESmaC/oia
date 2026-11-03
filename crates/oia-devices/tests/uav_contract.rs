@@ -244,6 +244,16 @@ fn uav_hud_clock_drift_drops_bookmarks_and_onboard_linking_preserve_evidence()
     );
     assert_eq!(handoff.source_stream_byte_len(), 12_500_000);
     assert_eq!(
+        handoff.camera_calibration_state_at_frame(),
+        &oia_devices::uav::CameraCalibrationState::Valid(CameraCalibration {
+            calibration_version: VersionId::new("ver:cam-cal-v1")?,
+            horizontal_fov_deg: 60.0,
+            vertical_fov_deg: 40.0,
+            angular_uncertainty_deg: 0.5,
+        })
+    );
+    assert!(handoff.frame_drops_at_or_before_frame().is_empty());
+    assert_eq!(
         handoff.hud_snapshot_at_frame().motion_flags,
         HudFieldState::Fresh {
             value: MotionDynamicsFlags {
@@ -835,15 +845,8 @@ fn footprint_nadir_geometry_uncertainty_and_historical_handoff_isolation() -> Re
         sample_version: VersionId::new("ver:geo-sample-1")?,
         device_clock_ms: 1_000,
         receipt_utc_ms: 1_762_000_001_000,
-        heading: Some(HeadingSample {
-            degrees: 0.0,
-            reference: HeadingReference::TrueNorth,
-        }),
-        attitude: Some(AttitudeDeg {
-            roll_deg: 0.0,
-            pitch_deg: 0.0,
-            yaw_deg: 0.0,
-        }),
+        heading: None,
+        attitude: None,
         position: Some(Wgs84Position {
             latitude_deg: 0.100_000,
             longitude_deg: 0.200_000,
@@ -863,7 +866,11 @@ fn footprint_nadir_geometry_uncertainty_and_historical_handoff_isolation() -> Re
         }),
         battery: None,
         link_health: None,
-        navigation_health: None,
+        navigation_health: Some(NavigationHealth {
+            fix_kind: GnssFixKind::Standard3D,
+            satellite_count: Some(12),
+            hdop: Some(0.9),
+        }),
         recording_state: RecordingState::Recording,
         motion_flags: MotionDynamicsFlags::default(),
     })?;
@@ -876,9 +883,28 @@ fn footprint_nadir_geometry_uncertainty_and_historical_handoff_isolation() -> Re
         sha256_hex: "1111111111111111111111111111111111111111111111111111111111111111".to_owned(),
     })?;
 
+    // Export frame 1 before any invalidation or replacement (B6).
+    let handoff_f1_before =
+        session.export_forensic_frame_handoff(OpaqueId::new("handoff:f1-before")?, 1, None)?;
+    assert_eq!(
+        handoff_f1_before.camera_calibration_state_at_frame(),
+        &oia_devices::uav::CameraCalibrationState::Valid(CameraCalibration {
+            calibration_version: VersionId::new("ver:cal-v1")?,
+            horizontal_fov_deg: 45.0,
+            vertical_fov_deg: 45.0,
+            angular_uncertainty_deg: 0.5,
+        })
+    );
+    assert!(
+        handoff_f1_before
+            .frame_drops_at_or_before_frame()
+            .is_empty()
+    );
+
     let nadir_hud = session.project_hud_snapshot(1_000, 1_762_000_001_000);
     match &nadir_hud.footprint_status {
         FootprintStatus::CalibratedDerivedFootprint(fp) => {
+            assert_eq!(fp.calibration_version.as_str(), "ver:cal-v1");
             assert!(fp.center_ground_distance_m.abs() < 1e-6);
             assert!((fp.along_look_span_m - 82.842_712_474_6).abs() < 1e-6);
             assert!((fp.cross_look_span_m - 82.842_712_474_6).abs() < 1e-6);
@@ -906,14 +932,72 @@ fn footprint_nadir_geometry_uncertainty_and_historical_handoff_isolation() -> Re
             if cal.calibration_version.as_str() == "ver:cal-v1"
     ));
 
-    // 3. Invalidate v1 at t = 1_000 ms, then install v2 at t = 2_000 ms and clock c2 at t = 2_000 ms:
-    // exporting frame 1 (@1000 ms) must preserve CalibrationInvalidated(v1) and clock alignment c1 (B6).
-    session.invalidate_camera_calibration("Mount shock at 1000ms")?;
+    // 3. Same-timestamp boundary & dated invalidation (B6):
+    // Invalidate v1 and immediately install v2 and clock c2 WITHOUT advancing telemetry first.
+    // Frame 1 (@1000 ms), `align_device_timestamp(1000)`, and `project_hud_snapshot(1000)` must
+    // still resolve to `Valid(ver:cal-v1)` and `ver:clock-c1`, matching `handoff_f1_before`.
+    session.invalidate_camera_calibration("Mount shock after frame 1")?;
+    let handoff_f1_during_inv =
+        session.export_forensic_frame_handoff(OpaqueId::new("handoff:f1-inv")?, 1, None)?;
+    assert_eq!(
+        handoff_f1_during_inv.camera_calibration_state_at_frame(),
+        handoff_f1_before.camera_calibration_state_at_frame()
+    );
 
-    // Install v2 after ingesting telemetry at t = 2_000 ms:
-    // Past-nadir gimbal (-120 deg at 0 deg heading, 100 m AGL, 10 deg FOV) folds to 60 deg depression
-    // along 180 deg azimuth (center_north_offset_m ≈ -57.735 m south), and IndependentWorldLocked
-    // ignores non-zero airframe pitch (+15 deg) and MagneticNorth airframe heading (B3, B4).
+    session.set_camera_calibration(CameraCalibration {
+        calibration_version: VersionId::new("ver:cal-v2")?,
+        horizontal_fov_deg: 10.0,
+        vertical_fov_deg: 4.0,
+        angular_uncertainty_deg: 1.0,
+    })?;
+    session.set_clock_alignment(ClockAlignmentRecord {
+        alignment_version: VersionId::new("ver:clock-c2")?,
+        device_to_utc_offset_ms: 1_762_000_000_500,
+        linear_drift_ppm: 0,
+        uncertainty_ms: 2,
+        reference_clock_label: "GNSS".to_owned(),
+        method_label: "PPS-recal".to_owned(),
+        valid_from_device_ms: 0,
+        valid_until_device_ms: 500_000,
+    })?;
+
+    // Exporting frame 1 (@1000 ms) after v2 and c2 are installed without intermediate telemetry
+    // still preserves `Valid(ver:cal-v1)` and `ver:clock-c1`, as do the public query paths at 1000 ms.
+    let handoff_f1_after =
+        session.export_forensic_frame_handoff(OpaqueId::new("handoff:f1-after")?, 1, None)?;
+    assert_eq!(
+        handoff_f1_after.camera_calibration_state_at_frame(),
+        handoff_f1_before.camera_calibration_state_at_frame()
+    );
+    assert_eq!(
+        handoff_f1_after.hud_snapshot_at_frame().footprint_status,
+        handoff_f1_before.hud_snapshot_at_frame().footprint_status
+    );
+    assert_eq!(
+        handoff_f1_after.frame().time_alignment(),
+        &TimeAlignment::Synchronized {
+            aligned_utc_ms: 1_762_000_001_000,
+            alignment_version: VersionId::new("ver:clock-c1")?,
+            base_offset_ms: 1_762_000_000_000,
+            drift_adjustment_ms: 0,
+            total_uncertainty_ms: 4,
+        }
+    );
+    assert_eq!(
+        &handoff_f1_after.hud_snapshot_at_frame().time_alignment,
+        handoff_f1_after.frame().time_alignment()
+    );
+    assert_eq!(
+        session.align_device_timestamp(1_000, 1_762_000_001_000),
+        *handoff_f1_after.frame().time_alignment()
+    );
+    assert_eq!(
+        session.camera_calibration_history().len(),
+        3 // [Valid(cal-v1), Invalidated(cal-v1), Valid(cal-v2)]
+    );
+
+    // At t = 2_000 ms, past-nadir gimbal (-120 deg) under cal-v2 yields 60 deg depression along
+    // 180 deg TrueNorth, and IndependentWorldLocked ignores airframe pitch (+15 deg) and MagneticNorth (B3, B4).
     session.ingest_telemetry_sample(TelemetrySampleInput {
         sample_version: VersionId::new("ver:geo-sample-2")?,
         device_clock_ms: 2_000,
@@ -946,53 +1030,15 @@ fn footprint_nadir_geometry_uncertainty_and_historical_handoff_isolation() -> Re
         }),
         battery: None,
         link_health: None,
-        navigation_health: None,
+        navigation_health: Some(NavigationHealth {
+            fix_kind: GnssFixKind::Standard3D,
+            satellite_count: Some(12),
+            hdop: Some(0.9),
+        }),
         recording_state: RecordingState::Recording,
         motion_flags: MotionDynamicsFlags::default(),
     })?;
-    session.set_camera_calibration(CameraCalibration {
-        calibration_version: VersionId::new("ver:cal-v2")?,
-        horizontal_fov_deg: 10.0,
-        vertical_fov_deg: 4.0,
-        angular_uncertainty_deg: 1.0,
-    })?;
-    session.set_clock_alignment(ClockAlignmentRecord {
-        alignment_version: VersionId::new("ver:clock-c2")?,
-        device_to_utc_offset_ms: 1_762_000_000_500,
-        linear_drift_ppm: 0,
-        uncertainty_ms: 2,
-        reference_clock_label: "GNSS".to_owned(),
-        method_label: "PPS-recal".to_owned(),
-        valid_from_device_ms: 0,
-        valid_until_device_ms: 500_000,
-    })?;
 
-    // Historical handoff for frame 1 (@1000 ms) preserves clock-c1 and CalibrationInvalidated(cal-v1).
-    let handoff_f1 =
-        session.export_forensic_frame_handoff(OpaqueId::new("handoff:f1")?, 1, None)?;
-    assert_eq!(
-        handoff_f1.frame().time_alignment(),
-        &TimeAlignment::Synchronized {
-            aligned_utc_ms: 1_762_000_001_000,
-            alignment_version: VersionId::new("ver:clock-c1")?,
-            base_offset_ms: 1_762_000_000_000,
-            drift_adjustment_ms: 0,
-            total_uncertainty_ms: 4,
-        }
-    );
-    assert_eq!(
-        &handoff_f1.hud_snapshot_at_frame().time_alignment,
-        handoff_f1.frame().time_alignment()
-    );
-    assert_eq!(
-        handoff_f1.hud_snapshot_at_frame().footprint_status,
-        FootprintStatus::CalibrationInvalidated {
-            calibration_version: VersionId::new("ver:cal-v1")?,
-            reason: "Mount shock at 1000ms".to_owned(),
-        }
-    );
-
-    // At t = 2_000 ms, past-nadir gimbal (-120 deg) under cal-v2 yields 60 deg depression along 180 deg TrueNorth.
     let hud_2000 = session.project_hud_snapshot(2_000, 1_762_000_002_500);
     let marker_2000 = hud_2000
         .look_direction_marker
@@ -1051,7 +1097,11 @@ fn footprint_nadir_geometry_uncertainty_and_historical_handoff_isolation() -> Re
         }),
         battery: None,
         link_health: None,
-        navigation_health: None,
+        navigation_health: Some(NavigationHealth {
+            fix_kind: GnssFixKind::Standard3D,
+            satellite_count: Some(12),
+            hdop: Some(0.9),
+        }),
         recording_state: RecordingState::Recording,
         motion_flags: MotionDynamicsFlags::default(),
     })?;
@@ -1070,7 +1120,71 @@ fn footprint_nadir_geometry_uncertainty_and_historical_handoff_isolation() -> Re
         }
     }
 
-    // 5. FollowHeading with MagneticNorth and non-zero roll are explicitly refused (B3, B4).
+    // 5. FollowHeading 3D rotation composition (yaw 90 deg, airframe pitch +10 deg, gimbal pitch -30 deg,
+    // 100 m AGL -> azimuth ≈ 84.2704 deg, depression ≈ 29.4987 deg, ground distance ≈ 176.7595 m)
+    // and roll-cancellation refusal (airframe roll +10 deg, gimbal roll -10 deg, gimbal yaw 90 deg) (B3).
+    session.ingest_telemetry_sample(TelemetrySampleInput {
+        sample_version: VersionId::new("ver:geo-sample-3b")?,
+        device_clock_ms: 3_500,
+        receipt_utc_ms: 1_762_000_004_000,
+        heading: Some(HeadingSample {
+            degrees: 0.0,
+            reference: HeadingReference::TrueNorth,
+        }),
+        attitude: Some(AttitudeDeg {
+            roll_deg: 0.0,
+            pitch_deg: 10.0,
+            yaw_deg: 0.0,
+        }),
+        position: Some(Wgs84Position {
+            latitude_deg: 0.100_000,
+            longitude_deg: 0.200_000,
+            horizontal_uncertainty_m: Some(1.0),
+        }),
+        altitude: Some(AltitudeSample {
+            meters: 100.0,
+            reference: AltitudeReference::AboveGroundLevel,
+            vertical_uncertainty_m: Some(0.5),
+        }),
+        velocity: None,
+        gimbal: Some(GimbalOrientation {
+            pitch_deg: -30.0,
+            roll_deg: 0.0,
+            yaw_deg: 90.0,
+            mode: GimbalMode::FollowHeading,
+        }),
+        battery: None,
+        link_health: None,
+        navigation_health: Some(NavigationHealth {
+            fix_kind: GnssFixKind::Standard3D,
+            satellite_count: Some(12),
+            hdop: Some(0.9),
+        }),
+        recording_state: RecordingState::Recording,
+        motion_flags: MotionDynamicsFlags::default(),
+    })?;
+    let yaw90_hud = session.project_hud_snapshot(3_500, 1_762_000_004_000);
+    let yaw90_marker = yaw90_hud
+        .look_direction_marker
+        .ok_or(UavError::InternalInvariant)?;
+    assert!((yaw90_marker.world_azimuth_deg - 84.274_895).abs() < 1e-4);
+    assert!((yaw90_marker.depression_deg - 29.498_704).abs() < 1e-4);
+    match &yaw90_hud.footprint_status {
+        FootprintStatus::CalibratedDerivedFootprint(fp) => {
+            assert!((fp.center_ground_distance_m - 176.759_5).abs() < 1e-2);
+        }
+        other => {
+            return Err(UavError::InvalidNumericField {
+                field: match other {
+                    FootprintStatus::UncalibratedViewingRayOnly => "expected_yaw90_footprint",
+                    _ => "unexpected_yaw90_status",
+                },
+            });
+        }
+    }
+
+    // FollowHeading with MagneticNorth, non-zero roll, and opposite airframe/gimbal rolls (+10/-10)
+    // are explicitly refused (B3, B4).
     session.ingest_telemetry_sample(TelemetrySampleInput {
         sample_version: VersionId::new("ver:geo-sample-4")?,
         device_clock_ms: 4_000,
@@ -1125,7 +1239,7 @@ fn footprint_nadir_geometry_uncertainty_and_historical_handoff_isolation() -> Re
             reference: HeadingReference::TrueNorth,
         }),
         attitude: Some(AttitudeDeg {
-            roll_deg: 12.5,
+            roll_deg: 10.0,
             pitch_deg: 0.0,
             yaw_deg: 10.0,
         }),
@@ -1141,14 +1255,18 @@ fn footprint_nadir_geometry_uncertainty_and_historical_handoff_isolation() -> Re
         }),
         velocity: None,
         gimbal: Some(GimbalOrientation {
-            pitch_deg: -45.0,
-            roll_deg: 0.0,
-            yaw_deg: 0.0,
+            pitch_deg: -30.0,
+            roll_deg: -10.0,
+            yaw_deg: 90.0,
             mode: GimbalMode::FollowHeading,
         }),
         battery: None,
         link_health: None,
-        navigation_health: None,
+        navigation_health: Some(NavigationHealth {
+            fix_kind: GnssFixKind::Standard3D,
+            satellite_count: Some(12),
+            hdop: Some(0.9),
+        }),
         recording_state: RecordingState::Recording,
         motion_flags: MotionDynamicsFlags::default(),
     })?;
@@ -1157,7 +1275,7 @@ fn footprint_nadir_geometry_uncertainty_and_historical_handoff_isolation() -> Re
             .project_hud_snapshot(5_000, 1_762_000_005_500)
             .footprint_status,
         FootprintStatus::NonZeroRollUnsupported {
-            effective_roll_deg: 12.5,
+            effective_roll_deg: 10.0,
         }
     );
 
@@ -1175,6 +1293,66 @@ fn footprint_nadir_geometry_uncertainty_and_historical_handoff_isolation() -> Re
             vertical_fov_deg: 40.0,
             angular_uncertainty_deg: 0.5,
         })
+    );
+
+    // 7. Recorded-import order: frames ingested before the first `set_clock_alignment` are aligned
+    // across the record's `[valid_from_device_ms, valid_until_device_ms)` window (B6).
+    let mut import_session = UavFlightSession::new(
+        OpaqueId::new("session:recorded-import-order")?,
+        sample_registered_uav()?,
+        OriginalFlightStreamInput {
+            stream_id: OpaqueId::new("stream:import-1")?,
+            stream_version: VersionId::new("ver:import-stream-v1")?,
+            origin: FlightStreamOrigin::RecordedFlightImport,
+            sha256_hex: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .to_owned(),
+            byte_len: 10_000,
+            media_type: "video/mp4".to_owned(),
+        },
+        UavSessionLimits::default_bounded(),
+    )?;
+    import_session.ingest_video_frame(VideoFrameInput {
+        frame_index: 10,
+        frame_version: VersionId::new("ver:import-frame-10")?,
+        device_clock_ms: 1_000,
+        receipt_utc_ms: 1_762_000_001_000,
+        exposure_duration_us: Some(2_000),
+        sha256_hex: "2222222222222222222222222222222222222222222222222222222222222222".to_owned(),
+    })?;
+    import_session.set_clock_alignment(ClockAlignmentRecord {
+        alignment_version: VersionId::new("ver:import-clock-v1")?,
+        device_to_utc_offset_ms: 1_762_000_000_000,
+        linear_drift_ppm: 0,
+        uncertainty_ms: 3,
+        reference_clock_label: "GNSS".to_owned(),
+        method_label: "PPS".to_owned(),
+        valid_from_device_ms: 0,
+        valid_until_device_ms: 1_000_000,
+    })?;
+    assert_eq!(
+        import_session.align_device_timestamp(1_000, 1_762_000_001_000),
+        TimeAlignment::Synchronized {
+            aligned_utc_ms: 1_762_000_001_000,
+            alignment_version: VersionId::new("ver:import-clock-v1")?,
+            base_offset_ms: 1_762_000_000_000,
+            drift_adjustment_ms: 0,
+            total_uncertainty_ms: 3,
+        }
+    );
+    let import_handoff = import_session.export_forensic_frame_handoff(
+        OpaqueId::new("handoff:import-10")?,
+        10,
+        None,
+    )?;
+    assert_eq!(
+        import_handoff.frame().time_alignment(),
+        &TimeAlignment::Synchronized {
+            aligned_utc_ms: 1_762_000_001_000,
+            alignment_version: VersionId::new("ver:import-clock-v1")?,
+            base_offset_ms: 1_762_000_000_000,
+            drift_adjustment_ms: 0,
+            total_uncertainty_ms: 3,
+        }
     );
 
     Ok(())

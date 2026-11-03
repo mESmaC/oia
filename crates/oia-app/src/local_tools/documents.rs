@@ -5,15 +5,15 @@
 //! selection, never source or version identities; a hash identifies bytes only. No source
 //! registry, authorization, ranking, persistence, OCR or model runs here.
 use super::{
-    Control, FileInfo, FileKind, MATCHES, PASSAGES, Passage, Result, Snapshot, TEXT_BYTES,
-    ToolError, display_text, open_file, require_kind,
+    Control, FileInfo, FileKind, MATCHES, PASSAGES, Passage, Result, SearchMode, Snapshot,
+    TEXT_BYTES, ToolError, display_text, open_file, require_kind,
 };
 use oia_documents::{
     Extraction, ExtractionLimits,
     citations::{Citation, CitationError, CitationLimits, CitationProblem, validate_citations},
     corpus::{CorpusInput, CorpusLimits, DocumentOutcome, search_corpus as corpus_search},
     extract_utf8,
-    search::{SearchLimits, SearchMode},
+    search::SearchLimits,
 };
 use serde::Serialize;
 use std::path::PathBuf;
@@ -111,6 +111,7 @@ pub struct CorpusDocumentView {
 #[derive(Clone, Debug, Serialize)]
 pub struct CorpusSearchView {
     pub query: String,
+    pub mode: SearchMode,
     pub documents: Vec<CorpusDocumentView>,
     pub match_count: usize,
     pub known_input_bytes: usize,
@@ -123,6 +124,7 @@ pub struct CorpusSearchView {
 pub fn search_corpus(
     snapshots: &[Snapshot],
     query: &str,
+    mode: SearchMode,
     control: &Control,
 ) -> Result<CorpusSearchView> {
     let extractions = snapshots
@@ -134,10 +136,8 @@ pub fn search_corpus(
         SearchLimits::new(QUERY_BYTES, MATCHES).map_err(|e| ToolError::new("limits", e))?;
     let limits = CorpusLimits::new(CORPUS_FILES, CORPUS_BYTES, search)
         .map_err(|e| ToolError::new("limits", e))?;
-    let result = corpus_search(&inputs, query, limits, SearchMode::ExactSubstring, || {
-        control.text_check()
-    })
-    .map_err(|e| ToolError::new("search", e))?;
+    let result = corpus_search(&inputs, query, limits, mode.into(), || control.text_check())
+        .map_err(|e| ToolError::new("search", e))?;
     let mut documents = Vec::with_capacity(result.documents().len());
     for document in result.documents() {
         let file = snapshots
@@ -196,6 +196,7 @@ pub fn search_corpus(
     control.check()?;
     Ok(CorpusSearchView {
         query: query.to_owned(),
+        mode,
         documents,
         match_count: result.match_count(),
         known_input_bytes: result.known_input_bytes(),

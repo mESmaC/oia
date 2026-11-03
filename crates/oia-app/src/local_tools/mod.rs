@@ -1,7 +1,7 @@
 //! Local, session-only tools over merged kernels. These do not create evidence/case records.
 use oia_documents::{
     ExtractionLimits, extract_utf8,
-    search::{SearchLimits, find_text},
+    search::{SearchLimits, find_text, find_token},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -32,6 +32,23 @@ pub const TEXT_BYTES: usize = 2 * 1024 * 1024;
 pub const IMAGE_BYTES: usize = 16 * 1024 * 1024;
 pub const PASSAGES: usize = 10_000;
 pub const MATCHES: usize = 200;
+
+/// Transport spelling for the existing document kernel's matching modes.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchMode {
+    ExactSubstring,
+    WhitespaceToken,
+}
+
+impl From<SearchMode> for oia_documents::search::SearchMode {
+    fn from(mode: SearchMode) -> Self {
+        match mode {
+            SearchMode::ExactSubstring => Self::ExactSubstring,
+            SearchMode::WhitespaceToken => Self::WhitespaceToken,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ToolError {
@@ -252,21 +269,34 @@ pub fn document(snapshot: &Snapshot, control: &Control) -> Result<DocumentView> 
 pub struct SearchView {
     pub sha256: String,
     pub query: String,
+    pub mode: SearchMode,
     pub matches: Vec<Passage>,
     pub searched_bytes: usize,
     pub input_bytes: usize,
     pub complete: bool,
     pub match_limit: usize,
 }
-pub fn search(snapshot: &Snapshot, query: &str, control: &Control) -> Result<SearchView> {
+pub fn search(
+    snapshot: &Snapshot,
+    query: &str,
+    mode: SearchMode,
+    control: &Control,
+) -> Result<SearchView> {
     require_kind(snapshot, FileKind::Text)?;
     let limits =
         ExtractionLimits::new(TEXT_BYTES, PASSAGES).map_err(|e| ToolError::new("limits", e))?;
     let extraction = extract_utf8(snapshot.bytes(), limits, || control.text_check())
         .map_err(|e| ToolError::new("extraction", e))?;
     let limits = SearchLimits::new(512, MATCHES).map_err(|e| ToolError::new("limits", e))?;
-    let result = find_text(&extraction, query, limits, || control.text_check())
-        .map_err(|e| ToolError::new("search", e))?;
+    let result = match mode {
+        SearchMode::ExactSubstring => {
+            find_text(&extraction, query, limits, || control.text_check())
+        }
+        SearchMode::WhitespaceToken => {
+            find_token(&extraction, query, limits, || control.text_check())
+        }
+    }
+    .map_err(|e| ToolError::new("search", e))?;
     let matches = result
         .matches()
         .iter()
@@ -281,6 +311,7 @@ pub fn search(snapshot: &Snapshot, query: &str, control: &Control) -> Result<Sea
     Ok(SearchView {
         sha256: snapshot.info.sha256.clone(),
         query: query.to_owned(),
+        mode,
         matches,
         searched_bytes: result.coverage().searched_bytes(),
         input_bytes: snapshot.info.bytes,

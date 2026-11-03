@@ -15,7 +15,12 @@ fn searches_the_opened_bytes_even_after_the_source_changes()
     assert!(view.complete);
     assert_eq!(view.passages[1].start, "évidence\r\n".len());
     fs::write(&path, "later revision")?;
-    let result = search(&snapshot, "two lights", &control)?;
+    let result = search(
+        &snapshot,
+        "two lights",
+        SearchMode::ExactSubstring,
+        &control,
+    )?;
     assert_eq!(result.matches.len(), 1);
     let hit = &result.matches[0];
     assert_eq!(&original.as_bytes()[hit.start..hit.end], b"two lights");
@@ -33,13 +38,13 @@ fn bounds_invalid_input_and_cancellation_are_visible() -> std::result::Result<()
     let control = Control::default();
     let snapshot = open_file(&path, FileKind::Text, &control)?;
     assert!(!document(&snapshot, &control)?.complete);
-    let result = search(&snapshot, "match", &control)?;
+    let result = search(&snapshot, "match", SearchMode::ExactSubstring, &control)?;
     assert!(!result.complete);
     assert_eq!(result.matches.len(), MATCHES);
     assert!(result.searched_bytes < result.input_bytes);
-    assert!(search(&snapshot, "", &control).is_err());
+    assert!(search(&snapshot, "", SearchMode::ExactSubstring, &control).is_err());
     control.cancel();
-    assert!(search(&snapshot, "match", &control).is_err());
+    assert!(search(&snapshot, "match", SearchMode::ExactSubstring, &control).is_err());
     fs::write(&path, [0xff])?;
     assert!(
         document(
@@ -184,7 +189,7 @@ fn corpus_search_and_citations_preserve_anchors_and_refuse_whole_selections()
     fs::write(&second, "two lights\n".repeat(MATCHES + 1))?;
     let control = Control::default();
     let corpus = open_corpus(&[first.clone(), second.clone()], &control)?;
-    let result = search_corpus(&corpus, "two lights", &control)?;
+    let result = search_corpus(&corpus, "two lights", SearchMode::ExactSubstring, &control)?;
     assert_eq!(result.match_count, MATCHES);
     assert!(!result.complete);
     let (a, b) = (&result.documents[0], &result.documents[1]);
@@ -204,6 +209,7 @@ fn corpus_search_and_citations_preserve_anchors_and_refuse_whole_selections()
     let exhausted = search_corpus(
         &[corpus[1].clone(), third[0].clone()],
         "two lights",
+        SearchMode::ExactSubstring,
         &control,
     )?;
     assert_eq!(exhausted.documents[1].outcome, "match_limit_reached");
@@ -257,7 +263,100 @@ fn corpus_search_and_citations_preserve_anchors_and_refuse_whole_selections()
     );
     assert!(cite_selection(snapshot, 1, 0, &control).is_err());
     control.cancel();
-    assert!(search_corpus(&corpus, "two", &control).is_err());
+    assert!(search_corpus(&corpus, "two", SearchMode::ExactSubstring, &control).is_err());
     assert!(check_citation(snapshot, hit.start, hit.end, "two lights", &control).is_err());
+    Ok(())
+}
+
+// CASE-05/DOC-04: a requested mode must govern both app paths without changing
+// byte anchors, selected-file attribution, bounded coverage or citation validity.
+#[test]
+fn matching_modes_preserve_snapshot_anchors_and_coverage() -> std::result::Result<(), Box<dyn Error>>
+{
+    let dir = tempfile::tempdir()?;
+    let first = dir.path().join("first.txt");
+    let second = dir.path().join("same-bytes.txt");
+    let original = "é lights lightsome lights,\u{2003}lights\r\nLIGHTS\n";
+    fs::write(&first, original)?;
+    fs::write(&second, original)?;
+    let control = Control::default();
+    let corpus = open_corpus(&[first.clone(), second], &control)?;
+    fs::write(&first, "later revision")?;
+
+    for (mode, expected) in [
+        (
+            SearchMode::ExactSubstring,
+            vec![(3, 9), (10, 16), (20, 26), (30, 36)],
+        ),
+        (SearchMode::WhitespaceToken, vec![(3, 9), (30, 36)]),
+    ] {
+        let one = search(&corpus[0], "lights", mode, &control)?;
+        let many = search_corpus(&corpus, "lights", mode, &control)?;
+        assert_eq!((one.mode, many.mode), (mode, mode));
+        assert!(one.complete && many.complete);
+        assert_eq!(one.searched_bytes, original.len());
+        assert_eq!(many.match_count, expected.len() * 2);
+        assert_eq!(
+            one.matches
+                .iter()
+                .map(|m| (m.start, m.end))
+                .collect::<Vec<_>>(),
+            expected
+        );
+        for (slot, document) in many.documents.iter().enumerate() {
+            assert_eq!(document.file.snapshot_ref, corpus[slot].info.snapshot_ref);
+            assert_eq!(document.file.sha256, one.sha256);
+            assert_eq!(
+                document
+                    .matches
+                    .iter()
+                    .map(|m| (m.start, m.end))
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            for hit in &document.matches {
+                let citation = cite_selection(&corpus[slot], hit.start, hit.end, &control)?;
+                assert_eq!(
+                    (citation.status, citation.quote.as_str()),
+                    ("valid", "lights")
+                );
+                assert_eq!(citation.file.snapshot_ref, document.file.snapshot_ref);
+            }
+        }
+        assert_ne!(
+            many.documents[0].file.snapshot_ref,
+            many.documents[1].file.snapshot_ref
+        );
+        let encoded = serde_json::to_value(&one)?;
+        assert_eq!(
+            serde_json::from_value::<SearchMode>(encoded["mode"].clone())?,
+            mode
+        );
+    }
+    assert!(serde_json::from_str::<SearchMode>("\"whole_word\"").is_err());
+    for query in ["two lights", "lights\u{0085}"] {
+        assert_eq!(
+            search(&corpus[0], query, SearchMode::WhitespaceToken, &control)
+                .err()
+                .map(|e| e.code),
+            Some("search")
+        );
+        assert_eq!(
+            search_corpus(&corpus, query, SearchMode::WhitespaceToken, &control)
+                .err()
+                .map(|e| e.code),
+            Some("search")
+        );
+    }
+    fs::write(&first, "lights\n".repeat(MATCHES + 1))?;
+    let bounded = open_corpus(std::slice::from_ref(&first), &control)?;
+    let one = search(&bounded[0], "lights", SearchMode::WhitespaceToken, &control)?;
+    let many = search_corpus(&bounded, "lights", SearchMode::WhitespaceToken, &control)?;
+    assert_eq!((one.matches.len(), many.match_count), (MATCHES, MATCHES));
+    assert!(!one.complete && !many.complete);
+    assert!(one.searched_bytes < one.input_bytes);
+    control.cancel();
+    assert!(search(&corpus[0], "lights", SearchMode::WhitespaceToken, &control).is_err());
+    assert!(search_corpus(&corpus, "lights", SearchMode::WhitespaceToken, &control).is_err());
     Ok(())
 }

@@ -28,7 +28,7 @@
     <form class="cmd glass" id="search-form" role="search">
       <button type="button" class="scope" id="scope" title="Search scope · switches between the open document and the held corpus when both are loaded" disabled>NO DOCUMENT</button>
       <label class="sr-only" for="query">Search the open document or the held corpus for exact text</label>
-      <input id="query" name="query" type="search" placeholder="Open a document or corpus to search exact text" maxlength="512" autocomplete="off" data-operation disabled>
+      <input id="query" name="query" type="search" placeholder="Open a document or corpus to search exact text" maxlength="512" autocomplete="off" aria-describedby="search-mode-note" data-operation disabled>
       <button type="submit" id="search-submit" class="cmd-btn" data-operation disabled>Find</button>
       <button type="button" id="clear-search" class="cmd-btn" data-operation disabled>Clear</button>
       <kbd>Ctrl F</kbd>
@@ -90,6 +90,15 @@
 
     <!-- Documents view -->
     <section class="view" id="view-documents" hidden>
+      <div class="search-options glass">
+        <label for="search-mode">Match</label>
+        <select id="search-mode" aria-describedby="search-mode-note" data-operation disabled>
+          <option value="exact_substring">Exact substring</option>
+          <option value="whitespace_token">Whole token (whitespace)</option>
+        </select>
+        <p id="search-mode-note">Case-sensitive text within a line; matches inside longer tokens too.</p>
+      </div>
+      <div class="document-content">
       <div class="empty" id="document-empty">
         <span class="k">Document reader</span>
         <h2 id="document-empty-title">No document open</h2>
@@ -107,6 +116,7 @@
           <div class="passages" id="passages" tabindex="0" aria-label="Passages"></div>
           <div class="pager"><button type="button" id="previous-page">← Previous</button><span class="k" id="page-label"></span><button type="button" id="next-page">Next →</button></div>
         </div>
+      </div>
       </div>
     </section>
 

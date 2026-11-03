@@ -169,3 +169,95 @@ fn residual_export_preserves_labels_and_source() -> std::result::Result<(), Box<
     );
     Ok(())
 }
+
+/// Corpus results keep slot attribution and original anchors, an unsearched file after the
+/// shared hit limit is never reported as empty, an oversized selection is refused whole, and a
+/// citation is a structural check that rejects a wrong quote or an unextracted range without
+/// repairing it (#18 desktop slice: CASE-05, DOC-03, DOC-04).
+#[test]
+fn corpus_search_and_citations_preserve_anchors_and_refuse_whole_selections()
+-> std::result::Result<(), Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    let first = dir.path().join("first.txt");
+    let second = dir.path().join("second.txt");
+    fs::write(&first, "no hit here\nthe two lights rose\n")?;
+    fs::write(&second, "two lights\n".repeat(MATCHES + 1))?;
+    let control = Control::default();
+    let corpus = open_corpus(&[first.clone(), second.clone()], &control)?;
+    let result = search_corpus(&corpus, "two lights", &control)?;
+    assert_eq!(result.match_count, MATCHES);
+    assert!(!result.complete);
+    let (a, b) = (&result.documents[0], &result.documents[1]);
+    assert_eq!((a.index, a.outcome, a.matches.len()), (0, "searched", 1));
+    assert_eq!(
+        &fs::read(&first)?[a.matches[0].start..a.matches[0].end],
+        b"two lights"
+    );
+    assert_eq!(a.matches[0].line, 2);
+    assert!(a.search_complete && a.extraction_complete);
+    assert_eq!(
+        (b.index, b.outcome, b.matches.len()),
+        (1, "searched", MATCHES - 1)
+    );
+    assert!(!b.search_complete && b.searched_bytes < b.input_bytes);
+    let third = open_corpus(std::slice::from_ref(&first), &control)?;
+    let exhausted = search_corpus(
+        &[corpus[1].clone(), third[0].clone()],
+        "two lights",
+        &control,
+    )?;
+    assert_eq!(exhausted.documents[1].outcome, "match_limit_reached");
+    assert_eq!(exhausted.documents[1].searched_bytes, 0);
+    assert_eq!(exhausted.documents[1].input_bytes, corpus[0].info.bytes);
+
+    let too_many: Vec<_> = (0..=CORPUS_FILES).map(|_| first.clone()).collect();
+    assert_eq!(
+        open_corpus(&too_many, &control).err().map(|e| e.code),
+        Some("input_limit")
+    );
+    let big = dir.path().join("big.txt");
+    fs::File::create(&big)?.set_len(TEXT_BYTES as u64)?;
+    let over: Vec<_> = (0..=CORPUS_BYTES / TEXT_BYTES)
+        .map(|_| big.clone())
+        .collect();
+    assert_eq!(
+        open_corpus(&over, &control).err().map(|e| e.code),
+        Some("input_limit")
+    );
+
+    let snapshot = &corpus[0];
+    let hit = &a.matches[0];
+    let cited = cite_selection(snapshot, hit.start, hit.end, &control)?;
+    assert_eq!(
+        (cited.status, cited.quote.as_str(), cited.line),
+        ("valid", "two lights", Some(2))
+    );
+    let wrong = check_citation(snapshot, hit.start, hit.end, "two light!", &control)?;
+    assert_eq!(wrong.status, "invalid");
+    assert!(
+        wrong
+            .problem
+            .as_deref()
+            .is_some_and(|p| p.contains("differs"))
+    );
+    let long = dir.path().join("long.txt");
+    fs::write(
+        &long,
+        "s
+"
+        .repeat(PASSAGES + 1),
+    )?;
+    let partial = open_file(&long, FileKind::Text, &control)?;
+    let beyond = partial.info.bytes - 1;
+    assert_eq!(
+        check_citation(&partial, beyond - 1, beyond, "s", &control)?
+            .problem
+            .as_deref(),
+        Some("The range reaches bytes that were not extracted (passage limit).")
+    );
+    assert!(cite_selection(snapshot, 1, 0, &control).is_err());
+    control.cancel();
+    assert!(search_corpus(&corpus, "two", &control).is_err());
+    assert!(check_citation(snapshot, hit.start, hit.end, "two lights", &control).is_err());
+    Ok(())
+}

@@ -3,7 +3,9 @@
 //! inspectable composed reasoning (`REASON-01`..=`REASON-04`), dated text
 //! snapshot comparison (`PRIVACY-03`), personal exposure audit (`INTEL-01`),
 //! geographic context reconstruction (`GEO-02`, `GEO-05`, `INTEL-03`, `#24`), and
-//! satellite imagery / space observation catalog (`SPACE-01`..=`SPACE-03`, `A05`, `#26`), and
+//! satellite imagery / space observation catalog (`SPACE-01`..=`SPACE-03`, `A05`, `#26`),
+//! statement comparison with copied-text and drift detection (`INTEL-01`, `REASON-03`,
+//! `FIELD-02`, `#138`), and
 //! validation/simulation lab with operational benchmarks (`FIELD-04`, `CAM-05`, `MEDIA-02`,
 //! `DEVICE-04`, `#40`) kernels.
 //!
@@ -17,6 +19,7 @@ pub mod reasoning;
 pub mod records_request;
 pub mod snapshot_change;
 pub mod space_imagery;
+pub mod statement_comparison;
 pub mod triangulation;
 pub mod validation_lab;
 

@@ -72,6 +72,7 @@ The repository was empty on GitHub when this backlog was created, so issue bodie
 
 - [#35: Implement deduction, extrapolation, correlation, and abstraction workflows](https://github.com/mESmaC/oia/issues/35)
 - [#36: Build link analysis, collection planning, and research utilities](https://github.com/mESmaC/oia/issues/36)
+  - [#138 statement comparison kernel and remaining integration](implementation/statement-comparison.md)
 - [#37: Build calibration, observation planning, and multi-view reconstruction](https://github.com/mESmaC/oia/issues/37)
 - [#38: Add shared-case roles and offline field synchronization](https://github.com/mESmaC/oia/issues/38)
 - [#39: Complete reproducible investigation bundles and analysis replay](https://github.com/mESmaC/oia/issues/39)

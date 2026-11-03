@@ -46,13 +46,13 @@ fn instrument() -> Result<Instrument, Box<dyn Error>> {
         quote_unit: Unit::new("USD")?,
         aliases: vec![
             ListingAlias {
-                symbol: "OLD".into(),
+                symbol: "SYN-OLD".into(),
                 valid_from: date(2024, 1, 1)?,
                 valid_to_exclusive: Some(date(2024, 2, 1)?),
                 source_version: version("listing-old")?,
             },
             ListingAlias {
-                symbol: "NEW".into(),
+                symbol: "SYN-NEW".into(),
                 valid_from: date(2024, 2, 1)?,
                 valid_to_exclusive: None,
                 source_version: version("listing-new")?,
@@ -102,8 +102,8 @@ fn identity_calendar_and_delayed_quote_cutoffs() -> Result<(), Box<dyn Error>> {
     assert!(CalendarDate::new(2023, 2, 29).is_err());
     let instrument = instrument()?;
     let limits = MarketLimits::new(16)?;
-    for (symbol, day) in [("OLD", 15), ("NEW", 1)] {
-        let date = if symbol == "OLD" {
+    for (symbol, day) in [("SYN-OLD", 15), ("SYN-NEW", 1)] {
+        let date = if symbol == "SYN-OLD" {
             date(2024, 1, day)?
         } else {
             date(2024, 2, day)?
@@ -122,7 +122,7 @@ fn identity_calendar_and_delayed_quote_cutoffs() -> Result<(), Box<dyn Error>> {
         resolve_instrument(
             std::slice::from_ref(&instrument),
             &instrument.venue,
-            "OLD",
+            "SYN-OLD",
             date(2024, 2, 1)?,
             limits,
             || Ok(()),
@@ -136,7 +136,20 @@ fn identity_calendar_and_delayed_quote_cutoffs() -> Result<(), Box<dyn Error>> {
         resolve_instrument(
             &[instrument.clone(), ambiguous],
             &instrument.venue,
-            "OLD",
+            "SYN-OLD",
+            date(2024, 1, 15)?,
+            limits,
+            || Ok(()),
+        ),
+        Err(MarketError::AmbiguousAlias)
+    ));
+    let mut padded = instrument.clone();
+    padded.aliases[0].symbol = " SYN-OLD".into();
+    assert!(matches!(
+        resolve_instrument(
+            &[padded],
+            &instrument.venue,
+            "SYN-OLD",
             date(2024, 1, 15)?,
             limits,
             || Ok(()),
@@ -148,36 +161,34 @@ fn identity_calendar_and_delayed_quote_cutoffs() -> Result<(), Box<dyn Error>> {
     let jan16 = date(2024, 1, 16)?;
     let jan17 = date(2024, 1, 17)?;
     let jan18 = date(2024, 1, 18)?;
-    let calendar = TradingCalendarVersion::new(
-        TradingCalendarInput {
-            venue: instrument.venue.clone(),
-            version: version("calendar-v1")?,
-            source_version: version("calendar-source-v1")?,
-            timezone_identifier: "America/New_York".into(),
-            coverage_start: jan15,
-            coverage_end: jan18,
-            sessions: vec![
-                TradingSession {
-                    local_date: jan16,
-                    open_at_utc_ms: 1_000,
-                    close_at_utc_ms: 2_000,
-                    kind: SessionKind::Ordinary,
-                },
-                TradingSession {
-                    local_date: jan17,
-                    open_at_utc_ms: 3_000,
-                    close_at_utc_ms: 4_000,
-                    kind: SessionKind::EarlyClose,
-                },
-            ],
-            closures: vec![TradingClosure {
-                local_date: jan15,
-                kind: ClosureKind::Holiday,
-                reason: "Synthetic holiday".into(),
-            }],
-        },
-        limits,
-    )?;
+    let calendar_input = TradingCalendarInput {
+        venue: instrument.venue.clone(),
+        version: version("calendar-v1")?,
+        source_version: version("calendar-source-v1")?,
+        timezone_identifier: "Synthetic/Exchange".into(),
+        coverage_start: jan15,
+        coverage_end: jan18,
+        sessions: vec![
+            TradingSession {
+                local_date: jan16,
+                open_at_utc_ms: 1_000,
+                close_at_utc_ms: 2_000,
+                kind: SessionKind::Ordinary,
+            },
+            TradingSession {
+                local_date: jan17,
+                open_at_utc_ms: 3_000,
+                close_at_utc_ms: 4_000,
+                kind: SessionKind::EarlyClose,
+            },
+        ],
+        closures: vec![TradingClosure {
+            local_date: jan15,
+            kind: ClosureKind::Holiday,
+            reason: "Synthetic holiday".into(),
+        }],
+    };
+    let calendar = TradingCalendarVersion::new(calendar_input.clone(), limits)?;
     assert!(matches!(
         calendar.calendar_day(jan15),
         CalendarDay::Closed(closure) if closure.kind == ClosureKind::Holiday
@@ -193,6 +204,18 @@ fn identity_calendar_and_delayed_quote_cutoffs() -> Result<(), Box<dyn Error>> {
     );
     assert_eq!(calendar.session_at(jan17, 4_000)?, SessionAt::Closed);
     assert_eq!(calendar.session_at(jan18, 4_000)?, SessionAt::Unknown);
+    assert_eq!(calendar.session_at(jan15, 1_500)?, SessionAt::Unknown);
+    let mut overlapping_calendar = calendar_input.clone();
+    overlapping_calendar.sessions.push(TradingSession {
+        local_date: jan18,
+        open_at_utc_ms: 1_500,
+        close_at_utc_ms: 2_500,
+        kind: SessionKind::Ordinary,
+    });
+    assert!(matches!(
+        TradingCalendarVersion::new(overlapping_calendar, limits),
+        Err(MarketError::InvalidCalendar(_))
+    ));
 
     let quote = make_quote(1_000)?;
     let source = id("source:test")?;
@@ -240,6 +263,17 @@ fn identity_calendar_and_delayed_quote_cutoffs() -> Result<(), Box<dyn Error>> {
     )?;
     assert_eq!(complete.selected(), Some(&quote));
     assert_eq!(complete.eligible_count(), 1);
+    let mut tied = quote.clone();
+    tied.version = version("quote-tied-version")?;
+    assert!(matches!(
+        select_quote_as_of(
+            &[quote.clone(), tied],
+            query(&instrument, &source, &unit, 1_200, &strict)?,
+            limits,
+            || Ok(()),
+        ),
+        Err(MarketError::InvalidQuote(_))
+    ));
     let empty = select_quote_as_of(
         &[],
         query(&instrument, &source, &unit, 1_200, &strict)?,
@@ -483,9 +517,33 @@ fn release_vintages_exclude_late_or_unknown_information() -> Result<(), Box<dyn 
     let mut backward_v1 = v1.clone();
     backward_v1.availability.public_available_at_utc_ms = Some(13_000);
     assert!(matches!(
-        select_release_vintage(&[backward_v1, v2], &series, 14_000, &strict, limits, || Ok(
-            ()
-        ),),
+        select_release_vintage(
+            &[backward_v1, v2.clone()],
+            &series,
+            14_000,
+            &strict,
+            limits,
+            || Ok(()),
+        ),
+        Err(MarketError::InvalidRelease(_))
+    ));
+    let mut unknown_middle = v2.clone();
+    unknown_middle.availability.public_available_at_utc_ms = None;
+    let mut backward_third = v2.clone();
+    backward_third.version = version("release-v3")?;
+    backward_third.source_version = version("release-source-v3")?;
+    backward_third.revision = 3;
+    backward_third.predecessor_version = Some(version("release-v2")?);
+    backward_third.availability = available(5_000, 5_000);
+    assert!(matches!(
+        select_release_vintage(
+            &[v1, unknown_middle, backward_third],
+            &series,
+            7_000,
+            &strict,
+            limits,
+            || Ok(()),
+        ),
         Err(MarketError::InvalidRelease(_))
     ));
     Ok(())
@@ -499,8 +557,11 @@ fn action(
 ) -> Result<CorporateActionRecord, Box<dyn Error>> {
     Ok(CorporateActionRecord {
         instrument_id: id("instrument:stable")?,
+        action_id: id(&format!("action:{name}"))?,
         version: version(name)?,
         source_version: version(&format!("{name}-source"))?,
+        revision: 1,
+        predecessor_version: None,
         effective_at_utc_ms: effective,
         availability: available(effective, effective),
         split_numerator: numerator,
@@ -514,7 +575,8 @@ fn split_adjustment_is_exact_and_failure_paths_return_no_result() -> Result<(), 
     let strict = CutoffMode::ProspectiveStrict;
     let quote = make_quote(10_000)?;
     let split = action("split-2-for-1", 15_000, 2, 1)?;
-    let future = action("split-future", 30_000, 2, 1)?;
+    let mut future = action("split-future", 30_000, 2, 1)?;
+    future.availability = available(16_000, 16_000);
     let prior = action("split-prior", 5_000, 2, 1)?;
     let mut unknown = action("split-unknown", 16_000, 2, 1)?;
     unknown.availability.public_available_at_utc_ms = None;
@@ -570,7 +632,7 @@ fn split_adjustment_is_exact_and_failure_paths_return_no_result() -> Result<(), 
     assert!(before_split.applied_actions().is_empty());
     assert_eq!(
         before_split.excluded_actions()[0].reason,
-        ExclusionReason::EffectiveAfterCutoff
+        ExclusionReason::PublicAvailabilityAfterCutoff
     );
 
     let post_split_quote = make_quote(16_000)?;
@@ -602,13 +664,59 @@ fn split_adjustment_is_exact_and_failure_paths_return_no_result() -> Result<(), 
         ),
         Err(MarketError::UnsupportedAdjustment)
     ));
-    let mut duplicate_split = split.clone();
-    duplicate_split.version = version("split-duplicate-version")?;
-    duplicate_split.source_version = version("split-duplicate-source")?;
+    let mut correction = split.clone();
+    correction.version = version("split-correction")?;
+    correction.source_version = version("split-correction-source")?;
+    correction.revision = 2;
+    correction.predecessor_version = Some(split.version.clone());
+    correction.effective_at_utc_ms = 15_001;
+    correction.availability = available(16_000, 16_000);
+    let corrected = adjust_quote(
+        &quote,
+        &[split.clone(), correction.clone()],
+        PriceAdjustmentBasis::SplitAdjusted,
+        20_000,
+        &strict,
+        limits,
+        || Ok(()),
+    )?;
+    assert_eq!(corrected.adjusted_price(), ExactRational::new(50, 1)?);
+    assert_eq!(corrected.applied_actions(), &[version("split-correction")?]);
+    assert!(corrected.excluded_actions().iter().any(|entry| {
+        entry.version == split.version
+            && entry.reason == ExclusionReason::SupersededByAdmissibleRevision
+    }));
+    let mut late_correction = correction.clone();
+    late_correction.version = version("split-late-correction")?;
+    late_correction.source_version = version("split-late-correction-source")?;
+    late_correction.effective_at_utc_ms = split.effective_at_utc_ms;
+    late_correction.availability = available(50_000, 50_000);
+    let prior_selected = adjust_quote(
+        &quote,
+        &[split.clone(), late_correction.clone()],
+        PriceAdjustmentBasis::SplitAdjusted,
+        20_000,
+        &strict,
+        limits,
+        || Ok(()),
+    )?;
+    assert_eq!(prior_selected.adjusted_price(), ExactRational::new(50, 1)?);
+    assert_eq!(
+        prior_selected.applied_actions(),
+        std::slice::from_ref(&split.version)
+    );
+    assert!(prior_selected.excluded_actions().iter().any(|entry| {
+        entry.version == late_correction.version
+            && entry.reason == ExclusionReason::PublicAvailabilityAfterCutoff
+    }));
+    let mut competing = split.clone();
+    competing.action_id = id("action:competing")?;
+    competing.version = version("split-competing")?;
+    competing.source_version = version("split-competing-source")?;
     assert!(matches!(
         adjust_quote(
             &quote,
-            &[split.clone(), duplicate_split],
+            &[split.clone(), competing],
             PriceAdjustmentBasis::SplitAdjusted,
             20_000,
             &strict,
@@ -623,6 +731,19 @@ fn split_adjustment_is_exact_and_failure_paths_return_no_result() -> Result<(), 
             &quote,
             &[invalid],
             PriceAdjustmentBasis::SplitAdjusted,
+            20_000,
+            &strict,
+            limits,
+            || Ok(()),
+        ),
+        Err(MarketError::InvalidAction(_))
+    ));
+    let invalid_unadjusted = action("split-invalid-unadjusted", 15_000, 0, 1)?;
+    assert!(matches!(
+        adjust_quote(
+            &quote,
+            &[invalid_unadjusted],
+            PriceAdjustmentBasis::Unadjusted,
             20_000,
             &strict,
             limits,

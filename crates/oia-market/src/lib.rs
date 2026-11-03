@@ -29,7 +29,8 @@ pub enum StopReason {
     DeadlineExceeded,
 }
 
-/// Per-operation record budget. Every supplied record still counts toward the bound.
+/// Per-operation top-level record budget. Nested disclosure links have a separate
+/// per-record bound, as documented by `ReleaseVintage` selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MarketLimits {
     max_records: usize,

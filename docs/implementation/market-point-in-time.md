@@ -9,6 +9,13 @@ standard-library-only [`oia-market`](../../crates/oia-market/) crate uses existi
 dependency. The [synthetic example](../../crates/oia-market/examples/inspect-a14-point-in-time.rs)
 is not observed market evidence or a provider integration.
 
+**Provisional pending #12:** `CalendarDate`, `DateInterval`, `Unit`,
+`TradingCalendarVersion`, and all `*_utc_ms` fields are local kernel primitives
+until the shared time/geometry contract lands. Exact instants are signed
+Unix-epoch UTC milliseconds with millisecond resolution and no leap-second
+representation. Adapters must truncate finer tick timestamps and retain the
+original precision on the pinned source version.
+
 ## Identity, dates, and calendars
 
 `Instrument` carries a stable `OpaqueId`, immutable instrument version, class,
@@ -18,7 +25,10 @@ assets. Alias validity is half-open by civil date and source-versioned.
 `resolve_instrument` resolves the symbol effective on a requested date at one
 venue; a rename therefore retains the same instrument ID. It validates the whole
 bounded input before returning a match, rejecting duplicate instrument/version
-IDs, malformed or overlapping venue/symbol intervals, and ambiguous matches.
+IDs, malformed or overlapping venue/symbol intervals, ambiguous matches, and
+symbols with surrounding whitespace or control characters. This slice models one
+venue per instrument; a listing transfer requires a distinct ID and an explicit
+versioned relationship rather than mutation of the existing instrument.
 
 `CalendarDate` validates civil dates, including leap years, without converting a
 date-only value into an observed UTC midnight. `DateInterval` is half-open.
@@ -27,9 +37,11 @@ timezone identifier, inclusive civil-date coverage, explicit UTC session bounds,
 and closure reasons. Ordinary and early-close sessions are distinct, as are
 holiday, weekend, and other closures. Session membership is `[open, close)`, so
 the exact close is not open. Missing entries inside or outside coverage return
-`Unknown`; they are not guessed to be open or observed closed. The kernel consumes
-already-normalized UTC bounds and does not embed a timezone/DST database. It does
-not apply exchange-session rules to off-hours or 24/7 quotes automatically.
+`Unknown`; they are not guessed to be open or observed closed. Sessions may not
+overlap in UTC. An instant belonging to a different date's session returns
+`Unknown` rather than a misleading closure for the supplied date. The kernel
+consumes already-normalized UTC bounds and does not embed a timezone/DST database.
+It does not apply exchange-session rules to off-hours or 24/7 quotes automatically.
 
 ## Exact values and quote cutoffs
 
@@ -51,15 +63,17 @@ ingestion. `ProspectiveStrict` requires both to be known and at or before the
 cutoff. `RetrospectiveReconstructed` requires a nonempty limitation note, still
 requires known public availability at or before the cutoff, and permits later or
 unknown OIA ingestion. Equality with the cutoff qualifies. Unknown public
-availability never qualifies in either mode.
+availability never qualifies in either mode. Ingestion may precede publication
+for an embargoed acquisition; public availability is still independently required.
 
 `select_quote_as_of` requires one exact instrument/venue/source/unit scope and
 observation at or before the cutoff. It returns the selected immutable quote,
 supplied/eligible counts, the cutoff instant, the complete cutoff mode, and
-per-version exclusion reasons. Empty supplied input is distinguishable from input whose records were
-all excluded. Selection is deterministic by observation time, public availability,
-then lexical normalized version ID. Mixed scopes and duplicate versions reject
-the request rather than silently merging providers or units.
+per-version exclusion reasons. Empty supplied input is distinguishable from input
+whose records were all excluded. Selection is deterministic by observation time
+and public availability; exact ties between distinct versions are rejected rather
+than resolved by lexical ID. Mixed scopes and duplicate versions reject the
+request rather than silently merging providers or units.
 
 ## Release vintages and disclosures
 
@@ -72,7 +86,8 @@ lineage remain owned by the document/evidence layers.
 
 A revision series must retain source identity, reporting period, payload kind,
 and numeric unit. Predecessors must form a consecutive explicit chain, and known
-public availability cannot move backward across revisions. `select_release_vintage`
+public availability cannot move backward across revisions, including when an
+unknown timestamp sits between two known ones. `select_release_vintage`
 chooses the highest revision admissible at the cutoff rather than the newest
 record currently supplied. The result retains the cutoff, mode, counts, and
 exclusions. Earlier vintages remain selectable and inspectable when a later
@@ -93,22 +108,26 @@ effective at or before the cutoff, and admissible under the same cutoff mode are
 applied. A 2-for-1 split multiplies a pre-effective price by `1/2`; an observation
 at or after the effective instant is not adjusted again. Future, post-cutoff,
 unknown-availability, and non-effective actions remain visible as exclusions.
-Multiple split records at one instrument/effective instant are rejected as
-ambiguous instead of being multiplied repeatedly.
+Each `action_id` has a consecutive revision/predecessor chain. The highest
+admissible revision per event is selected before effectiveness is evaluated, so
+a correction is applied once and a not-yet-public correction does not suppress
+the prior admissible version. Older eligible revisions are marked superseded.
+Distinct applicable split events at one instrument/effective instant remain
+ambiguous and are rejected instead of being multiplied repeatedly.
 
 Adjustment methods are pinned as `unadjusted-exact-rational-v1` and
 `split-adjusted-exact-rational-v1`. Results preserve the original quote/version,
 exact adjusted rational, basis, method, cutoff, complete mode/limitation note,
-and applied action versions in chronological/version order. Original inputs are
-not mutated. Dividend/total-return adjustment, FX conversion, and simultaneous
-split identity/revision handling require separate contracts.
+and applied action versions in chronological/action-ID order. Original inputs are
+not mutated. Dividend/total-return adjustment, FX conversion, and distinct
+simultaneous split events at one effective instant require separate contracts.
 
 ## Bounds and cancellation
 
-`MarketLimits` accepts a nonzero per-operation record budget up to 10,000. Every
-supplied record counts, including excluded records and unused action inputs.
-Aliases and total calendar entries are bounded. Disclosure links are bounded per
-record. Text metadata is limited to 4,096 UTF-8 bytes and units to 32 bytes.
+`MarketLimits` accepts a nonzero per-operation top-level record budget up to
+10,000. Every supplied top-level record counts, including excluded records and
+unused action inputs. Aliases and total calendar entries are bounded. Disclosure
+links have a separate per-record bound. Text metadata is limited to 4,096 UTF-8 bytes and units to 32 bytes.
 Oversized inputs are rejected, never truncated. Result vectors use fallible
 reservations; arithmetic and timestamp/date ranges are checked before use.
 
@@ -142,8 +161,7 @@ source authenticity, forecast skill, or full A14 acceptance is claimed.
 Issue #41 remains open for licensed provider/adapters and acquisition, shared
 #12 time primitives and #13 ingestion, document integration from #17, immutable
 storage, application-service authorization, source coverage/freshness envelopes,
-and integrated acceptance. Provider calendar generation, corporate-action
-revision identity beyond the explicit ambiguity rejection, total-return methods,
+and integrated acceptance. Provider calendar generation, total-return methods,
 and FX inputs need separately validated contracts. Charts, event studies,
 exposure citations, forecast issuance/scoring, baselines, intervals, and UI belong
 to later packages. No unmerged prerequisite code is copied, and no Lean proof or
@@ -154,15 +172,15 @@ Rust-to-Lean correspondence claim applies.
 The [three focused contract tests](../../crates/oia-market/tests/market_contract.rs)
 address stable identity and calendar boundaries; delayed/unknown/late cutoff
 exclusion; retrospective disclosure; revision-chain integrity; future-event news
-semantics; original/version preservation; exact split arithmetic and future
-leakage; malformed input, ambiguity, overflow, budget exhaustion, and entry/final
-cancellation. They use synthetic values and do not establish provider access or
+semantics; original/version preservation; exact split arithmetic, correction
+selection, and future leakage; unknown-middle revision timestamps; malformed
+input, ambiguity, overflow, budget exhaustion, and entry/final cancellation. They use synthetic values and do not establish provider access or
 market-data truth.
 
 On 2026-11-03 UTC, local Windows x86_64 MSVC verification with pinned Rust 1.99.0
 passed `cargo +1.99.0 test -p oia-market --locked --offline` (three tests),
 `cargo +1.99.0 clippy -p oia-market --all-targets --locked --offline -- -D warnings`,
-and the synthetic example command above. The example resolved OLD/NEW to one ID,
+and the synthetic example command above. The example resolved SYN-OLD/SYN-NEW to one ID,
 returned `Unknown` for missing calendar coverage, excluded the delayed quote
 before publication, adjusted `100/1` to `50/1` for the synthetic 2-for-1 split,
 selected release v1 before v2 publication and v2 afterward, and excluded late

@@ -1,4 +1,10 @@
 //! Validated market values, immutable record envelopes, and cutoff semantics.
+//!
+//! **Provisional pending #12:** `CalendarDate`, `DateInterval`, `Unit`, and all
+//! `*_utc_ms` fields are local kernel primitives until the shared time/geometry
+//! contract lands. Exact instants are signed Unix-epoch UTC milliseconds with
+//! millisecond resolution and no leap-second representation. Callers must truncate
+//! finer tick timestamps and retain the original precision on the source version.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -7,7 +13,7 @@ use oia_domain::{OpaqueId, VersionId};
 
 use crate::{MarketError, MarketLimits, StopReason, validate_text, validate_timestamp};
 
-/// A civil calendar date, never an implicitly observed UTC midnight.
+/// **Provisional pending #12.** A civil calendar date, never an implicitly observed UTC midnight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CalendarDate {
     year: u16,
@@ -55,7 +61,7 @@ impl fmt::Display for CalendarDate {
     }
 }
 
-/// Half-open calendar-date interval `[start, end_exclusive)`.
+/// **Provisional pending #12.** Half-open calendar-date interval `[start, end_exclusive)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DateInterval {
     pub start: CalendarDate,
@@ -76,7 +82,8 @@ impl DateInterval {
     }
 }
 
-/// Explicit currency, asset, percentage, or other unit; no implicit FX conversion.
+/// **Provisional pending #12.** Explicit currency, asset, percentage, or other unit;
+/// no implicit FX conversion.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Unit(String);
 
@@ -220,7 +227,8 @@ impl fmt::Display for ExactRational {
     }
 }
 
-/// Public availability and OIA knowledge are distinct exact instants.
+/// Public availability and OIA knowledge are distinct exact instants, represented
+/// with the module's provisional Unix-epoch UTC millisecond convention pending #12.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecordAvailability {
     pub public_available_at_utc_ms: Option<i64>,
@@ -259,6 +267,7 @@ pub enum ExclusionReason {
     PublicAvailabilityAfterCutoff,
     IngestionUnknownStrict,
     IngestedAfterStrictCutoff,
+    SupersededByAdmissibleRevision,
     EffectiveAfterCutoff,
     NotEffectiveForQuote,
 }
@@ -311,7 +320,9 @@ pub struct ListingAlias {
     pub source_version: VersionId,
 }
 
-/// Stable identity survives symbol renames; venue and unit remain explicit.
+/// Stable identity survives symbol renames; venue and unit remain explicit. This
+/// slice models one venue per instrument; a listing transfer needs a distinct ID
+/// and an explicit versioned relationship rather than mutation of this record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Instrument {
     pub id: OpaqueId,
@@ -320,6 +331,16 @@ pub struct Instrument {
     pub venue: OpaqueId,
     pub quote_unit: Unit,
     pub aliases: Vec<ListingAlias>,
+}
+
+fn validate_symbol(symbol: &str) -> Result<(), MarketError> {
+    validate_text("listing symbol", symbol)?;
+    if symbol.trim() != symbol || symbol.chars().any(char::is_control) {
+        return Err(MarketError::InvalidInstrument(
+            "listing symbols must not have surrounding whitespace or control characters",
+        ));
+    }
+    Ok(())
 }
 
 /// Resolves a historical symbol without treating it as the instrument's identity.
@@ -334,7 +355,7 @@ pub fn resolve_instrument<'a>(
 ) -> Result<&'a Instrument, MarketError> {
     check_control().map_err(MarketError::Stopped)?;
     limits.check_len(instruments.len())?;
-    validate_text("listing symbol", symbol)?;
+    validate_symbol(symbol)?;
     let mut instrument_ids = BTreeSet::new();
     let mut versions = BTreeSet::new();
     let mut alias_groups: BTreeMap<(OpaqueId, String), Vec<ListingAlias>> = BTreeMap::new();
@@ -354,7 +375,7 @@ pub fn resolve_instrument<'a>(
             .ok_or(MarketError::ArithmeticOverflow)?;
         limits.check_len(alias_count)?;
         for alias in &instrument.aliases {
-            validate_text("listing symbol", &alias.symbol)?;
+            validate_symbol(&alias.symbol)?;
             if let Some(end) = alias.valid_to_exclusive
                 && alias.valid_from >= end
             {
@@ -383,9 +404,7 @@ pub fn resolve_instrument<'a>(
         for alias in aliases.iter() {
             if has_previous && (unbounded || furthest_end.is_some_and(|end| alias.valid_from < end))
             {
-                return Err(MarketError::InvalidInstrument(
-                    "overlapping aliases for one venue and symbol",
-                ));
+                return Err(MarketError::AmbiguousAlias);
             }
             has_previous = true;
             match alias.valid_to_exclusive {
@@ -444,12 +463,16 @@ pub struct QuoteRecord {
     pub delay: QuoteDelay,
 }
 
-/// Split-only corporate action. Other action kinds are outside this kernel.
+/// Split-only corporate-action revision. `action_id` is stable across corrections;
+/// other action kinds are outside this kernel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CorporateActionRecord {
     pub instrument_id: OpaqueId,
+    pub action_id: OpaqueId,
     pub version: VersionId,
     pub source_version: VersionId,
+    pub revision: u32,
+    pub predecessor_version: Option<VersionId>,
     pub effective_at_utc_ms: i64,
     pub availability: RecordAvailability,
     pub split_numerator: i128,

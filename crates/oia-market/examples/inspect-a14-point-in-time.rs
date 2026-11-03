@@ -51,13 +51,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         quote_unit: usd.clone(),
         aliases: vec![
             ListingAlias {
-                symbol: "OLD".into(),
+                symbol: "SYN-OLD".into(),
                 valid_from: date(2024, 1, 1)?,
                 valid_to_exclusive: Some(date(2024, 2, 1)?),
                 source_version: version("listing-old-v1")?,
             },
             ListingAlias {
-                symbol: "NEW".into(),
+                symbol: "SYN-NEW".into(),
                 valid_from: date(2024, 2, 1)?,
                 valid_to_exclusive: None,
                 source_version: version("listing-new-v1")?,
@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let before_rename = resolve_instrument(
         std::slice::from_ref(&instrument),
         &venue,
-        "OLD",
+        "SYN-OLD",
         date(2024, 1, 15)?,
         limits,
         || Ok(()),
@@ -75,13 +75,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let after_rename = resolve_instrument(
         std::slice::from_ref(&instrument),
         &venue,
-        "NEW",
+        "SYN-NEW",
         date(2024, 2, 1)?,
         limits,
         || Ok(()),
     )?;
     println!(
-        "rename: OLD and NEW resolve to same stable ID = {}",
+        "rename: SYN-OLD and SYN-NEW resolve to same stable ID = {}",
         before_rename.id == after_rename.id
     );
 
@@ -94,7 +94,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             venue: venue.clone(),
             version: version("calendar-v1")?,
             source_version: version("calendar-source-v1")?,
-            timezone_identifier: "America/New_York".into(),
+            timezone_identifier: "Synthetic/Exchange".into(),
             coverage_start: jan15,
             coverage_end: jan17,
             sessions: vec![
@@ -186,14 +186,18 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let split = CorporateActionRecord {
         instrument_id: instrument_id.clone(),
+        action_id: id("action:split")?,
         version: version("split-v1")?,
         source_version: version("split-source-v1")?,
+        revision: 1,
+        predecessor_version: None,
         effective_at_utc_ms: t0 + 1_000_000,
         availability: available(t0 + 1_000_001, t0 + 1_000_002),
         split_numerator: 2,
         split_denominator: 1,
     };
     let future_split = CorporateActionRecord {
+        action_id: id("action:future-split")?,
         version: version("split-future-v1")?,
         source_version: version("split-future-source-v1")?,
         effective_at_utc_ms: after + 1_000_000,

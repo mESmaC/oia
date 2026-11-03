@@ -105,6 +105,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "red-green wingtip navigation strobes or rotor wash on harbor water".to_owned(),
                 "Both synthetic pier observers explicitly reported steady non-flashing white-amber lights and calm water".to_owned(),
                 OpaqueId::new("detail:flashing-nav-strobes")?,
+                "Rumor account claimed flashing red-green navigation strobes and surface rotor spray".to_owned(),
+                VersionId::new("ver:synthetic-rumor-c-v1")?,
                 vec![
                     VersionId::new("ver:synthetic-witness-a-v1")?,
                     VersionId::new("ver:synthetic-witness-b-v1")?,
@@ -114,7 +116,15 @@ fn main() -> Result<(), Box<dyn Error>> {
                 OpaqueId::new("neg:exclude-bar-silhouette-merge")?,
                 "opaque rectangular bar silhouette connecting the three point lights".to_owned(),
                 "Do not merge the continuous bar silhouette variant into the separated point-lights variant".to_owned(),
+                OpaqueId::new("variant:three-separated-lights")?,
                 OpaqueId::new("variant:single-bar-silhouette")?,
+            ),
+            NegativeKeyword::from_variant(
+                OpaqueId::new("neg:exclude-separated-point-gaps")?,
+                "open cloud gaps visible between separated point lights".to_owned(),
+                "Do not merge the separated point-lights variant into the continuous bar silhouette variant".to_owned(),
+                OpaqueId::new("variant:single-bar-silhouette")?,
+                OpaqueId::new("variant:three-separated-lights")?,
             ),
         ],
         reference_assets: vec![

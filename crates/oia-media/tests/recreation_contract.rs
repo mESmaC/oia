@@ -94,15 +94,17 @@ fn sample_prompt_input() -> Result<RecreationPromptInput, RecreationError> {
         negative_keywords: vec![
             NegativeKeyword::from_unknown(
                 OpaqueId::new("neg:altitude-grid")?,
-                "no altitude-grid overlay or range-marker HUD".to_owned(),
+                "altitude-grid overlay or range-marker HUD".to_owned(),
                 "True altitude above sea level and slant range remain unmeasured".to_owned(),
                 OpaqueId::new("unknown:object-altitude")?,
             ),
             NegativeKeyword::from_contradicted_detail(
                 OpaqueId::new("neg:navigation-strobes")?,
-                "no red-green navigation strobes or anti-collision beacons".to_owned(),
+                "red-green navigation strobes or anti-collision beacons".to_owned(),
                 "Both witness statements contradict aircraft navigation strobe lighting".to_owned(),
                 OpaqueId::new("detail:navigation-strobes")?,
+                "Unverified third-party claim of flashing red-green navigation strobes".to_owned(),
+                VersionId::new("ver:rumor-3")?,
                 vec![
                     VersionId::new("ver:witness-1")?,
                     VersionId::new("ver:witness-2")?,
@@ -110,15 +112,17 @@ fn sample_prompt_input() -> Result<RecreationPromptInput, RecreationError> {
             ),
             NegativeKeyword::from_variant(
                 OpaqueId::new("neg:tandem-separation-for-single-orb")?,
-                "no separated dual-light formation when rendering variant:single-orb".to_owned(),
+                "separated dual-light formation".to_owned(),
                 "Single-orb witness account excludes the separated two-light variant".to_owned(),
                 OpaqueId::new("variant:single-orb")?,
+                OpaqueId::new("variant:tandem-pair")?,
             ),
             NegativeKeyword::from_variant(
                 OpaqueId::new("neg:continuous-sphere-for-tandem-pair")?,
-                "no single continuous sphere rim when rendering variant:tandem-pair".to_owned(),
+                "single continuous sphere rim".to_owned(),
                 "Tandem-pair witness account excludes the single-orb variant".to_owned(),
                 OpaqueId::new("variant:tandem-pair")?,
+                OpaqueId::new("variant:single-orb")?,
             ),
         ],
         reference_assets: vec![
@@ -155,6 +159,26 @@ fn conflicting_accounts_and_imported_recreation_preserve_separation_and_labels()
 -> Result<(), RecreationError> {
     let limits = RecreationLimits::new(16, 8, 8, 4, 8, 8192, 16_384)?;
     let input = sample_prompt_input()?;
+
+    // B1: When `negative_keywords` is empty, exported prompt and sidecar omit positive/negative
+    // keyword sections and `negative_keyword_count` so schema_version=1 output is byte-identical.
+    let mut no_negatives_input = input.clone();
+    no_negatives_input.negative_keywords.clear();
+    let exported_no_negatives = export_recreation_prompt(
+        &no_negatives_input,
+        limits,
+        AssetExportPolicy::OmitWithNotice,
+    )?;
+    assert!(
+        !exported_no_negatives
+            .portable_prompt_text()
+            .contains("Positive Prompt Keywords")
+    );
+    assert!(
+        !exported_no_negatives
+            .portable_prompt_text()
+            .contains("Negative Prompt Keywords")
+    );
 
     // Refusal mode rejects unpermitted assets rather than exporting them.
     assert_eq!(
@@ -197,15 +221,38 @@ fn conflicting_accounts_and_imported_recreation_preserve_separation_and_labels()
         "- apparent_scale: [REPORTED ANGULAR/RELATIVE | sources: ver:witness-1, ver:witness-2]"
     ));
     assert!(
-        text.contains("## Positive Prompt Keywords (Reported Details and Declared Assumptions)")
+        text.contains(
+            "## Positive Prompt Keywords (Source-Pinned Details and Declared Assumptions)"
+        )
     );
+    assert!(
+        text.contains(
+            "- [prompt:title] title=\"Synthetic conflicting witness account recreation\""
+        )
+    );
+    assert!(text.contains(
+        "- [context:scene] origin=source_context sources=[ver:witness-1] keyword=\"Coastal bluff looking west over bay\""
+    ));
+    assert!(text.contains(
+        "- [context:apparent_scale] origin=source_angular_scale sources=[ver:witness-1, ver:witness-2] keyword=\"Roughly full-moon diameter (~0.5 deg) at unknown distance\" physical_size_unknown_reason=\"Single-azimuth observation without rangefinder or second baseline\""
+    ));
+    assert!(text.contains(
+        "- [detail:horizontal-path] origin=source_detail sources=[ver:witness-1, ver:witness-2] keyword=\"Moved horizontally from north to south across the bay for 14 seconds\" note=\"Both witnesses timed duration against watch\""
+    ));
+    assert!(text.contains(
+        "- [detail:two-lights] origin=variant_source_detail variant_id=variant:tandem-pair sources=[ver:witness-2] keyword=\"Two distinct lights maintaining fixed horizontal separation\" note=\"Observed through 8x42 binoculars\""
+    ));
     assert!(text.contains("## Negative Prompt Keywords (Evidence-Derived Exclusions)"));
     assert!(text.contains("origin=unknown unknown_id=unknown:object-altitude"));
     assert!(text.contains(
-        "origin=contradicted_detail detail_id=detail:navigation-strobes contradicting_sources=[ver:witness-1, ver:witness-2]"
+        "origin=contradicted_detail detail_id=detail:navigation-strobes contradicted_source=ver:rumor-3 contradicted_statement=\"Unverified third-party claim of flashing red-green navigation strobes\" contradicting_sources=[ver:witness-1, ver:witness-2]"
     ));
-    assert!(text.contains("origin=variant variant_id=variant:single-orb"));
-    assert!(text.contains("origin=variant variant_id=variant:tandem-pair"));
+    assert!(text.contains(
+        "origin=variant for_variant=variant:single-orb excludes_variant=variant:tandem-pair"
+    ));
+    assert!(text.contains(
+        "origin=variant for_variant=variant:tandem-pair excludes_variant=variant:single-orb"
+    ));
     assert!(text.contains("## Omitted Reference Assets (Redistribution Restricted)"));
     assert_eq!(exported.negative_keywords().len(), 4);
     assert_eq!(
@@ -218,6 +265,9 @@ fn conflicting_accounts_and_imported_recreation_preserve_separation_and_labels()
         exported.negative_keywords().get(1).map(|n| n.origin()),
         Some(&NegativeKeywordOrigin::ContradictedDetail {
             detail_id: OpaqueId::new("detail:navigation-strobes")?,
+            contradicted_statement:
+                "Unverified third-party claim of flashing red-green navigation strobes".to_owned(),
+            contradicted_source_version: VersionId::new("ver:rumor-3")?,
             contradicting_source_versions: vec![
                 VersionId::new("ver:witness-1")?,
                 VersionId::new("ver:witness-2")?,
@@ -227,17 +277,21 @@ fn conflicting_accounts_and_imported_recreation_preserve_separation_and_labels()
     assert_eq!(
         exported.negative_keywords().get(2).map(|n| n.origin()),
         Some(&NegativeKeywordOrigin::Variant {
-            variant_id: OpaqueId::new("variant:single-orb")?,
+            for_variant_id: OpaqueId::new("variant:single-orb")?,
+            excluded_variant_id: OpaqueId::new("variant:tandem-pair")?,
         })
     );
     assert_eq!(
         exported.negative_keywords().get(3).map(|n| n.origin()),
         Some(&NegativeKeywordOrigin::Variant {
-            variant_id: OpaqueId::new("variant:tandem-pair")?,
+            for_variant_id: OpaqueId::new("variant:tandem-pair")?,
+            excluded_variant_id: OpaqueId::new("variant:single-orb")?,
         })
     );
 
     // Valid imported recreation preserves lineage, settings, and non-evidentiary flags.
+    // B4: When importing for `variant:tandem-pair`, only shared negatives (`Unknown`,
+    // `ContradictedDetail`) and `Variant` negatives for `variant:tandem-pair` are retained.
     let import_input = ImportedRecreationInput {
         artifact_id: OpaqueId::new("artifact:rec-1")?,
         artifact_version: VersionId::new("ver:rec-1-v1")?,
@@ -253,9 +307,20 @@ fn conflicting_accounts_and_imported_recreation_preserve_separation_and_labels()
     };
     let validated = validate_imported_recreation(&import_input, &exported, 2048)?;
     assert_eq!(validated.visible_label(), VISIBLE_RECREATION_LABEL);
-    assert_eq!(validated.negative_keywords(), exported.negative_keywords());
+    assert_eq!(validated.negative_keywords().len(), 3);
+    assert!(
+        validated
+            .negative_keywords()
+            .iter()
+            .all(|neg| neg.negative_id().as_str() != "neg:tandem-separation-for-single-orb")
+    );
     assert!(!validated.can_serve_as_observation_evidence());
     assert!(!validated.can_establish_physical_measurement());
+
+    let validated_no_negatives =
+        validate_imported_recreation(&import_input, &exported_no_negatives, 2048)?;
+    let sidecar_no_negatives = validated_no_negatives.portable_metadata_text(2048)?;
+    assert!(!sidecar_no_negatives.contains("negative_keyword"));
 
     // MEDIA-04/A10: exported metadata must retain labels and lineage, and never
     // claim that a declared digest or a sidecar proves image-byte/pixel integrity.
@@ -273,7 +338,7 @@ fn conflicting_accounts_and_imported_recreation_preserve_separation_and_labels()
         "variant_id=\"variant:tandem-pair\"",
         "generator_model=\"flux-illustrative-v1\"",
         "media_type=\"image/png\"",
-        "negative_keyword_count=4",
+        "negative_keyword_count=3",
         "Observation evidence: false",
         "Physical measurement: false",
         "Digest is caller-declared; image bytes have not been verified.",
@@ -284,8 +349,12 @@ fn conflicting_accounts_and_imported_recreation_preserve_separation_and_labels()
         "negative_keyword=[neg:altitude-grid] origin=unknown unknown_id=unknown:object-altitude"
     ));
     assert!(sidecar.contains(
-        "negative_keyword=[neg:navigation-strobes] origin=contradicted_detail detail_id=detail:navigation-strobes contradicting_sources=[ver:witness-1, ver:witness-2]"
+        "negative_keyword=[neg:navigation-strobes] origin=contradicted_detail detail_id=detail:navigation-strobes contradicted_source=ver:rumor-3 contradicted_statement=\"Unverified third-party claim of flashing red-green navigation strobes\" contradicting_sources=[ver:witness-1, ver:witness-2]"
     ));
+    assert!(sidecar.contains(
+        "negative_keyword=[neg:continuous-sphere-for-tandem-pair] origin=variant for_variant=variant:tandem-pair excludes_variant=variant:single-orb"
+    ));
+    assert!(!sidecar.contains("neg:tandem-separation-for-single-orb"));
     assert!(sidecar.contains(&format!(
         "declared_sha256_hex=\"{}\"",
         import_input.sha256_hex
@@ -306,17 +375,54 @@ fn conflicting_accounts_and_imported_recreation_preserve_separation_and_labels()
         Err(RecreationError::ZeroLimit(RecreationLimitKind::OutputBytes))
     );
 
+    // NB1/NB4/NB5: `derive_unknown_negative_keywords` derives negative keywords for both
+    // `ContextField::Unknown` / `ApparentScale` unknowns and `ExplicitUnknown` items under limits.
     let mut shared_input = input.clone();
     shared_input.conflicting_variants.clear();
-    shared_input.negative_keywords = derive_unknown_negative_keywords(&shared_input.unknowns)?;
+    shared_input.negative_keywords =
+        derive_unknown_negative_keywords(&shared_input.context, &shared_input.unknowns, limits)?;
     let shared =
         export_recreation_prompt(&shared_input, limits, AssetExportPolicy::OmitWithNotice)?;
-    assert_eq!(shared.negative_keywords().len(), 1);
+    assert_eq!(shared.negative_keywords().len(), 3);
     assert_eq!(
-        shared.negative_keywords().first().map(|n| n.origin()),
-        Some(&NegativeKeywordOrigin::Unknown {
-            unknown_id: OpaqueId::new("unknown:object-altitude")?,
-        })
+        shared
+            .negative_keywords()
+            .first()
+            .map(|n| (n.negative_id().as_str(), n.keyword())),
+        Some(("neg:context:lighting", "a specific value for lighting"))
+    );
+    assert_eq!(
+        shared
+            .negative_keywords()
+            .get(1)
+            .map(|n| (n.negative_id().as_str(), n.keyword())),
+        Some((
+            "neg:context:apparent_scale",
+            "a specific value for physical size and slant range"
+        ))
+    );
+    assert_eq!(
+        shared
+            .negative_keywords()
+            .get(2)
+            .map(|n| (n.negative_id().as_str(), n.keyword())),
+        Some((
+            "neg:unknown:object-altitude",
+            "a specific value for True altitude above sea level and slant range"
+        ))
+    );
+    // B5 follow-up: assumption bound to `context:viewpoint` appears once in the positive section.
+    assert_eq!(
+        shared
+            .portable_prompt_text()
+            .matches("[context:viewpoint] origin=assumption assumption_id=assumption:camera-fov")
+            .count(),
+        1
+    );
+    assert!(
+        !shared
+            .portable_prompt_text()
+            .contains("- [assumption:camera-fov] origin=assumption")
     );
     let mut shared_import = import_input.clone();
     shared_import.variant_id = None;
@@ -542,7 +648,8 @@ fn rejects_injection_unbounded_versions_and_structural_violations() -> Result<()
     ));
 
     // Negative keywords without a declared origin, with undeclared unknown/variant origins,
-    // with empty contradicting source versions, or referencing shared reported details are refused.
+    // with empty/unpinned/self-contradicting source versions, or referencing shared or variant
+    // reported details are refused (B3, B4).
     let mut missing_neg_origin = sample_prompt_input()?;
     if let Some(first_neg) = missing_neg_origin.negative_keywords.first_mut() {
         first_neg.origin = None;
@@ -580,7 +687,8 @@ fn rejects_injection_unbounded_versions_and_structural_violations() -> Result<()
     let mut undeclared_variant_neg = sample_prompt_input()?;
     if let Some(first_neg) = undeclared_variant_neg.negative_keywords.first_mut() {
         first_neg.origin = Some(NegativeKeywordOrigin::Variant {
-            variant_id: OpaqueId::new("variant:undeclared")?,
+            for_variant_id: OpaqueId::new("variant:undeclared")?,
+            excluded_variant_id: OpaqueId::new("variant:tandem-pair")?,
         });
     }
     assert_eq!(
@@ -600,6 +708,8 @@ fn rejects_injection_unbounded_versions_and_structural_violations() -> Result<()
     if let Some(first_neg) = empty_contradiction_sources.negative_keywords.first_mut() {
         first_neg.origin = Some(NegativeKeywordOrigin::ContradictedDetail {
             detail_id: OpaqueId::new("detail:navigation-strobes")?,
+            contradicted_statement: "Claimed strobes".to_owned(),
+            contradicted_source_version: VersionId::new("ver:rumor-3")?,
             contradicting_source_versions: Vec::new(),
         });
     }
@@ -614,20 +724,86 @@ fn rejects_injection_unbounded_versions_and_structural_violations() -> Result<()
         )
     );
 
-    let mut shared_detail_contradicted = sample_prompt_input()?;
-    if let Some(first_neg) = shared_detail_contradicted.negative_keywords.first_mut() {
+    let mut unpinned_contradiction_source = sample_prompt_input()?;
+    if let Some(first_neg) = unpinned_contradiction_source.negative_keywords.first_mut() {
         first_neg.origin = Some(NegativeKeywordOrigin::ContradictedDetail {
-            detail_id: OpaqueId::new("detail:horizontal-path")?,
+            detail_id: OpaqueId::new("detail:navigation-strobes")?,
+            contradicted_statement: "Claimed strobes".to_owned(),
+            contradicted_source_version: VersionId::new("ver:rumor-3")?,
+            contradicting_source_versions: vec![VersionId::new("ver:unpinned-source")?],
+        });
+    }
+    assert_eq!(
+        Err(RecreationError::UnpinnedContradictingSourceVersion {
+            negative_id: OpaqueId::new("neg:altitude-grid")?,
+            source_version: VersionId::new("ver:unpinned-source")?,
+        }),
+        export_recreation_prompt(
+            &unpinned_contradiction_source,
+            limits,
+            AssetExportPolicy::OmitWithNotice
+        )
+    );
+
+    let mut self_contradicting_source = sample_prompt_input()?;
+    if let Some(first_neg) = self_contradicting_source.negative_keywords.first_mut() {
+        first_neg.origin = Some(NegativeKeywordOrigin::ContradictedDetail {
+            detail_id: OpaqueId::new("detail:navigation-strobes")?,
+            contradicted_statement: "Claimed strobes".to_owned(),
+            contradicted_source_version: VersionId::new("ver:witness-1")?,
             contradicting_source_versions: vec![VersionId::new("ver:witness-1")?],
         });
     }
     assert_eq!(
-        Err(RecreationError::ContradictedDetailInSharedDetails {
+        Err(RecreationError::SelfContradictingSourceVersion {
+            negative_id: OpaqueId::new("neg:altitude-grid")?,
+            source_version: VersionId::new("ver:witness-1")?,
+        }),
+        export_recreation_prompt(
+            &self_contradicting_source,
+            limits,
+            AssetExportPolicy::OmitWithNotice
+        )
+    );
+
+    let mut shared_detail_contradicted = sample_prompt_input()?;
+    if let Some(first_neg) = shared_detail_contradicted.negative_keywords.first_mut() {
+        first_neg.origin = Some(NegativeKeywordOrigin::ContradictedDetail {
+            detail_id: OpaqueId::new("detail:horizontal-path")?,
+            contradicted_statement: "Claimed vertical path".to_owned(),
+            contradicted_source_version: VersionId::new("ver:rumor-3")?,
+            contradicting_source_versions: vec![VersionId::new("ver:witness-1")?],
+        });
+    }
+    assert_eq!(
+        Err(RecreationError::ContradictedDetailInReportedDetails {
             negative_id: OpaqueId::new("neg:altitude-grid")?,
             detail_id: OpaqueId::new("detail:horizontal-path")?,
         }),
         export_recreation_prompt(
             &shared_detail_contradicted,
+            limits,
+            AssetExportPolicy::OmitWithNotice
+        )
+    );
+
+    let mut variant_detail_contradicted = sample_prompt_input()?;
+    if let Some(first_neg) = variant_detail_contradicted.negative_keywords.first_mut() {
+        first_neg.origin = Some(NegativeKeywordOrigin::ContradictedDetail {
+            detail_id: OpaqueId::new("detail:two-lights")?,
+            contradicted_statement: "Two distinct lights maintaining fixed horizontal separation"
+                .to_owned(),
+            contradicted_source_version: VersionId::new("ver:witness-2")?,
+            contradicting_source_versions: vec![VersionId::new("ver:witness-1")?],
+        });
+    }
+    assert_eq!(
+        Err(RecreationError::ContradictedDetailInReportedDetails {
+            negative_id: OpaqueId::new("neg:altitude-grid")?,
+            detail_id: OpaqueId::new("detail:two-lights")?,
+        }),
+        export_recreation_prompt(
+            &variant_detail_contradicted,
             limits,
             AssetExportPolicy::OmitWithNotice
         )

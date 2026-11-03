@@ -25,8 +25,13 @@ with read-only getters and a deterministic, human-editable UTF-8 prompt document
    - `ExplicitAssumption` entries record an illustrative assumption and its rationale.
    - `ExplicitUnknown` entries record aspects that remain undetermined and their impact on the recreation.
    - `AccountVariant` entries preserve competing witness or source accounts separately with validated, symmetric `conflicts_with` links rather than merging or discarding disagreements. A single unconflicted variant is rejected (`SingleVariantRequiresSharedDetails`); each variant must contain at least one `ReportedDetail` (`EmptyVariantDetails`).
-   - `NegativeKeyword` entries record explicit prompt exclusions and require a validated `NegativeKeywordOrigin`: `Unknown { unknown_id }` (referencing a declared `ExplicitUnknown`), `ContradictedDetail { detail_id, contradicting_source_versions }` (requiring between `1` and `max_source_versions_per_item` unique pinned `VersionId`s and refusing any `detail_id` present in `shared_reported_details`), or `Variant { variant_id }` (referencing a declared `AccountVariant`). Unattributed negative keywords (`origin: None`) and references to undeclared unknowns or variants are refused (`MissingNegativeKeywordOrigin`, `UnknownNegativeOriginReference`, `ContradictedDetailInSharedDetails`). `derive_unknown_negative_keywords(&[ExplicitUnknown])` deterministically derives unknown-origin negative keywords for single-witness or unknown-only prompts without inventing defaults.
-   - `portable_prompt_text()` renders separate, explicitly labeled `## Positive Prompt Keywords (Reported Details and Declared Assumptions)` and `## Negative Prompt Keywords (Evidence-Derived Exclusions)` sections while keeping `VISIBLE_RECREATION_LABEL` and `FIDELITY_AND_EXTERNAL_LABEL_CAVEAT` intact.
+   - `NegativeKeyword` entries record explicit prompt exclusions and require a validated `NegativeKeywordOrigin`:
+     - `Unknown { unknown_id }` (referencing a declared `ExplicitUnknown`, or a synthetic `context:<field>` / `context:apparent_scale` ID when the corresponding `SceneContext` field or `ApparentScale` leaves that aspect or physical size undetermined),
+     - `ContradictedDetail { detail_id, contradicted_statement, contradicted_source_version, contradicting_source_versions }` (carrying the verbatim contradicted statement and its pinned source version, requiring between `1` and `max_source_versions_per_item` unique `contradicting_source_versions` that are pinned in the prompt's reported context/scale or reported details, refusing self-contradiction where `contradicted_source_version` appears in `contradicting_source_versions`, and refusing any `detail_id` present in `shared_reported_details` or any `conflicting_variants[*].reported_details`), or
+     - `Variant { for_variant_id, excluded_variant_id }` (scoping a variant exclusion to a specific declared `for_variant_id` and verifying that `excluded_variant_id` is declared and listed in `for_variant_id`'s `conflicts_with`).
+     Unattributed negative keywords (`origin: None`) and invalid origin references are refused (`MissingNegativeKeywordOrigin`, `UnknownNegativeOriginReference`, `ContradictedDetailInReportedDetails`, `UnpinnedContradictingSourceVersion`, `SelfContradictingSourceVersion`, `InvalidVariantConflict`).
+   - `derive_unknown_negative_keywords(&SceneContext, &[ExplicitUnknown], RecreationLimits)` deterministically derives unknown-origin negative keywords (`"a specific value for <aspect>"`) from both `SceneContext` (`ContextField::Unknown`, `ApparentScale::Unknown`, and `ApparentScale::ReportedAngularOrRelative`'s undetermined physical size/slant range) and `ExplicitUnknown` items while enforcing `limits.max_negative_keywords()` and `limits.max_text_bytes()` before allocation and disambiguating ID collisions.
+   - When `negative_keywords` is empty, `portable_prompt_text()` omits both the positive and negative keyword sections and `ValidatedImportedRecreation::portable_metadata_text()` omits `negative_keyword_count` and `negative_keyword=...` lines so `schema_version: 1` outputs without negative keywords remain byte-for-byte identical. When `negative_keywords` is non-empty, `portable_prompt_text()` renders `## Positive Prompt Keywords (Source-Pinned Details and Declared Assumptions)` (preserving `[prompt:title]`, source-pinned `SceneContext` and `ApparentScale` entries with neutral `origin=source_context` / `origin=source_angular_scale` / `origin=calibrated_scale` tags, deduplicated `ExplicitAssumption` entries, and `ReportedDetail` entries with `origin=source_detail` / `origin=variant_source_detail` and preserved `note="..."` qualifiers) and `## Negative Prompt Keywords (Evidence-Derived Exclusions)`. When `conflicting_variants` is non-empty, both sections render per-variant `### Variant` subsections so competing accounts and variant-specific exclusions are never flattened into a single list.
    - All identifier and text bytes are charged against `max_text_bytes` before allocation. Single-line text fields reject ASCII/Unicode control characters, line/paragraph separators (`U+0085`, `U+2028`, `U+2029`), structural bidi controls, and disallowed zero-width characters, while preserving `ZWNJ`/`ZWJ` (`U+200C`/`U+200D`) for multilingual text and emoji. Free-text values in `portable_prompt_text()` are quoted with `\` and `"` escaped so source strings cannot inject headings, forge tags, or alter manifest attributes. `U+200E`/`U+200F`, `U+FFF9..=U+FFFB`, `U+E0000..=U+E007F`, `U+180E`, and `U+3164` are rendered as visible `\u{...}` ASCII escapes rather than exported invisibly. Output length is checked incrementally against `max_output_bytes` on every write, including escape expansion.
 2. **Scene, time, viewpoint, lighting, and apparent scale (`SceneContext`):**
    - Each context attribute is tagged as `Reported` (with pinned source versions), `Assumed` (referencing a declared `ExplicitAssumption`), or `Unknown` (preserving the reason without inventing a default time, lens, or altitude).
@@ -37,7 +42,7 @@ with read-only getters and a deterministic, human-editable UTF-8 prompt document
    - Under `AssetExportPolicy::OmitWithNotice`, unpermitted assets are excluded from `permitted_assets()` and recorded in `omitted_assets()` as well as the rendered prompt's `Omitted Reference Assets` section so omissions are never hidden.
 4. **Imported recreations (`validate_imported_recreation`):**
    - Accepts only a validated `&ExportedRecreationPrompt` (whose fields are private) and requires `AttemptedArtifactClass::IllustrativeRecreation`; attempting to register or promote a generated recreation as `ObservationEvidence`, `SourceAssertion`, or `CalibratedMeasurement` is rejected with `RecreationError::ForbiddenEvidencePromotion`.
-   - Verifies that `prompt_id` and `prompt_version` match the exported prompt, requires `variant_id` to identify which declared variant was depicted whenever the prompt has conflicting variants (`MissingVariantSelection`), checks the 64-character lowercase hexadecimal SHA-256 digest format, preserves `generator_model` and `generator_settings`, requires an exact match with `VISIBLE_RECREATION_LABEL`, and returns an encapsulated `ValidatedImportedRecreation` whose `can_serve_as_observation_evidence()` and `can_establish_physical_measurement()` methods always return `false`.
+   - Verifies that `prompt_id` and `prompt_version` match the exported prompt, requires `variant_id` to identify which declared variant was depicted whenever the prompt has conflicting variants (`MissingVariantSelection`), filters retained `negative_keywords()` to shared (`Unknown`, `ContradictedDetail`) and variant-matching (`Variant { for_variant_id == selected_variant_id, .. }`) exclusions, checks the 64-character lowercase hexadecimal SHA-256 digest format, preserves `generator_model` and `generator_settings`, requires an exact match with `VISIBLE_RECREATION_LABEL`, and returns an encapsulated `ValidatedImportedRecreation` whose `can_serve_as_observation_evidence()` and `can_establish_physical_measurement()` methods always return `false`.
    - Preserves `FIDELITY_AND_EXTERNAL_LABEL_CAVEAT`, stating that prompt wording alone neither proves physical fidelity nor guarantees external-generator metadata labeling.
 
 ### Imported recreation metadata export
@@ -45,7 +50,9 @@ with read-only getters and a deterministic, human-editable UTF-8 prompt document
 `ValidatedImportedRecreation::portable_metadata_text(max_output_bytes)` returns a
 plain UTF-8 sidecar beginning with `ILLUSTRATIVE RECREATION`. It retains artifact
 ID/version, caller-declared digest, media type, prompt ID/version, selected variant,
-and generator model/settings. An explicitly empty `variant_id` means the validated
+and generator model/settings (plus `negative_keyword_count` and per-keyword
+`negative_keyword=[...]` lines when the imported recreation has non-empty negative
+keywords). An explicitly empty `variant_id` means the validated
 prompt has no conflicting variants. It includes the fidelity caveat and explicit
 statements that the recreation cannot serve as observation evidence or establish
 physical measurements. Digest format validation does not verify image bytes.
@@ -71,7 +78,7 @@ Original evidence bytes are unchanged.
 - `AttemptedArtifactClass` is a local crate guard to be consolidated with the shared `oia-domain` origin-class vocabulary in `#10`.
 - Predictive restoration, frame interpolation, denoising, deblurring, multi-frame reconstruction, and learned super-resolution (`MEDIA-03`) are not implemented in this slice.
 - `D09` (restoration and detection model/corpus/threshold selection) remains open.
-- The desktop workbench builds and saves a prompt from one session-only witness version through this kernel (see [desktop workbench](desktop-workbench.md), workflow 3); it uses a single witness, no reference assets, no conflicting variants and no imported-recreation validation. Integration with the forensic media workbench (`#30`), portable bundle/report packaging (`#22`), and full end-to-end `A10` acceptance across decoded imagery remain open on `#31`.
+- The desktop workbench builds and saves a prompt from one session-only simulated account version through this kernel (see [desktop workbench](desktop-workbench.md), workflow 3) with `negative_keywords: Vec::new()`; wiring `derive_unknown_negative_keywords` into the desktop simulated-account export and statement-comparison/composer workflows (`#138`/`#139`) remains open on `#140`. Integration with the forensic media workbench (`#30`), portable bundle/report packaging (`#22`), and full end-to-end `A10` acceptance across decoded imagery remain open on `#31`.
 - No Lean theorem or formal Rust-to-Lean correspondence claim is made for this slice.
 
 ## Local verification
@@ -122,7 +129,7 @@ the Unicode export slice, not full A10/A16 integration.
 ### Evidence-derived negative keywords verification (2026-11-03)
 
 Executed on Windows x86_64 MSVC with pinned `rustc 1.99.0` for the `#140`
-`oia-media::recreation` kernel slice:
+`oia-media::recreation` kernel slice after merging `main` (`#136` / `#143`):
 
 - `cargo +1.99.0 fmt --all -- --check`
 - `cargo +1.99.0 clippy --workspace --all-targets --locked --offline -- -D warnings`
@@ -130,12 +137,15 @@ Executed on Windows x86_64 MSVC with pinned `rustc 1.99.0` for the `#140`
 - `cargo +1.99.0 run -p oia-media --example export-recreation-prompt --locked --offline`
 
 The three contract tests in [`crates/oia-media/tests/recreation_contract.rs`](../../crates/oia-media/tests/recreation_contract.rs)
-verify positive and negative prompt section separation, `Unknown`/`ContradictedDetail`/`Variant`
-negative-keyword origins, `derive_unknown_negative_keywords` for single-witness
-unknown-only prompts, sidecar `negative_keyword_count` and `negative_keyword=[...]`
-metadata preservation, and refusals for missing origins, undeclared unknown/variant
-references, empty contradicting source lists, contradicted details present in
-`shared_reported_details`, and `max_negative_keywords` overflows. Desktop
-workbench single-witness prompt wiring (`#136`) and statement-comparison/composer
-wiring (`#138`/`#139`) remain open on `#140`. No Lean proof check was rerun; no
-covered algorithm or formal proof claim changed.
+verify byte-identical empty-negative output under `schema_version: 1`, per-variant
+positive and negative prompt subsections, `Unknown`/`ContradictedDetail`/`Variant`
+negative-keyword origins (including verbatim `contradicted_statement` and
+`contradicted_source_version`), `derive_unknown_negative_keywords` across both
+`SceneContext` and `ExplicitUnknown` items under `RecreationLimits`, variant-filtered
+sidecar `negative_keyword_count` and `negative_keyword=[...]` metadata preservation,
+and refusals for missing origins, undeclared unknown/variant references,
+empty/unpinned/self-contradicting source lists, contradicted details present in
+shared or variant `reported_details`, and `max_negative_keywords` overflows.
+Desktop workbench `derive_unknown_negative_keywords` export wiring and
+statement-comparison/composer wiring (`#138`/`#139`) remain open on `#140`. No
+Lean proof check was rerun; no covered algorithm or formal proof claim changed.

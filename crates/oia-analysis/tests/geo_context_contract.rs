@@ -1,9 +1,5 @@
 //! Targeted contract tests for geographic context reconstruction (`GEO-02`, `GEO-05`, `INTEL-03`, `A04`).
 
-use oia_analysis::geo_context::provisional::{
-    Altitude, AltitudeBand, AltitudeReference, GeoBoundingBoxWgs84, GeoPointWgs84, GeoPosition,
-    TimeWindow,
-};
 use oia_analysis::geo_context::{
     AircraftTrack, AircraftTrackPoint, CloudCoverage, CloudLayer, ContextLimits,
     ContextReconstructionInputs, GeoContextError, MaritimeTrackPoint, MaritimeVesselTrack,
@@ -14,6 +10,10 @@ use oia_analysis::geo_context::{
     WeatherReportKind, reconstruct_geographic_context, spherical_slerp,
 };
 use oia_domain::{OpaqueId, VersionId};
+use oia_time_geo::{
+    Altitude, AltitudeBand, AltitudeReference, GeoBoundingBoxWgs84, GeoPointWgs84, GeoPosition,
+    TimeWindow,
+};
 
 /// Risk: Missing radar, ADS-B, or AIS sensor feeds reported as an empty scene (`GEO-05`, `A04`, B1′).
 ///

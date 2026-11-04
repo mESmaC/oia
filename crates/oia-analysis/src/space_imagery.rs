@@ -38,8 +38,8 @@
 use std::error::Error;
 use std::fmt;
 
-use crate::geo_context::provisional::{GeoBoundingBoxWgs84, GeoPointWgs84, TimeWindow};
 pub use crate::multilingual::StopReason;
+use oia_time_geo::{GeoBoundingBoxWgs84, GeoPointWgs84, TimeWindow};
 
 /// Method identifier for space imagery catalog and observation analysis.
 pub const METHOD_ID: &str = "oia-space-imagery-catalog-v1";

@@ -30,6 +30,7 @@ The repository was empty on GitHub when this backlog was created, so issue bodie
 - [#10: Implement versioned evidence, claims, cases, and provenance records](https://github.com/mESmaC/oia/issues/10)
 - [#11: Build transactional evidence storage, retention, and recovery](https://github.com/mESmaC/oia/issues/11)
 - [#12: Implement shared time, coordinate, unit, and uncertainty primitives](https://github.com/mESmaC/oia/issues/12)
+  - [Shared geometry/UTC interval slice and remaining contracts](implementation/shared-time-geo.md)
 - [#13: Build source registry and bounded ingestion contracts](https://github.com/mESmaC/oia/issues/13)
 - [#14: Implement durable jobs and shared application services](https://github.com/mESmaC/oia/issues/14)
 - [#15: Establish Lean verification and the first Rust correspondence fixture](https://github.com/mESmaC/oia/issues/15)

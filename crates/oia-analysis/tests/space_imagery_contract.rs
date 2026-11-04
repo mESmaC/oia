@@ -1,7 +1,7 @@
 //! Contract tests for space imagery catalog, scientific provenance, and mission stream kernel (`SPACE-01`–`SPACE-03`, `GEO-04`, `INTEL-03`, `A05`).
 
-use oia_analysis::geo_context::provisional::{GeoBoundingBoxWgs84, TimeWindow};
 use oia_analysis::space_imagery::*;
+use oia_time_geo::{GeoBoundingBoxWgs84, TimeWindow};
 
 #[test]
 fn scientific_provenance_and_outreach_rendering_integrity() -> Result<(), Box<dyn std::error::Error>>

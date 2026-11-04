@@ -1,8 +1,8 @@
 //! Atmospheric and meteorological context types (`GEO-02`, `GEO-05`).
 
 use crate::geo_context::GeoContextError;
-use crate::geo_context::provisional::{Altitude, GeoPosition, TimeWindow};
 use oia_domain::{OpaqueId, VersionId};
+use oia_time_geo::{Altitude, GeoPosition, TimeWindow};
 
 /// Classification of a meteorological record as a direct sensor measurement vs. forecast model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

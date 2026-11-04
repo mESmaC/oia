@@ -20,8 +20,17 @@ const News = (() => {
   function safeText(value) {
     return Array.from(String(value), character => {
       const code = character.codePointAt(0);
-      const hidden = (code < 32 && code !== 9 && code !== 10) || (code >= 127 && code <= 159) ||
-        (code >= 0x200b && code <= 0x200f) || (code >= 0x202a && code <= 0x202e) || (code >= 0x2060 && code <= 0x206f);
+      const control = code < 32 || (code >= 127 && code <= 159);
+      const format = code === 0x85 || code === 0xad || (code >= 0x600 && code <= 0x605) ||
+        code === 0x61c || code === 0x6dd || code === 0x70f || (code >= 0x890 && code <= 0x891) ||
+        code === 0x8e2 || code === 0x180e || (code >= 0x200b && code <= 0x200f) ||
+        (code >= 0x2028 && code <= 0x202e) || (code >= 0x2060 && code <= 0x206f) ||
+        code === 0x3164 || code === 0xfeff || code === 0xffa0 || (code >= 0xfff9 && code <= 0xfffb) ||
+        code === 0x110bd || code === 0x110cd || (code >= 0x13430 && code <= 0x1343f) ||
+        (code >= 0x1bca0 && code <= 0x1bca3) || (code >= 0x1d173 && code <= 0x1d17a) ||
+        (code >= 0xe0000 && code <= 0xe007f);
+      const hidden = code !== 9 && code !== 10 &&
+        (control || (format && code !== 0x200c && code !== 0x200d));
       return hidden ? String.fromCharCode(92) + 'u{' + code.toString(16).toUpperCase() + '}' : character;
     }).join('');
   }
@@ -204,7 +213,8 @@ const News = (() => {
     onView(callback) { listener = callback; },
     summary() {
       return {
-        loaded: !!view, source: view ? safeText(view.title) : 'No news dossier',
+        loaded: !!view, synthetic: view?.synthetic === true,
+        source: view ? safeText(view.title) : 'No news dossier',
         hash: view ? view.sha256.slice(0, 8) + '...' : '—',
         coverage: view ? 'declared ' + view.collection_coverage : 'Not collected',
         selection: selectedId ?? 'none'

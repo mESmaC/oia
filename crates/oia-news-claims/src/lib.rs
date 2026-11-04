@@ -779,17 +779,14 @@ pub fn verify_corpus<'a>(
     let mut validated_passage_count = 0usize;
     for (idx, rec) in input.records.iter().enumerate() {
         check_control().map_err(ClaimCheckError::Stopped)?;
-        if rec.version_id.is_empty()
-            || input
-                .records
-                .get(..idx)
-                .is_some_and(|prior| prior.iter().any(|r| r.version_id == rec.version_id))
-        {
-            return Err(ClaimCheckError::DuplicateIdentifier {
-                kind: "record_version_id",
-                id: rec.version_id.to_owned(),
-            });
-        }
+        publication::validate_version_id(
+            rec.version_id,
+            input.records.get(..idx).is_some_and(|prior| {
+                prior
+                    .iter()
+                    .any(|record| record.version_id == rec.version_id)
+            }),
+        )?;
         if !input.source_ids.contains(&rec.source_id) {
             return Err(ClaimCheckError::UnknownReference {
                 context: format!("record {}", rec.version_id),
@@ -816,13 +813,11 @@ pub fn verify_corpus<'a>(
             });
         }
         // NEWS-04 / A06: A deleted/removed page must never be auto-marked retracted
-        if rec.availability == AvailabilityState::Removed
-            && rec.retraction_status == RetractionStatus::Retracted
-        {
-            return Err(ClaimCheckError::RemovedPageAutoRetracted {
-                record_version_id: rec.version_id.to_owned(),
-            });
-        }
+        publication::validate_availability_retraction(
+            rec.version_id,
+            rec.availability,
+            rec.retraction_status,
+        )?;
 
         let decoded =
             std::str::from_utf8(rec.raw_bytes).map_err(|err| ClaimCheckError::MalformedUtf8 {

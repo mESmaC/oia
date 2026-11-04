@@ -138,7 +138,7 @@ function renderShell() {
     setText('ro-selection', block ? `${pad2(selectedBlock + 1)} block · ${block.first.x},${block.first.y} ↔ ${block.repeated.x},${block.repeated.y}` : 'none', block ? 'v' : 'v none');
   } else if (instrument === 'news') {
     const news = News.summary();
-    setText('ro-source', news.source, news.loaded ? 'v' : 'v none');
+    setText('ro-source', (news.synthetic ? 'Declared synthetic / not observed evidence / ' : '') + news.source, news.loaded ? 'v' : 'v none');
     setText('ro-hash', news.hash, news.loaded ? 'v' : 'v none');
     setText('ro-coverage', news.coverage, 'v est');
     setText('ro-selection', news.selection, news.loaded ? 'v' : 'v none');
@@ -212,7 +212,7 @@ function renderShell() {
     n += 1;
     const news = News.summary();
     for (const host of [tray, list]) {
-      const entry = tag(n, news.source + ' / News dossier');
+      const entry = tag(n, (news.synthetic ? 'Declared synthetic / not observed evidence / ' : '') + news.source + ' / News dossier');
       entry.onclick = () => showInstrument('news', true);
       host.append(entry);
     }

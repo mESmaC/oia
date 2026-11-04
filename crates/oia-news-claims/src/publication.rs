@@ -29,6 +29,34 @@ pub struct PublicationInventory<'a> {
     pub sources: Vec<SourceInventory<'a>>,
 }
 
+pub(crate) fn validate_version_id(
+    version_id: &str,
+    is_duplicate: bool,
+) -> Result<(), ClaimCheckError> {
+    if version_id.is_empty() || is_duplicate {
+        return Err(ClaimCheckError::DuplicateIdentifier {
+            kind: "record_version_id",
+            id: version_id.to_owned(),
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_availability_retraction(
+    version_id: &str,
+    availability: AvailabilityState,
+    retraction_status: RetractionStatus,
+) -> Result<(), ClaimCheckError> {
+    if availability == AvailabilityState::Removed
+        && retraction_status == RetractionStatus::Retracted
+    {
+        return Err(ClaimCheckError::RemovedPageAutoRetracted {
+            record_version_id: version_id.to_owned(),
+        });
+    }
+    Ok(())
+}
+
 pub fn publication_inventory<'a>(
     publications: &[Publication<'a>],
     limits: AssessmentLimits,
@@ -47,12 +75,10 @@ pub fn publication_inventory<'a>(
     let mut sources: BTreeMap<&str, (usize, BTreeSet<&str>)> = BTreeMap::new();
     for publication in publications {
         check_control().map_err(ClaimCheckError::Stopped)?;
-        if publication.version_id.is_empty() || !versions.insert(publication.version_id) {
-            return Err(ClaimCheckError::DuplicateIdentifier {
-                kind: "record_version_id",
-                id: publication.version_id.to_owned(),
-            });
-        }
+        validate_version_id(
+            publication.version_id,
+            !versions.insert(publication.version_id),
+        )?;
         if publication.record_id.is_empty()
             || publication.source_id.is_empty()
             || record_sources
@@ -64,13 +90,11 @@ pub fn publication_inventory<'a>(
                 reason: "record/source IDs must be nonempty and record ownership consistent",
             });
         }
-        if publication.availability == AvailabilityState::Removed
-            && publication.retraction_status == RetractionStatus::Retracted
-        {
-            return Err(ClaimCheckError::RemovedPageAutoRetracted {
-                record_version_id: publication.version_id.to_owned(),
-            });
-        }
+        validate_availability_retraction(
+            publication.version_id,
+            publication.availability,
+            publication.retraction_status,
+        )?;
         let source = sources.entry(publication.source_id).or_default();
         source.0 += 1;
         source.1.insert(publication.record_id);

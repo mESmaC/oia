@@ -12,9 +12,10 @@ evaluation, UI, application integration, or full end-to-end `A06`.
 The `regional` module adds a bounded `NEWS-02` regional-account kernel for
 [issue #20](https://github.com/mESmaC/oia/issues/20): typed epistemic
 categories, attributed-only stated purposes, analyst-assigned event grouping
-with separate article/version/independent-source counts, ordered legal-process
-stages, and explicit window coverage. It does not acquire news, translate, or
-cluster automatically.
+with separate article/version counts and independent-source counts derived
+from corpus lineage (not from declared roots), ordered legal-process stages,
+and explicit window coverage. It does not acquire news, translate, or cluster
+automatically.
 Dependency locking is managed by the root workspace `Cargo.lock`.
 
 See:

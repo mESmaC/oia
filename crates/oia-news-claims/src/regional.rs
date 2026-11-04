@@ -11,15 +11,20 @@
 //! Grouping into proposed events is an explicit analyst decision supplied by the
 //! caller (for example the current revision of a reversible clustering ledger).
 //! This module does not cluster automatically. Article, article-version,
-//! syndicated-reprint, candidate, and independent-lineage-root counts stay
-//! separate, and no count is presented as an incident frequency or crime rate.
+//! syndicated-reprint, candidate, derived independent-source, and declared
+//! lineage-root counts stay separate, and no count is presented as an incident
+//! frequency or crime rate. Independent sources are derived from the corpus
+//! (shared record, source, declared root, identical content, or a quoting,
+//! republishing, or superseding edge), so a declaration can merge sources but
+//! never split them.
 
 use std::error::Error;
 use std::fmt;
 
 use super::{
-    AssessmentLimits, ClaimCheckError, CorpusAssessmentInput, ReviewStatus, SourceRecordInput,
-    StopReason, find_passage, find_record, is_valid_rfc3339_utc_second, verify_corpus,
+    AssessmentLimits, ClaimCheckError, CorpusAssessmentInput, LineageRelationKind, ReviewStatus,
+    SourceRecordInput, StopReason, find_passage, find_record, is_valid_rfc3339_utc_second,
+    verify_corpus,
 };
 
 /// Epistemic category of a reported development (`NEWS-02`).
@@ -275,14 +280,29 @@ pub enum WindowOverlap {
     TimeNotReported,
 }
 
+/// Who a purpose is attributed to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttributionBasis {
+    /// A named speaker given on the candidate.
+    NamedSpeaker,
+    /// No speaker was given; the purpose is attributed to the source that
+    /// published the record (for a news article, the outlet), not to an actor.
+    IssuingSource,
+}
+
 /// A purpose kept attributed to whoever stated it.
+///
+/// The kernel checks that the cited passage exists in the candidate's own
+/// record. Whether that passage actually states this purpose and speaker is
+/// the analyst's typing decision and is not verified textually.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AttributedPurpose<'a> {
     pub kind: PurposeKind,
     pub text: &'a str,
     pub passage_id: &'a str,
-    /// The attributed speaker, or the issuing source for an unattributed plan.
+    /// The attributed speaker, or the issuing source when no speaker was given.
     pub attributed_to: &'a str,
+    pub attribution_basis: AttributionBasis,
     /// Always the entry's own category; a purpose never becomes an observation.
     pub category: EpistemicCategory,
 }
@@ -376,8 +396,19 @@ pub struct EventSourceCounts {
     pub syndicated_reprint_versions: usize,
     pub superseded_versions: usize,
     pub entries: usize,
-    /// Distinct independent lineage roots among member versions.
+    /// Independence classes among member versions that contain at least one
+    /// non-reprint record in the corpus. Classes are derived, not taken from
+    /// declarations: corpus records are joined when they share a record id,
+    /// declared lineage root, source id, or byte-identical content, or are
+    /// linked by a `Quotes`, `Republishes`, or `Supersedes` edge. `Supports`
+    /// edges do not join. Declarations can only merge classes, never split them.
     pub independent_sources: usize,
+    /// Classes made only of syndicated reprints with no identified original in
+    /// the corpus. They are not counted as independent sources.
+    pub unanchored_reprint_classes: usize,
+    /// Distinct declared `independent_lineage_root_id` values among members.
+    /// An upper bound that holds only if the declarations are correct.
+    pub declared_lineage_roots: usize,
     pub by_category: CategoryCounts,
 }
 
@@ -387,8 +418,11 @@ pub struct LegalStageEntry<'a> {
     pub category: EpistemicCategory,
     pub candidate_id: &'a str,
     pub source_record_version_id: &'a str,
+    pub reported_time: Option<ReportedInterval<'a>>,
     pub review_status: ReviewStatus,
     pub needs_reassessment: bool,
+    /// The stage's source record version has a later version.
+    pub record_superseded: bool,
 }
 
 /// Reported legal process for one matter, ordered arrest → charge → judgment.
@@ -400,6 +434,10 @@ pub struct LegalMatterAccount<'a> {
     pub stages: Vec<LegalStageEntry<'a>>,
     pub latest_reported_stage: EpistemicCategory,
     pub judgment_reported: bool,
+    /// A later stage has a reported start before an earlier stage's reported
+    /// start. The stage order is kept and the contradiction is surfaced, not
+    /// resolved.
+    pub chronology_conflict: bool,
 }
 
 /// Account of one included proposed event.
@@ -410,7 +448,8 @@ pub struct EventAccount<'a> {
     pub grouping_decision_id: &'a str,
     pub entries: Vec<AccountEntry<'a>>,
     pub member_version_ids: Vec<&'a str>,
-    pub independent_lineage_roots: Vec<&'a str>,
+    /// Declared lineage roots among members (see [`EventSourceCounts::declared_lineage_roots`]).
+    pub declared_lineage_roots: Vec<&'a str>,
     pub counts: EventSourceCounts,
     pub legal_matters: Vec<LegalMatterAccount<'a>>,
     pub conflicts: &'a [EventConflictInput<'a>],
@@ -435,6 +474,8 @@ pub struct RegionalCoverage {
     pub entries_outside_window_in_included_events: usize,
     pub entries_needing_reassessment: usize,
     pub entries_not_reviewed: usize,
+    /// Corpus event candidates the analyst did not type for this account.
+    pub corpus_candidates_untyped: usize,
 }
 
 /// Region- and window-scoped account of reported developments.
@@ -449,8 +490,14 @@ pub struct RegionalAccount<'a> {
     pub development_event_counts: DevelopmentEventCounts,
     /// Distinct source records across included events.
     pub distinct_articles: usize,
-    /// Distinct independent lineage roots across included events.
+    /// Distinct anchored independence classes across included events
+    /// (see [`EventSourceCounts::independent_sources`]).
     pub distinct_independent_sources: usize,
+    /// Distinct unanchored reprint classes across included events.
+    pub unanchored_reprint_classes: usize,
+    /// Legal matter ids that appear in more than one included event. Each
+    /// event shows its own stages; the kernel does not merge them.
+    pub legal_matters_spanning_events: Vec<&'a str>,
     pub coverage: RegionalCoverage,
     pub limits: RegionalLimits,
 }
@@ -656,11 +703,167 @@ fn push<T>(vec: &mut Vec<T>, value: T) -> Result<(), RegionalAccountError> {
     Ok(())
 }
 
-fn push_unique<'a>(vec: &mut Vec<&'a str>, value: &'a str) -> Result<(), RegionalAccountError> {
+fn push_unique<T: PartialEq>(vec: &mut Vec<T>, value: T) -> Result<(), RegionalAccountError> {
     if !vec.contains(&value) {
         push(vec, value)?;
     }
     Ok(())
+}
+
+/// Refuses a list that is over `limit` or repeats an identifier.
+fn check_id_list(
+    ids: &[&str],
+    kind: &'static str,
+    limit_kind: RegionalLimitKind,
+    limit: usize,
+    check_control: &mut impl FnMut() -> Result<(), StopReason>,
+) -> Result<(), RegionalAccountError> {
+    if ids.len() > limit {
+        return Err(RegionalAccountError::BudgetExceeded {
+            kind: limit_kind,
+            actual: ids.len(),
+            limit,
+        });
+    }
+    for (idx, id) in ids.iter().enumerate() {
+        check_control().map_err(RegionalAccountError::Stopped)?;
+        if ids.get(..idx).is_some_and(|prior| prior.contains(id)) {
+            return Err(RegionalAccountError::DuplicateIdentifier {
+                kind,
+                id: (*id).to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn record_index(records: &[SourceRecordInput<'_>], version_id: &str) -> Option<usize> {
+    records.iter().position(|r| r.version_id == version_id)
+}
+
+fn class_find(parent: &mut [usize], mut i: usize) -> usize {
+    loop {
+        let Some(&p) = parent.get(i) else {
+            return i;
+        };
+        if p == i {
+            return i;
+        }
+        let grandparent = parent.get(p).copied().unwrap_or(p);
+        if let Some(slot) = parent.get_mut(i) {
+            *slot = grandparent;
+        }
+        i = grandparent;
+    }
+}
+
+/// Joins two classes, keeping the lower record index as the representative so
+/// the result does not depend on join order.
+fn class_union(parent: &mut [usize], a: usize, b: usize) {
+    let ra = class_find(parent, a);
+    let rb = class_find(parent, b);
+    let (low, high) = if ra <= rb { (ra, rb) } else { (rb, ra) };
+    if low != high
+        && let Some(slot) = parent.get_mut(high)
+    {
+        *slot = low;
+    }
+}
+
+fn content_fingerprint(bytes: &[u8]) -> u64 {
+    // FNV-1a; only used to skip byte comparisons that cannot match.
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// Independence classes over every corpus record (see
+/// [`EventSourceCounts::independent_sources`]). Returns each record's class
+/// representative and, per representative, whether the class holds at least
+/// one non-reprint record.
+fn independence_classes(
+    corpus: &CorpusAssessmentInput<'_>,
+    check_control: &mut impl FnMut() -> Result<(), StopReason>,
+) -> Result<(Vec<usize>, Vec<bool>), RegionalAccountError> {
+    let records = corpus.records;
+    let mut parent: Vec<usize> = Vec::new();
+    parent
+        .try_reserve(records.len())
+        .map_err(|_| RegionalAccountError::AllocationFailed)?;
+    parent.extend(0..records.len());
+    let mut fingerprints: Vec<u64> = Vec::new();
+    fingerprints
+        .try_reserve(records.len())
+        .map_err(|_| RegionalAccountError::AllocationFailed)?;
+    for record in records {
+        check_control().map_err(RegionalAccountError::Stopped)?;
+        fingerprints.push(content_fingerprint(record.raw_bytes));
+    }
+
+    for (i, a) in records.iter().enumerate() {
+        check_control().map_err(RegionalAccountError::Stopped)?;
+        let a_print = fingerprints.get(i).copied();
+        for (j, b) in records.iter().enumerate().take(i) {
+            let joined = a.record_id == b.record_id
+                || a.source_id == b.source_id
+                || (!a.independent_lineage_root_id.trim().is_empty()
+                    && a.independent_lineage_root_id == b.independent_lineage_root_id)
+                || (!a.raw_bytes.is_empty()
+                    && a_print == fingerprints.get(j).copied()
+                    && a.raw_bytes == b.raw_bytes);
+            if joined {
+                class_union(&mut parent, i, j);
+            }
+        }
+    }
+    for edge in corpus.lineage_edges {
+        check_control().map_err(RegionalAccountError::Stopped)?;
+        if edge.relation_kind == LineageRelationKind::Supports {
+            continue;
+        }
+        if let (Some(from), Some(to)) = (
+            record_index(records, edge.from_version_id),
+            record_index(records, edge.to_version_id),
+        ) {
+            class_union(&mut parent, from, to);
+        }
+    }
+
+    let mut class_of: Vec<usize> = Vec::new();
+    class_of
+        .try_reserve(records.len())
+        .map_err(|_| RegionalAccountError::AllocationFailed)?;
+    let mut anchored: Vec<bool> = Vec::new();
+    anchored
+        .try_reserve(records.len())
+        .map_err(|_| RegionalAccountError::AllocationFailed)?;
+    anchored.resize(records.len(), false);
+    for (i, record) in records.iter().enumerate() {
+        check_control().map_err(RegionalAccountError::Stopped)?;
+        let class = class_find(&mut parent, i);
+        class_of.push(class);
+        if !record.is_syndicated_reprint
+            && let Some(slot) = anchored.get_mut(class)
+        {
+            *slot = true;
+        }
+    }
+    Ok((class_of, anchored))
+}
+
+/// True when a later legal stage (by rank) has a reported start before an
+/// earlier-rank stage's reported start. Stages without a reported time are
+/// not compared.
+fn legal_chronology_conflict(stages: &[LegalStageEntry<'_>]) -> bool {
+    let start =
+        |s: &LegalStageEntry<'_>| s.reported_time.and_then(|t| parse_utc_second(t.start_utc));
+    let rank = |s: &LegalStageEntry<'_>| s.category.legal_stage_rank();
+    stages.iter().any(|later| {
+        stages.iter().any(|earlier| {
+            rank(earlier) < rank(later)
+                && matches!((start(earlier), start(later)), (Some(e), Some(l)) if l < e)
+        })
+    })
 }
 
 fn validate_location(
@@ -683,6 +886,10 @@ fn validate_location(
         (_, Some(_)) => Ok(()),
     }
 }
+
+/// Earliest reported start, the event account, and its anchored and
+/// unanchored independence classes, kept until region totals are computed.
+type PendingEvent<'a> = (Option<i64>, EventAccount<'a>, Vec<usize>, Vec<usize>);
 
 struct ValidatedEntry<'a> {
     entry: AccountEntry<'a>,
@@ -762,13 +969,37 @@ pub fn build_regional_account<'a>(
                 limit: limits.max_conflicts_per_event,
             });
         }
+        check_id_list(
+            event.additional_member_version_ids,
+            "additional_member_version_id",
+            RegionalLimitKind::MembersPerEvent,
+            limits.max_members_per_event,
+            &mut check_control,
+        )?;
         for version_id in event.additional_member_version_ids {
+            check_control().map_err(RegionalAccountError::Stopped)?;
             if find_record(corpus.records, version_id).is_none() {
                 return Err(RegionalAccountError::UnknownReference {
                     context: context.clone(),
                     target: (*version_id).to_owned(),
                 });
             }
+        }
+        for conflict in event.conflicts {
+            check_id_list(
+                conflict.conflicting_version_ids,
+                "conflicting_version_id",
+                RegionalLimitKind::MembersPerEvent,
+                limits.max_members_per_event,
+                &mut check_control,
+            )?;
+            check_id_list(
+                conflict.corrected_or_authoritative_version_ids,
+                "corrected_or_authoritative_version_id",
+                RegionalLimitKind::MembersPerEvent,
+                limits.max_members_per_event,
+                &mut check_control,
+            )?;
         }
     }
 
@@ -825,13 +1056,13 @@ pub fn build_regional_account<'a>(
                 field: "supporting_passage_ids",
             });
         }
-        if cand.supporting_passage_ids.len() > limits.max_passages_per_candidate {
-            return Err(RegionalAccountError::BudgetExceeded {
-                kind: RegionalLimitKind::PassagesPerCandidate,
-                actual: cand.supporting_passage_ids.len(),
-                limit: limits.max_passages_per_candidate,
-            });
-        }
+        check_id_list(
+            cand.supporting_passage_ids,
+            "supporting_passage_id",
+            RegionalLimitKind::PassagesPerCandidate,
+            limits.max_passages_per_candidate,
+            &mut check_control,
+        )?;
         for passage_id in cand.supporting_passage_ids {
             if find_passage(record, passage_id).is_none() {
                 return Err(RegionalAccountError::UnknownReference {
@@ -894,6 +1125,11 @@ pub fn build_regional_account<'a>(
                     text: stated.text,
                     passage_id: stated.passage_id,
                     attributed_to: cand.attributed_speaker.unwrap_or(record.source_id),
+                    attribution_basis: if cand.attributed_speaker.is_some() {
+                        AttributionBasis::NamedSpeaker
+                    } else {
+                        AttributionBasis::IssuingSource
+                    },
                     category: cand.category,
                 })
             }
@@ -954,7 +1190,19 @@ pub fn build_regional_account<'a>(
         events_considered: input.events.len(),
         ..RegionalCoverage::default()
     };
-    let mut events: Vec<(Option<i64>, EventAccount<'a>)> = Vec::new();
+    for base in corpus.candidates {
+        check_control().map_err(RegionalAccountError::Stopped)?;
+        if !input
+            .candidates
+            .iter()
+            .any(|c| c.candidate_id == base.candidate_id)
+        {
+            coverage.corpus_candidates_untyped =
+                coverage.corpus_candidates_untyped.saturating_add(1);
+        }
+    }
+    let (class_of, class_anchored) = independence_classes(corpus, &mut check_control)?;
+    let mut events: Vec<PendingEvent<'a>> = Vec::new();
     for (event_index, event) in input.events.iter().enumerate() {
         check_control().map_err(RegionalAccountError::Stopped)?;
         let mut members: Vec<&ValidatedEntry<'a>> = validated
@@ -999,16 +1247,32 @@ pub fn build_regional_account<'a>(
 
         let mut record_ids: Vec<&'a str> = Vec::new();
         let mut roots: Vec<&'a str> = Vec::new();
+        let mut anchored_classes: Vec<usize> = Vec::new();
+        let mut unanchored_classes: Vec<usize> = Vec::new();
         let mut needs_reassessment = entries.iter().any(|e| e.needs_reassessment);
         for version_id in &member_versions {
-            let Some(record) = find_record(corpus.records, version_id) else {
+            check_control().map_err(RegionalAccountError::Stopped)?;
+            let Some((record, class)) = record_index(corpus.records, version_id)
+                .and_then(|i| Some((corpus.records.get(i)?, class_of.get(i).copied()?)))
+            else {
                 return Err(RegionalAccountError::UnknownReference {
                     context: format!("event {}", event.event_id),
                     target: (*version_id).to_owned(),
                 });
             };
+            if record.independent_lineage_root_id.trim().is_empty() {
+                return Err(RegionalAccountError::EmptyField {
+                    context: format!("member record {}", record.version_id),
+                    field: "independent_lineage_root_id",
+                });
+            }
             push_unique(&mut record_ids, record.record_id)?;
             push_unique(&mut roots, record.independent_lineage_root_id)?;
+            if class_anchored.get(class).copied().unwrap_or(false) {
+                push_unique(&mut anchored_classes, class)?;
+            } else {
+                push_unique(&mut unanchored_classes, class)?;
+            }
             if record.is_syndicated_reprint {
                 counts.syndicated_reprint_versions =
                     counts.syndicated_reprint_versions.saturating_add(1);
@@ -1022,9 +1286,12 @@ pub fn build_regional_account<'a>(
         counts.articles = record_ids.len();
         counts.article_versions = member_versions.len();
         counts.entries = entries.len();
-        counts.independent_sources = roots.len();
+        counts.independent_sources = anchored_classes.len();
+        counts.unanchored_reprint_classes = unanchored_classes.len();
+        counts.declared_lineage_roots = roots.len();
 
         for conflict in event.conflicts {
+            check_control().map_err(RegionalAccountError::Stopped)?;
             let context = format!("conflict {}", conflict.conflict_id);
             check_text(&context, "conflict_id", conflict.conflict_id, limits)?;
             check_text(&context, "description", conflict.description, limits)?;
@@ -1039,6 +1306,7 @@ pub fn build_regional_account<'a>(
                 .iter()
                 .chain(conflict.corrected_or_authoritative_version_ids)
             {
+                check_control().map_err(RegionalAccountError::Stopped)?;
                 if !member_versions.contains(version_id) {
                     return Err(RegionalAccountError::InvalidConflict {
                         conflict_id: conflict.conflict_id.to_owned(),
@@ -1078,8 +1346,10 @@ pub fn build_regional_account<'a>(
                 category: entry.category,
                 candidate_id: entry.candidate_id,
                 source_record_version_id: entry.source_record_version_id,
+                reported_time: entry.reported_time,
                 review_status: entry.review_status,
                 needs_reassessment: entry.needs_reassessment,
+                record_superseded: entry.record_superseded,
             };
             if let Some(matter) = legal_matters.iter_mut().find(|m| m.matter_id == matter_id) {
                 push(&mut matter.stages, stage)?;
@@ -1093,11 +1363,13 @@ pub fn build_regional_account<'a>(
                         stages,
                         latest_reported_stage: entry.category,
                         judgment_reported: false,
+                        chronology_conflict: false,
                     },
                 )?;
             }
         }
         for matter in &mut legal_matters {
+            check_control().map_err(RegionalAccountError::Stopped)?;
             // Stable sort keeps the chronological entry order within a stage.
             matter
                 .stages
@@ -1109,6 +1381,7 @@ pub fn build_regional_account<'a>(
                 .stages
                 .iter()
                 .any(|s| s.category == EpistemicCategory::Judgment);
+            matter.chronology_conflict = legal_chronology_conflict(&matter.stages);
         }
 
         let mut approximate_location_present = false;
@@ -1158,7 +1431,7 @@ pub fn build_regional_account<'a>(
                     grouping_decision_id: event.grouping_decision_id,
                     entries,
                     member_version_ids: member_versions,
-                    independent_lineage_roots: roots,
+                    declared_lineage_roots: roots,
                     counts,
                     legal_matters,
                     conflicts: event.conflicts,
@@ -1167,11 +1440,13 @@ pub fn build_regional_account<'a>(
                     widest_location_uncertainty_m: widest,
                     needs_reassessment,
                 },
+                anchored_classes,
+                unanchored_classes,
             ),
         )?;
     }
 
-    events.sort_by(|(a_start, a), (b_start, b)| {
+    events.sort_by(|(a_start, a, ..), (b_start, b, ..)| {
         (a_start.is_none(), a_start)
             .cmp(&(b_start.is_none(), b_start))
             .then_with(|| a.event_id.cmp(b.event_id))
@@ -1180,12 +1455,16 @@ pub fn build_regional_account<'a>(
     let mut category_totals = CategoryCounts::default();
     let mut development_event_counts = DevelopmentEventCounts::default();
     let mut region_records: Vec<&'a str> = Vec::new();
-    let mut region_roots: Vec<&'a str> = Vec::new();
+    let mut region_anchored: Vec<usize> = Vec::new();
+    let mut region_unanchored: Vec<usize> = Vec::new();
+    let mut matters_seen: Vec<&'a str> = Vec::new();
+    let mut matters_spanning: Vec<&'a str> = Vec::new();
     let mut out_events = Vec::new();
     out_events
         .try_reserve(events.len())
         .map_err(|_| RegionalAccountError::AllocationFailed)?;
-    for (_, event) in events {
+    for (_, event, anchored, unanchored) in events {
+        check_control().map_err(RegionalAccountError::Stopped)?;
         let mut kinds: Vec<DevelopmentKind> = Vec::new();
         for entry in &event.entries {
             category_totals.add(entry.category);
@@ -1199,8 +1478,18 @@ pub fn build_regional_account<'a>(
                 push_unique(&mut region_records, record.record_id)?;
             }
         }
-        for root in &event.independent_lineage_roots {
-            push_unique(&mut region_roots, root)?;
+        for class in anchored {
+            push_unique(&mut region_anchored, class)?;
+        }
+        for class in unanchored {
+            push_unique(&mut region_unanchored, class)?;
+        }
+        for matter in &event.legal_matters {
+            if matters_seen.contains(&matter.matter_id) {
+                push_unique(&mut matters_spanning, matter.matter_id)?;
+            } else {
+                push(&mut matters_seen, matter.matter_id)?;
+            }
         }
         out_events.push(event);
     }
@@ -1214,7 +1503,9 @@ pub fn build_regional_account<'a>(
         category_totals,
         development_event_counts,
         distinct_articles: region_records.len(),
-        distinct_independent_sources: region_roots.len(),
+        distinct_independent_sources: region_anchored.len(),
+        unanchored_reprint_classes: region_unanchored.len(),
+        legal_matters_spanning_events: matters_spanning,
         coverage,
         limits,
     })

@@ -1,17 +1,19 @@
 //! Targeted `NEWS-02` regional-account contracts: syndicated copies do not add
-//! independent sources, legal stages keep their order without erasing earlier
-//! stages, observed movement cannot carry a purpose, and window coverage keeps
-//! uncertainty-only inclusions and exclusions visible.
+//! independent sources (even when they declare their own lineage roots), legal
+//! stages keep their order without erasing earlier stages, observed movement
+//! cannot carry a purpose, window coverage keeps uncertainty-only inclusions and
+//! exclusions visible, and member lists are bounded before any lookup.
 
 use oia_news_claims::regional::{
     DevelopmentKind, EpistemicCategory, LocationBasis, ProposedEventInput, PurposeKind,
     RegionalAccount, RegionalAccountError, RegionalAccountInput, RegionalCandidateInput,
-    RegionalLimits, ReportedInterval, ReportedLocation, StatedPurposeInput, WindowOverlap,
-    build_regional_account,
+    RegionalLimitKind, RegionalLimits, ReportedInterval, ReportedLocation, StatedPurposeInput,
+    WindowOverlap, build_regional_account,
 };
 use oia_news_claims::{
-    AssessmentLimits, AvailabilityState, CorpusAssessmentInput, EventCandidateInput, PassageAnchor,
-    RetractionStatus, ReviewStatus, SourceRecordInput,
+    AssessmentLimits, AvailabilityState, CorpusAssessmentInput, EventCandidateInput,
+    LineageEdgeInput, LineageRelationKind, PassageAnchor, RetractionStatus, ReviewStatus,
+    SourceRecordInput,
 };
 
 const SHA256_FORMAT_ONLY: &str = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -70,6 +72,8 @@ const SOURCES: &[&str] = &[
     "src-harbor-office",
     "src-aggregator",
     "src-court",
+    "src-wire-a",
+    "src-wire-b",
 ];
 
 fn records() -> Vec<SourceRecordInput<'static>> {
@@ -255,12 +259,21 @@ fn build<R>(
     candidates: &[RegionalCandidateInput<'_>],
     inspect: impl FnOnce(Result<RegionalAccount<'_>, RegionalAccountError>) -> R,
 ) -> R {
-    let records = records();
+    build_in(&records(), &[], EVENTS, candidates, inspect)
+}
+
+fn build_in<R>(
+    records: &[SourceRecordInput<'_>],
+    lineage_edges: &[LineageEdgeInput<'_>],
+    events: &[ProposedEventInput<'_>],
+    candidates: &[RegionalCandidateInput<'_>],
+    inspect: impl FnOnce(Result<RegionalAccount<'_>, RegionalAccountError>) -> R,
+) -> R {
     let corpus_candidates = corpus_candidates();
     let corpus = CorpusAssessmentInput {
         source_ids: SOURCES,
-        records: &records,
-        lineage_edges: &[],
+        records,
+        lineage_edges,
         candidates: &corpus_candidates,
         claims: &[],
         invalidations: &[],
@@ -270,7 +283,7 @@ fn build<R>(
         region_id: REGION,
         window_start_utc: "2024-05-01T00:00:00Z",
         window_end_utc: "2024-06-30T23:59:59Z",
-        events: EVENTS,
+        events,
         candidates,
     };
     let result = AssessmentLimits::new(8, 8, 4, 4, 4, 4, 4, 4, 1_024)
@@ -419,5 +432,112 @@ fn window_coverage_keeps_uncertainty_only_unreported_and_excluded_items_visible(
         assert_eq!(account.coverage.events_outside_window, 1);
         assert_eq!(account.coverage.entries_uncertainty_only, 1);
         assert_eq!(account.coverage.entries_time_not_reported, 1);
+    });
+}
+
+const WIRE_A: &str = "Wire copy: the harbor master said boats would escort the ferry.";
+const WIRE_B: &str = "Digest: boats to escort the morning ferry, the harbor master said.";
+const WIRE_A_P: &[PassageAnchor<'static>] = &[whole("p-wire-a", WIRE_A)];
+const WIRE_B_P: &[PassageAnchor<'static>] = &[whole("p-wire-b", WIRE_B)];
+
+#[test]
+fn independence_is_derived_from_lineage_not_from_declared_roots() {
+    let mut corpus_records = records();
+    // Reprints that declare their own roots: one is linked to its original by a
+    // `Republishes` edge, the other has no identified original in the corpus.
+    corpus_records.push(record(
+        "rec-wire-a@v1",
+        "src-wire-a",
+        "root-wire-a",
+        true,
+        WIRE_A,
+        WIRE_A_P,
+    ));
+    corpus_records.push(record(
+        "rec-wire-b@v1",
+        "src-wire-b",
+        "root-wire-b",
+        true,
+        WIRE_B,
+        WIRE_B_P,
+    ));
+    let edges = [LineageEdgeInput {
+        edge_id: "edge-wire-a",
+        relation_kind: LineageRelationKind::Republishes,
+        from_version_id: "rec-wire-a@v1",
+        to_version_id: "rec-statement@v1",
+        preserves_independent_corroboration: false,
+    }];
+    let events = [
+        event(
+            "evt-pier",
+            &["rec-reprint@v1", "rec-wire-a@v1", "rec-wire-b@v1"],
+        ),
+        event("evt-court", &[]),
+        event("evt-adrift-near", &[]),
+        event("evt-adrift-far", &[]),
+    ];
+    build_in(
+        &corpus_records,
+        &edges,
+        &events,
+        &regional_candidates(),
+        |result| {
+            let account = result.unwrap_or_else(|err| panic!("account should build: {err}"));
+            let Some(pier) = account.events.iter().find(|e| e.event_id == "evt-pier") else {
+                panic!("evt-pier missing");
+            };
+            assert_eq!(pier.counts.declared_lineage_roots, 4);
+            assert_eq!(pier.counts.independent_sources, 2);
+            assert_eq!(pier.counts.unanchored_reprint_classes, 1);
+            assert_eq!(account.unanchored_reprint_classes, 1);
+        },
+    );
+
+    // An empty declared root on a member record is refused, not counted.
+    let mut empty_root = records();
+    if let Some(reprint) = empty_root
+        .iter_mut()
+        .find(|r| r.version_id == "rec-reprint@v1")
+    {
+        reprint.independent_lineage_root_id = "";
+    }
+    build_in(&empty_root, &[], EVENTS, &regional_candidates(), |result| {
+        assert!(matches!(
+            result,
+            Err(RegionalAccountError::EmptyField {
+                field: "independent_lineage_root_id",
+                ..
+            })
+        ));
+    });
+}
+
+#[test]
+fn member_lists_are_bounded_and_unique_before_lookup() {
+    // Ids that are not in the corpus prove the refusal happens before lookup.
+    let duplicate = [event("evt-pier", &["rec-missing@v1", "rec-missing@v1"])];
+    build_in(&records(), &[], &duplicate, &[], |result| {
+        assert_eq!(
+            result.err(),
+            Some(RegionalAccountError::DuplicateIdentifier {
+                kind: "additional_member_version_id",
+                id: "rec-missing@v1".to_owned(),
+            })
+        );
+    });
+    let over_limit = [event(
+        "evt-pier",
+        &["m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9"],
+    )];
+    build_in(&records(), &[], &over_limit, &[], |result| {
+        assert_eq!(
+            result.err(),
+            Some(RegionalAccountError::BudgetExceeded {
+                kind: RegionalLimitKind::MembersPerEvent,
+                actual: 9,
+                limit: 8,
+            })
+        );
     });
 }

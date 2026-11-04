@@ -89,13 +89,15 @@ fn check(failures: &mut Vec<String>, label: &str, actual: usize, expected: usize
 
 fn print_account(account: &RegionalAccount<'_>) {
     println!(
-        "region={} window={}..{} events={} distinct_articles={} distinct_independent_sources={}",
+        "region={} window={}..{} events={} distinct_articles={} distinct_independent_sources={} unanchored_reprint_classes={} legal_matters_spanning_events={:?}",
         account.region_id,
         account.window_start_utc,
         account.window_end_utc,
         account.events.len(),
         account.distinct_articles,
         account.distinct_independent_sources,
+        account.unanchored_reprint_classes,
+        account.legal_matters_spanning_events,
     );
     println!("category_totals={:?}", account.category_totals);
     println!(
@@ -105,12 +107,12 @@ fn print_account(account: &RegionalAccount<'_>) {
     println!("coverage={:?}", account.coverage);
     for event in &account.events {
         println!(
-            "event={} version={} decision={} counts={:?} roots={:?} approximate_location={} uncertainty_m={:?}..{:?} needs_reassessment={}",
+            "event={} version={} decision={} counts={:?} declared_roots={:?} approximate_location={} uncertainty_m={:?}..{:?} needs_reassessment={}",
             event.event_id,
             event.version_id,
             event.grouping_decision_id,
             event.counts,
-            event.independent_lineage_roots,
+            event.declared_lineage_roots,
             event.approximate_location_present,
             event.tightest_location_uncertainty_m,
             event.widest_location_uncertainty_m,
@@ -132,9 +134,10 @@ fn print_account(account: &RegionalAccount<'_>) {
             );
             if let Some(purpose) = entry.purpose {
                 println!(
-                    "    purpose kind={:?} attributed_to={:?} as={:?} passage={} text={:?}",
+                    "    purpose kind={:?} attributed_to={:?} basis={:?} as={:?} passage={} text={:?}",
                     purpose.kind,
                     purpose.attributed_to,
+                    purpose.attribution_basis,
                     purpose.category,
                     purpose.passage_id,
                     purpose.text,
@@ -148,11 +151,12 @@ fn print_account(account: &RegionalAccount<'_>) {
                 .map(|s| format!("{:?}:{}", s.category, s.candidate_id))
                 .collect();
             println!(
-                "  legal_matter={} stages=[{}] latest_reported={:?} judgment_reported={}",
+                "  legal_matter={} stages=[{}] latest_reported={:?} judgment_reported={} chronology_conflict={}",
                 matter.matter_id,
                 stages.join(", "),
                 matter.latest_reported_stage,
                 matter.judgment_reported,
+                matter.chronology_conflict,
             );
         }
         for conflict in event.conflicts {

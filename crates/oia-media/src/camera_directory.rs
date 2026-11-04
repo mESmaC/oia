@@ -568,8 +568,9 @@ impl ViewingConeGeometry {
         self.horizontal_fov_deg
     }
 
-    /// Horizontal FOV widened by `2 * (angular_uncertainty_deg + atan2(horizontal_uncertainty_m, range_m))`,
-    /// clamped below `360.0` deg (`CAM-02`, `CAM-05`, `docs/architecture.md` §§3.2, 8).
+    /// Horizontal FOV widened by `2 * (angular_uncertainty_deg + asin(horizontal_uncertainty_m / range_m))`
+    /// (with `asin(...) = 180.0` deg when `horizontal_uncertainty_m >= range_m`), clamped below `360.0` deg
+    /// (`CAM-02`, `CAM-05`, `docs/architecture.md` §§3.2, 8).
     #[must_use]
     pub const fn uncertainty_widened_horizontal_fov_deg(&self) -> f64 {
         self.uncertainty_widened_horizontal_fov_deg
@@ -580,14 +581,15 @@ impl ViewingConeGeometry {
         self.range_m
     }
 
-    /// Nominal outer-arc vertices projected across `horizontal_fov_deg`.
+    /// Nominal outer-arc vertices projected from `(apex_latitude_deg, apex_longitude_deg)` across `horizontal_fov_deg`.
     #[must_use]
     pub fn arc_vertices_lat_lon_deg(&self) -> &[(f64, f64)] {
         &self.arc_vertices_lat_lon_deg
     }
 
-    /// Outer-arc vertices projected across `uncertainty_widened_horizontal_fov_deg` (`horizontal_fov_deg`
-    /// widened by both calibration/bearing angular uncertainty and `horizontal_uncertainty_m` at `range_m`).
+    /// Outer-arc vertices projected from the nominal apex `(apex_latitude_deg, apex_longitude_deg)` across
+    /// `uncertainty_widened_horizontal_fov_deg` (`horizontal_fov_deg` widened by both calibration/bearing
+    /// angular uncertainty and `asin(horizontal_uncertainty_m / range_m)` at `range_m`).
     #[must_use]
     pub fn uncertainty_widened_arc_vertices_lat_lon_deg(&self) -> &[(f64, f64)] {
         &self.uncertainty_widened_arc_vertices_lat_lon_deg
@@ -1175,7 +1177,11 @@ impl RetainedCameraClipManifest {
         &self.excluded_cross_version_frames
     }
 
-    /// Restricted/unavailable intervals `(restricted_start_ms, reregistered_end_ms)` overlapping `[pre_start_ms, post_end_ms]`.
+    /// Restricted/unavailable or policy-disabled intervals `(start_ms, end_ms)` overlapping `[pre_start_ms, post_end_ms]`.
+    ///
+    /// Transition timestamps (`occurred_at_ms` / `reregistered_at_ms`) are recorded on the operator/ingestion
+    /// clock and compared directly against `[pre_start_ms, post_end_ms]` (subject to each frame's declared
+    /// `clock_uncertainty_ms`).
     #[must_use]
     pub fn restriction_intervals_in_window(&self) -> &[(i64, Option<i64>)] {
         &self.restriction_intervals_in_window
@@ -1188,6 +1194,11 @@ impl RetainedCameraClipManifest {
     }
 
     /// Shared [`ContextWindowStatus`] directly consumable by [`crate::camera_anomaly::SceneTriggerInput`].
+    ///
+    /// Returns [`ContextWindowStatus::PartialBufferExpired`] for any partial or degraded window
+    /// (window expiry, capacity eviction, sequence drops, coverage gaps, restriction/disabled intervals,
+    /// cross-version exclusions, or empty requested pre/post context windows); exact cause breakdowns
+    /// are exposed via the dedicated accessors on [`RetainedCameraClipManifest`].
     #[must_use]
     pub fn context_window(&self) -> &ContextWindowStatus {
         &self.context_window
@@ -1380,7 +1391,7 @@ impl RegisteredCameraEntry {
         self.restricted_since_ms
     }
 
-    /// Recorded `(restricted_start_ms, reregistered_end_ms)` intervals for this camera.
+    /// Recorded `(start_ms, end_ms)` restriction or policy-disabled intervals for this camera.
     #[must_use]
     pub fn restriction_intervals(&self) -> &[(i64, Option<i64>)] {
         &self.restriction_intervals
@@ -2330,11 +2341,12 @@ impl CameraDirectoryRegistry {
         if let StreamCapability::LiveStreamSupported {
             nominal_frame_interval_ms,
         } = input.stream_capability
-            && nominal_frame_interval_ms == 0
+            && (nominal_frame_interval_ms == 0
+                || nominal_frame_interval_ms > MAX_CLOCK_UNCERTAINTY_MS)
         {
             return Err(CameraDirectoryError::InvalidCapabilityConfiguration {
                 camera_id: input.camera_id,
-                reason: "LiveStreamSupported nominal_frame_interval_ms must be >= 1",
+                reason: "LiveStreamSupported nominal_frame_interval_ms must be within 1..=MAX_CLOCK_UNCERTAINTY_MS",
             });
         }
         if let StillRefreshCapability::PeriodicStillSupported {
@@ -2342,16 +2354,20 @@ impl CameraDirectoryRegistry {
             stale_after_ms,
         } = input.still_capability
         {
-            if nominal_refresh_interval_ms == 0 {
+            if nominal_refresh_interval_ms == 0
+                || nominal_refresh_interval_ms > MAX_CLOCK_UNCERTAINTY_MS
+            {
                 return Err(CameraDirectoryError::InvalidCapabilityConfiguration {
                     camera_id: input.camera_id,
-                    reason: "PeriodicStillSupported nominal_refresh_interval_ms must be >= 1",
+                    reason: "PeriodicStillSupported nominal_refresh_interval_ms must be within 1..=MAX_CLOCK_UNCERTAINTY_MS",
                 });
             }
-            if stale_after_ms < nominal_refresh_interval_ms {
+            if stale_after_ms < nominal_refresh_interval_ms
+                || stale_after_ms > MAX_CLOCK_UNCERTAINTY_MS
+            {
                 return Err(CameraDirectoryError::InvalidCapabilityConfiguration {
                     camera_id: input.camera_id,
-                    reason: "PeriodicStillSupported stale_after_ms must be >= nominal_refresh_interval_ms",
+                    reason: "PeriodicStillSupported stale_after_ms must be within nominal_refresh_interval_ms..=MAX_CLOCK_UNCERTAINTY_MS",
                 });
             }
         }
@@ -2455,16 +2471,20 @@ impl CameraDirectoryRegistry {
             self.limits,
         )?;
 
-        let (access_status, restricted_since_ms, restriction_intervals) =
-            if input.initial_health == SourceLifecycleHealth::UnavailableRestricted {
-                (
-                    CameraAccessStatus::RestrictedOrUnavailable,
-                    Some(input.registered_at_ms),
-                    vec![(input.registered_at_ms, None)],
-                )
-            } else {
-                (CameraAccessStatus::OrdinarilyAccessible, None, Vec::new())
-            };
+        let (access_status, restricted_since_ms, restriction_intervals) = match input.initial_health
+        {
+            SourceLifecycleHealth::UnavailableRestricted => (
+                CameraAccessStatus::RestrictedOrUnavailable,
+                Some(input.registered_at_ms),
+                vec![(input.registered_at_ms, None)],
+            ),
+            SourceLifecycleHealth::DisabledByPolicy => (
+                CameraAccessStatus::OrdinarilyAccessible,
+                None,
+                vec![(input.registered_at_ms, None)],
+            ),
+            _ => (CameraAccessStatus::OrdinarilyAccessible, None, Vec::new()),
+        };
 
         self.seen_versions.insert(input.source_version.clone());
         if let ArchiveCapability::VerifiedArchiveWindow {
@@ -2532,14 +2552,24 @@ impl CameraDirectoryRegistry {
 
     /// Updates a camera's viewing orientation with a new calibrated or reported orientation,
     /// e.g. after re-calibrating a repositioned camera (`CAM-02`, `CAM-05`), while preserving
-    /// the prior orientation in [`RegisteredCameraEntry::prior_orientations`].
+    /// the prior orientation in [`RegisteredCameraEntry::prior_orientations`] (bounded by
+    /// `max_health_transitions_per_camera`).
     pub fn update_camera_orientation(
         &mut self,
         camera_id: &OpaqueId,
         new_orientation: CameraViewingOrientation,
     ) -> Result<&RegisteredCameraEntry, CameraDirectoryError> {
-        if !self.cameras.contains_key(camera_id) {
-            return Err(CameraDirectoryError::UnknownCameraId(camera_id.clone()));
+        let entry = self
+            .cameras
+            .get(camera_id)
+            .ok_or_else(|| CameraDirectoryError::UnknownCameraId(camera_id.clone()))?;
+        let next_prior_orientations = entry.prior_orientations.len().saturating_add(1);
+        if next_prior_orientations > self.limits.max_health_transitions_per_camera {
+            return Err(CameraDirectoryError::LimitExceeded {
+                kind: CameraDirectoryLimitKind::HealthTransitionsPerCamera,
+                actual: next_prior_orientations,
+                max: self.limits.max_health_transitions_per_camera,
+            });
         }
         if let CameraViewingOrientation::Calibrated {
             ref calibration_version,
@@ -2626,6 +2656,16 @@ impl CameraDirectoryRegistry {
                 max: self.limits.max_health_transitions_per_camera,
             });
         }
+        if fault_state == Some(CameraHealthState::CameraRepositioned) {
+            let next_prior_orientations = entry.prior_orientations.len().saturating_add(1);
+            if next_prior_orientations > self.limits.max_health_transitions_per_camera {
+                return Err(CameraDirectoryError::LimitExceeded {
+                    kind: CameraDirectoryLimitKind::HealthTransitionsPerCamera,
+                    actual: next_prior_orientations,
+                    max: self.limits.max_health_transitions_per_camera,
+                });
+            }
+        }
 
         let mut staged_text_bytes = self.used_text_bytes;
         check_single_line_text(
@@ -2675,13 +2715,24 @@ impl CameraDirectoryRegistry {
             entry.prior_orientations.push(old_orientation);
         }
 
+        let from_state = entry.current_health;
+        if from_state == SourceLifecycleHealth::DisabledByPolicy
+            && effective_to_state != SourceLifecycleHealth::DisabledByPolicy
+            && let Some((_, end_slot)) = entry.restriction_intervals.last_mut()
+            && end_slot.is_none()
+        {
+            *end_slot = Some(occurred_at_ms);
+        }
         if effective_to_state == SourceLifecycleHealth::UnavailableRestricted {
             entry.access_status = CameraAccessStatus::RestrictedOrUnavailable;
             entry.restricted_since_ms = Some(occurred_at_ms);
             entry.restriction_intervals.push((occurred_at_ms, None));
+        } else if effective_to_state == SourceLifecycleHealth::DisabledByPolicy
+            && from_state != SourceLifecycleHealth::DisabledByPolicy
+        {
+            entry.restriction_intervals.push((occurred_at_ms, None));
         }
 
-        let from_state = entry.current_health;
         entry.current_health = effective_to_state;
         entry.health_transitions.push(SourceHealthTransition {
             transition_id: transition_id.clone(),
@@ -2883,7 +2934,11 @@ impl CameraDirectoryRegistry {
                 }
             };
 
-        let position_angular_uncertainty_deg = horizontal_uncertainty_m.atan2(range_m).to_degrees();
+        let position_angular_uncertainty_deg = if horizontal_uncertainty_m >= range_m {
+            180.0
+        } else {
+            (horizontal_uncertainty_m / range_m).asin().to_degrees()
+        };
         let total_half_widening_deg = angular_uncertainty_deg + position_angular_uncertainty_deg;
         let uncertainty_widened_horizontal_fov_deg =
             (horizontal_fov_deg + 2.0 * total_half_widening_deg).min(359.999_999);
@@ -3625,9 +3680,7 @@ impl CameraDirectoryRegistry {
         };
 
         let mut coverage_gaps_in_window = Vec::new();
-        if let Some(tolerance_ms) = coverage_tolerance_ms
-            && (request.requested_pre_context_ms > 0 || request.requested_post_context_ms > 0)
-        {
+        if let Some(tolerance_ms) = coverage_tolerance_ms {
             let mut retained_times: Vec<i64> = pre_context_frames
                 .iter()
                 .chain(event_frames.iter())
@@ -3638,7 +3691,7 @@ impl CameraDirectoryRegistry {
 
             if let (Some(&first_t), Some(&last_t)) = (retained_times.first(), retained_times.last())
             {
-                if request.requested_pre_context_ms > 0 && first_t > pre_start_ms {
+                if first_t > pre_start_ms {
                     let lead_gap_ms = pre_start_ms.abs_diff(first_t);
                     if lead_gap_ms > tolerance_ms {
                         coverage_gaps_in_window.push(CoverageGapSpan {
@@ -3664,7 +3717,7 @@ impl CameraDirectoryRegistry {
                         }
                     }
                 }
-                if request.requested_post_context_ms > 0 && post_end_ms > last_t {
+                if post_end_ms > last_t {
                     let tail_gap_ms = last_t.abs_diff(post_end_ms);
                     if tail_gap_ms > tolerance_ms {
                         coverage_gaps_in_window.push(CoverageGapSpan {

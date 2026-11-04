@@ -489,7 +489,15 @@ pub enum ContextWindowStatus {
         pre_frames: Vec<RetainedFrameRef>,
         post_frames: Vec<RetainedFrameRef>,
     },
-    /// Some context frames expired from the bounded ring buffer before capture completed (`expired_frame_count >= 1`).
+    /// Context or event window is partial or degraded (ring-buffer window expiry, capacity eviction,
+    /// sequence drops, coverage gaps, restriction/disabled intervals, cross-version frame exclusions,
+    /// or empty requested pre/post context windows; `expired_frame_count >= 1`).
+    ///
+    /// When produced by [`crate::camera_directory::CameraDirectoryRegistry::extract_retained_clip_manifest`],
+    /// exact cause breakdowns (`expired_by_window_in_span`, `evicted_by_capacity_in_span`,
+    /// `eviction_ledger_truncated`, `dropped_frame_count_in_span`, `empty_context_window_count`,
+    /// `coverage_gaps_in_window`, `restriction_intervals_in_window`, and `excluded_cross_version_frames`)
+    /// are exposed on [`crate::camera_directory::RetainedCameraClipManifest`].
     PartialBufferExpired {
         pre_frames: Vec<RetainedFrameRef>,
         post_frames: Vec<RetainedFrameRef>,

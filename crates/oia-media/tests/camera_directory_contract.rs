@@ -355,12 +355,12 @@ fn cam02_cam05_viewing_cone_geometry_movement_invalidation_and_recalibration()
     // Calibrated due-north camera (`azimuth_deg = 0.0`, `horizontal_fov_deg = 60.0`):
     // midpoint vertex (`idx = 1` of 3) lies due north of the apex with higher latitude and matching longitude,
     // and `uncertainty_widened_horizontal_fov_deg` + `uncertainty_widened_arc_vertices_lat_lon_deg`
-    // reflect both `max_angular_error_mdeg` and `atan2(horizontal_uncertainty_m, range_m)`.
+    // reflect both `max_angular_error_mdeg` and `asin(horizontal_uncertainty_m / range_m)`.
     let cone = registry.compute_viewing_cone(&cal_id, 1_000.0, 3)?;
     assert!(cone.is_calibrated());
     assert_eq!(cone.arc_vertices_lat_lon_deg().len(), 3);
     assert_eq!(cone.uncertainty_widened_arc_vertices_lat_lon_deg().len(), 3);
-    let expected_widened_fov = 60.0 + 2.0 * (0.1 + (3.0_f64).atan2(1_000.0).to_degrees());
+    let expected_widened_fov = 60.0 + 2.0 * (0.1 + (3.0_f64 / 1_000.0).asin().to_degrees());
     assert!((cone.uncertainty_widened_horizontal_fov_deg() - expected_widened_fov).abs() < 1e-9);
     assert_ne!(
         cone.arc_vertices_lat_lon_deg()[0],
@@ -1175,6 +1175,109 @@ fn cam04_a09_fifo_eviction_context_completeness_and_anomaly_monitor_bridge()
     assert!(matches!(
         truncated_manifest.context_window(),
         ContextWindowStatus::PartialBufferExpired { .. }
+    ));
+
+    // 4. Verify `R1`: coverage-gap evaluation over `[pre_start_ms, post_end_ms]` even when
+    // `requested_pre_context_ms == 0` or `requested_post_context_ms == 0`.
+    let mut r1_registry = CameraDirectoryRegistry::new(CameraDirectoryLimits::new(
+        4, 4, 8, 8, 16_384, 8, 8, 8, 16_384,
+    )?);
+    let r1_reg = sample_registration("cam:r1-zero-context", "srcver:r1:1")?;
+    let r1_cam_id = r1_reg.camera_id.clone();
+    r1_registry.register_camera(r1_reg)?;
+
+    for (idx, cap_ms) in [(1_u64, 2_900_i64), (2_u64, 3_000_i64), (3_u64, 4_000_i64)] {
+        r1_registry.ingest_frame(
+            &r1_cam_id,
+            CameraFrameSubmission {
+                frame_version: VersionId::new(format!("ver:r1:{idx}"))?,
+                sha256_hex: hex64('a'),
+                byte_len: 512,
+                sequence_number: idx,
+                declared_kind: FeedObservationKind::UpstreamCameraFeed,
+                origin: FrameArtifactOrigin::OriginalRetainedFrame,
+                source_capture_time_ms: Some(cap_ms),
+                clock_uncertainty_ms: 20,
+                ingestion_time_ms: cap_ms + 10,
+                archive_version: None,
+            },
+        )?;
+    }
+
+    // Probe R1a: `requested_pre_context_ms == 0 && requested_post_context_ms == 0` over `[2_900, 4_100)`
+    // has a 1_000 ms mid-event stall (`3_000 -> 4_000 > 2 * 250 = 500 ms`) with contiguous sequence numbers;
+    // must record `coverage_gaps_in_window` and report `PartialBufferExpired`.
+    let r1_zero_ctx = r1_registry.extract_retained_clip_manifest(
+        &r1_cam_id,
+        ClipExtractionRequest {
+            clip_id: OpaqueId::new("clip:r1:zero-ctx")?,
+            clip_version: VersionId::new("clipver:r1:zero-ctx")?,
+            source_session_id: OpaqueId::new("sess:r1:1")?,
+            event_start_ms: 2_900,
+            event_end_ms: 4_100,
+            requested_pre_context_ms: 0,
+            requested_post_context_ms: 0,
+            extracted_at_ms: 4_200,
+            trigger_explanation: "Zero-context clip with 1000 ms mid-event stall".to_owned(),
+        },
+    )?;
+    assert_eq!(r1_zero_ctx.coverage_gaps_in_window().len(), 1);
+    assert_eq!(r1_zero_ctx.coverage_gaps_in_window()[0].start_ms(), 3_000);
+    assert_eq!(r1_zero_ctx.coverage_gaps_in_window()[0].end_ms(), 4_000);
+    assert!(matches!(
+        r1_zero_ctx.context_window(),
+        ContextWindowStatus::PartialBufferExpired { .. }
+    ));
+
+    // Probe R1b: `requested_pre_context_ms == 0, requested_post_context_ms = 200` over `[3_050, 4_050)`
+    // (with frame 4 at `4_100` in post-context) has a 950 ms lead gap from `event_start_ms = 3_050`
+    // to first retained frame at `4_000`; must record the lead gap and report `PartialBufferExpired`.
+    r1_registry.ingest_frame(
+        &r1_cam_id,
+        CameraFrameSubmission {
+            frame_version: VersionId::new("ver:r1:4")?,
+            sha256_hex: hex64('b'),
+            byte_len: 512,
+            sequence_number: 4,
+            declared_kind: FeedObservationKind::UpstreamCameraFeed,
+            origin: FrameArtifactOrigin::OriginalRetainedFrame,
+            source_capture_time_ms: Some(4_100),
+            clock_uncertainty_ms: 20,
+            ingestion_time_ms: 4_110,
+            archive_version: None,
+        },
+    )?;
+    let r1_lead_gap = r1_registry.extract_retained_clip_manifest(
+        &r1_cam_id,
+        ClipExtractionRequest {
+            clip_id: OpaqueId::new("clip:r1:lead-gap")?,
+            clip_version: VersionId::new("clipver:r1:lead-gap")?,
+            source_session_id: OpaqueId::new("sess:r1:1")?,
+            event_start_ms: 3_050,
+            event_end_ms: 4_050,
+            requested_pre_context_ms: 0,
+            requested_post_context_ms: 200,
+            extracted_at_ms: 4_300,
+            trigger_explanation: "Zero pre-context with 950 ms lead gap inside event window"
+                .to_owned(),
+        },
+    )?;
+    assert_eq!(r1_lead_gap.coverage_gaps_in_window().len(), 1);
+    assert_eq!(r1_lead_gap.coverage_gaps_in_window()[0].start_ms(), 3_050);
+    assert_eq!(r1_lead_gap.coverage_gaps_in_window()[0].end_ms(), 4_000);
+    assert!(matches!(
+        r1_lead_gap.context_window(),
+        ContextWindowStatus::PartialBufferExpired { .. }
+    ));
+
+    // Verify `nominal_frame_interval_ms > MAX_CLOCK_UNCERTAINTY_MS` rejection and `prior_orientations` cap.
+    let mut bad_cap_reg = sample_registration("cam:bad-interval", "srcver:bad-int:1")?;
+    bad_cap_reg.stream_capability = StreamCapability::LiveStreamSupported {
+        nominal_frame_interval_ms: u64::MAX,
+    };
+    assert!(matches!(
+        r1_registry.register_camera(bad_cap_reg),
+        Err(CameraDirectoryError::InvalidCapabilityConfiguration { .. })
     ));
 
     // Bridge directly into `CameraAnomalyMonitor` (`AGENTS.md` §4).

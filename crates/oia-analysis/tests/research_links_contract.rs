@@ -167,7 +167,7 @@ fn a08_public_links_conflicting_identity_circular_citations_and_maturity_contrac
             version_id: v_sim_derived.clone(),
             origin_class: EvidenceOriginClass::AcquiredSourceMaterial,
             lifecycle: SourceLifecycleState::Current,
-            derived_from_versions: vec![v_sim_root],
+            derived_from_versions: vec![v_sim_root.clone()],
             citation_label: "Report Derived Solely From Simulation".to_owned(),
         },
     ];
@@ -585,14 +585,19 @@ fn a08_public_links_conflicting_identity_circular_citations_and_maturity_contrac
             })
     );
 
-    // Simulation-root lineage: `v_sim_derived` has `AcquiredSourceMaterial` but its only in-set
-    // lineage root is `v_sim_root` (`Simulation`), so `counts_as_reported_public_source` is false.
+    // Simulation-root lineage: `v_sim_derived` has `AcquiredSourceMaterial` but its in-set
+    // ancestor `v_sim_root` is `Simulation`, so `counts_as_reported_public_source` is false
+    // and `non_observational_ancestor_versions` names `(v_sim_root, Simulation)`.
     let sim_derived_summary = report_disputed
         .sources
         .iter()
         .find(|s| s.version_id == v_sim_derived)
         .ok_or(ResearchLinkError::EmptySources)?;
     assert!(!sim_derived_summary.counts_as_reported_public_source);
+    assert_eq!(
+        sim_derived_summary.non_observational_ancestor_versions,
+        vec![v_sim_root.clone()]
+    );
 
     // Mention 0 is DisputedIdentity; Mention 1 is AllReversed and retains its reversed candidate history.
     assert_eq!(
@@ -696,6 +701,14 @@ fn a08_public_links_conflicting_identity_circular_citations_and_maturity_contrac
         dev0.items[2].assessed_stage,
         AssessedTechnicalStage::SimulatedEvidenceOnly
     );
+    assert_eq!(
+        dev0.items[2].caveats,
+        vec![
+            DemonstrationCaveat::SimulatedSourceCannotEstablishDemonstration {
+                qualifying_ancestors: vec![(v_sim_root, EvidenceOriginClass::Simulation)],
+            }
+        ]
+    );
 
     // Development 1 (`dev:instrumented-thruster`):
     // - `item:lab-root` (LaboratoryTestReport claiming FieldOrOperationalDemonstration) is capped
@@ -772,6 +785,7 @@ fn a08_public_links_conflicting_identity_circular_citations_and_maturity_contrac
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn rejects_invalid_endpoints_format_controls_and_preserves_scc_soundness_on_cycle_truncation()
 -> Result<(), TestError> {
     let analyst = ActorId::new("actor:reviewer-a08")?;
@@ -921,7 +935,7 @@ fn rejects_invalid_endpoints_format_controls_and_preserves_scc_soundness_on_cycl
     assert_eq!(tight_limits.max_reported_cycles(), 1);
     let two_cycle_req = ResearchLinkRequest {
         limits: tight_limits,
-        sources: base_sources,
+        sources: base_sources.clone(),
         entities: base_entities,
         mentions: Vec::new(),
         links: vec![
@@ -966,10 +980,10 @@ fn rejects_invalid_endpoints_format_controls_and_preserves_scc_soundness_on_cycl
                 from_endpoint: LinkEndpoint::Entity(pub_c.clone()),
                 to_endpoint: LinkEndpoint::Entity(pub_b.clone()),
                 relation: PublicLinkRelation::CitesPublication,
-                source_version: v1,
+                source_version: v1.clone(),
                 verbatim_excerpt: "C cites B".to_owned(),
                 decision: DecisionState::Confirmed {
-                    actor: analyst,
+                    actor: analyst.clone(),
                     rationale: "r".to_owned(),
                 },
             },
@@ -990,6 +1004,49 @@ fn rejects_invalid_endpoints_format_controls_and_preserves_scc_soundness_on_cycl
         }
     )));
 
+    // 6. Reverse-reachability pruning on a 256-node directed cycle (`MAX_ENTITIES = 256`)
+    //    enumerates the single 256-node cycle without exhausting `MAX_CYCLE_DFS_STEPS`.
+    let mut ring_entities = Vec::with_capacity(256);
+    let mut ring_links = Vec::with_capacity(256);
+    for idx in 0..256_usize {
+        let pub_id = OpaqueId::new(format!("ent:pub-ring-{idx:03}"))?;
+        ring_entities.push(ResearchEntity {
+            entity_id: pub_id,
+            kind: PublicEntityKind::Publication,
+            primary_name: format!("Ring Paper {idx:03}"),
+            alternate_names: Vec::new(),
+            defining_source_version: v1.clone(),
+        });
+    }
+    for idx in 0..256_usize {
+        let next_idx = (idx + 1) % 256;
+        ring_links.push(PublicLinkRecord {
+            link_id: OpaqueId::new(format!("link:ring-{idx:03}"))?,
+            from_endpoint: LinkEndpoint::Entity(ring_entities[idx].entity_id.clone()),
+            to_endpoint: LinkEndpoint::Entity(ring_entities[next_idx].entity_id.clone()),
+            relation: PublicLinkRelation::CitesPublication,
+            source_version: v1.clone(),
+            verbatim_excerpt: "Ring citation".to_owned(),
+            decision: DecisionState::Confirmed {
+                actor: analyst.clone(),
+                rationale: "r".to_owned(),
+            },
+        });
+    }
+    let ring_req = ResearchLinkRequest {
+        limits: ResearchLinkLimits::default(),
+        sources: base_sources,
+        entities: ring_entities,
+        mentions: Vec::new(),
+        links: ring_links,
+        developments: Vec::new(),
+    };
+    let ring_report = evaluate_research_links(&ring_req, || None)?;
+    assert_eq!(ring_report.citation_cycles.len(), 1);
+    assert_eq!(ring_report.citation_cycles[0].publication_chain.len(), 257);
+    assert_eq!(ring_report.publications_with_circular_dependency.len(), 256);
+    assert!(ring_report.limitations.is_empty());
+
     // Zero limit is rejected.
     assert_eq!(
         ResearchLinkLimits::new(0, 16, 8, 16, 8, 16, 16, 16, 8, 8, 256, 4096, 65536, 1, 1024),
@@ -1004,6 +1061,7 @@ fn rejects_invalid_endpoints_format_controls_and_preserves_scc_soundness_on_cycl
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn excludes_non_observational_origins_and_retracted_sources_and_propagates_upstream_reassessment()
 -> Result<(), TestError> {
     let analyst = ActorId::new("actor:reviewer-a08")?;
@@ -1011,7 +1069,10 @@ fn excludes_non_observational_origins_and_retracted_sources_and_propagates_upstr
     let v_upstream_v2 = VersionId::new("ver:upstream-v2")?;
     let v_derived = VersionId::new("ver:derived-v1")?;
     let v_retracted = VersionId::new("ver:retracted-lab-v1")?;
+    let v_retracted_mid = VersionId::new("ver:retracted-mid-v1")?;
+    let v_derived_from_retracted = VersionId::new("ver:derived-from-retracted-v1")?;
     let v_forecast = VersionId::new("ver:forecast-v1")?;
+    let v_extracted_via_forecast = VersionId::new("ver:extracted-via-forecast-v1")?;
     let v_inference = VersionId::new("ver:inference-v1")?;
     let v_recreation = VersionId::new("ver:recreation-v1")?;
     let v_predictive = VersionId::new("ver:predictive-v1")?;
@@ -1051,13 +1112,41 @@ fn excludes_non_observational_origins_and_retracted_sources_and_propagates_upstr
                 derived_from_versions: Vec::new(),
                 citation_label: "Retracted Lab Report".to_owned(),
             },
+            // Intermediate retracted source: `v_derived_from_retracted (Current)` -> `v_retracted_mid (Retracted)` -> `v_upstream_corrected (CorrectedBy)`
+            ResearchSourceRecord {
+                source_id: OpaqueId::new("src:retracted-mid")?,
+                version_id: v_retracted_mid.clone(),
+                origin_class: EvidenceOriginClass::AcquiredSourceMaterial,
+                lifecycle: SourceLifecycleState::Retracted {
+                    reason: "Intermediate processing pipeline retracted".to_owned(),
+                },
+                derived_from_versions: vec![v_upstream_corrected.clone()],
+                citation_label: "Retracted Intermediate Dataset".to_owned(),
+            },
+            ResearchSourceRecord {
+                source_id: OpaqueId::new("src:derived-from-retracted")?,
+                version_id: v_derived_from_retracted.clone(),
+                origin_class: EvidenceOriginClass::AcquiredSourceMaterial,
+                lifecycle: SourceLifecycleState::Current,
+                derived_from_versions: vec![v_retracted_mid.clone()],
+                citation_label: "Current Summary Derived From Retracted Dataset".to_owned(),
+            },
+            // Intermediate Forecast source: `v_extracted_via_forecast (ExtractedClaim)` -> `v_forecast (Forecast)` -> `v_upstream_corrected (AcquiredSourceMaterial)`
             ResearchSourceRecord {
                 source_id: OpaqueId::new("src:forecast")?,
                 version_id: v_forecast.clone(),
                 origin_class: EvidenceOriginClass::Forecast,
                 lifecycle: SourceLifecycleState::Current,
-                derived_from_versions: Vec::new(),
+                derived_from_versions: vec![v_upstream_corrected.clone()],
                 citation_label: "Forecast Scenario".to_owned(),
+            },
+            ResearchSourceRecord {
+                source_id: OpaqueId::new("src:extracted-via-forecast")?,
+                version_id: v_extracted_via_forecast.clone(),
+                origin_class: EvidenceOriginClass::ExtractedClaim,
+                lifecycle: SourceLifecycleState::Current,
+                derived_from_versions: vec![v_forecast.clone()],
+                citation_label: "Claim Extracted From Forecast Scenario".to_owned(),
             },
             ResearchSourceRecord {
                 source_id: OpaqueId::new("src:inference")?,
@@ -1147,14 +1236,42 @@ fn excludes_non_observational_origins_and_retracted_sources_and_propagates_upstr
                     },
                 },
                 TechnicalEvidenceItem {
+                    item_id: OpaqueId::new("item:derived-from-retracted")?,
+                    artifact_kind: TechnicalArtifactKind::LaboratoryTestReport,
+                    claimed_stage: ClaimedTechnicalStage::LaboratoryDemonstration,
+                    publication_entity_id: None,
+                    funding_or_contract_ids: Vec::new(),
+                    source_version: v_derived_from_retracted.clone(),
+                    verbatim_claim: "Claim derived through retracted intermediate".to_owned(),
+                    stated_conditions_and_limitations: "Upstream retracted".to_owned(),
+                    decision: DecisionState::Confirmed {
+                        actor: analyst.clone(),
+                        rationale: "Confirmed before intermediate retraction".to_owned(),
+                    },
+                },
+                TechnicalEvidenceItem {
                     item_id: OpaqueId::new("item:forecast")?,
                     artifact_kind: TechnicalArtifactKind::FieldOrOperationalTestReport,
                     claimed_stage: ClaimedTechnicalStage::FieldOrOperationalDemonstration,
                     publication_entity_id: None,
                     funding_or_contract_ids: Vec::new(),
-                    source_version: v_forecast,
+                    source_version: v_forecast.clone(),
                     verbatim_claim: "Forecasted field capability".to_owned(),
                     stated_conditions_and_limitations: "Forecast".to_owned(),
+                    decision: DecisionState::Confirmed {
+                        actor: analyst.clone(),
+                        rationale: "Confirmed".to_owned(),
+                    },
+                },
+                TechnicalEvidenceItem {
+                    item_id: OpaqueId::new("item:extracted-via-forecast")?,
+                    artifact_kind: TechnicalArtifactKind::FieldOrOperationalTestReport,
+                    claimed_stage: ClaimedTechnicalStage::FieldOrOperationalDemonstration,
+                    publication_entity_id: None,
+                    funding_or_contract_ids: Vec::new(),
+                    source_version: v_extracted_via_forecast.clone(),
+                    verbatim_claim: "Extracted claim from forecast".to_owned(),
+                    stated_conditions_and_limitations: "Intermediate forecast".to_owned(),
                     decision: DecisionState::Confirmed {
                         actor: analyst.clone(),
                         rationale: "Confirmed".to_owned(),
@@ -1166,7 +1283,7 @@ fn excludes_non_observational_origins_and_retracted_sources_and_propagates_upstr
                     claimed_stage: ClaimedTechnicalStage::FieldOrOperationalDemonstration,
                     publication_entity_id: None,
                     funding_or_contract_ids: Vec::new(),
-                    source_version: v_inference,
+                    source_version: v_inference.clone(),
                     verbatim_claim: "Inferred field capability".to_owned(),
                     stated_conditions_and_limitations: "Inference".to_owned(),
                     decision: DecisionState::Confirmed {
@@ -1180,7 +1297,7 @@ fn excludes_non_observational_origins_and_retracted_sources_and_propagates_upstr
                     claimed_stage: ClaimedTechnicalStage::FieldOrOperationalDemonstration,
                     publication_entity_id: None,
                     funding_or_contract_ids: Vec::new(),
-                    source_version: v_recreation,
+                    source_version: v_recreation.clone(),
                     verbatim_claim: "Recreated visual".to_owned(),
                     stated_conditions_and_limitations: "Recreation".to_owned(),
                     decision: DecisionState::Confirmed {
@@ -1194,7 +1311,7 @@ fn excludes_non_observational_origins_and_retracted_sources_and_propagates_upstr
                     claimed_stage: ClaimedTechnicalStage::FieldOrOperationalDemonstration,
                     publication_entity_id: None,
                     funding_or_contract_ids: Vec::new(),
-                    source_version: v_predictive,
+                    source_version: v_predictive.clone(),
                     verbatim_claim: "Predictive derivative".to_owned(),
                     stated_conditions_and_limitations: "Super-resolution".to_owned(),
                     decision: DecisionState::Confirmed {
@@ -1207,6 +1324,29 @@ fn excludes_non_observational_origins_and_retracted_sources_and_propagates_upstr
     };
 
     let report = evaluate_research_links(&req, || None)?;
+
+    // Verify `SourceSummary` explanations for intermediate Forecast and intermediate Retracted sources:
+    let extracted_forecast_summary = report
+        .sources
+        .iter()
+        .find(|s| s.version_id == v_extracted_via_forecast)
+        .ok_or(ResearchLinkError::EmptySources)?;
+    assert!(!extracted_forecast_summary.counts_as_reported_public_source);
+    assert_eq!(
+        extracted_forecast_summary.non_observational_ancestor_versions,
+        vec![v_forecast.clone()]
+    );
+
+    let derived_retracted_summary = report
+        .sources
+        .iter()
+        .find(|s| s.version_id == v_derived_from_retracted)
+        .ok_or(ResearchLinkError::EmptySources)?;
+    assert!(!derived_retracted_summary.counts_as_reported_public_source);
+    assert_eq!(
+        derived_retracted_summary.retracted_ancestor_versions,
+        vec![v_retracted_mid.clone()]
+    );
 
     // Retracted link is InactiveRetractedSource and does not count as confirmed funding.
     assert_eq!(
@@ -1235,14 +1375,15 @@ fn excludes_non_observational_origins_and_retracted_sources_and_propagates_upstr
     );
 
     let dev = &report.developments[0];
-    // Neither retracted lab report nor Forecast/AnalyticalInference/IllustrativeRecreation/PredictiveDerivative
-    // items can produce `ReportedDemonstratedCapability`.
+    // Neither direct/intermediate retracted lab reports nor direct/intermediate
+    // Forecast/AnalyticalInference/IllustrativeRecreation/PredictiveDerivative items
+    // can produce `ReportedDemonstratedCapability`.
     assert_eq!(
         dev.overall_maturity,
         OverallTechnicalMaturity::SimulatedOnly
     );
-    assert_eq!(dev.retracted_item_count, 1);
-    assert_eq!(dev.simulated_item_count, 4);
+    assert_eq!(dev.retracted_item_count, 2);
+    assert_eq!(dev.simulated_item_count, 5);
     assert_eq!(dev.confirmed_demonstration_item_count, 0);
     assert!(dev.confirmed_funding_or_contract_ids.is_empty());
     assert_eq!(
@@ -1257,14 +1398,39 @@ fn excludes_non_observational_origins_and_retracted_sources_and_propagates_upstr
             }
         ]
     );
-    for item in &dev.items[1..] {
+    // Intermediate retracted source names `v_retracted_mid` on the caveat even though
+    // `item:derived-from-retracted` cites `v_derived_from_retracted` (`Current`).
+    assert_eq!(
+        dev.items[1].assessed_stage,
+        AssessedTechnicalStage::RetractedSourceClaim
+    );
+    assert_eq!(
+        dev.items[1].caveats,
+        vec![
+            DemonstrationCaveat::RetractedSourceCannotEstablishMaturity {
+                source_version: v_retracted_mid,
+            }
+        ]
+    );
+    let expected_non_obs = [
+        vec![(v_forecast.clone(), EvidenceOriginClass::Forecast)],
+        vec![(v_forecast, EvidenceOriginClass::Forecast)],
+        vec![(v_inference, EvidenceOriginClass::AnalyticalInference)],
+        vec![(v_recreation, EvidenceOriginClass::IllustrativeRecreation)],
+        vec![(v_predictive, EvidenceOriginClass::PredictiveDerivative)],
+    ];
+    for (item, expected_ancestors) in dev.items[2..].iter().zip(expected_non_obs) {
         assert_eq!(
             item.assessed_stage,
             AssessedTechnicalStage::SimulatedEvidenceOnly
         );
         assert_eq!(
             item.caveats,
-            vec![DemonstrationCaveat::SimulatedSourceCannotEstablishDemonstration]
+            vec![
+                DemonstrationCaveat::SimulatedSourceCannotEstablishDemonstration {
+                    qualifying_ancestors: expected_ancestors,
+                }
+            ]
         );
     }
     assert!(dev.needs_reassessment);

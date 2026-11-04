@@ -38,11 +38,14 @@
 //!   proposal, patent, or analytical stages and can never establish demonstrated capability
 //!   — even if their prose claims a demonstration. Only sources with observational or
 //!   source-assertion origins (`AcquiredSourceMaterial`, `NormalizedObservation`,
-//!   `ExtractedClaim`, `UserTestimony`, `ConventionalDerivative`) whose upstream lineage roots
-//!   are also observational or source-assertion records can establish reported links or
-//!   reported demonstrations; `Simulation`, `AnalyticalInference`, `Forecast`,
-//!   `PredictiveDerivative`, and `IllustrativeRecreation` sources are excluded. Retracted
-//!   sources (`SourceLifecycleState::Retracted`) are excluded from active maturity and
+//!   `ExtractedClaim`, `UserTestimony`, `ConventionalDerivative`) whose entire in-set
+//!   upstream lineage (`derived_from_versions`) consists of non-retracted observational or
+//!   source-assertion records can establish reported links or reported demonstrations;
+//!   `Simulation`, `AnalyticalInference`, `Forecast`, `PredictiveDerivative`, and
+//!   `IllustrativeRecreation` sources (or sources with any such ancestor in their lineage)
+//!   are excluded (`AGENTS.md` §2: feeding an inference or forecast into a downstream source
+//!   never promotes it to an observation). Sources that are [`SourceLifecycleState::Retracted`]
+//!   (or have any retracted ancestor in their lineage) are excluded from active maturity and
 //!   confirmed link counts, and both direct and transitive upstream `CorrectedBy` / `Retracted`
 //!   states propagate `needs_reassessment` to downstream mentions, links, and technical items.
 //!
@@ -94,8 +97,8 @@ pub const CIRCULAR_CITATION_CAVEAT: &str = "Citation edges, directed citation cy
 /// synthetic sources.
 pub const SIMULATED_SOURCE_CAVEAT: &str = "Sources with Simulation, AnalyticalInference, \
     Forecast, PredictiveDerivative, or IllustrativeRecreation origin classes (or deriving from \
-    non-observational / non-source-assertion lineage roots) never count as reported public links \
-    or demonstrated capability.";
+    any ancestor with such an origin class) never count as reported public links or \
+    demonstrated capability.";
 
 /// Default maximum number of source versions in one evaluation request.
 pub const MAX_SOURCES: usize = 128;
@@ -1086,10 +1089,17 @@ pub struct SourceSummary {
     pub version_id: VersionId,
     pub origin_class: EvidenceOriginClass,
     pub lifecycle: SourceLifecycleState,
-    /// `true` only when `lifecycle` is not `Retracted`, `origin_class` is an observational or
-    /// source-assertion class (`!origin_class.requires_non_observational_qualification()`), and
-    /// at least one in-set lineage root is also non-retracted and observational/source-assertion.
+    /// `true` only when this source and every in-set ancestor in its `derived_from_versions`
+    /// graph has a non-retracted lifecycle and an observational or source-assertion origin class
+    /// (`!origin_class.requires_non_observational_qualification()`).
     pub counts_as_reported_public_source: bool,
+    /// Source versions (including `self` if applicable, plus any in-set ancestors) whose
+    /// `origin_class` requires non-observational qualification (`Simulation`,
+    /// `AnalyticalInference`, `Forecast`, `PredictiveDerivative`, `IllustrativeRecreation`).
+    pub non_observational_ancestor_versions: Vec<VersionId>,
+    /// Source versions (including `self` if applicable, plus any in-set ancestors) that are
+    /// [`SourceLifecycleState::Retracted`].
+    pub retracted_ancestor_versions: Vec<VersionId>,
     /// Upstream source versions that were declared in `derived_from_versions` and are present
     /// in the evaluated request.
     pub in_set_derived_from_versions: Vec<VersionId>,
@@ -1143,12 +1153,13 @@ pub enum LinkEffectiveStatus {
     /// mention has [`MentionResolution::DisputedIdentity`] (`A08`).
     DisputedEndpointIdentity { disputed_mention_ids: Vec<OpaqueId> },
     /// Link is backed by a `Simulation`, `AnalyticalInference`, `Forecast`,
-    /// `PredictiveDerivative`, or `IllustrativeRecreation` source (`!counts_as_reported_public_source`).
+    /// `PredictiveDerivative`, or `IllustrativeRecreation` source or ancestor
+    /// (`!counts_as_reported_public_source`).
     SimulatedSourceOnly {
         from_entity_id: Option<OpaqueId>,
         to_entity_id: Option<OpaqueId>,
     },
-    /// Link is inactive because its source version (or all of its in-set lineage roots) has
+    /// Link is inactive because its source version (or any in-set ancestor in its lineage) has
     /// been [`SourceLifecycleState::Retracted`].
     InactiveRetractedSource,
     /// Link is inactive because its own decision is `Reversed` or an endpoint mention is
@@ -1202,11 +1213,14 @@ pub enum DemonstrationCaveat {
     /// A laboratory test report claimed a field or operational demonstration; scope is capped
     /// at [`DemonstrationScope::Laboratory`].
     LaboratoryReportClaimedFieldDemonstration,
-    /// A source with `Simulation`, `AnalyticalInference`, `Forecast`, `PredictiveDerivative`,
-    /// or `IllustrativeRecreation` origin class (or deriving solely from such roots) claimed a
-    /// demonstration (`AGENTS.md` §2).
-    SimulatedSourceCannotEstablishDemonstration,
-    /// A retracted source (`SourceLifecycleState::Retracted`) cannot establish active maturity.
+    /// The item's source (or one or more ancestors in its `derived_from_versions` lineage) has
+    /// a `Simulation`, `AnalyticalInference`, `Forecast`, `PredictiveDerivative`, or
+    /// `IllustrativeRecreation` origin class (`AGENTS.md` §2).
+    SimulatedSourceCannotEstablishDemonstration {
+        qualifying_ancestors: Vec<(VersionId, EvidenceOriginClass)>,
+    },
+    /// A retracted source (`SourceLifecycleState::Retracted`) in the item's lineage cannot
+    /// establish active maturity.
     RetractedSourceCannotEstablishMaturity { source_version: VersionId },
     /// The item's publication participates in or depends exclusively on a directed citation cycle.
     CircularCitationChain { publication_entity_id: OpaqueId },
@@ -1738,14 +1752,16 @@ pub fn evaluate_research_links(
             });
         }
 
-        // Walk in-set upstream graph to find roots, propagate reassessment reasons transitively,
-        // and check whether at least one root is non-retracted and observational/source-assertion.
+        // Walk in-set upstream graph: evaluate EVERY visited node (self + intermediate ancestors +
+        // roots) for reassessment reasons, retraction, and non-observational qualification
+        // (`AGENTS.md` §2: feeding an inference or forecast into a downstream source must not
+        // promote it to an observation).
         let mut visited: BTreeSet<VersionId> = BTreeSet::new();
         let mut stack: Vec<VersionId> = vec![src.version_id.clone()];
         let mut roots: BTreeSet<VersionId> = BTreeSet::new();
         let mut lineage_reasons: BTreeSet<ReassessmentReason> = BTreeSet::new();
-        let mut has_qualifying_empirical_or_source_root = false;
-        let mut has_non_retracted_root = false;
+        let mut non_obs_ancestors: BTreeSet<VersionId> = BTreeSet::new();
+        let mut retracted_ancestors: BTreeSet<VersionId> = BTreeSet::new();
 
         while let Some(curr_ver) = stack.pop() {
             check_stop_tick(&mut tick, &mut check_stop)?;
@@ -1756,6 +1772,12 @@ pub fn evaluate_research_links(
                 if let Some(r) = direct_source_reassessment_reason(&curr_src.lifecycle, &curr_ver) {
                     lineage_reasons.insert(r);
                 }
+                if !can_back_reported_public_evidence(curr_src.origin_class) {
+                    non_obs_ancestors.insert(curr_ver.clone());
+                }
+                if matches!(curr_src.lifecycle, SourceLifecycleState::Retracted { .. }) {
+                    retracted_ancestors.insert(curr_ver.clone());
+                }
                 let curr_in_set_up: Vec<VersionId> = curr_src
                     .derived_from_versions
                     .iter()
@@ -1764,14 +1786,6 @@ pub fn evaluate_research_links(
                     .collect();
                 if curr_in_set_up.is_empty() {
                     roots.insert(curr_ver.clone());
-                    let root_retracted =
-                        matches!(curr_src.lifecycle, SourceLifecycleState::Retracted { .. });
-                    if !root_retracted {
-                        has_non_retracted_root = true;
-                        if can_back_reported_public_evidence(curr_src.origin_class) {
-                            has_qualifying_empirical_or_source_root = true;
-                        }
-                    }
                 } else {
                     for next_up in curr_in_set_up {
                         if !visited.contains(&next_up) {
@@ -1784,23 +1798,11 @@ pub fn evaluate_research_links(
         if roots.is_empty() {
             for v in &visited {
                 roots.insert(v.clone());
-                if let Some(s) = source_by_version.get(v) {
-                    let root_retracted =
-                        matches!(s.lifecycle, SourceLifecycleState::Retracted { .. });
-                    if !root_retracted {
-                        has_non_retracted_root = true;
-                        if can_back_reported_public_evidence(s.origin_class) {
-                            has_qualifying_empirical_or_source_root = true;
-                        }
-                    }
-                }
             }
         }
 
-        let is_retracted = matches!(src.lifecycle, SourceLifecycleState::Retracted { .. })
-            || !has_non_retracted_root;
-        let has_qualifying_origin = can_back_reported_public_evidence(src.origin_class)
-            && has_qualifying_empirical_or_source_root;
+        let is_retracted = !retracted_ancestors.is_empty();
+        let has_qualifying_origin = non_obs_ancestors.is_empty();
         let counts_as_reported_public_source = !is_retracted && has_qualifying_origin;
 
         if !has_qualifying_origin {
@@ -1822,6 +1824,8 @@ pub fn evaluate_research_links(
             origin_class: src.origin_class,
             lifecycle: src.lifecycle.clone(),
             counts_as_reported_public_source,
+            non_observational_ancestor_versions: non_obs_ancestors.into_iter().collect(),
+            retracted_ancestor_versions: retracted_ancestors.into_iter().collect(),
             in_set_derived_from_versions: in_set_up,
             external_derived_from_versions: ext_up,
             lineage_root_versions: roots.into_iter().collect(),
@@ -2439,7 +2443,8 @@ pub fn evaluate_research_links(
         let mut highest_confirmed_non_circular_scope: Option<DemonstrationScope> = None;
 
         let mut demo_source_versions: BTreeSet<VersionId> = BTreeSet::new();
-        let mut demo_lineage_root_counts: BTreeMap<VersionId, usize> = BTreeMap::new();
+        let mut demo_lineage_root_sources: BTreeMap<VersionId, BTreeSet<VersionId>> =
+            BTreeMap::new();
         let mut confirmed_funding_set: BTreeSet<OpaqueId> = BTreeSet::new();
         let mut item_declared_funding_set: BTreeSet<OpaqueId> = BTreeSet::new();
         let mut item_publications: BTreeSet<OpaqueId> = BTreeSet::new();
@@ -2562,17 +2567,32 @@ pub fn evaluate_research_links(
                 AssessedTechnicalStage::ReversedClaim
             } else if item_src_retracted {
                 retracted_item_count += 1;
-                caveats.push(
-                    DemonstrationCaveat::RetractedSourceCannotEstablishMaturity {
-                        source_version: item.source_version.clone(),
-                    },
-                );
+                for ret_ver in &item_src_summary.retracted_ancestor_versions {
+                    caveats.push(
+                        DemonstrationCaveat::RetractedSourceCannotEstablishMaturity {
+                            source_version: ret_ver.clone(),
+                        },
+                    );
+                }
                 AssessedTechnicalStage::RetractedSourceClaim
             } else if !item_src_summary.counts_as_reported_public_source {
                 simulated_item_count += 1;
+                let qualifying_ancestors: Vec<(VersionId, EvidenceOriginClass)> = item_src_summary
+                    .non_observational_ancestor_versions
+                    .iter()
+                    .filter_map(|ver| {
+                        source_by_version
+                            .get(ver)
+                            .map(|s| (ver.clone(), s.origin_class))
+                    })
+                    .collect();
+                caveats.push(
+                    DemonstrationCaveat::SimulatedSourceCannotEstablishDemonstration {
+                        qualifying_ancestors,
+                    },
+                );
                 if item.claimed_stage.claims_empirical_demonstration() {
                     has_unsupported_demonstration_claim = true;
-                    caveats.push(DemonstrationCaveat::SimulatedSourceCannotEstablishDemonstration);
                     item_reasons.insert(ReassessmentReason::UnsupportedDemonstrationClaim {
                         item_id: item.item_id.clone(),
                     });
@@ -2703,9 +2723,10 @@ pub fn evaluate_research_links(
                                             });
                                         demo_source_versions.insert(item.source_version.clone());
                                         for root_ver in &item_src_summary.lineage_root_versions {
-                                            *demo_lineage_root_counts
+                                            demo_lineage_root_sources
                                                 .entry(root_ver.clone())
-                                                .or_insert(0) += 1;
+                                                .or_default()
+                                                .insert(item.source_version.clone());
                                         }
                                     }
                                     AssessedTechnicalStage::ConfirmedReportedDemonstration {
@@ -2822,9 +2843,9 @@ pub fn evaluate_research_links(
             }
         }
 
-        let shared_demonstration_lineage_roots: Vec<VersionId> = demo_lineage_root_counts
+        let shared_demonstration_lineage_roots: Vec<VersionId> = demo_lineage_root_sources
             .into_iter()
-            .filter_map(|(root, count)| (count >= 2).then_some(root))
+            .filter_map(|(root, distinct_sources)| (distinct_sources.len() >= 2).then_some(root))
             .collect();
 
         let overall_maturity = if let Some(highest_scope) = highest_confirmed_non_circular_scope {
@@ -3003,10 +3024,9 @@ fn trace_citation_cycles(
         let mut call_stack: Vec<(OpaqueId, usize)> = vec![(root.clone(), 0)];
         while let Some((v, neighbor_idx)) = call_stack.pop() {
             check_stop_tick(tick, check_stop)?;
-            let neighbors_len = adj.get(&v).map_or(0, Vec::len);
-            if neighbor_idx < neighbors_len {
+            if let Some((w, _, _, _)) = adj.get(&v).and_then(|nbrs| nbrs.get(neighbor_idx)).cloned()
+            {
                 call_stack.push((v.clone(), neighbor_idx + 1));
-                let w = adj[&v][neighbor_idx].0.clone();
                 if !indices.contains_key(&w) {
                     let w_idx = index_counter;
                     index_counter += 1;
@@ -3052,6 +3072,16 @@ fn trace_citation_cycles(
         }
     }
 
+    let mut rev_adj: BTreeMap<OpaqueId, Vec<OpaqueId>> = BTreeMap::new();
+    for (from_id, to_id, _, _, _) in edges {
+        if in_cycle_scc.contains(from_id) && in_cycle_scc.contains(to_id) {
+            rev_adj
+                .entry(to_id.clone())
+                .or_default()
+                .push(from_id.clone());
+        }
+    }
+
     let mut cycles: Vec<CitationCycle> = Vec::new();
     let mut seen_cycle_keys: BTreeSet<(Vec<OpaqueId>, Vec<OpaqueId>)> = BTreeSet::new();
     let mut dfs_steps = 0usize;
@@ -3061,6 +3091,25 @@ fn trace_citation_cycles(
         if truncated {
             break;
         }
+        // Reverse reachability over nodes `>= start_node` in `in_cycle_scc` so nodes that cannot
+        // return to `start_node` without visiting `< start_node` are pruned immediately.
+        let mut can_reach_start: BTreeSet<OpaqueId> = BTreeSet::new();
+        can_reach_start.insert(start_node.clone());
+        let mut rev_queue: Vec<OpaqueId> = vec![start_node.clone()];
+        while let Some(curr) = rev_queue.pop() {
+            check_stop_tick(tick, check_stop)?;
+            if let Some(preds) = rev_adj.get(&curr) {
+                for pred in preds {
+                    if pred >= start_node && can_reach_start.insert(pred.clone()) {
+                        rev_queue.push(pred.clone());
+                    }
+                }
+            }
+        }
+        if can_reach_start.len() < 2 {
+            continue;
+        }
+
         let mut dfs_stack: Vec<(OpaqueId, Vec<OpaqueId>, Vec<OpaqueId>, bool, bool, usize)> =
             vec![(
                 start_node.clone(),
@@ -3079,12 +3128,11 @@ fn trace_citation_cycles(
                 break;
             }
 
-            let Some(neighbors) = adj.get(&curr) else {
+            let Some((next_node, link_id, edge_unconf, edge_sim)) =
+                adj.get(&curr).and_then(|nbrs| nbrs.get(edge_idx))
+            else {
                 continue;
             };
-            if edge_idx >= neighbors.len() {
-                continue;
-            }
             dfs_stack.push((
                 curr.clone(),
                 path_nodes.clone(),
@@ -3094,8 +3142,7 @@ fn trace_citation_cycles(
                 edge_idx + 1,
             ));
 
-            let (next_node, link_id, edge_unconf, edge_sim) = &neighbors[edge_idx];
-            if next_node < start_node || !in_cycle_scc.contains(next_node) {
+            if next_node < start_node || !can_reach_start.contains(next_node) {
                 continue;
             }
 

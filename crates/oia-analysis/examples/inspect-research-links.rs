@@ -10,8 +10,8 @@
 //! 3. Directed circular citation tracing (`CitesPublication` cycle `pub:alpha -> pub:beta -> pub:alpha`).
 //! 4. Technical development maturity (`ProposalOrPatentOnly` vs. `ReportedDemonstratedCapability`),
 //!    showing that a patent claiming a field demonstration is capped at `PatentSpecificationOnly`
-//!    with an explicit caveat, while independent non-circular laboratory test reports are counted
-//!    by source lineage group.
+//!    with an explicit caveat, while non-circular laboratory test reports surface their pinned
+//!    `demonstration_source_versions` and `shared_demonstration_lineage_roots` as structure.
 
 use oia_analysis::research_links::{
     AlternateName, AlternateNameKind, ClaimedTechnicalStage, DecisionState, EvidenceOriginClass,

@@ -22,6 +22,22 @@ fn geographic_extent_boundaries() -> Result<(), TimeGeoError> {
     assert!(wrapped.overlaps_interior(&wrapped, 15.0));
     assert!(!wrapped.overlaps_interior(&wrapped, 20.0));
 
+    // B1 / GEO-05: shared sensor/envelope edges stay covered, but the next
+    // representable value outside the edge must not gain coverage by rounding.
+    for (outer_west, inner_west, shared_east) in [(-33.3, -33.0, 44.9), (170.1, 171.2, -44.9)] {
+        let outer = GeoBoundingBoxWgs84::new(-1.0, 1.0, outer_west, shared_east)?;
+        let inner = GeoBoundingBoxWgs84::new(-1.0, 1.0, inner_west, shared_east)?;
+        let outside = GeoBoundingBoxWgs84::new(-1.0, 1.0, inner_west, shared_east.next_up())?;
+        assert!(outer.contains_box(&inner));
+        assert!(outer.contains_box_with_tolerance(&inner, 0.0));
+        assert!(!outer.contains_box(&outside));
+        assert!(!outer.contains_box_with_tolerance(&outside, 0.0));
+        assert!(!outer.contains_point(GeoPointWgs84::new(0.0, shared_east.next_up())?));
+        let touching = GeoBoundingBoxWgs84::new(-1.0, 1.0, outer_west - 1.0, outer_west)?;
+        assert!(outer.overlaps_box(&touching));
+        assert!(!outer.overlaps_interior(&touching, 0.0));
+    }
+
     let cap = GeoBoundingBoxWgs84::new(85.0, 90.0, 10.0, 20.0)?;
     let pole = GeoBoundingBoxWgs84::new(90.0, 90.0, -60.0, -50.0)?;
     assert!(cap.contains_box(&pole) && cap.overlaps_box(&pole));

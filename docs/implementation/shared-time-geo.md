@@ -19,8 +19,11 @@ database, renderer, dependency or production Lean runtime.
   overlap but does not establish positive interior area for composite planning.
 - Angular tolerances expand the comparison extent explicitly; they do not change
   stored coordinates or measurement uncertainty. Negative/non-finite tolerances
-  and interior-overlap thresholds return false. Zero tolerance means exact
-  containment under floating-point arithmetic.
+  and interior-overlap thresholds return false. Zero tolerance compares stored
+  endpoints directly (splitting wrapped arcs at the seam); it does not reconstruct
+  endpoints from rounded offsets and spans. Shared edges compare equal, while the
+  next representable longitude outside stays outside. Positive tolerance expansion
+  and angular extent calculations still use rounded floating-point arithmetic.
 - `Altitude`, `AltitudeBand` and `GeoPosition` preserve metres, reference category,
   negative heights and optional missing height. Cross-category and unknown-reference
   comparisons fail with a typed error. Shared comparisons also reject unbound
@@ -37,6 +40,16 @@ Geographic-context and space-imagery analysis import these shared types directly
 same types, not another implementation. Constructors now return `TimeGeoError`;
 analysis operations map it to the existing `GeoContextError` variants. Callers
 matching a direct constructor error must update its type.
+The unused public `TimeGeoBoundary` bootstrap marker has been removed.
+
+Consumer-visible changes include a full-world sensor mask covering a wrapped
+envelope becoming `FullyCoveredByActiveSensors` instead of partial. A mask touching
+only at the seam or pole changes from `UncoveredNoSensorData` to partial coverage
+with `PartialCoverageBlindSpots`; it does not become fully covered. A `[170, 180]`
+notice now contains `(0, -180)` and intersects a `[-180, -170]` envelope. Negative
+tolerances previously acted as margins (and negative interior thresholds could
+admit edge contact); they now return false. In-tree composite callers use positive
+`1e-9` allowances, so the negative-input change affects only other callers.
 
 `oia_devices::uav::AltitudeReference` re-exports the same enum, including the
 device-specific `RelativeToTakeoff` category. Device position uncertainty, telemetry

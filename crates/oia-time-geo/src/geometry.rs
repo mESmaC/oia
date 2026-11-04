@@ -109,6 +109,8 @@ pub enum AltitudeReference {
     /// Measured height above local ground level (AGL).
     AboveGroundLevel,
     /// Uncorrected barometric pressure altitude (ISA 1013.25 hPa reference).
+    /// Adding geoid undulation alone does not physically correct it to an
+    /// orthometric or ellipsoidal height.
     BarometricUnadjusted,
     /// Height relative to a particular takeoff/home point, not a global datum.
     RelativeToTakeoff,
@@ -309,13 +311,45 @@ impl GeoBoundingBoxWgs84 {
     }
 
     fn contains_longitude(&self, longitude: f64) -> bool {
-        (longitude - self.west_lon_deg).rem_euclid(360.0) <= self.longitude_span_deg()
+        self.longitude_segments().any(|(west, east)| {
+            (west <= longitude && longitude <= east)
+                || (longitude.abs() == 180.0 && (west == -180.0 || east == 180.0))
+        })
+    }
+
+    // Split at the seam without arithmetic on the stored endpoints. This avoids
+    // changing shared-edge equality or accepting adjacent outside floats by rounding.
+    fn longitude_segments(&self) -> impl Iterator<Item = (f64, f64)> {
+        if self.crosses_antimeridian() {
+            [
+                Some((self.west_lon_deg, 180.0)),
+                Some((-180.0, self.east_lon_deg)),
+            ]
+        } else {
+            [Some((self.west_lon_deg, self.east_lon_deg)), None]
+        }
+        .into_iter()
+        .flatten()
     }
 
     /// True if this closed geographic extent contains every point of `other`.
+    /// Compares stored endpoints directly, without a numerical tolerance.
     #[must_use]
     pub fn contains_box(&self, other: &GeoBoundingBoxWgs84) -> bool {
-        self.contains_box_with_tolerance(other, 0.0)
+        if self.south_lat_deg > other.south_lat_deg || self.north_lat_deg < other.north_lat_deg {
+            return false;
+        }
+        if other.south_lat_deg == other.north_lat_deg && other.south_lat_deg.abs() == 90.0 {
+            return true;
+        }
+        other.longitude_segments().all(|(west, east)| {
+            if west == east {
+                self.contains_longitude(west)
+            } else {
+                self.longitude_segments()
+                    .any(|(outer_west, outer_east)| outer_west <= west && east <= outer_east)
+            }
+        })
     }
 
     /// True if the closed extents share any point, including a seam edge or pole.
@@ -343,23 +377,49 @@ impl GeoBoundingBoxWgs84 {
         if north - south <= min_span_deg {
             return false;
         }
-        let outer_span = self.longitude_span_deg();
-        let inner_span = other.longitude_span_deg();
-        if outer_span == 360.0 || inner_span == 360.0 {
-            return outer_span.min(inner_span) > min_span_deg;
+        let mut west_seam_span = 0.0_f64;
+        let mut east_seam_span = 0.0_f64;
+        for (outer_west, outer_east) in self.longitude_segments() {
+            for (inner_west, inner_east) in other.longitude_segments() {
+                let west = outer_west.max(inner_west);
+                let east = outer_east.min(inner_east);
+                // Establish positive overlap before any subtraction, so shared
+                // edges cannot acquire a sliver of area from rounding.
+                if west >= east {
+                    continue;
+                }
+                if west == -180.0 && east == 180.0 {
+                    return 360.0 > min_span_deg;
+                }
+                let span = east - west;
+                if span > min_span_deg {
+                    return true;
+                }
+                if west == -180.0 {
+                    west_seam_span = west_seam_span.max(span);
+                }
+                if east == 180.0 {
+                    east_seam_span = east_seam_span.max(span);
+                }
+            }
         }
-        let offset = (other.west_lon_deg - self.west_lon_deg).rem_euclid(360.0);
-        [offset - 360.0, offset]
-            .into_iter()
-            .any(|start| outer_span.min(start + inner_span) - 0.0_f64.max(start) > min_span_deg)
+        // The two seam pieces form one contiguous circular intersection.
+        west_seam_span + east_seam_span > min_span_deg
     }
 
     /// Tests containment after expanding each outer angular edge by `tol_deg`.
     /// Negative or non-finite tolerances return false. A tolerance is an explicit
-    /// comparison allowance, not measurement uncertainty. Zero is exact containment.
+    /// comparison allowance, not measurement uncertainty. Zero uses direct stored-
+    /// endpoint containment; positive expansion uses rounded floating-point arithmetic.
     #[must_use]
     pub fn contains_box_with_tolerance(&self, other: &GeoBoundingBoxWgs84, tol_deg: f64) -> bool {
         if !tol_deg.is_finite() || tol_deg < 0.0 {
+            return false;
+        }
+        if self.contains_box(other) {
+            return true;
+        }
+        if tol_deg == 0.0 {
             return false;
         }
         if self.south_lat_deg > other.south_lat_deg + tol_deg

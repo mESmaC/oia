@@ -2,9 +2,10 @@
 //! measured provider integration or full A18 acceptance.
 use oia_analysis::snapshot_change::{
     Capture, CaptureCoverageSummary, ChangeError, ChangeExplanation, ChangeExplanationLimits,
-    ChangeHunkKind, ChangeRule, EXPLANATION_METHOD_ID, LineChangeCounts, MAX_TEXT_BYTES,
-    RULE_CRITERION_ID, RetrievalFreshness, RuleDecision, Snapshot, SnapshotInput, SnapshotScope,
-    StopReason, TextComparison, UnavailableReason, evaluate,
+    ChangeHunkKind, ChangeRule, EXPLANATION_METHOD_ID, ExplanationUnavailableReason,
+    LineChangeCounts, MAX_TEXT_BYTES, RULE_CRITERION_ID, RetrievalFreshness, RuleDecision,
+    Snapshot, SnapshotInput, SnapshotScope, StopReason, TextComparison, UnavailableReason,
+    evaluate,
 };
 use oia_domain::{OpaqueId, VersionId};
 use std::error::Error;
@@ -227,18 +228,92 @@ fn exact_spans_preserve_unicode_and_versions_without_promoting_missing_coverage(
         return Err("expected multi-hunk Changed explanation".into());
     }
 
-    // Verify the MAX_LCS_CELLS fallback reports CoalescedWindowUpperBound rather than
-    // presenting a coalesced interior window as measured line-change counts.
-    let mut fallback_left = String::new();
-    let mut fallback_right = String::new();
-    for line_no in 1..=600 {
-        fallback_left.push_str(&format!("line-{line_no}\n"));
-        if line_no == 2 || line_no == 599 {
-            fallback_right.push_str(&format!("line-{line_no}-edited\n"));
+    // Verify distant edits separated by > MAX_LCS_CELLS (both unique lines via Patience LIS
+    // and duplicate lines via bounded Myers) resolve to exact per-edit hunks rather than coalescing.
+    for use_unique_lines in [true, false] {
+        let mut distant_left = String::new();
+        let mut distant_right = String::new();
+        for line_no in 1..=1_200 {
+            if line_no == 2 || line_no == 1_199 {
+                distant_left.push_str(&format!("line-{line_no}-before\n"));
+                distant_right.push_str(&format!("line-{line_no}-edited\n"));
+            } else {
+                let base_line = if use_unique_lines {
+                    format!("line-{line_no}\n")
+                } else {
+                    "repeated-boilerplate-line\n".to_owned()
+                };
+                distant_left.push_str(&base_line);
+                distant_right.push_str(&base_line);
+            }
+        }
+        let dist_before = snapshot(Capture::Complete(&distant_left), "dist-v1", 10)?;
+        let dist_after = snapshot(Capture::Complete(&distant_right), "dist-v2", 20)?;
+        let dist_eval = evaluate(
+            &rule,
+            &dist_before,
+            &dist_after,
+            UNIX_EPOCH + Duration::from_secs(25),
+            || Ok(()),
+        )?;
+        if let ChangeExplanation::Changed {
+            before_line_count,
+            after_line_count,
+            line_counts,
+            hunks,
+            ..
+        } = dist_eval.explain_changes(ChangeExplanationLimits::default_limits(), || Ok(()))?
+        {
+            assert_eq!(before_line_count, 1_200);
+            assert_eq!(after_line_count, 1_200);
+            assert_eq!(
+                line_counts,
+                LineChangeCounts::Exact {
+                    unchanged_lines: 1_198,
+                    inserted_lines: 2,
+                    removed_lines: 2,
+                }
+            );
+            assert_eq!(hunks.len(), 2);
+            assert_eq!(hunks[0].kind(), ChangeHunkKind::Modified);
+            assert_eq!(hunks[0].before_lines(), Some(2..=2));
+            assert_eq!(hunks[0].after_lines(), Some(2..=2));
+            assert_eq!(hunks[1].kind(), ChangeHunkKind::Modified);
+            assert_eq!(hunks[1].before_lines(), Some(1_199..=1_199));
+            assert_eq!(hunks[1].after_lines(), Some(1_199..=1_199));
+            let mut reconstructed = distant_left.clone();
+            for hunk in hunks.iter().rev() {
+                let rep = distant_right
+                    .get(hunk.after_bytes())
+                    .ok_or("invalid distant after_bytes")?;
+                reconstructed.replace_range(hunk.before_bytes(), rep);
+            }
+            assert_eq!(reconstructed, distant_right);
         } else {
-            fallback_right.push_str(&format!("line-{line_no}\n"));
+            return Err("expected exact Changed explanation for distant edits".into());
         }
     }
+
+    // Verify selective sub-window coalescing: when a capture has an exact edit separated by
+    // unique anchors from a 550-line unanchored rewrite block (> MAX_LCS_CELLS and > MAX_MYERS_EDIT_DISTANCE),
+    // the early edit stays an exact hunk while only the unanchored rewrite block coalesces and
+    // reports CoalescedWindowUpperBound.
+    let mut fallback_left = String::new();
+    let mut fallback_right = String::new();
+    fallback_left.push_str("header-1\nedit-2-before\n");
+    fallback_right.push_str("header-1\nedit-2-after\n");
+    for anchor_no in 3..=10 {
+        let anchor = format!("anchor-{anchor_no}\n");
+        fallback_left.push_str(&anchor);
+        fallback_right.push_str(&anchor);
+    }
+    for rewrite_no in 11..=560 {
+        fallback_left.push_str(&format!("old-block-{rewrite_no}\n"));
+        fallback_right.push_str(&format!("new-block-{rewrite_no}\n"));
+    }
+    fallback_left.push_str("footer-561\n");
+    fallback_right.push_str("footer-561\n");
+
     let fb_before = snapshot(Capture::Complete(&fallback_left), "fb-v1", 10)?;
     let fb_after = snapshot(Capture::Complete(&fallback_right), "fb-v2", 20)?;
     let fb_eval = evaluate(
@@ -256,25 +331,30 @@ fn exact_spans_preserve_unicode_and_versions_without_promoting_missing_coverage(
         ..
     } = fb_eval.explain_changes(ChangeExplanationLimits::default_limits(), || Ok(()))?
     {
-        assert_eq!(before_line_count, 600);
-        assert_eq!(after_line_count, 600);
+        assert_eq!(before_line_count, 561);
+        assert_eq!(after_line_count, 561);
         assert_eq!(
             line_counts,
             LineChangeCounts::CoalescedWindowUpperBound {
-                trimmed_unchanged_lines: 2,
-                coalesced_before_window_lines: 598,
-                coalesced_after_window_lines: 598,
+                trimmed_unchanged_lines: 10,
+                coalesced_before_window_lines: 551,
+                coalesced_after_window_lines: 551,
             }
         );
-        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks.len(), 2);
         assert_eq!(hunks[0].kind(), ChangeHunkKind::Modified);
-        assert_eq!(hunks[0].before_lines(), Some(2..=599));
-        assert_eq!(hunks[0].after_lines(), Some(2..=599));
+        assert_eq!(hunks[0].before_lines(), Some(2..=2));
+        assert_eq!(hunks[0].after_lines(), Some(2..=2));
+        assert_eq!(hunks[1].kind(), ChangeHunkKind::Modified);
+        assert_eq!(hunks[1].before_lines(), Some(11..=560));
+        assert_eq!(hunks[1].after_lines(), Some(11..=560));
         let mut reconstructed = fallback_left.clone();
-        let rep = fallback_right
-            .get(hunks[0].after_bytes())
-            .ok_or("invalid fallback after_bytes")?;
-        reconstructed.replace_range(hunks[0].before_bytes(), rep);
+        for hunk in hunks.iter().rev() {
+            let rep = fallback_right
+                .get(hunk.after_bytes())
+                .ok_or("invalid fallback after_bytes")?;
+            reconstructed.replace_range(hunk.before_bytes(), rep);
+        }
         assert_eq!(reconstructed, fallback_right);
     } else {
         return Err("expected Changed explanation for coalesced fallback".into());
@@ -421,12 +501,32 @@ fn invalid_scope_time_budget_and_cancellation_cannot_publish_a_comparison()
         20,
     )?;
     let multi_eval = evaluate(&rule, &multi_before, &multi_after, at, || Ok(()))?;
+    let line_limited = ChangeExplanationLimits::new(3, 10)?;
     assert_eq!(
-        multi_eval.explain_changes(ChangeExplanationLimits::new(3, 10)?, || Ok(())),
+        multi_eval.explain_changes(line_limited, || Ok(())),
         Err(ChangeError::LineLimitExceeded {
             actual_lines: 5,
             max_lines: 3,
         })
+    );
+    // Notification projection preserves the rule decision and replacement span while marking
+    // the line-level explanation Unavailable when a line or hunk limit is hit.
+    let line_limited_notif = multi_eval.explain_notification(line_limited, || Ok(()))?;
+    assert_eq!(line_limited_notif.decision(), RuleDecision::ChangeDetected);
+    assert_eq!(
+        line_limited_notif.replacement_span(),
+        multi_eval.comparison()
+    );
+    assert_eq!(
+        line_limited_notif.explanation(),
+        &ChangeExplanation::Unavailable {
+            before_line_count: 5,
+            after_line_count: 5,
+            reason: ExplanationUnavailableReason::LineLimitExceeded {
+                actual_lines: 5,
+                max_lines: 3,
+            },
+        }
     );
     // Unchanged captures over max_lines_per_capture still succeed without allocating a line table.
     let same_after = snapshot(
@@ -436,20 +536,39 @@ fn invalid_scope_time_budget_and_cancellation_cannot_publish_a_comparison()
     )?;
     let same_eval = evaluate(&rule, &multi_before, &same_after, at, || Ok(()))?;
     assert_eq!(
-        same_eval.explain_changes(ChangeExplanationLimits::new(3, 10)?, || Ok(())),
+        same_eval.explain_changes(line_limited, || Ok(())),
         Ok(ChangeExplanation::Unchanged {
             method_id: EXPLANATION_METHOD_ID,
             line_count: 5,
         })
     );
+    let hunk_limited = ChangeExplanationLimits::new(10, 1)?;
     assert_eq!(
-        multi_eval.explain_changes(ChangeExplanationLimits::new(10, 1)?, || Ok(())),
+        multi_eval.explain_changes(hunk_limited, || Ok(())),
         Err(ChangeError::HunkLimitExceeded { max_hunks: 1 })
+    );
+    let hunk_limited_notif = multi_eval.explain_notification(hunk_limited, || Ok(()))?;
+    assert_eq!(hunk_limited_notif.decision(), RuleDecision::ChangeDetected);
+    assert_eq!(
+        hunk_limited_notif.replacement_span(),
+        multi_eval.comparison()
+    );
+    assert_eq!(
+        hunk_limited_notif.explanation(),
+        &ChangeExplanation::Unavailable {
+            before_line_count: 5,
+            after_line_count: 5,
+            reason: ExplanationUnavailableReason::HunkLimitExceeded { max_hunks: 1 },
+        }
     );
     assert_eq!(
         multi_eval.explain_changes(ChangeExplanationLimits::default_limits(), || {
             Err(StopReason::Superseded)
         }),
+        Err(ChangeError::Stopped(StopReason::Superseded))
+    );
+    assert_eq!(
+        multi_eval.explain_notification(line_limited, || Err(StopReason::Superseded)),
         Err(ChangeError::Stopped(StopReason::Superseded))
     );
     Ok(())

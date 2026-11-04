@@ -63,24 +63,38 @@ structured `ChangeExplanation` under explicit `ChangeExplanationLimits`
 lines and `256` hunks):
 
 - `ChangeExplanation::Changed` (`EXPLANATION_METHOD_ID = "exact-utf8-line-segments-v1"`):
-  splits both complete captures with `split_inclusive('\n')` so exact line endings
-  (`\r\n` versus `\n`) and trailing newline differences are preserved without
-  normalization. After trimming identical leading and trailing lines, it aligns the
-  interior window (`n` baseline lines by `m` current lines) using exact line-level
-  longest common subsequence (LCS) up to `MAX_LCS_CELLS = 262,144` (`n * m`). Within
-  this budget, LCS runs in $O(n \cdot m)$ time with one line-slice comparison per
-  cell, allocates an $(n + 1)(m + 1)$ `u32` DP table (about 1 MiB at the ceiling),
-  reports `LineChangeCounts::Exact { unchanged_lines, inserted_lines, removed_lines }`,
-  and emits ordered, non-overlapping `ChangeHunk` records (`Inserted`, `Removed`,
-  `Modified`) with exact half-open UTF-8 byte ranges (`before_bytes`, `after_bytes`)
+  splits both complete captures with `split_inclusive('\n')` and computes a
+  deterministic 64-bit FNV-1a hash per line so exact line endings (`\r\n` versus
+  `\n`) and trailing newline differences are preserved without normalization. Using an
+  iterative sub-window work stack:
+  1. Each sub-window first trims identical leading and trailing lines in $O(n + m)$ time.
+  2. When a residual sub-window has $n \cdot m \le \text{MAX\_LCS\_CELLS}$ (`262,144`),
+     it runs exact line-level dynamic-programming LCS in $O(n \cdot m)$ time, allocating
+     an $(n + 1)(m + 1)$ `u32` DP table (at most ~1 MiB).
+  3. When a residual sub-window exceeds `MAX_LCS_CELLS` and cumulative alignment work is
+     within `MAX_ALIGNMENT_STEPS = 1_048_576`, it first extracts the longest increasing
+     subsequence (LIS) of lines that appear **exactly once** in both sub-windows
+     (Patience unique-line anchors in $O((n + m) \log(n + m))$ time via sorted
+     `(hash, len, text)` indices and binary-searched LIS tails) and recursively splits
+     the sub-window around those anchors, trimming any adjacent non-unique common lines.
+  4. If an oversized sub-window has no unique common lines (for example, repeated
+     boilerplate lines between distant edits), it runs bounded forward Myers alignment up
+     to `MAX_MYERS_EDIT_DISTANCE = 256` edits ($O((n + m) D)$ time, allocating a
+     $(D_{\max} + 1)(2 D_{\max} + 3)$ `usize` trace buffer of ~1 MiB at $D_{\max} = 256$).
+  5. Only when an individual unanchored residual sub-window exceeds both `MAX_LCS_CELLS`
+     and `MAX_MYERS_EDIT_DISTANCE` (or `MAX_ALIGNMENT_STEPS`) does *that* sub-window
+     coalesce into a single bounded `Modified` hunk while other sub-windows retain exact
+     hunks. When no sub-window coalesces, `line_counts` is
+     `LineChangeCounts::Exact { unchanged_lines, inserted_lines, removed_lines }`. When
+     any sub-window coalesces, `line_counts` switches to
+     `LineChangeCounts::CoalescedWindowUpperBound { trimmed_unchanged_lines, coalesced_before_window_lines, coalesced_after_window_lines }`
+     so coalesced window sizes (upper bounds on removed and inserted lines) are never
+     presented as measured line-edit counts.
+  Emitted `ChangeHunk` records (`Inserted`, `Removed`, `Modified`) are ordered and
+  non-overlapping, with exact half-open UTF-8 byte ranges (`before_bytes`, `after_bytes`)
   and 1-indexed inclusive line ranges (`before_lines`, `after_lines`). Applying the
   emitted hunks in reverse byte order reconstructs the exact current UTF-8 text from
-  the baseline text. When the interior window exceeds `MAX_LCS_CELLS`, the middle
-  window coalesces into a single bounded `Modified` hunk that may include unchanged
-  interior lines, and `line_counts` switches to
-  `LineChangeCounts::CoalescedWindowUpperBound { trimmed_unchanged_lines, coalesced_before_window_lines, coalesced_after_window_lines }`
-  so the coalesced window sizes (upper bounds on removed and inserted lines) are
-  never presented as measured line-edit counts.
+  the baseline text.
 - `ChangeExplanation::Unchanged`: counts lines in a single linear pass with zero
   heap allocation when both complete captures are byte-identical (without failing
   `LineLimitExceeded` on large unchanged captures).
@@ -88,6 +102,14 @@ lines and `256` hunks):
   `Partial { captured_byte_len, reason }`, or `Unavailable(UnavailableReason)`) for
   both captures so partial or missing captures never masquerade as deletions or
   unchanged segments.
+- `ChangeExplanation::Unavailable { before_line_count, after_line_count, reason }`:
+  used by `ChangeEvaluation::explain_notification` when `explain_changes` exceeds
+  `limits.max_lines_per_capture()` (`ExplanationUnavailableReason::LineLimitExceeded`)
+  or `limits.max_hunks()` (`ExplanationUnavailableReason::HunkLimitExceeded`). Rather
+  than failing the notification outright, `explain_notification` returns
+  `Ok(ExplainedNotification)` with the rule decision, capture coverage, retrieval
+  freshness, and top-level `TextComparison` replacement span preserved alongside the
+  explicit unavailable-explanation reason.
 
 `ChangeEvaluation::explain_notification` projects an `ExplainedNotification`
 envelope binding the saved `ChangeRule` version and criterion
@@ -128,19 +150,23 @@ Each capture is limited to 1,048,576 UTF-8 bytes. Attribution and partial-captur
 explanations are each limited to 4,096 bytes and must contain non-whitespace text.
 Oversized inputs produce typed errors without truncation. There is no quadratic
 diff matrix, output-text copy, or allocation in `evaluate`. `explain_changes`
-enforces `max_lines_per_capture` (`<= 16,384`), `max_hunks` (`<= 1,024`), and
-`MAX_LCS_CELLS` (`262,144`), using fallible `try_reserve` allocations and returning
-typed `ChangeError` variants (`LineLimitExceeded`, `HunkLimitExceeded`,
+enforces `max_lines_per_capture` (`<= 16,384`), `max_hunks` (`<= 1,024`),
+`MAX_LCS_CELLS` (`262,144`), `MAX_MYERS_EDIT_DISTANCE` (`256`), and
+`MAX_ALIGNMENT_STEPS` (`1,048,576`), using fallible `try_reserve` allocations and
+returning typed `ChangeError` variants (`LineLimitExceeded`, `HunkLimitExceeded`,
 `InvalidExplanationLimits`, `AllocationFailed`) rather than silently truncating
-hunks. `StopReason` is re-exported from `oia_analysis::multilingual::StopReason`
-(`Cancelled`, `DeadlineExceeded`, `Superseded`). Source text is data, including
-embedded instructions and display controls.
+hunks. `explain_notification` converts `LineLimitExceeded` and `HunkLimitExceeded`
+into `ChangeExplanation::Unavailable` while still propagating `Stopped(StopReason)`
+and `AllocationFailed`. `StopReason` is re-exported from
+`oia_analysis::multilingual::StopReason` (`Cancelled`, `DeadlineExceeded`,
+`Superseded`). Source text is data, including embedded instructions and display
+controls.
 
 The cancellation/deadline callback runs before work, at intervals of at most 1,024
-scanned characters/lines/cells/backtrack steps, and before returning a result. A
-stop yields no comparison or explanation. The application service must still fence
-cancelled or superseded job completions when saving/publishing a result; this pure
-function does not implement a job queue.
+scanned characters/lines/cells/alignment steps, and before returning a result. A
+stop yields no comparison, explanation, or notification. The application service must
+still fence cancelled or superseded job completions when saving/publishing a result;
+this pure function does not implement a job queue.
 
 ## Local use
 
@@ -162,7 +188,8 @@ filesystem open/read latency itself has no wall-clock deadline.
 
 Output includes source attribution, method, rule/version, retrieval/evaluation
 times, coverage, freshness, decision, byte ranges, and per-hunk line/byte
-explanations. Text previews are ASCII escaped and capped at 240 characters with an
+explanations (or `explanation_status=Unavailable` when line/hunk limits are exceeded).
+Text previews are ASCII escaped and capped at 240 characters with an
 explicit truncation flag; comparison still uses the entire bounded input. This
 display limit never changes evidence or calculations. Exit `0` means a fresh
 complete evaluation (changed or unchanged), `2` means a stale/incomplete decision,
@@ -201,13 +228,15 @@ Rust-to-Lean correspondence claim applies to this new kernel.
 The [two focused contract tests](../../crates/oia-analysis/tests/snapshot_change_contract.rs)
 use synthetic captures. They address original/version preservation, UTF-8 byte
 anchors, line-ending-only changes, multi-hunk line/segment reconstruction,
-coalesced-window upper-bound line counts, notification rule/coverage/freshness
-provenance, empty versus missing coverage, stale decisions, scope/time rejection,
-byte/line/hunk bounds, and cancellation without publishing a result. They do not
-establish provider access, operational notification quality, persistence, or source
-truth.
+distant-edit exactness beyond `MAX_LCS_CELLS` (via Patience unique-line anchors and
+bounded Myers), selective sub-window coalescing (`CoalescedWindowUpperBound`),
+notification rule/coverage/freshness provenance, `ChangeExplanation::Unavailable`
+when notification explanation limits are exceeded, empty versus missing coverage,
+stale decisions, scope/time rejection, byte/line/hunk bounds, and cancellation
+without publishing a result. They do not establish provider access, operational
+notification quality, persistence, or source truth.
 
-On 2026-11-03, local Windows x86_64 MSVC verification with pinned Rust 1.99.0
+On 2026-11-04, local Windows x86_64 MSVC verification with pinned Rust 1.99.0
 passed `cargo +1.99.0 fmt --all -- --check`,
 `cargo +1.99.0 clippy --workspace --all-targets --locked --offline -- -D warnings`,
 `cargo +1.99.0 test --workspace --locked --offline`, and

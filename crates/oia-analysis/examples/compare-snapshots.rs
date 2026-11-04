@@ -232,7 +232,7 @@ fn run() -> Result<ExitCode, Box<dyn Error>> {
                 } => {
                     writeln!(
                         output,
-                        "explanation_method={method_id}; before_lines={before_line_count}; after_lines={after_line_count}; line_counts=CoalescedWindowUpperBound; trimmed_unchanged_lines={trimmed_unchanged_lines}; coalesced_before_window_upper_bound={coalesced_before_window_lines}; coalesced_after_window_upper_bound={coalesced_after_window_lines}; hunk_count={}; interior window exceeded MAX_LCS_CELLS and coalesced into one Modified hunk that may include unchanged lines",
+                        "explanation_method={method_id}; before_lines={before_line_count}; after_lines={after_line_count}; line_counts=CoalescedWindowUpperBound; trimmed_unchanged_lines={trimmed_unchanged_lines}; coalesced_before_window_upper_bound={coalesced_before_window_lines}; coalesced_after_window_upper_bound={coalesced_after_window_lines}; hunk_count={}; unanchored sub-window exceeded MAX_LCS_CELLS and MAX_MYERS_EDIT_DISTANCE and coalesced into a Modified hunk that may include unchanged lines",
                         hunks.len()
                     )?;
                 }
@@ -283,6 +283,16 @@ fn run() -> Result<ExitCode, Box<dyn Error>> {
             writeln!(
                 output,
                 "explanation_status=Inconclusive; baseline_coverage={baseline_coverage:?}; current_coverage={current_coverage:?}"
+            )?;
+        }
+        ChangeExplanation::Unavailable {
+            before_line_count,
+            after_line_count,
+            reason,
+        } => {
+            writeln!(
+                output,
+                "explanation_status=Unavailable; before_lines={before_line_count}; after_lines={after_line_count}; reason={reason:?}; top-level comparison and rule decision remain valid"
             )?;
         }
     }

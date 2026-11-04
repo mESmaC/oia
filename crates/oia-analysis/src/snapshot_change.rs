@@ -392,12 +392,21 @@ fn compare_text(
 pub const MAX_EXPLANATION_LINES: usize = 16_384;
 /// Hard ceiling on emitted line/segment change hunks.
 pub const MAX_EXPLANATION_HUNKS: usize = 1_024;
-/// Hard ceiling on exact quadratic LCS cells (`changed_before_lines * changed_after_lines`)
-/// before falling back to a single bounded `Modified` replacement hunk for the middle window.
+/// Hard ceiling on exact quadratic LCS cells (`sub_before_lines * sub_after_lines`)
+/// for an individual residual sub-window.
 ///
-/// Within this budget, interior LCS runs in `O(n * m)` time with one line-slice comparison
-/// per cell and allocates an `(n + 1) * (m + 1)` `u32` DP table (about 1 MiB at the ceiling).
+/// Sub-windows exceeding this cell budget first partition around unique common line
+/// anchors (Patience LIS in `O((n + m) log u)` time) and, if no unique common lines
+/// exist, attempt bounded Myers alignment up to [`MAX_MYERS_EDIT_DISTANCE`] before
+/// coalescing only that unanchored residual sub-window.
 pub const MAX_LCS_CELLS: usize = 262_144;
+/// Maximum edit distance (`removed_lines + inserted_lines`) explored by bounded Myers
+/// alignment on an unanchored sub-window whose cell product exceeds [`MAX_LCS_CELLS`].
+pub const MAX_MYERS_EDIT_DISTANCE: usize = 256;
+/// Hard ceiling on cumulative sub-quadratic partitioning and Myers snake steps across a
+/// single `explain_changes` invocation before remaining oversized unanchored sub-windows
+/// coalesce directly.
+pub const MAX_ALIGNMENT_STEPS: usize = 1_048_576;
 /// Pin this method alongside rule and capture versions when persisting line-level explanations.
 pub const EXPLANATION_METHOD_ID: &str = "exact-utf8-line-segments-v1";
 /// Criterion identifier for `ChangeRule`.
@@ -495,26 +504,29 @@ impl ChangeHunk {
 
 /// Line-level change counts for `ChangeExplanation::Changed`.
 ///
-/// Separates exact LCS-measured line counts from the quality-reducing `MAX_LCS_CELLS`
-/// fallback so a coalesced interior window is never presented as a measured count of
-/// edited lines (`AGENTS.md` §2).
+/// Separates exact aligned line counts from the quality-reducing coalesced sub-window
+/// fallback so an unaligned high-churn sub-window is never presented as a measured count
+/// of edited lines (`AGENTS.md` §2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineChangeCounts {
-    /// Exact line counts measured via leading/trailing line trimming plus exact interior
-    /// line-level LCS alignment. Every hunk contains only inserted, removed, or modified
-    /// lines without unaligned unchanged lines between edits.
+    /// Exact line counts measured via leading/trailing line trimming, unique-anchor
+    /// partitioning, bounded Myers, and exact sub-window LCS alignment. Every hunk
+    /// contains only inserted, removed, or modified lines without unaligned unchanged
+    /// lines between edits.
     Exact {
         unchanged_lines: usize,
         inserted_lines: usize,
         removed_lines: usize,
     },
-    /// Quality-reducing fallback used when `changed_before_lines * changed_after_lines > MAX_LCS_CELLS`.
+    /// Quality-reducing fallback used when at least one unanchored sub-window exceeds
+    /// both [`MAX_LCS_CELLS`] and [`MAX_MYERS_EDIT_DISTANCE`].
     ///
-    /// Only identical leading and trailing lines (`trimmed_unchanged_lines`) were matched;
-    /// the entire interior window (`coalesced_before_window_lines` and
-    /// `coalesced_after_window_lines`) is emitted as a single `Modified` hunk that may
-    /// include unchanged interior lines. These window sizes are upper bounds on removed
-    /// and inserted lines, not measured change counts.
+    /// `trimmed_unchanged_lines` records all verified unchanged lines (from prefix/suffix
+    /// trimming, unique anchors, and exact sub-windows). `coalesced_before_window_lines`
+    /// and `coalesced_after_window_lines` bound total non-matched baseline and current
+    /// lines across emitted hunks, which may include unaligned unchanged lines inside
+    /// any coalesced sub-window. These window sizes are upper bounds on removed and
+    /// inserted lines, not measured change counts.
     CoalescedWindowUpperBound {
         trimmed_unchanged_lines: usize,
         coalesced_before_window_lines: usize,
@@ -522,20 +534,34 @@ pub enum LineChangeCounts {
     },
 }
 
+/// Reason a line/segment-level change explanation could not be completed within
+/// `ChangeExplanationLimits` during notification projection (`PRIVACY-03`, `A18`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExplanationUnavailableReason {
+    /// At least one complete capture exceeded `limits.max_lines_per_capture()`.
+    LineLimitExceeded {
+        actual_lines: usize,
+        max_lines: usize,
+    },
+    /// The number of distinct line/segment change hunks exceeded `limits.max_hunks()`.
+    HunkLimitExceeded { max_hunks: usize },
+}
+
 /// Structured line/segment-level explanation of snapshot differences (`PRIVACY-03`, `A18`).
 ///
-/// Keeps `Changed`, `Unchanged`, and `Inconclusive` strictly distinct so partial or
-/// unavailable captures never masquerade as deletions or unchanged resources.
+/// Keeps `Changed`, `Unchanged`, `Inconclusive`, and `Unavailable` strictly distinct so
+/// partial, unavailable, or budget-exceeded captures never masquerade as deletions or
+/// unchanged resources.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChangeExplanation {
     Changed {
         method_id: &'static str,
         before_line_count: usize,
         after_line_count: usize,
-        /// Exact LCS-measured line counts (`LineChangeCounts::Exact`), or explicit
-        /// interior-window upper bounds (`LineChangeCounts::CoalescedWindowUpperBound`)
-        /// when `changed_before_lines * changed_after_lines > MAX_LCS_CELLS` coalesces
-        /// the interior window into a single `Modified` hunk that may contain unchanged lines.
+        /// Exact aligned line counts (`LineChangeCounts::Exact`), or explicit
+        /// window upper bounds (`LineChangeCounts::CoalescedWindowUpperBound`)
+        /// when an unanchored high-churn sub-window exceeds [`MAX_LCS_CELLS`] and
+        /// [`MAX_MYERS_EDIT_DISTANCE`].
         line_counts: LineChangeCounts,
         hunks: Vec<ChangeHunk>,
     },
@@ -546,6 +572,14 @@ pub enum ChangeExplanation {
     Inconclusive {
         baseline_coverage: CaptureCoverageSummary,
         current_coverage: CaptureCoverageSummary,
+    },
+    /// Line/segment decomposition exceeded `ChangeExplanationLimits` during notification
+    /// projection. The notification's `RuleDecision`, capture coverage, freshness, and
+    /// exact top-level `TextComparison` byte replacement span remain intact.
+    Unavailable {
+        before_line_count: usize,
+        after_line_count: usize,
+        reason: ExplanationUnavailableReason,
     },
 }
 
@@ -564,12 +598,25 @@ pub enum CaptureCoverageSummary {
 }
 
 impl CaptureCoverageSummary {
-    fn from_capture(capture: Capture<'_>) -> Result<Self, ChangeError> {
+    fn from_capture(
+        capture: Capture<'_>,
+        check_control: &mut impl FnMut() -> Result<(), StopReason>,
+    ) -> Result<Self, ChangeError> {
+        check_control().map_err(ChangeError::Stopped)?;
         match capture {
-            Capture::Complete(text) => Ok(Self::Complete {
-                byte_len: text.len(),
-                line_count: text.split_inclusive('\n').count(),
-            }),
+            Capture::Complete(text) => {
+                let mut line_count = 0usize;
+                for (idx, _) in text.split_inclusive('\n').enumerate() {
+                    if idx.is_multiple_of(CONTROL_INTERVAL) {
+                        check_control().map_err(ChangeError::Stopped)?;
+                    }
+                    line_count += 1;
+                }
+                Ok(Self::Complete {
+                    byte_len: text.len(),
+                    line_count,
+                })
+            }
             Capture::Partial { text, reason } => {
                 let mut owned_reason = String::new();
                 owned_reason
@@ -681,8 +728,29 @@ impl<'a> ExplainedNotification<'a> {
 #[derive(Clone)]
 struct LineSlice<'a> {
     text: &'a str,
+    hash: u64,
     byte_range: Range<usize>,
     line_number: usize,
+}
+
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3_u64);
+    }
+    hash
+}
+
+fn lines_equal(left: &LineSlice<'_>, right: &LineSlice<'_>) -> bool {
+    left.hash == right.hash && left.text.len() == right.text.len() && left.text == right.text
+}
+
+fn cmp_lines(left: &LineSlice<'_>, right: &LineSlice<'_>) -> std::cmp::Ordering {
+    left.hash
+        .cmp(&right.hash)
+        .then_with(|| left.text.len().cmp(&right.text.len()))
+        .then_with(|| left.text.cmp(right.text))
 }
 
 fn split_lines<'a>(
@@ -694,7 +762,13 @@ fn split_lines<'a>(
     if text.is_empty() {
         return Ok(Vec::new());
     }
-    let count = text.split_inclusive('\n').count();
+    let mut count = 0usize;
+    for (idx, _) in text.split_inclusive('\n').enumerate() {
+        if idx.is_multiple_of(CONTROL_INTERVAL) {
+            check_control().map_err(ChangeError::Stopped)?;
+        }
+        count += 1;
+    }
     if count > max_lines {
         return Err(ChangeError::LineLimitExceeded {
             actual_lines: count,
@@ -707,18 +781,31 @@ fn split_lines<'a>(
         .map_err(|_| ChangeError::AllocationFailed)?;
     let mut offset = 0usize;
     for (idx, line) in text.split_inclusive('\n').enumerate() {
-        if idx % CONTROL_INTERVAL == 0 {
+        if idx.is_multiple_of(CONTROL_INTERVAL) {
             check_control().map_err(ChangeError::Stopped)?;
         }
         let end = offset + line.len();
         lines.push(LineSlice {
             text: line,
+            hash: fnv1a_64(line.as_bytes()),
             byte_range: offset..end,
             line_number: idx + 1,
         });
         offset = end;
     }
     Ok(lines)
+}
+
+fn boundary_byte(lines: &[LineSlice<'_>], index: usize) -> usize {
+    if let Some(line) = lines.get(index) {
+        line.byte_range.start
+    } else if index > 0
+        && let Some(prev) = lines.get(index - 1)
+    {
+        prev.byte_range.end
+    } else {
+        0
+    }
 }
 
 fn build_hunk(
@@ -759,6 +846,476 @@ fn build_hunk(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn emit_subwindow_hunk(
+    left_lines: &[LineSlice<'_>],
+    l_start: usize,
+    l_end: usize,
+    right_lines: &[LineSlice<'_>],
+    r_start: usize,
+    r_end: usize,
+    max_hunks: usize,
+    hunks: &mut Vec<ChangeHunk>,
+) -> Result<(), ChangeError> {
+    let b_slice = left_lines.get(l_start..l_end).unwrap_or(&[]);
+    let a_slice = right_lines.get(r_start..r_end).unwrap_or(&[]);
+    let b_ins = boundary_byte(left_lines, l_start);
+    let a_ins = boundary_byte(right_lines, r_start);
+    if let Some(hunk) = build_hunk(b_slice, b_ins, a_slice, a_ins) {
+        if hunks.len() == max_hunks {
+            return Err(ChangeError::HunkLimitExceeded { max_hunks });
+        }
+        hunks
+            .try_reserve(1)
+            .map_err(|_| ChangeError::AllocationFailed)?;
+        hunks.push(hunk);
+    }
+    Ok(())
+}
+
+fn unique_sorted_indices(
+    sub: &[LineSlice<'_>],
+    alignment_steps: &mut usize,
+    check_control: &mut impl FnMut() -> Result<(), StopReason>,
+) -> Result<Vec<usize>, ChangeError> {
+    let len = sub.len();
+    let mut order = Vec::new();
+    order
+        .try_reserve_exact(len)
+        .map_err(|_| ChangeError::AllocationFailed)?;
+    for idx in 0..len {
+        if idx.is_multiple_of(CONTROL_INTERVAL) {
+            check_control().map_err(ChangeError::Stopped)?;
+        }
+        order.push(idx);
+    }
+    *alignment_steps = alignment_steps.saturating_add(len.saturating_mul(14));
+    check_control().map_err(ChangeError::Stopped)?;
+    order.sort_unstable_by(|&a, &b| match (sub.get(a), sub.get(b)) {
+        (Some(la), Some(lb)) => cmp_lines(la, lb).then_with(|| a.cmp(&b)),
+        _ => a.cmp(&b),
+    });
+    let mut unique = Vec::new();
+    unique
+        .try_reserve_exact(len)
+        .map_err(|_| ChangeError::AllocationFailed)?;
+    for pos in 0..len {
+        if pos.is_multiple_of(CONTROL_INTERVAL) {
+            check_control().map_err(ChangeError::Stopped)?;
+        }
+        let Some(&idx) = order.get(pos) else {
+            continue;
+        };
+        let Some(cur) = sub.get(idx) else {
+            continue;
+        };
+        let dup_prev = pos > 0
+            && order
+                .get(pos - 1)
+                .and_then(|&p| sub.get(p))
+                .is_some_and(|prev| lines_equal(prev, cur));
+        let dup_next = order
+            .get(pos + 1)
+            .and_then(|&n| sub.get(n))
+            .is_some_and(|next| lines_equal(cur, next));
+        if !dup_prev && !dup_next {
+            unique.push(idx);
+        }
+    }
+    Ok(unique)
+}
+
+/// Find the longest increasing subsequence of lines that appear exactly once in `left_sub`
+/// and `right_sub` (`O((n + m) log(n + m))` time, deterministic tie-breaking).
+fn find_unique_anchor_lis(
+    left_sub: &[LineSlice<'_>],
+    right_sub: &[LineSlice<'_>],
+    alignment_steps: &mut usize,
+    check_control: &mut impl FnMut() -> Result<(), StopReason>,
+) -> Result<Vec<(usize, usize)>, ChangeError> {
+    let left_unique = unique_sorted_indices(left_sub, alignment_steps, check_control)?;
+    let right_unique = unique_sorted_indices(right_sub, alignment_steps, check_control)?;
+    if left_unique.is_empty() || right_unique.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut pairs = Vec::new();
+    pairs
+        .try_reserve_exact(left_unique.len().min(right_unique.len()))
+        .map_err(|_| ChangeError::AllocationFailed)?;
+    let mut li = 0usize;
+    let mut ri = 0usize;
+    let mut merge_steps = 0usize;
+    while li < left_unique.len() && ri < right_unique.len() {
+        if merge_steps.is_multiple_of(CONTROL_INTERVAL) {
+            check_control().map_err(ChangeError::Stopped)?;
+        }
+        merge_steps += 1;
+        let Some(&l_idx) = left_unique.get(li) else {
+            break;
+        };
+        let Some(&r_idx) = right_unique.get(ri) else {
+            break;
+        };
+        let (Some(l_line), Some(r_line)) = (left_sub.get(l_idx), right_sub.get(r_idx)) else {
+            break;
+        };
+        match cmp_lines(l_line, r_line) {
+            std::cmp::Ordering::Less => li += 1,
+            std::cmp::Ordering::Greater => ri += 1,
+            std::cmp::Ordering::Equal => {
+                pairs.push((l_idx, r_idx));
+                li += 1;
+                ri += 1;
+            }
+        }
+    }
+    *alignment_steps = alignment_steps.saturating_add(merge_steps);
+    if pairs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    pairs.sort_unstable_by_key(|&(l_idx, _)| l_idx);
+
+    let pair_count = pairs.len();
+    let mut tails_pair_idx = Vec::new();
+    tails_pair_idx
+        .try_reserve_exact(pair_count)
+        .map_err(|_| ChangeError::AllocationFailed)?;
+    let mut prev_pair_idx = Vec::new();
+    prev_pair_idx
+        .try_reserve_exact(pair_count)
+        .map_err(|_| ChangeError::AllocationFailed)?;
+    prev_pair_idx.resize(pair_count, None);
+
+    for (pair_i, &(_, r_idx)) in pairs.iter().enumerate() {
+        if pair_i.is_multiple_of(CONTROL_INTERVAL) {
+            check_control().map_err(ChangeError::Stopped)?;
+        }
+        let pos = tails_pair_idx.partition_point(|&tail_i| {
+            pairs.get(tail_i).is_some_and(|&(_, tail_r)| tail_r < r_idx)
+        });
+        if pos > 0
+            && let Some(slot) = prev_pair_idx.get_mut(pair_i)
+        {
+            *slot = tails_pair_idx.get(pos - 1).copied();
+        }
+        if pos == tails_pair_idx.len() {
+            tails_pair_idx.push(pair_i);
+        } else if let Some(slot) = tails_pair_idx.get_mut(pos) {
+            *slot = pair_i;
+        }
+    }
+    *alignment_steps = alignment_steps.saturating_add(pair_count.saturating_mul(14));
+
+    let mut anchors = Vec::new();
+    anchors
+        .try_reserve_exact(tails_pair_idx.len())
+        .map_err(|_| ChangeError::AllocationFailed)?;
+    let mut cur = tails_pair_idx.last().copied();
+    while let Some(pair_i) = cur {
+        if let Some(&pair) = pairs.get(pair_i) {
+            anchors.push(pair);
+        }
+        cur = prev_pair_idx.get(pair_i).copied().flatten();
+    }
+    anchors.reverse();
+    Ok(anchors)
+}
+
+/// Bounded Myers `O((n + m) D)` alignment for unanchored sub-windows where all unchanged
+/// lines are duplicates (`D <= MAX_MYERS_EDIT_DISTANCE`).
+#[allow(clippy::too_many_arguments)]
+fn try_bounded_myers(
+    left_lines: &[LineSlice<'_>],
+    l_start: usize,
+    l_end: usize,
+    right_lines: &[LineSlice<'_>],
+    r_start: usize,
+    r_end: usize,
+    max_hunks: usize,
+    hunks: &mut Vec<ChangeHunk>,
+    matched_unchanged_lines: &mut usize,
+    exact_inserted_lines: &mut usize,
+    exact_removed_lines: &mut usize,
+    alignment_steps: &mut usize,
+    check_control: &mut impl FnMut() -> Result<(), StopReason>,
+) -> Result<bool, ChangeError> {
+    let left_sub = left_lines.get(l_start..l_end).unwrap_or(&[]);
+    let right_sub = right_lines.get(r_start..r_end).unwrap_or(&[]);
+    let n = left_sub.len();
+    let m = right_sub.len();
+    let diff_bound = n.abs_diff(m);
+    let max_d = MAX_MYERS_EDIT_DISTANCE.min(n.saturating_add(m));
+    if diff_bound > max_d {
+        return Ok(false);
+    }
+
+    let k_offset = max_d + 1;
+    let stride = 2 * max_d + 3;
+    let trace_len = (max_d + 1)
+        .checked_mul(stride)
+        .ok_or(ChangeError::AllocationFailed)?;
+    let mut v = Vec::new();
+    v.try_reserve_exact(stride)
+        .map_err(|_| ChangeError::AllocationFailed)?;
+    v.resize(stride, 0usize);
+    let mut trace = Vec::new();
+    trace
+        .try_reserve_exact(trace_len)
+        .map_err(|_| ChangeError::AllocationFailed)?;
+    trace.resize(trace_len, 0usize);
+
+    let mut reached_d = None;
+    let mut step = 0usize;
+
+    'outer: for d in 0..=max_d {
+        let d_isize = d as isize;
+        let mut k = -d_isize;
+        while k <= d_isize {
+            if step.is_multiple_of(CONTROL_INTERVAL) {
+                check_control().map_err(ChangeError::Stopped)?;
+            }
+            step += 1;
+            let idx = (k + k_offset as isize) as usize;
+            let mut x = if d == 0 {
+                0usize
+            } else {
+                let down = v.get(idx + 1).copied().unwrap_or(0);
+                let right = v.get(idx - 1).copied().unwrap_or(0);
+                if k == -d_isize || (k != d_isize && right < down) {
+                    down
+                } else {
+                    right.saturating_add(1)
+                }
+            };
+            let mut y = (x as isize - k) as usize;
+            while x < n && y < m {
+                if step.is_multiple_of(CONTROL_INTERVAL) {
+                    check_control().map_err(ChangeError::Stopped)?;
+                }
+                step += 1;
+                let (Some(ll), Some(rl)) = (left_sub.get(x), right_sub.get(y)) else {
+                    break;
+                };
+                if !lines_equal(ll, rl) {
+                    break;
+                }
+                x += 1;
+                y += 1;
+            }
+            if let Some(slot) = v.get_mut(idx) {
+                *slot = x;
+            }
+            if x >= n && y >= m {
+                if let Some(row) = trace.get_mut(d * stride..(d + 1) * stride) {
+                    row.copy_from_slice(&v);
+                }
+                reached_d = Some(d);
+                break 'outer;
+            }
+            k += 2;
+        }
+        if let Some(row) = trace.get_mut(d * stride..(d + 1) * stride) {
+            row.copy_from_slice(&v);
+        }
+        if alignment_steps.saturating_add(step) > MAX_ALIGNMENT_STEPS {
+            *alignment_steps = alignment_steps.saturating_add(step);
+            return Ok(false);
+        }
+    }
+    *alignment_steps = alignment_steps.saturating_add(step);
+
+    let Some(final_d) = reached_d else {
+        return Ok(false);
+    };
+
+    let mut snakes = Vec::new();
+    snakes
+        .try_reserve_exact(final_d + 1)
+        .map_err(|_| ChangeError::AllocationFailed)?;
+    let mut x = n;
+    let mut y = m;
+    for d in (1..=final_d).rev() {
+        let d_isize = d as isize;
+        let k = x as isize - y as isize;
+        let idx = (k + k_offset as isize) as usize;
+        let prev_row = trace.get((d - 1) * stride..d * stride).unwrap_or(&[]);
+        let down = prev_row.get(idx + 1).copied().unwrap_or(0);
+        let right = prev_row.get(idx - 1).copied().unwrap_or(0);
+        let (prev_k, x_start) = if k == -d_isize || (k != d_isize && right < down) {
+            (k + 1, down)
+        } else {
+            (k - 1, right.saturating_add(1))
+        };
+        let y_start = (x_start as isize - k) as usize;
+        if x > x_start {
+            snakes.push((x_start, y_start, x - x_start));
+        }
+        let prev_idx = (prev_k + k_offset as isize) as usize;
+        x = prev_row.get(prev_idx).copied().unwrap_or(0);
+        y = (x as isize - prev_k) as usize;
+    }
+    if x > 0 {
+        snakes.push((0, 0, x));
+    }
+    snakes.reverse();
+
+    let mut cur_i = 0usize;
+    let mut cur_j = 0usize;
+    for (x_start, y_start, len) in snakes {
+        if cur_i < x_start || cur_j < y_start {
+            emit_subwindow_hunk(
+                left_lines,
+                l_start + cur_i,
+                l_start + x_start,
+                right_lines,
+                r_start + cur_j,
+                r_start + y_start,
+                max_hunks,
+                hunks,
+            )?;
+            *exact_removed_lines += x_start - cur_i;
+            *exact_inserted_lines += y_start - cur_j;
+        }
+        *matched_unchanged_lines += len;
+        cur_i = x_start + len;
+        cur_j = y_start + len;
+    }
+    if cur_i < n || cur_j < m {
+        emit_subwindow_hunk(
+            left_lines,
+            l_start + cur_i,
+            l_end,
+            right_lines,
+            r_start + cur_j,
+            r_end,
+            max_hunks,
+            hunks,
+        )?;
+        *exact_removed_lines += n - cur_i;
+        *exact_inserted_lines += m - cur_j;
+    }
+    Ok(true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn align_exact_lcs_subwindow(
+    left_lines: &[LineSlice<'_>],
+    l_start: usize,
+    l_end: usize,
+    right_lines: &[LineSlice<'_>],
+    r_start: usize,
+    r_end: usize,
+    max_hunks: usize,
+    hunks: &mut Vec<ChangeHunk>,
+    matched_unchanged_lines: &mut usize,
+    exact_inserted_lines: &mut usize,
+    exact_removed_lines: &mut usize,
+    check_control: &mut impl FnMut() -> Result<(), StopReason>,
+) -> Result<(), ChangeError> {
+    let left_mid = left_lines.get(l_start..l_end).unwrap_or(&[]);
+    let right_mid = right_lines.get(r_start..r_end).unwrap_or(&[]);
+    let n = left_mid.len();
+    let m = right_mid.len();
+    let cols = m + 1;
+    let total_dp = (n + 1)
+        .checked_mul(cols)
+        .ok_or(ChangeError::AllocationFailed)?;
+    let mut dp = Vec::new();
+    dp.try_reserve_exact(total_dp)
+        .map_err(|_| ChangeError::AllocationFailed)?;
+    dp.resize(total_dp, 0u32);
+
+    let mut step = 0usize;
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            if step.is_multiple_of(CONTROL_INTERVAL) {
+                check_control().map_err(ChangeError::Stopped)?;
+            }
+            step += 1;
+            let matched = match (left_mid.get(i), right_mid.get(j)) {
+                (Some(ll), Some(rl)) => lines_equal(ll, rl),
+                _ => false,
+            };
+            let val = if matched {
+                let diag = dp.get((i + 1) * cols + (j + 1)).copied().unwrap_or(0);
+                diag.saturating_add(1)
+            } else {
+                let down = dp.get((i + 1) * cols + j).copied().unwrap_or(0);
+                let right = dp.get(i * cols + (j + 1)).copied().unwrap_or(0);
+                down.max(right)
+            };
+            if let Some(slot) = dp.get_mut(i * cols + j) {
+                *slot = val;
+            }
+        }
+    }
+
+    let mut i = 0usize;
+    let mut j = 0usize;
+    let mut run_start_i = 0usize;
+    let mut run_start_j = 0usize;
+    let mut backtrack_steps = 0usize;
+
+    while i < n || j < m {
+        if backtrack_steps.is_multiple_of(CONTROL_INTERVAL) {
+            check_control().map_err(ChangeError::Stopped)?;
+        }
+        backtrack_steps += 1;
+        let matched = match (left_mid.get(i), right_mid.get(j)) {
+            (Some(ll), Some(rl)) => lines_equal(ll, rl),
+            _ => false,
+        };
+
+        if matched {
+            if run_start_i < i || run_start_j < j {
+                emit_subwindow_hunk(
+                    left_lines,
+                    l_start + run_start_i,
+                    l_start + i,
+                    right_lines,
+                    r_start + run_start_j,
+                    r_start + j,
+                    max_hunks,
+                    hunks,
+                )?;
+                *exact_removed_lines += i - run_start_i;
+                *exact_inserted_lines += j - run_start_j;
+            }
+            *matched_unchanged_lines += 1;
+            i += 1;
+            j += 1;
+            run_start_i = i;
+            run_start_j = j;
+        } else if i < n
+            && (j == m
+                || dp.get((i + 1) * cols + j).copied().unwrap_or(0)
+                    >= dp.get(i * cols + (j + 1)).copied().unwrap_or(0))
+        {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+
+    if run_start_i < n || run_start_j < m {
+        emit_subwindow_hunk(
+            left_lines,
+            l_start + run_start_i,
+            l_end,
+            right_lines,
+            r_start + run_start_j,
+            r_end,
+            max_hunks,
+            hunks,
+        )?;
+        *exact_removed_lines += n - run_start_i;
+        *exact_inserted_lines += m - run_start_j;
+    }
+    Ok(())
+}
+
 impl<'a> ChangeEvaluation<'a> {
     /// Compute a bounded line/segment-level explanation of the evaluated snapshot pair.
     ///
@@ -766,10 +1323,10 @@ impl<'a> ChangeEvaluation<'a> {
     /// - Keeps `Changed`, `Unchanged`, and `Inconclusive` distinct.
     /// - Enforces `limits.max_lines_per_capture()` and `limits.max_hunks()`, returning a
     ///   typed `ChangeError` rather than silently truncating hunks.
-    /// - When `changed_before_lines * changed_after_lines > MAX_LCS_CELLS`, coalesces the
-    ///   interior window into a single `Modified` hunk that may include unchanged lines and
-    ///   reports `LineChangeCounts::CoalescedWindowUpperBound` rather than presenting window
-    ///   sizes as measured line-change counts.
+    /// - Partitions oversized windows (`sub_n * sub_m > MAX_LCS_CELLS`) around Patience
+    ///   unique common line anchors (`O((n + m) log u)`) and bounded Myers alignment
+    ///   (`D <= MAX_MYERS_EDIT_DISTANCE`) before falling back to coalescing only an
+    ///   unanchored high-churn sub-window with `LineChangeCounts::CoalescedWindowUpperBound`.
     pub fn explain_changes(
         &self,
         limits: ChangeExplanationLimits,
@@ -779,9 +1336,12 @@ impl<'a> ChangeEvaluation<'a> {
         let (left_text, right_text) = match (self.before.0.capture, self.after.0.capture) {
             (Capture::Complete(left), Capture::Complete(right)) => (left, right),
             _ => {
-                let baseline_coverage =
-                    CaptureCoverageSummary::from_capture(self.before.0.capture)?;
-                let current_coverage = CaptureCoverageSummary::from_capture(self.after.0.capture)?;
+                let baseline_coverage = CaptureCoverageSummary::from_capture(
+                    self.before.0.capture,
+                    &mut check_control,
+                )?;
+                let current_coverage =
+                    CaptureCoverageSummary::from_capture(self.after.0.capture, &mut check_control)?;
                 check_control().map_err(ChangeError::Stopped)?;
                 return Ok(ChangeExplanation::Inconclusive {
                     baseline_coverage,
@@ -809,231 +1369,190 @@ impl<'a> ChangeEvaluation<'a> {
         let right_lines =
             split_lines(right_text, limits.max_lines_per_capture, &mut check_control)?;
 
-        // Trim identical leading lines.
-        let mut prefix_lines = 0usize;
-        for (idx, (l, r)) in left_lines.iter().zip(right_lines.iter()).enumerate() {
-            if idx % CONTROL_INTERVAL == 0 {
-                check_control().map_err(ChangeError::Stopped)?;
-            }
-            if l.text != r.text {
-                break;
-            }
-            prefix_lines += 1;
-        }
-
-        // Trim identical trailing lines without overlapping the prefix.
-        let mut suffix_lines = 0usize;
-        for (idx, (l, r)) in left_lines
-            .iter()
-            .rev()
-            .zip(right_lines.iter().rev())
-            .enumerate()
-        {
-            if idx % CONTROL_INTERVAL == 0 {
-                check_control().map_err(ChangeError::Stopped)?;
-            }
-            if left_lines.len() - suffix_lines <= prefix_lines
-                || right_lines.len() - suffix_lines <= prefix_lines
-                || l.text != r.text
-            {
-                break;
-            }
-            suffix_lines += 1;
-        }
-
-        let left_mid = left_lines
-            .get(prefix_lines..left_lines.len() - suffix_lines)
-            .unwrap_or(&[]);
-        let right_mid = right_lines
-            .get(prefix_lines..right_lines.len() - suffix_lines)
-            .unwrap_or(&[]);
-
-        let before_anchor_start = left_mid
-            .first()
-            .map(|l| l.byte_range.start)
-            .or_else(|| {
-                left_lines
-                    .get(prefix_lines.wrapping_sub(1))
-                    .map(|l| l.byte_range.end)
-            })
-            .unwrap_or(0);
-        let after_anchor_start = right_mid
-            .first()
-            .map(|l| l.byte_range.start)
-            .or_else(|| {
-                right_lines
-                    .get(prefix_lines.wrapping_sub(1))
-                    .map(|l| l.byte_range.end)
-            })
-            .unwrap_or(0);
-
-        let n = left_mid.len();
-        let m = right_mid.len();
-        let cells = n.saturating_mul(m);
-
         let mut hunks = Vec::new();
-        let line_counts = if cells > MAX_LCS_CELLS {
-            if let Some(hunk) =
-                build_hunk(left_mid, before_anchor_start, right_mid, after_anchor_start)
-            {
-                hunks
-                    .try_reserve_exact(1)
-                    .map_err(|_| ChangeError::AllocationFailed)?;
-                hunks.push(hunk);
-            }
-            LineChangeCounts::CoalescedWindowUpperBound {
-                trimmed_unchanged_lines: prefix_lines + suffix_lines,
-                coalesced_before_window_lines: n,
-                coalesced_after_window_lines: m,
-            }
-        } else if n == 0 || m == 0 {
-            if let Some(hunk) =
-                build_hunk(left_mid, before_anchor_start, right_mid, after_anchor_start)
-            {
-                hunks
-                    .try_reserve_exact(1)
-                    .map_err(|_| ChangeError::AllocationFailed)?;
-                hunks.push(hunk);
-            }
-            LineChangeCounts::Exact {
-                unchanged_lines: prefix_lines + suffix_lines,
-                inserted_lines: m,
-                removed_lines: n,
-            }
-        } else {
-            let mut unchanged_mid_lines = 0usize;
-            let mut inserted_line_count = 0usize;
-            let mut removed_line_count = 0usize;
-            let cols = m + 1;
-            let total_dp = (n + 1)
-                .checked_mul(cols)
-                .ok_or(ChangeError::AllocationFailed)?;
-            let mut dp = Vec::new();
-            dp.try_reserve_exact(total_dp)
-                .map_err(|_| ChangeError::AllocationFailed)?;
-            dp.resize(total_dp, 0u32);
+        let mut matched_unchanged_lines = 0usize;
+        let mut exact_inserted_lines = 0usize;
+        let mut exact_removed_lines = 0usize;
+        let mut coalesced_before_lines = 0usize;
+        let mut coalesced_after_lines = 0usize;
+        let mut any_coalesced = false;
+        let mut alignment_steps = 0usize;
+        let mut trim_steps = 0usize;
 
-            let mut step = 0usize;
-            for i in (0..n).rev() {
-                for j in (0..m).rev() {
-                    if step.is_multiple_of(CONTROL_INTERVAL) {
-                        check_control().map_err(ChangeError::Stopped)?;
-                    }
-                    step += 1;
-                    let left_line = left_mid.get(i).map(|l| l.text).unwrap_or("");
-                    let right_line = right_mid.get(j).map(|l| l.text).unwrap_or("");
-                    let val = if left_line == right_line {
-                        let diag = dp.get((i + 1) * cols + (j + 1)).copied().unwrap_or(0);
-                        diag.saturating_add(1)
-                    } else {
-                        let down = dp.get((i + 1) * cols + j).copied().unwrap_or(0);
-                        let right = dp.get(i * cols + (j + 1)).copied().unwrap_or(0);
-                        down.max(right)
-                    };
-                    if let Some(slot) = dp.get_mut(i * cols + j) {
-                        *slot = val;
-                    }
-                }
-            }
+        let mut work_stack = Vec::new();
+        work_stack
+            .try_reserve_exact(64)
+            .map_err(|_| ChangeError::AllocationFailed)?;
+        work_stack.push((0usize, left_lines.len(), 0usize, right_lines.len()));
 
-            let mut i = 0usize;
-            let mut j = 0usize;
-            let mut run_start_i = 0usize;
-            let mut run_start_j = 0usize;
-            let mut backtrack_steps = 0usize;
+        while let Some((mut l_start, mut l_end, mut r_start, mut r_end)) = work_stack.pop() {
+            check_control().map_err(ChangeError::Stopped)?;
 
-            while i < n || j < m {
-                if backtrack_steps.is_multiple_of(CONTROL_INTERVAL) {
+            // Trim identical leading lines in this sub-window.
+            while l_start < l_end && r_start < r_end {
+                if trim_steps.is_multiple_of(CONTROL_INTERVAL) {
                     check_control().map_err(ChangeError::Stopped)?;
                 }
-                backtrack_steps += 1;
-                let matched = if i < n && j < m {
-                    left_mid.get(i).map(|l| l.text) == right_mid.get(j).map(|r| r.text)
-                } else {
-                    false
+                trim_steps += 1;
+                let (Some(ll), Some(rl)) = (left_lines.get(l_start), right_lines.get(r_start))
+                else {
+                    break;
                 };
+                if !lines_equal(ll, rl) {
+                    break;
+                }
+                l_start += 1;
+                r_start += 1;
+                matched_unchanged_lines += 1;
+            }
 
-                if matched {
-                    if run_start_i < i || run_start_j < j {
-                        let b_slice = left_mid.get(run_start_i..i).unwrap_or(&[]);
-                        let a_slice = right_mid.get(run_start_j..j).unwrap_or(&[]);
-                        let b_ins = left_mid
-                            .get(run_start_i)
-                            .map(|l| l.byte_range.start)
-                            .unwrap_or(before_anchor_start);
-                        let a_ins = right_mid
-                            .get(run_start_j)
-                            .map(|l| l.byte_range.start)
-                            .unwrap_or(after_anchor_start);
-                        if let Some(hunk) = build_hunk(b_slice, b_ins, a_slice, a_ins) {
-                            if hunks.len() == limits.max_hunks {
-                                return Err(ChangeError::HunkLimitExceeded {
-                                    max_hunks: limits.max_hunks,
-                                });
-                            }
-                            hunks
-                                .try_reserve(1)
-                                .map_err(|_| ChangeError::AllocationFailed)?;
-                            hunks.push(hunk);
-                            removed_line_count += b_slice.len();
-                            inserted_line_count += a_slice.len();
+            // Trim identical trailing lines in this sub-window without overlapping the prefix.
+            while l_start < l_end && r_start < r_end {
+                if trim_steps.is_multiple_of(CONTROL_INTERVAL) {
+                    check_control().map_err(ChangeError::Stopped)?;
+                }
+                trim_steps += 1;
+                let (Some(ll), Some(rl)) = (left_lines.get(l_end - 1), right_lines.get(r_end - 1))
+                else {
+                    break;
+                };
+                if !lines_equal(ll, rl) {
+                    break;
+                }
+                l_end -= 1;
+                r_end -= 1;
+                matched_unchanged_lines += 1;
+            }
+
+            let n = l_end - l_start;
+            let m = r_end - r_start;
+            if n == 0 && m == 0 {
+                continue;
+            }
+            if n == 0 || m == 0 {
+                emit_subwindow_hunk(
+                    &left_lines,
+                    l_start,
+                    l_end,
+                    &right_lines,
+                    r_start,
+                    r_end,
+                    limits.max_hunks,
+                    &mut hunks,
+                )?;
+                exact_removed_lines += n;
+                exact_inserted_lines += m;
+                continue;
+            }
+
+            let cells = n.saturating_mul(m);
+            if cells <= MAX_LCS_CELLS {
+                align_exact_lcs_subwindow(
+                    &left_lines,
+                    l_start,
+                    l_end,
+                    &right_lines,
+                    r_start,
+                    r_end,
+                    limits.max_hunks,
+                    &mut hunks,
+                    &mut matched_unchanged_lines,
+                    &mut exact_inserted_lines,
+                    &mut exact_removed_lines,
+                    &mut check_control,
+                )?;
+                continue;
+            }
+
+            if alignment_steps < MAX_ALIGNMENT_STEPS {
+                let left_sub = left_lines.get(l_start..l_end).unwrap_or(&[]);
+                let right_sub = right_lines.get(r_start..r_end).unwrap_or(&[]);
+                let anchors = find_unique_anchor_lis(
+                    left_sub,
+                    right_sub,
+                    &mut alignment_steps,
+                    &mut check_control,
+                )?;
+                if !anchors.is_empty() {
+                    matched_unchanged_lines += anchors.len();
+                    work_stack
+                        .try_reserve(anchors.len() + 1)
+                        .map_err(|_| ChangeError::AllocationFailed)?;
+                    if let Some(&(last_li, last_rj)) = anchors.last() {
+                        let sub_l_start = l_start + last_li + 1;
+                        let sub_r_start = r_start + last_rj + 1;
+                        if sub_l_start < l_end || sub_r_start < r_end {
+                            work_stack.push((sub_l_start, l_end, sub_r_start, r_end));
                         }
                     }
-                    unchanged_mid_lines += 1;
-                    i += 1;
-                    j += 1;
-                    run_start_i = i;
-                    run_start_j = j;
-                } else if i < n
-                    && (j == m
-                        || dp.get((i + 1) * cols + j).copied().unwrap_or(0)
-                            >= dp.get(i * cols + (j + 1)).copied().unwrap_or(0))
-                {
-                    i += 1;
-                } else {
-                    j += 1;
+                    for pair_idx in (0..anchors.len().saturating_sub(1)).rev() {
+                        if let (Some(&(li_a, rj_a)), Some(&(li_b, rj_b))) =
+                            (anchors.get(pair_idx), anchors.get(pair_idx + 1))
+                        {
+                            let sub_l_start = l_start + li_a + 1;
+                            let sub_l_end = l_start + li_b;
+                            let sub_r_start = r_start + rj_a + 1;
+                            let sub_r_end = r_start + rj_b;
+                            if sub_l_start < sub_l_end || sub_r_start < sub_r_end {
+                                work_stack.push((sub_l_start, sub_l_end, sub_r_start, sub_r_end));
+                            }
+                        }
+                    }
+                    if let Some(&(first_li, first_rj)) = anchors.first() {
+                        let sub_l_end = l_start + first_li;
+                        let sub_r_end = r_start + first_rj;
+                        if l_start < sub_l_end || r_start < sub_r_end {
+                            work_stack.push((l_start, sub_l_end, r_start, sub_r_end));
+                        }
+                    }
+                    continue;
+                }
+
+                if try_bounded_myers(
+                    &left_lines,
+                    l_start,
+                    l_end,
+                    &right_lines,
+                    r_start,
+                    r_end,
+                    limits.max_hunks,
+                    &mut hunks,
+                    &mut matched_unchanged_lines,
+                    &mut exact_inserted_lines,
+                    &mut exact_removed_lines,
+                    &mut alignment_steps,
+                    &mut check_control,
+                )? {
+                    continue;
                 }
             }
 
-            if run_start_i < n || run_start_j < m {
-                let b_slice = left_mid.get(run_start_i..n).unwrap_or(&[]);
-                let a_slice = right_mid.get(run_start_j..m).unwrap_or(&[]);
-                let b_ins = left_mid
-                    .get(run_start_i)
-                    .map(|l| l.byte_range.start)
-                    .or_else(|| {
-                        left_mid
-                            .get(run_start_i.wrapping_sub(1))
-                            .map(|l| l.byte_range.end)
-                    })
-                    .unwrap_or(before_anchor_start);
-                let a_ins = right_mid
-                    .get(run_start_j)
-                    .map(|l| l.byte_range.start)
-                    .or_else(|| {
-                        right_mid
-                            .get(run_start_j.wrapping_sub(1))
-                            .map(|l| l.byte_range.end)
-                    })
-                    .unwrap_or(after_anchor_start);
-                if let Some(hunk) = build_hunk(b_slice, b_ins, a_slice, a_ins) {
-                    if hunks.len() == limits.max_hunks {
-                        return Err(ChangeError::HunkLimitExceeded {
-                            max_hunks: limits.max_hunks,
-                        });
-                    }
-                    hunks
-                        .try_reserve(1)
-                        .map_err(|_| ChangeError::AllocationFailed)?;
-                    hunks.push(hunk);
-                    removed_line_count += b_slice.len();
-                    inserted_line_count += a_slice.len();
-                }
+            emit_subwindow_hunk(
+                &left_lines,
+                l_start,
+                l_end,
+                &right_lines,
+                r_start,
+                r_end,
+                limits.max_hunks,
+                &mut hunks,
+            )?;
+            any_coalesced = true;
+            coalesced_before_lines += n;
+            coalesced_after_lines += m;
+        }
+
+        let line_counts = if any_coalesced {
+            LineChangeCounts::CoalescedWindowUpperBound {
+                trimmed_unchanged_lines: matched_unchanged_lines,
+                coalesced_before_window_lines: exact_removed_lines + coalesced_before_lines,
+                coalesced_after_window_lines: exact_inserted_lines + coalesced_after_lines,
             }
+        } else {
             LineChangeCounts::Exact {
-                unchanged_lines: prefix_lines + suffix_lines + unchanged_mid_lines,
-                inserted_lines: inserted_line_count,
-                removed_lines: removed_line_count,
+                unchanged_lines: matched_unchanged_lines,
+                inserted_lines: exact_inserted_lines,
+                removed_lines: exact_removed_lines,
             }
         };
 
@@ -1050,14 +1569,55 @@ impl<'a> ChangeEvaluation<'a> {
     /// Project an explained notification record that exposes source coverage, freshness,
     /// attribution, the saved rule that triggered it, and the line-level change explanation
     /// (`PRIVACY-03`, `A18`).
+    ///
+    /// When line/segment decomposition exceeds `limits.max_lines_per_capture()` or
+    /// `limits.max_hunks()`, the notification still succeeds with
+    /// `ChangeExplanation::Unavailable` rather than failing outright, keeping the
+    /// `RuleDecision`, capture coverage, freshness, and top-level `TextComparison`
+    /// replacement span inspectable.
     pub fn explain_notification(
         &'a self,
         limits: ChangeExplanationLimits,
         mut check_control: impl FnMut() -> Result<(), StopReason>,
     ) -> Result<ExplainedNotification<'a>, ChangeError> {
-        let baseline_coverage = CaptureCoverageSummary::from_capture(self.before.0.capture)?;
-        let current_coverage = CaptureCoverageSummary::from_capture(self.after.0.capture)?;
-        let explanation = self.explain_changes(limits, &mut check_control)?;
+        let baseline_coverage =
+            CaptureCoverageSummary::from_capture(self.before.0.capture, &mut check_control)?;
+        let current_coverage =
+            CaptureCoverageSummary::from_capture(self.after.0.capture, &mut check_control)?;
+        let before_line_count = match &baseline_coverage {
+            CaptureCoverageSummary::Complete { line_count, .. } => *line_count,
+            _ => 0,
+        };
+        let after_line_count = match &current_coverage {
+            CaptureCoverageSummary::Complete { line_count, .. } => *line_count,
+            _ => 0,
+        };
+        let explanation = match self.explain_changes(limits, &mut check_control) {
+            Ok(explanation) => explanation,
+            Err(ChangeError::LineLimitExceeded {
+                actual_lines,
+                max_lines,
+            }) => {
+                check_control().map_err(ChangeError::Stopped)?;
+                ChangeExplanation::Unavailable {
+                    before_line_count,
+                    after_line_count,
+                    reason: ExplanationUnavailableReason::LineLimitExceeded {
+                        actual_lines,
+                        max_lines,
+                    },
+                }
+            }
+            Err(ChangeError::HunkLimitExceeded { max_hunks }) => {
+                check_control().map_err(ChangeError::Stopped)?;
+                ChangeExplanation::Unavailable {
+                    before_line_count,
+                    after_line_count,
+                    reason: ExplanationUnavailableReason::HunkLimitExceeded { max_hunks },
+                }
+            }
+            Err(err) => return Err(err),
+        };
         Ok(ExplainedNotification {
             rule_version: &self.rule.version,
             rule_criterion: RULE_CRITERION_ID,

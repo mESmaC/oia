@@ -14,9 +14,9 @@
 use oia_domain::{OpaqueId, VersionId};
 use oia_media::recreation::{
     ApparentScale, AssetExportPolicy, ContextField, ExplicitAssumption, ExplicitUnknown,
-    ExportedRecreationPrompt, FIDELITY_AND_EXTERNAL_LABEL_CAVEAT, RecreationError,
+    ExportedRecreationPrompt, FIDELITY_AND_EXTERNAL_LABEL_CAVEAT, NegativeKeyword, RecreationError,
     RecreationLimits, RecreationPromptInput, ReportedDetail, SceneContext,
-    VISIBLE_RECREATION_LABEL, export_recreation_prompt,
+    VISIBLE_RECREATION_LABEL, derive_unknown_negative_keywords, export_recreation_prompt,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -110,6 +110,7 @@ pub struct PromptView {
     pub reported_details: usize,
     pub assumptions: usize,
     pub unknowns: usize,
+    pub negative_keywords: usize,
     pub context: Vec<ContextRow>,
     pub text: String,
     pub bytes: usize,
@@ -244,6 +245,59 @@ fn map_kernel_error(error: RecreationError) -> ToolError {
         other => format!("The recreation kernel refused the prompt: {other}. Nothing was changed."),
     };
     ToolError::new(code, message)
+}
+
+fn qualified_unknown_reason(reason: &str, source_label: &str) -> String {
+    format!("{reason} · source: {source_label}")
+}
+
+/// Derives single-witness negatives without changing the declarations or context exported in
+/// the prompt. Only the derived rationales gain the source qualification, so every simulated,
+/// post-exposure or revised negative remains labeled while the user's wording stays verbatim.
+fn derive_negative_keywords(
+    context: &SceneContext,
+    unknowns: &[ExplicitUnknown],
+    source: &Source,
+    limits: RecreationLimits,
+) -> Result<Vec<NegativeKeyword>> {
+    let source_label = source.label();
+    let mut derived_context = context.clone();
+    for field in [
+        &mut derived_context.scene,
+        &mut derived_context.time_context,
+        &mut derived_context.viewpoint,
+        &mut derived_context.lighting,
+    ] {
+        if let ContextField::Unknown { reason } = field {
+            *reason = qualified_unknown_reason(reason, &source_label);
+        }
+    }
+    match &mut derived_context.apparent_scale {
+        ApparentScale::Unknown { reason } => {
+            *reason = qualified_unknown_reason(reason, &source_label);
+        }
+        ApparentScale::ReportedAngularOrRelative {
+            physical_size_unknown_reason,
+            ..
+        } => {
+            *physical_size_unknown_reason =
+                qualified_unknown_reason(physical_size_unknown_reason, &source_label);
+        }
+        ApparentScale::CalibratedEstimate { .. } => {}
+    }
+    let derived_unknowns = unknowns
+        .iter()
+        .map(|unknown| ExplicitUnknown {
+            unknown_id: unknown.unknown_id.clone(),
+            aspect: unknown.aspect.clone(),
+            impact_on_recreation: qualified_unknown_reason(
+                &unknown.impact_on_recreation,
+                &source_label,
+            ),
+        })
+        .collect::<Vec<_>>();
+    derive_unknown_negative_keywords(&derived_context, &derived_unknowns, limits)
+        .map_err(map_kernel_error)
 }
 
 fn control_character(what: &str) -> ToolError {
@@ -432,6 +486,7 @@ impl RecreationState {
                     reported_details: e.prompt.shared_reported_details().len(),
                     assumptions: e.prompt.assumptions().len(),
                     unknowns: e.prompt.unknowns().len(),
+                    negative_keywords: e.prompt.negative_keywords().len(),
                     context: e.context.clone(),
                     text: text.to_owned(),
                     bytes: text.len(),
@@ -584,29 +639,31 @@ impl RecreationState {
             request.title,
             source.label()
         );
+        let context = SceneContext {
+            scene,
+            time_context,
+            viewpoint,
+            lighting,
+            apparent_scale,
+        };
+        let limits = limits()?;
+        let negative_keywords = derive_negative_keywords(&context, &unknowns, &source, limits)?;
         let input = RecreationPromptInput {
             prompt_id: opaque(PROMPT_ID.to_owned())?,
             prompt_version: VersionId::new(format!("ver:recreation-{next}"))
                 .map_err(|e| ToolError::new("internal", e))?,
             case_id: opaque(CASE_ID.to_owned())?,
             title,
-            context: SceneContext {
-                scene,
-                time_context,
-                viewpoint,
-                lighting,
-                apparent_scale,
-            },
+            context,
             shared_reported_details,
             conflicting_variants: Vec::new(),
             assumptions,
             unknowns,
-            negative_keywords: Vec::new(),
+            negative_keywords,
             reference_assets: Vec::new(),
         };
-        let prompt =
-            export_recreation_prompt(&input, limits()?, AssetExportPolicy::RefuseUnpermitted)
-                .map_err(map_kernel_error)?;
+        let prompt = export_recreation_prompt(&input, limits, AssetExportPolicy::RefuseUnpermitted)
+            .map_err(map_kernel_error)?;
         self.exports = next;
         self.exported = Some(Exported {
             prompt,
@@ -710,6 +767,10 @@ mod tests {
         assert_eq!(prompt.source_origin, "simulated account");
         assert!(!prompt.source_after_explanations);
         assert_eq!(prompt.reported_details, 3); // two narrative lines + duration; the blank line is skipped
+        assert_eq!(prompt.unknowns, 1);
+        // Unknown scene, viewpoint and physical scale plus the declared Range unknown. Reported
+        // time and assumed lighting do not produce exclusions.
+        assert_eq!(prompt.negative_keywords, 4);
         assert_eq!(prompt.prompt_version, "ver:recreation-1");
         let statuses: Vec<_> = prompt.context.iter().map(|c| (c.field, c.status)).collect();
         assert_eq!(
@@ -744,6 +805,23 @@ mod tests {
         )));
         assert!(!prompt.text.contains(AFTER_EXPLANATIONS));
         assert!(prompt.text.contains(SCALE_UNKNOWN_REASON));
+        assert!(
+            prompt
+                .text
+                .contains("## Negative Prompt Keywords (Evidence-Derived Exclusions)")
+        );
+        assert!(prompt.text.contains(
+            "- [neg:context:scene] origin=unknown unknown_id=context:scene keyword=\"a specific value for scene\" rationale=\"scene was not reported in witness-v1. · source: witness-v1 · simulated account\""
+        ));
+        assert!(prompt.text.contains(
+            "- [neg:unknown:u1] origin=unknown unknown_id=unknown:u1 keyword=\"a specific value for Range\" rationale=\"Do not read depth as distance · source: witness-v1 · simulated account\""
+        ));
+        // Qualifying a derived rationale must not rewrite the user's original declaration.
+        assert!(
+            prompt.text.contains(
+                "- [unknown:u1] aspect=\"Range\" impact=\"Do not read depth as distance\""
+            )
+        );
         assert_eq!(prompt.bytes, prompt.text.len());
 
         // An assumption may not replace reported wording; the held prompt is unchanged.
@@ -835,6 +913,9 @@ mod tests {
         // The kernel quotes the note, so the visible `\u{a}` escape carries a doubled backslash.
         assert!(prompt.text.contains(&format!(
             "witness-v3 · simulated account · {AFTER_EXPLANATIONS} · revision rationale: Recalled a second light\\\\u{{a}}after review · narrative line 2"
+        )));
+        assert!(prompt.text.contains(&format!(
+            "keyword=\"a specific value for Range\" rationale=\"Do not read depth as distance · source: witness-v3 · simulated account · {AFTER_EXPLANATIONS} · revision rationale: Recalled a second light\\\\u{{a}}after review\""
         )));
         Ok(())
     }

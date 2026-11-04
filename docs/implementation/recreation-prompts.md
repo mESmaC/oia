@@ -78,7 +78,7 @@ Original evidence bytes are unchanged.
 - `AttemptedArtifactClass` is a local crate guard to be consolidated with the shared `oia-domain` origin-class vocabulary in `#10`.
 - Predictive restoration, frame interpolation, denoising, deblurring, multi-frame reconstruction, and learned super-resolution (`MEDIA-03`) are not implemented in this slice.
 - `D09` (restoration and detection model/corpus/threshold selection) remains open.
-- The desktop workbench builds and saves a prompt from one session-only simulated account version through this kernel (see [desktop workbench](desktop-workbench.md), workflow 3) with `negative_keywords: Vec::new()`; wiring `derive_unknown_negative_keywords` into the desktop simulated-account export and statement-comparison/composer workflows (`#138`/`#139`) remains open on `#140`. Integration with the forensic media workbench (`#30`), portable bundle/report packaging (`#22`), and full end-to-end `A10` acceptance across decoded imagery remain open on `#31`.
+- The desktop workbench builds and saves a prompt from one session-only reported or simulated account version through this kernel (see [desktop workbench](desktop-workbench.md), workflow 3). Its single-witness adapter derives unknown-origin negatives from the scene context and declared unknowns, qualifies only the derived rationales with the existing source label, preserves the original declarations verbatim, and displays the negative count and complete portable text. Statement-comparison/composer wiring (`#138`/`#139`), including contradiction- and variant-origin negatives, remains open on `#140`. Integration with the forensic media workbench (`#30`), portable bundle/report packaging (`#22`), and full end-to-end `A10` acceptance across decoded imagery remain open on `#31`.
 - No Lean theorem or formal Rust-to-Lean correspondence claim is made for this slice.
 
 ## Local verification
@@ -146,6 +146,26 @@ sidecar `negative_keyword_count` and `negative_keyword=[...]` metadata preservat
 and refusals for missing origins, undeclared unknown/variant references,
 empty/unpinned/self-contradicting source lists, contradicted details present in
 shared or variant `reported_details`, and `max_negative_keywords` overflows.
-Desktop workbench `derive_unknown_negative_keywords` export wiring and
-statement-comparison/composer wiring (`#138`/`#139`) remain open on `#140`. No
-Lean proof check was rerun; no covered algorithm or formal proof claim changed.
+At that kernel checkpoint, desktop workbench `derive_unknown_negative_keywords` export
+wiring and statement-comparison/composer wiring (`#138`/`#139`) remained open on `#140`.
+The desktop wiring is implemented by the later adapter slice below; composer wiring remains
+open. No Lean proof check was rerun for the kernel slice; no covered algorithm or formal
+proof claim changed.
+
+### Desktop unknown-derived negatives verification (2026-11-04)
+
+Executed on Windows x86_64 MSVC with pinned `rustc 1.99.0` for the `#140`
+single-witness desktop adapter slice:
+
+- `cargo +1.99.0 test -p oia-app --lib recreation::tests::prompt_keeps_reported_assumed_and_unknown_apart --locked --offline`: passed. The existing adapter test now also checks four context/declaration-derived exclusions, the absence of exclusions for reported or assumed context, simulated and post-exposure/revision source labels in negative rationales, and byte-for-byte preservation of the original unknown declaration.
+- `cargo +1.99.0 fmt --all -- --check`: passed.
+- `cargo +1.99.0 clippy --workspace --all-targets --locked --offline -- -D warnings`: passed.
+- `cargo +1.99.0 test --workspace --locked --offline`: passed, including the existing recreation and Rust-to-Lean correspondence tests.
+- `cargo +1.99.0 run -p oia-app --no-default-features --locked --offline -- --status`: printed the expected local-workbench status. This headless configuration emitted its existing dead-code warnings; it does not exercise the native recreation panel.
+- `node --check crates/oia-app/ui/witness.js` and `git diff --check`: passed.
+
+The optional CesiumJS vendor payload was absent, so the Globe renderer was not exercised;
+it is unrelated to this adapter path. No native GUI/layout walkthrough, external image
+generator, or imported image pixel validation was performed. No Lean proof gate was rerun
+because no proof-covered algorithm or correspondence claim changed. Composer-derived
+contradiction/variant negatives and full A10 acceptance remain open.

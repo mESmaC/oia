@@ -214,6 +214,159 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         mosaic_report.footprints.len()
     );
 
+    // 6. Multi-Source Globe Composite Planning & Unredacted Source Selection (GEO-02, GEO-04, SPACE-01, SPACE-02)
+    println!(
+        "\n=== Multi-Source Globe Composite Planning & Unredacted Source Selection (GEO-02, GEO-04) ==="
+    );
+    let composite_envelope = GeoBoundingBoxWgs84::new(43.0, 43.2, 5.0, 5.2)?;
+
+    // Candidate A: National aerial orthophoto (0.15 m native GSD) covering full envelope,
+    // but with a statutory security blur polygon over the SW cell [43.0, 43.1] x [5.0, 5.1]
+    // and a cloud bank over the NE cell [43.1, 43.2] x [5.1, 5.2].
+    let mut aerial_ortho = CompositeCandidatePatch {
+        patch_id: "patch:ign:bd_ortho_15cm".into(),
+        source_id: "src:ign:bd_ortho_2025".into(),
+        platform: CompositeSourcePlatform::AerialOrthophoto,
+        provider: SpaceDataProvider::new("IGN France", "Geoservices Open Data", true)?,
+        mission_or_collection: "BD ORTHO 15cm".into(),
+        instrument_or_sensor: "Leica DMC-III".into(),
+        footprint: composite_envelope,
+        time_window: TimeWindow::new(1_718_000_000_000, 1_718_003_600_000)?,
+        native_gsd_m: Some(0.15),
+        served_grid_spacing_m: 0.15,
+        radiometric_class: SurfaceRadiometricClass::OpticalTrueColor,
+        calibration_level: CalibrationLevel::Level3GriddedComposite,
+        stacking_history: None,
+        color_mapping: Some(ColorMapping::TrueColor),
+        base_integrity: PatchIntegrityState::UneditedClearNative {
+            cloud_or_haze_fraction: 0.01,
+        },
+        localized_defects: Vec::new(),
+        registration: CrossViewRegistration::new(
+            VerticalReference::OrthometricDem {
+                dem_source: "RGE ALTI 1m LiDAR".into(),
+                vertical_rmse_m: 0.25,
+            },
+            CorrespondenceMethod::GroundControlPointsBundleAdjustment { gcp_count: 24 },
+            0.30,
+            4.5,
+        )?,
+    };
+    aerial_ortho
+        .localized_defects
+        .push(LocalizedPatchDefect::new(
+            "defect:statutory_blur_sw",
+            GeoBoundingBoxWgs84::new(43.0, 43.1, 5.0, 5.1)?,
+            PatchIntegrityState::DeliberatelyBlurredOrRedacted {
+                reason: "Host-nation statutory aerial security redaction polygon".into(),
+                coarse_effective_gsd_m: Some(25.0),
+            },
+        )?);
+    aerial_ortho
+        .localized_defects
+        .push(LocalizedPatchDefect::new(
+            "defect:cumulus_cloud_ne",
+            GeoBoundingBoxWgs84::new(43.1, 43.2, 5.1, 5.2)?,
+            PatchIntegrityState::ObscuredByCloudShadowOrSmoke {
+                obscuration_fraction: 0.85,
+            },
+        )?);
+
+    // Candidate B: Unredacted commercial open-data satellite pass (0.50 m native GSD)
+    // covering the entire envelope without blur or clouds.
+    let open_sat_patch = CompositeCandidatePatch {
+        patch_id: "patch:worldview:open_data_50cm".into(),
+        source_id: "src:maxar:opendata_2025".into(),
+        platform: CompositeSourcePlatform::SatelliteEarthObservation,
+        provider: SpaceDataProvider::new("Maxar Open Data", "AWS Public STAC", true)?,
+        mission_or_collection: "WorldView-3 Open Data".into(),
+        instrument_or_sensor: "WV110".into(),
+        footprint: composite_envelope,
+        time_window: TimeWindow::new(1_719_000_000_000, 1_719_000_060_000)?,
+        native_gsd_m: Some(0.50),
+        served_grid_spacing_m: 0.50,
+        radiometric_class: SurfaceRadiometricClass::OpticalPansharpenedTrueColor,
+        calibration_level: CalibrationLevel::Level2Geophysical,
+        stacking_history: None,
+        color_mapping: Some(ColorMapping::TrueColor),
+        base_integrity: PatchIntegrityState::UneditedClearNative {
+            cloud_or_haze_fraction: 0.02,
+        },
+        localized_defects: Vec::new(),
+        registration: CrossViewRegistration::new(
+            VerticalReference::OrthometricDem {
+                dem_source: "Copernicus GLO-30 DEM".into(),
+                vertical_rmse_m: 2.5,
+            },
+            CorrespondenceMethod::OrbitalWcsAndDemOrthorectification,
+            1.8,
+            12.0,
+        )?,
+    };
+
+    // Candidate C: Calibrated OpenAerialMap UAV orthomosaic (0.04 m native GSD) over the SE cell [43.0, 43.1] x [5.1, 5.2]
+    let uav_patch = CompositeCandidatePatch {
+        patch_id: "patch:oam:uav_4cm_se".into(),
+        source_id: "src:oam:coastal_survey_2025".into(),
+        platform: CompositeSourcePlatform::CalibratedUavOrDroneOrtho,
+        provider: SpaceDataProvider::new("HOT / OpenAerialMap", "OAM Catalog", true)?,
+        mission_or_collection: "OpenAerialMap Community Survey".into(),
+        instrument_or_sensor: "DJI Zenmuse P1".into(),
+        footprint: GeoBoundingBoxWgs84::new(43.0, 43.1, 5.1, 5.2)?,
+        time_window: TimeWindow::new(1_719_500_000_000, 1_719_501_800_000)?,
+        native_gsd_m: Some(0.04),
+        served_grid_spacing_m: 0.04,
+        radiometric_class: SurfaceRadiometricClass::OpticalTrueColor,
+        calibration_level: CalibrationLevel::Level3GriddedComposite,
+        stacking_history: None,
+        color_mapping: Some(ColorMapping::TrueColor),
+        base_integrity: PatchIntegrityState::UneditedClearNative {
+            cloud_or_haze_fraction: 0.0,
+        },
+        localized_defects: Vec::new(),
+        registration: CrossViewRegistration::new(
+            VerticalReference::OrthometricDem {
+                dem_source: "RTK Photogrammetric DSM".into(),
+                vertical_rmse_m: 0.08,
+            },
+            CorrespondenceMethod::GroundControlPointsBundleAdjustment { gcp_count: 12 },
+            0.06,
+            2.0,
+        )?,
+    };
+
+    let stitch_req = CompositeStitchRequest {
+        target_envelope: composite_envelope,
+        grid_rows: 2,
+        grid_cols: 2,
+        policy: CompositeStitchPolicy::default(),
+        candidates: vec![aerial_ortho, open_sat_patch, uav_patch],
+    };
+
+    let composite_plan = catalog.plan_globe_composite(&stitch_req, &limits, None)?;
+    println!(
+        "Composite grid: {}x{} ({} clean optical, {} filled from alternate optical source, {} seams, single-instant: {})",
+        composite_plan.grid_rows,
+        composite_plan.grid_cols,
+        composite_plan.clean_optical_cells_count,
+        composite_plan.cells_filled_from_alternate_optical_source,
+        composite_plan.seams.len(),
+        composite_plan.is_single_instant_observation
+    );
+    for cell in &composite_plan.cells {
+        if let Some(a) = cell.outcome.assignment() {
+            println!(
+                " - Cell ({}, {}): Winner '{}' ({}) | Verifiable GSD: {:?} m | Bypassed degraded patches: {:?}",
+                cell.row,
+                cell.col,
+                a.patch_id,
+                a.platform,
+                a.effective_verifiable_gsd_m,
+                a.bypassed_degraded_patch_ids
+            );
+        }
+    }
+
     println!("\n=== Verification Completed Cleanly ===");
     Ok(())
 }

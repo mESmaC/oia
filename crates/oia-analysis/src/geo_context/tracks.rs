@@ -1,10 +1,10 @@
 //! Aviation and maritime kinematic tracking with bounded spherical great-circle interpolation (`GEO-05`, `INTEL-03`).
 
-use crate::geo_context::provisional::{Altitude, AltitudeReference, GeoPointWgs84};
 use crate::geo_context::{
     ContextLimits, GeoContextError, INTERPOLATION_METHOD_ID, spherical_slerp,
 };
 use oia_domain::OpaqueId;
+use oia_time_geo::{Altitude, AltitudeReference, GeoPointWgs84};
 
 /// Surveillance or navigation positioning source technology (`GEO-05`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

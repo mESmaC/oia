@@ -2,20 +2,18 @@
 
 This implements the dependency-independent context normalization and reconstruction
 slice of [#24](https://github.com/mESmaC/oia/issues/24), supporting
-[`GEO-02`, `GEO-05`, and `INTEL-03`](../spec.md#42-geographic-reconstruction-and-context),
+[`GEO-02`, `GEO-05`, and `INTEL-03`](../spec.md#42-geographic-events-and-uap-investigations),
 and the deterministic track/weather/notice/coverage subset of [A04](../delivery.md#a04-geographic-reconstruction).
 The implementation is in [`oia_analysis::geo_context`](../../crates/oia-analysis/src/geo_context.rs) (with submodules `provisional`, `weather`, `tracks`, `notices`, and `coverage`),
 with a read-only local example in [`reconstruct-geo-context.rs`](../../crates/oia-analysis/examples/reconstruct-geo-context.rs)
 and targeted contract tests in [`geo_context_contract.rs`](../../crates/oia-analysis/tests/geo_context_contract.rs).
 
-> [!NOTE]
-> **Provisional Geometry & Datum Primitives (`provisional` module, pending #12):**
-> Geometry and time primitives (`GeoPointWgs84`, `GeoBoundingBoxWgs84`, `Altitude`, `AltitudeReference`,
-> `AltitudeBand`, `TimeWindow`) are **provisional domain models** grouped in `oia_analysis::geo_context::provisional`
-> pending the delivery of `#12` (`crates/oia-time-geo`). Upon completion of `#12`, these types will migrate
-> directly to the shared `oia-time-geo` contracts without changing the analytical semantics or evidence
-> preservation rules of this kernel. PR #102 (`oia-query`) has narrowed its scope to clustering and deferred
-> its geometry primitives to `#12` / `#24`.
+Geometry and UTC interval types now come from the shared [`oia-time-geo`
+primitives](shared-time-geo.md). The former `provisional` module re-exports the
+same types for existing callers. Direct constructors return `TimeGeoError`;
+analysis operations retain their `GeoContextError` mapping. Full-world, seam
+and polar containment follow the shared closed-extent contract. Scientific time,
+clock alignment and model-backed height conversion remain in #12.
 
 ## Implemented workflow and evidence contracts
 

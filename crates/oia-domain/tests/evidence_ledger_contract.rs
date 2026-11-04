@@ -3,11 +3,12 @@
 //! Each test covers a risk that ordinary execution would not reveal:
 //! 1. The committed fixture round-trips byte-for-byte, keeps the original version, its
 //!    verbatim text and unknown values, and flags exactly the dependents of a correction.
-//! 2. Generated material cannot be promoted, lineage labels cannot be shed through a later
-//!    derivation edge, derivation cycles and stale revisions are rejected, and a rejected
-//!    operation leaves the ledger unchanged.
-//! 3. Import is strict: oversized, unknown, duplicate, miscoded and rule-violating input is
-//!    refused rather than repaired.
+//! 2. Generated material cannot be promoted or cited as evidence when illustrative, lineage
+//!    labels cannot be shed through a later derivation edge, out-of-order (cycle-forming) and
+//!    duplicate edges, stale and backdated revisions are rejected, and a rejected operation
+//!    leaves the ledger unchanged.
+//! 3. Import is strict: oversized, unknown, duplicate, positional, incomplete, miscoded and
+//!    rule-violating input is refused rather than repaired.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -184,6 +185,12 @@ fn derivation_rules_reject_promotion_cycles_and_stale_revisions() -> TestResult 
     )?)?;
     ledger.issue(record("sim", "sim:v1", Simulation, Provenance::Manual)?)?;
     ledger.issue(record(
+        "art",
+        "art:v1",
+        IllustrativeRecreation,
+        Provenance::Manual,
+    )?)?;
+    ledger.issue(record(
         "inf",
         "inf:v1",
         AnalyticalInference,
@@ -221,7 +228,8 @@ fn derivation_rules_reject_promotion_cycles_and_stale_revisions() -> TestResult 
         )?),
         Err(EvidenceError::LabelNotInherited { .. })
     ));
-    // inf2 derives from inf, so inf cannot also derive from inf2.
+    // Issue order bounds derivation: inf was issued before inf2, so it cannot derive from it,
+    // which also rules out cycles without a graph walk.
     assert!(matches!(
         ledger.relate(relation(
             "rel:cycle",
@@ -229,7 +237,27 @@ fn derivation_rules_reject_promotion_cycles_and_stale_revisions() -> TestResult 
             "inf:v1",
             "inf2:v1"
         )?),
-        Err(EvidenceError::DerivationCycle { .. })
+        Err(EvidenceError::RelationOrder { .. })
+    ));
+    // Provenance already records inf2 <- inf; a second identical edge is refused.
+    assert!(matches!(
+        ledger.relate(relation(
+            "rel:dup",
+            RelationKind::DerivedFrom,
+            "inf2:v1",
+            "inf:v1"
+        )?),
+        Err(EvidenceError::DuplicateEdge { .. })
+    ));
+    // An illustrative recreation cannot be cited as support for anything.
+    assert!(matches!(
+        ledger.relate(relation(
+            "rel:art",
+            RelationKind::Supports,
+            "inf:v1",
+            "art:v1"
+        )?),
+        Err(EvidenceError::IllustrationAsEvidence { .. })
     ));
     assert_eq!(
         ledger, snapshot,
@@ -264,7 +292,7 @@ fn derivation_rules_reject_promotion_cycles_and_stale_revisions() -> TestResult 
     let snapshot = ledger.clone();
     assert!(matches!(
         ledger.revise(
-            record("src", "src:v3", AcquiredSourceMaterial, source)?,
+            record("src", "src:v3", AcquiredSourceMaterial, source.clone())?,
             &v("src:v1")?,
             correction()
         ),
@@ -277,6 +305,12 @@ fn derivation_rules_reject_promotion_cycles_and_stale_revisions() -> TestResult 
             correction()
         ),
         Err(EvidenceError::ImmutableFieldChanged { field: "origin" })
+    ));
+    let mut backdated = record("src", "src:v3", AcquiredSourceMaterial, source)?;
+    backdated.created_at_ms -= 1;
+    assert!(matches!(
+        ledger.revise(backdated, &v("src:v2")?, correction()),
+        Err(EvidenceError::CreatedBeforeReference { .. })
     ));
     assert_eq!(
         ledger, snapshot,
@@ -320,6 +354,19 @@ fn json_import_is_strict() -> TestResult {
     );
     assert!(matches!(
         EvidenceLedger::from_json(&duplicate_field, limits),
+        Err(CodecError::Syntax(_))
+    ));
+
+    // serde alone would accept a positional array and read a missing `Option` key as null.
+    let positional = "[\"oia.evidence-ledger\", 1, []]";
+    assert!(matches!(
+        EvidenceLedger::from_json(positional, limits),
+        Err(CodecError::Syntax(_))
+    ));
+    let missing_claim = fixture.replacen("],\n        \"claim\": null", "]", 1);
+    assert_ne!(missing_claim, fixture, "claim marker missing");
+    assert!(matches!(
+        EvidenceLedger::from_json(&missing_claim, limits),
         Err(CodecError::Syntax(_))
     ));
 

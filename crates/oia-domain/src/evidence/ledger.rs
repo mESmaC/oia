@@ -9,7 +9,7 @@ use std::fmt;
 use super::{
     AttributeName, AttributeValue, EVIDENCE_SCHEMA_VERSION, FieldValue, InheritedLabels,
     MAX_UTC_MS, MIN_UTC_MS, ObjectType, OriginClass, Provenance, RecordFields, RecordVersion,
-    Relation, Revision, RevisionReason,
+    Relation, RelationKind, Revision, RevisionReason,
 };
 use crate::{OpaqueId, VersionId};
 
@@ -124,9 +124,27 @@ pub enum EvidenceError {
         object_type: ObjectType,
     },
     SelfRelation(VersionId),
-    DerivationCycle {
+    /// A derivation or `supersedes` upstream must have been issued before its dependent.
+    /// Issue order is a topological order, so this keeps those edges acyclic in O(log n).
+    /// To record a derivation from a later version, revise the dependent with that input.
+    RelationOrder {
         dependent: VersionId,
         upstream: VersionId,
+    },
+    /// The same kind of edge already joins these versions, as a relation or provenance input.
+    DuplicateEdge {
+        kind: RelationKind,
+        dependent: VersionId,
+        upstream: VersionId,
+    },
+    /// An illustrative recreation, or material derived from one, cannot support or
+    /// contradict anything: it is never evidence of what occurred.
+    IllustrationAsEvidence {
+        upstream: VersionId,
+    },
+    /// A revision or relation claims a creation time earlier than a version it references.
+    CreatedBeforeReference {
+        reference: VersionId,
     },
 }
 
@@ -192,12 +210,25 @@ impl fmt::Display for EvidenceError {
                 "claim fields are required for claim objects and rejected for {object_type}"
             ),
             Self::SelfRelation(v) => write!(f, "relation joins version {v} to itself"),
-            Self::DerivationCycle {
+            Self::RelationOrder {
                 dependent,
                 upstream,
             } => write!(
                 f,
-                "derivation edge {dependent} <- {upstream} would create a cycle"
+                "upstream {upstream} was issued after {dependent}; revise the dependent with that input instead"
+            ),
+            Self::DuplicateEdge {
+                kind,
+                dependent,
+                upstream,
+            } => write!(f, "a {kind} edge {dependent} <- {upstream} already exists"),
+            Self::IllustrationAsEvidence { upstream } => write!(
+                f,
+                "{upstream} is or derives from an illustrative recreation and cannot be evidence"
+            ),
+            Self::CreatedBeforeReference { reference } => write!(
+                f,
+                "creation time is earlier than referenced version {reference}"
             ),
         }
     }
@@ -248,10 +279,14 @@ pub struct EvidenceLedger {
     relations: BTreeMap<OpaqueId, Relation>,
     /// Upstream -> dependents along edges that propagate reassessment.
     propagating: BTreeMap<VersionId, BTreeSet<VersionId>>,
-    /// Upstream -> dependents along derivation edges only (kept acyclic).
-    derivation: BTreeMap<VersionId, BTreeSet<VersionId>>,
+    /// Issue position of each version. Ordered edges must point to an earlier position.
+    sequence: BTreeMap<VersionId, usize>,
+    /// Every typed edge as (kind, dependent, upstream), including provenance inputs as
+    /// `derived_from`, so the same edge cannot be stored twice.
+    edges: BTreeSet<(RelationKind, VersionId, VersionId)>,
     flags: BTreeMap<VersionId, Vec<ReassessmentFlag>>,
-    flag_count: usize,
+    /// (flagged, replaced, replacement) for each stored flag.
+    flag_keys: BTreeSet<(VersionId, VersionId, VersionId)>,
     entries: Vec<LedgerEntry>,
 }
 
@@ -268,9 +303,10 @@ impl EvidenceLedger {
             successors: BTreeMap::new(),
             relations: BTreeMap::new(),
             propagating: BTreeMap::new(),
-            derivation: BTreeMap::new(),
+            sequence: BTreeMap::new(),
+            edges: BTreeSet::new(),
             flags: BTreeMap::new(),
-            flag_count: 0,
+            flag_keys: BTreeSet::new(),
             entries: Vec::new(),
         }
     }
@@ -376,6 +412,11 @@ impl EvidenceLedger {
         if fields.scope != prior.scope {
             return Err(EvidenceError::ImmutableFieldChanged { field: "scope" });
         }
+        if fields.created_at_ms < prior.created_at_ms {
+            return Err(EvidenceError::CreatedBeforeReference {
+                reference: predecessor.clone(),
+            });
+        }
         self.check_text("rationale", &revision.rationale, false)?;
         self.check_new_version(&fields)?;
         let labels = self.validate_fields(&fields)?;
@@ -435,6 +476,50 @@ impl EvidenceLedger {
         if let FieldValue::Known(text) = &relation.rationale {
             self.check_text("rationale", text, true)?;
         }
+        if relation.created_at_ms < dependent.fields.created_at_ms {
+            return Err(EvidenceError::CreatedBeforeReference {
+                reference: relation.dependent,
+            });
+        }
+        if relation.created_at_ms < upstream.fields.created_at_ms {
+            return Err(EvidenceError::CreatedBeforeReference {
+                reference: relation.upstream,
+            });
+        }
+        let edge = (
+            relation.kind,
+            relation.dependent.clone(),
+            relation.upstream.clone(),
+        );
+        if self.edges.contains(&edge) {
+            return Err(EvidenceError::DuplicateEdge {
+                kind: relation.kind,
+                dependent: relation.dependent,
+                upstream: relation.upstream,
+            });
+        }
+
+        // Issue order is topological, so an ordered edge can never close a cycle.
+        if relation.kind.is_ordered() {
+            let position = |v: &VersionId| self.sequence.get(v).copied();
+            if position(&relation.upstream) >= position(&relation.dependent) {
+                return Err(EvidenceError::RelationOrder {
+                    dependent: relation.dependent,
+                    upstream: relation.upstream,
+                });
+            }
+        }
+
+        if matches!(
+            relation.kind,
+            RelationKind::Supports | RelationKind::Contradicts
+        ) && (upstream.fields.origin == OriginClass::IllustrativeRecreation
+            || upstream.labels.illustrative)
+        {
+            return Err(EvidenceError::IllustrationAsEvidence {
+                upstream: relation.upstream,
+            });
+        }
 
         if relation.kind.is_derivation() {
             let (dep, up) = (&dependent.fields, &upstream.fields);
@@ -459,12 +544,6 @@ impl EvidenceLedger {
                     upstream: relation.upstream,
                 });
             }
-            if reaches(&self.derivation, &relation.dependent, &relation.upstream) {
-                return Err(EvidenceError::DerivationCycle {
-                    dependent: relation.dependent,
-                    upstream: relation.upstream,
-                });
-            }
         }
 
         let planned = if relation.kind.propagates_reassessment() {
@@ -485,13 +564,7 @@ impl EvidenceLedger {
                 &relation.dependent,
             );
         }
-        if relation.kind.is_derivation() {
-            add_edge(
-                &mut self.derivation,
-                &relation.upstream,
-                &relation.dependent,
-            );
-        }
+        self.edges.insert(edge);
         self.apply_flags(planned);
         self.entries
             .push(LedgerEntry::Relation(relation.id.clone()));
@@ -674,12 +747,10 @@ impl EvidenceLedger {
     /// Flags for a version that is not yet in the graph (it has no dependents to walk).
     fn inherited_for_new(&self, fields: &RecordFields) -> Result<PlannedFlags, EvidenceError> {
         let mut planned: PlannedFlags = Vec::new();
+        let mut seen = BTreeSet::new();
         for input in fields.provenance.inputs() {
             for flag in self.inherited_from(input) {
-                let duplicate = planned.iter().any(|(_, existing)| {
-                    existing.replaced == flag.replaced && existing.replacement == flag.replacement
-                });
-                if !duplicate {
+                if seen.insert((flag.replaced.clone(), flag.replacement.clone())) {
                     planned.push((fields.version.clone(), flag));
                 }
             }
@@ -689,21 +760,25 @@ impl EvidenceLedger {
     }
 
     fn check_flag_capacity(&self, additional: usize) -> Result<(), EvidenceError> {
-        if self.flag_count.saturating_add(additional) > self.limits.max_flags {
+        if self.flag_keys.len().saturating_add(additional) > self.limits.max_flags {
             return Err(self.limit(LimitKind::Flags));
         }
         Ok(())
     }
 
     fn has_flag(&self, version: &VersionId, flag: &ReassessmentFlag) -> bool {
-        self.reassessment_flags(version)
-            .iter()
-            .any(|f| f.replaced == flag.replaced && f.replacement == flag.replacement)
+        self.flag_keys.contains(&(
+            version.clone(),
+            flag.replaced.clone(),
+            flag.replacement.clone(),
+        ))
     }
 
     /// Breadth-first walk along propagating edges. Each (version, replaced, replacement) is
-    /// flagged at most once, so the walk terminates on cycles and its work is bounded by the
-    /// flag limit. Neighbours are visited in `VersionId` order for deterministic output.
+    /// flagged at most once and only newly flagged versions are expanded, so the walk
+    /// terminates on evidential cycles and visits each propagating edge at most once per
+    /// replacement. The replaced version itself is never flagged by its own replacement.
+    /// Neighbours are visited in `VersionId` order for deterministic output.
     fn plan_propagation(
         &self,
         seeds: Vec<(VersionId, ReassessmentFlag)>,
@@ -713,6 +788,9 @@ impl EvidenceLedger {
         let mut seen: BTreeSet<(VersionId, VersionId, VersionId)> = BTreeSet::new();
         let mut planned: PlannedFlags = Vec::new();
         while let Some((node, flag)) = queue.pop_front() {
+            if node == flag.replaced {
+                continue;
+            }
             let key = (
                 node.clone(),
                 flag.replaced.clone(),
@@ -741,8 +819,12 @@ impl EvidenceLedger {
 
     fn apply_flags(&mut self, planned: PlannedFlags) {
         for (version, flag) in planned {
+            self.flag_keys.insert((
+                version.clone(),
+                flag.replaced.clone(),
+                flag.replacement.clone(),
+            ));
             self.flags.entry(version).or_default().push(flag);
-            self.flag_count += 1;
         }
     }
 
@@ -756,9 +838,15 @@ impl EvidenceLedger {
     ) {
         for input in fields.provenance.inputs() {
             add_edge(&mut self.propagating, input, &fields.version);
-            add_edge(&mut self.derivation, input, &fields.version);
+            self.edges.insert((
+                RelationKind::DerivedFrom,
+                fields.version.clone(),
+                input.clone(),
+            ));
         }
         self.apply_flags(planned);
+        self.sequence
+            .insert(fields.version.clone(), self.sequence.len());
         self.heads.insert(fields.id.clone(), fields.version.clone());
         self.entries
             .push(LedgerEntry::Record(fields.version.clone()));
@@ -792,23 +880,4 @@ fn add_edge(
         .entry(upstream.clone())
         .or_default()
         .insert(dependent.clone());
-}
-
-/// Whether `target` is reachable from `start` along upstream -> dependent edges.
-fn reaches(
-    graph: &BTreeMap<VersionId, BTreeSet<VersionId>>,
-    start: &VersionId,
-    target: &VersionId,
-) -> bool {
-    let mut visited: BTreeSet<&VersionId> = BTreeSet::new();
-    let mut queue: VecDeque<&VersionId> = VecDeque::from([start]);
-    while let Some(node) = queue.pop_front() {
-        if node == target {
-            return true;
-        }
-        if visited.insert(node) {
-            queue.extend(graph.get(node).into_iter().flatten());
-        }
-    }
-    false
 }

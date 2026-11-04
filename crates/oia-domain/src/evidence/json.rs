@@ -236,6 +236,9 @@ impl EvidenceLedger {
         }
         let doc: LedgerDoc =
             serde_json::from_str(input).map_err(|e| CodecError::Syntax(e.to_string()))?;
+        let tree: serde_json::Value =
+            serde_json::from_str(input).map_err(|e| CodecError::Syntax(e.to_string()))?;
+        shape::document(&tree)?;
         if doc.format != LEDGER_FORMAT {
             return Err(CodecError::UnsupportedFormat(doc.format));
         }
@@ -513,4 +516,157 @@ fn relation_from_doc(entry: usize, doc: RelationDoc) -> Result<Relation, CodecEr
         evidence: d.versions("evidence", doc.evidence)?,
         rationale: d.field(doc.rationale, |s| s)?,
     })
+}
+
+/// Structural checks that serde's derived deserializers do not make: every struct must be a
+/// JSON object (serde also accepts positional arrays), and every key, including nullable
+/// ones, must be present (serde reads a missing `Option` as `null`). Field types, unknown
+/// keys and duplicate keys are already checked by the typed parse.
+mod shape {
+    use serde_json::{Map, Value};
+
+    use super::CodecError;
+
+    type Obj = Map<String, Value>;
+
+    fn fail(at: &str, message: &str) -> CodecError {
+        CodecError::Syntax(format!("{at}: {message}"))
+    }
+
+    fn object<'a>(value: &'a Value, at: &str, keys: &[&str]) -> Result<&'a Obj, CodecError> {
+        let Value::Object(map) = value else {
+            return Err(fail(at, "expected a JSON object"));
+        };
+        for key in keys {
+            if !map.contains_key(*key) {
+                return Err(fail(at, &format!("missing field `{key}`")));
+            }
+        }
+        Ok(map)
+    }
+
+    fn field<'a>(map: &'a Obj, key: &str) -> &'a Value {
+        map.get(key).unwrap_or(&Value::Null)
+    }
+
+    /// An externally tagged enum value: a single-key object, or a bare string for unit
+    /// variants listed in `units`.
+    fn tagged<'a>(
+        value: &'a Value,
+        at: &str,
+        units: &[&str],
+    ) -> Result<Option<(&'a str, &'a Value)>, CodecError> {
+        match value {
+            Value::String(s) if units.contains(&s.as_str()) => Ok(None),
+            Value::Object(map) if map.len() == 1 => {
+                Ok(map.iter().next().map(|(k, v)| (k.as_str(), v)))
+            }
+            _ => Err(fail(at, "expected a single-key object")),
+        }
+    }
+
+    fn array<'a>(value: &'a Value, at: &str) -> Result<&'a [Value], CodecError> {
+        match value {
+            Value::Array(items) => Ok(items),
+            _ => Err(fail(at, "expected an array")),
+        }
+    }
+
+    fn nullable(
+        value: &Value,
+        at: &str,
+        check: impl FnOnce(&Value, &str) -> Result<(), CodecError>,
+    ) -> Result<(), CodecError> {
+        if value.is_null() {
+            Ok(())
+        } else {
+            check(value, at)
+        }
+    }
+
+    fn field_value(value: &Value, at: &str) -> Result<(), CodecError> {
+        tagged(value, at, &[]).map(|_| ())
+    }
+
+    pub(super) fn document(value: &Value) -> Result<(), CodecError> {
+        let doc = object(value, "document", &["format", "schema_version", "entries"])?;
+        for (index, entry) in array(field(doc, "entries"), "entries")?.iter().enumerate() {
+            let at = format!("entry {index}");
+            match tagged(entry, &at, &[])? {
+                Some(("record", body)) => record(body, &at)?,
+                Some(("relation", body)) => relation(body, &at)?,
+                _ => return Err(fail(&at, "expected `record` or `relation`")),
+            }
+        }
+        Ok(())
+    }
+
+    fn record(value: &Value, at: &str) -> Result<(), CodecError> {
+        let r = object(
+            value,
+            at,
+            &[
+                "id",
+                "version",
+                "schema_version",
+                "object_type",
+                "origin",
+                "created_at_ms",
+                "created_by",
+                "scope",
+                "access_policies",
+                "provenance",
+                "review",
+                "availability",
+                "predecessor",
+                "revision",
+                "attributes",
+                "claim",
+            ],
+        )?;
+        tagged(field(r, "scope"), at, &["library"])?;
+        match tagged(field(r, "provenance"), at, &["manual"])? {
+            Some(("acquired", body)) => {
+                object(body, at, &["source"])?;
+            }
+            Some(("derived", body)) => {
+                object(body, at, &["method", "method_version", "inputs"])?;
+            }
+            _ => {}
+        }
+        nullable(field(r, "revision"), at, |v, at| {
+            object(v, at, &["reason", "rationale"]).map(|_| ())
+        })?;
+        for attribute in array(field(r, "attributes"), at)? {
+            let a = object(attribute, at, &["name", "value"])?;
+            let value = field(a, "value");
+            field_value(value, at)?;
+            if let Some(("known", inner)) = tagged(value, at, &[])? {
+                field_value(inner, at)?;
+            }
+        }
+        nullable(field(r, "claim"), at, |v, at| {
+            let c = object(v, at, &["proposition", "claimant", "assessment"])?;
+            field_value(field(c, "claimant"), at)
+        })
+    }
+
+    fn relation(value: &Value, at: &str) -> Result<(), CodecError> {
+        let r = object(
+            value,
+            at,
+            &[
+                "id",
+                "kind",
+                "dependent",
+                "upstream",
+                "created_at_ms",
+                "created_by",
+                "review",
+                "evidence",
+                "rationale",
+            ],
+        )?;
+        field_value(field(r, "rationale"), at)
+    }
 }

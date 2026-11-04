@@ -238,6 +238,12 @@ vocabulary! {
     /// Each relation joins a `dependent` version to an `upstream` version. For `supports` and
     /// `contradicts`, the dependent is the claim or hypothesis being assessed and the upstream
     /// is the evidence. For `possible_same_event`, the direction carries no meaning.
+    ///
+    /// An illustrative recreation, or anything carrying illustration lineage, cannot be the
+    /// upstream of `supports` or `contradicts`. Simulations, forecasts and inferences may be,
+    /// because analysis legitimately compares hypotheses with them. Their tier stays on the
+    /// referenced upstream version (`OriginClass::tier` and `InheritedLabels`), and consumers
+    /// must present it so the edge is not read as observational support.
     RelationKind {
         DerivedFrom => "derived_from",
         Quotes => "quotes",
@@ -247,17 +253,29 @@ vocabulary! {
         /// A proposed grouping, not an established identity.
         PossibleSameEvent => "possible_same_event",
         /// Cross-object replacement. Revisions of one object use predecessor links instead.
+        /// It is ordered (acyclic) but does not propagate reassessment; revise dependents
+        /// explicitly when a replacement document changes their basis.
         Supersedes => "supersedes",
         CalibratedBy => "calibrated_by",
     }
 }
 
 impl RelationKind {
-    /// Whether this is a derivation dependency. Derivation edges must be acyclic and must
-    /// satisfy the same origin and lineage rules as derivation inputs.
+    /// Whether this is a derivation dependency. Derivation edges must satisfy the same origin
+    /// and lineage rules as derivation inputs.
     #[must_use]
     pub const fn is_derivation(self) -> bool {
         matches!(self, Self::DerivedFrom | Self::CalibratedBy)
+    }
+
+    /// Whether the upstream must have been issued before the dependent. Issue order is a
+    /// topological order, so ordered edges can never form a cycle.
+    #[must_use]
+    pub const fn is_ordered(self) -> bool {
+        matches!(
+            self,
+            Self::DerivedFrom | Self::CalibratedBy | Self::Supersedes
+        )
     }
 
     /// Whether replacing the upstream marks the dependent for reassessment.

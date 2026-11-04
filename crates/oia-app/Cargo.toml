@@ -25,6 +25,7 @@ tempfile = "=3.27.0"
 tauri = { version = "=2.12.5", optional = true }
 rfd = { version = "=0.15.4", optional = true }
 oia-documents = { path = "../oia-documents" }
+oia-news-claims = { path = "../oia-news-claims" }
 oia-png-privacy = { path = "../oia-png-privacy" }
 oia-jpeg-privacy = { path = "../oia-jpeg-privacy" }
 oia-image-forensics = { path = "../oia-image-forensics" }

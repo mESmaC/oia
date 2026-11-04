@@ -10,6 +10,7 @@ use crate::local_tools::{
     ForensicView, PreparedExport, PrivacyView, Result, SNAPSHOT_SCHEME, SearchView, Selection,
     Snapshot, ToolError,
 };
+use crate::news::{self, Dossier, Filter as NewsFilter, View as NewsView};
 use crate::recreation::{RecreationRequest, RecreationState, RecreationView};
 use crate::witness::{WitnessFormData, WitnessOrigin, WitnessState, WitnessView};
 use serde::Serialize;
@@ -25,6 +26,7 @@ struct Inner {
     corpus: Vec<Snapshot>,
     /// Session-only citation records in creation order, valid and invalid alike.
     citations: Vec<CitationView>,
+    news: Option<Arc<Dossier>>,
 }
 #[derive(Clone, Debug, Default)]
 struct Services(Arc<Mutex<Inner>>);
@@ -104,6 +106,21 @@ impl Operation {
         }
         Ok(corpus)
     }
+    fn replace_news(&self, dossier: Dossier) -> Result<NewsView> {
+        let view = dossier.view(&NewsFilter::default(), &self.control)?;
+        self.publish(|state| {
+            state.news = Some(Arc::new(dossier));
+            Ok(view)
+        })
+    }
+    fn news(&self, sha256: &str) -> Result<Arc<Dossier>> {
+        self.services
+            .lock()?
+            .news
+            .clone()
+            .filter(|held| held.sha256() == sha256)
+            .ok_or_else(|| ToolError::new("stale_input", "That news dossier is no longer loaded."))
+    }
     fn publish<T>(&self, f: impl FnOnce(&mut Inner) -> Result<T>) -> Result<T> {
         // Cancellation and the final mutation share this gate; a cancelled attempt cannot publish.
         let mut state = self.services.lock()?;
@@ -163,6 +180,64 @@ async fn worker<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send + 'stati
     tauri::async_runtime::spawn_blocking(f)
         .await
         .map_err(|_| ToolError::new("worker", "The operation worker stopped unexpectedly."))?
+}
+
+#[tauri::command]
+async fn open_news(
+    state: State<'_, Services>,
+    window: tauri::WebviewWindow,
+) -> Result<Envelope<Option<NewsView>>> {
+    let mut operation = state.begin()?;
+    worker(move || {
+        let Some(path) = rfd::FileDialog::new()
+            .set_parent(&window)
+            .set_title("Import a local news dossier (JSON, at most 2 MiB)")
+            .add_filter("News dossier", &["json"])
+            .pick_file()
+        else {
+            return Ok(envelope(None));
+        };
+        operation.control = operation.control.processing();
+        let dossier = Dossier::open(&path, &operation.control)?;
+        operation
+            .replace_news(dossier)
+            .map(|view| envelope(Some(view)))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn news_example(state: State<'_, Services>) -> Result<Envelope<NewsView>> {
+    let operation = state.begin()?;
+    worker(move || {
+        let dossier = Dossier::parse(news::EXAMPLE, &operation.control)?;
+        operation.replace_news(dossier).map(envelope)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn news_query(
+    state: State<'_, Services>,
+    sha256: String,
+    filter: NewsFilter,
+) -> Result<Envelope<NewsView>> {
+    let operation = state.begin()?;
+    let dossier = operation.news(&sha256)?;
+    worker(move || {
+        let view = dossier.view(&filter, &operation.control)?;
+        operation.publish(|_| Ok(envelope(view)))
+    })
+    .await
+}
+
+#[tauri::command]
+fn news_clear(state: State<'_, Services>) -> Result<Envelope<()>> {
+    let operation = state.begin()?;
+    operation.publish(|state| {
+        state.news = None;
+        Ok(envelope(()))
+    })
 }
 
 #[tauri::command]
@@ -717,6 +792,10 @@ pub fn run() -> std::result::Result<(), tauri::Error> {
         .manage(Witness::default())
         .manage(Recreation::default())
         .invoke_handler(tauri::generate_handler![
+            open_news,
+            news_example,
+            news_query,
+            news_clear,
             open_document,
             open_image,
             search_document,
@@ -895,6 +974,30 @@ mod tests {
                 .is_err()
         );
         assert!(!published);
+        drop(operation);
+        assert!(services.begin().is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn news_import_failure_and_cancellation_keep_previous_bytes() -> Result<()> {
+        let services = Services::default();
+        let operation = services.begin()?;
+        let original =
+            operation.replace_news(Dossier::parse(news::EXAMPLE, &operation.control)?)?;
+        assert!(Dossier::parse(b"malformed", &operation.control).is_err());
+        assert!(operation.news("wrong-dossier-hash").is_err());
+        assert_eq!(
+            operation.news(&original.sha256)?.original_bytes(),
+            news::EXAMPLE
+        );
+        let replacement = Dossier::parse(news::EXAMPLE, &operation.control)?;
+        operation.control.cancel();
+        assert!(operation.replace_news(replacement).is_err());
+        assert_eq!(
+            operation.news(&original.sha256)?.original_bytes(),
+            news::EXAMPLE
+        );
         drop(operation);
         assert!(services.begin().is_ok());
         Ok(())

@@ -10,6 +10,7 @@ use oia_domain::SchemaVersion;
 pub mod desktop;
 pub(crate) mod globe;
 pub mod local_tools;
+pub mod news;
 pub(crate) mod recreation;
 pub mod recreation_composer;
 pub(crate) mod witness;

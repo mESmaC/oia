@@ -242,7 +242,7 @@ const Witness = (() => {
       context.append(node('dt', row.field), node('dd', `${word} · ${row.text}`, `${cls} witness-text`.trim()));
     }
     $('recreation-text').value = prompt.text;
-    $('recreation-counts').textContent = `${prompt.reported_details} reported details · ${prompt.assumptions} assumptions · ${prompt.unknowns} unknowns · ${prompt.bytes.toLocaleString('en-US')} bytes · exact text; existing files are never overwritten`;
+    $('recreation-counts').textContent = `${prompt.reported_details} reported details · ${prompt.assumptions} assumptions · ${prompt.unknowns} unknowns · ${prompt.negative_keywords} evidence-derived negative keywords · ${prompt.bytes.toLocaleString('en-US')} bytes · exact text; existing files are never overwritten`;
     const saved = $('recreation-saved');
     const current = recreationSaved && recreationSaved.prompt_version === prompt.prompt_version;
     saved.hidden = !current;

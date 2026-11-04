@@ -5,7 +5,9 @@
 //! geographic context reconstruction (`GEO-02`, `GEO-05`, `INTEL-03`, `#24`), and
 //! satellite imagery / space observation catalog (`SPACE-01`..=`SPACE-03`, `A05`, `#26`),
 //! statement comparison with copied-text and drift detection (`INTEL-01`, `REASON-03`,
-//! `FIELD-02`, `#138`), and
+//! `FIELD-02`, `#138`), public link analysis, reversible conflicting-identity resolution,
+//! circular citation tracing, and technical development tracking (`INTEL-02`, `INTEL-04`,
+//! `REASON-03`, `A08`, `#36`), and
 //! validation/simulation lab with operational benchmarks (`FIELD-04`, `CAM-05`, `MEDIA-02`,
 //! `DEVICE-04`, `#40`) kernels.
 //!
@@ -17,6 +19,7 @@ pub mod geo_context;
 pub mod multilingual;
 pub mod reasoning;
 pub mod records_request;
+pub mod research_links;
 pub mod snapshot_change;
 pub mod space_imagery;
 pub mod statement_comparison;

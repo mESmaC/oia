@@ -516,6 +516,7 @@ pub struct ViewingConeGeometry {
     uncertainty_widened_horizontal_fov_deg: f64,
     range_m: f64,
     arc_vertices_lat_lon_deg: Vec<(f64, f64)>,
+    uncertainty_widened_arc_vertices_lat_lon_deg: Vec<(f64, f64)>,
 }
 
 impl ViewingConeGeometry {
@@ -567,8 +568,8 @@ impl ViewingConeGeometry {
         self.horizontal_fov_deg
     }
 
-    /// Horizontal FOV widened by `2 * angular_uncertainty` (`max_angular_error_mdeg` for calibrated
-    /// cones or `bearing_uncertainty_deg` for illustrative cones), clamped below `360.0` deg.
+    /// Horizontal FOV widened by `2 * (angular_uncertainty_deg + atan2(horizontal_uncertainty_m, range_m))`,
+    /// clamped below `360.0` deg (`CAM-02`, `CAM-05`, `docs/architecture.md` §§3.2, 8).
     #[must_use]
     pub const fn uncertainty_widened_horizontal_fov_deg(&self) -> f64 {
         self.uncertainty_widened_horizontal_fov_deg
@@ -579,9 +580,17 @@ impl ViewingConeGeometry {
         self.range_m
     }
 
+    /// Nominal outer-arc vertices projected across `horizontal_fov_deg`.
     #[must_use]
     pub fn arc_vertices_lat_lon_deg(&self) -> &[(f64, f64)] {
         &self.arc_vertices_lat_lon_deg
+    }
+
+    /// Outer-arc vertices projected across `uncertainty_widened_horizontal_fov_deg` (`horizontal_fov_deg`
+    /// widened by both calibration/bearing angular uncertainty and `horizontal_uncertainty_m` at `range_m`).
+    #[must_use]
+    pub fn uncertainty_widened_arc_vertices_lat_lon_deg(&self) -> &[(f64, f64)] {
+        &self.uncertainty_widened_arc_vertices_lat_lon_deg
     }
 }
 
@@ -613,7 +622,8 @@ pub struct CameraDirectoryRegistrationInput {
 /// Freshness and provenance evaluation attached to a classified camera frame (`CAM-02`, `AGENTS.md` §2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FrameFreshnessEvaluation {
-    /// Frame from a live stream verified within `2 * nominal_frame_interval_ms` when capture time is present.
+    /// Frame from a live stream whose capture age (when `source_capture_time_ms` is present) is
+    /// verified within the camera's retention/live staleness bound (`max(max_retention_window_ms, 2 * nominal_frame_interval_ms)`).
     LiveStream {
         nominal_frame_interval_ms: u64,
         source_capture_time_ms: Option<i64>,
@@ -857,6 +867,38 @@ impl FrameDiscontinuitySpan {
     }
 }
 
+/// Temporal coverage gap inside `[pre_start_ms, post_end_ms]` exceeding the camera's coverage
+/// tolerance (`2 * nominal_frame_interval_ms` or `2 * nominal_refresh_interval_ms`) (`CAM-04`, `AGENTS.md` §2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoverageGapSpan {
+    start_ms: i64,
+    end_ms: i64,
+    gap_duration_ms: u64,
+    tolerance_ms: u64,
+}
+
+impl CoverageGapSpan {
+    #[must_use]
+    pub const fn start_ms(&self) -> i64 {
+        self.start_ms
+    }
+
+    #[must_use]
+    pub const fn end_ms(&self) -> i64 {
+        self.end_ms
+    }
+
+    #[must_use]
+    pub const fn gap_duration_ms(&self) -> u64 {
+        self.gap_duration_ms
+    }
+
+    #[must_use]
+    pub const fn tolerance_ms(&self) -> u64 {
+        self.tolerance_ms
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct EvictedFrameRecord {
     capture_time_ms: i64,
@@ -877,6 +919,8 @@ pub struct RingBufferEvictionSummary {
     earliest_evicted_capture_time_ms: Option<i64>,
     latest_evicted_capture_time_ms: Option<i64>,
     evicted_records: VecDeque<EvictedFrameRecord>,
+    dropped_from_ledger_frames: u64,
+    latest_dropped_from_ledger_capture_time_ms: Option<i64>,
 }
 
 impl RingBufferEvictionSummary {
@@ -916,10 +960,20 @@ impl RingBufferEvictionSummary {
         self.latest_evicted_capture_time_ms
     }
 
-    /// Counts evicted frames whose capture time falls within `[start_ms, end_ms]`, returning
-    /// `(expired_by_window_in_span, evicted_by_capacity_in_span)`.
+    /// Number of per-frame eviction records that rolled off the bounded per-frame ledger.
     #[must_use]
-    pub fn evicted_counts_in_window(&self, start_ms: i64, end_ms: i64) -> (u32, u32) {
+    pub const fn dropped_from_ledger_frames(&self) -> u64 {
+        self.dropped_from_ledger_frames
+    }
+
+    /// Counts evicted frames retained in the bounded ledger whose capture time falls within
+    /// `[start_ms, end_ms]`, returning `(expired_by_window_in_span, evicted_by_capacity_in_span, ledger_truncated)`.
+    ///
+    /// When `ledger_truncated` is `true`, older eviction records whose capture time fell inside or
+    /// after `start_ms` rolled off the bounded per-frame ledger, so `(expired_by_window_in_span, evicted_by_capacity_in_span)`
+    /// are verified lower bounds rather than exact counts (`AGENTS.md` §2).
+    #[must_use]
+    pub fn evicted_counts_in_window(&self, start_ms: i64, end_ms: i64) -> (u32, u32, bool) {
         let mut by_window = 0u32;
         let mut by_capacity = 0u32;
         for rec in &self.evicted_records {
@@ -931,7 +985,11 @@ impl RingBufferEvictionSummary {
                 }
             }
         }
-        (by_window, by_capacity)
+        let ledger_truncated = self.dropped_from_ledger_frames > 0
+            && self
+                .latest_dropped_from_ledger_capture_time_ms
+                .is_some_and(|dropped_cap_ms| dropped_cap_ms >= start_ms);
+        (by_window, by_capacity, ledger_truncated)
     }
 
     fn record_eviction(
@@ -961,7 +1019,15 @@ impl RingBufferEvictionSummary {
                 .saturating_add(frame.byte_len as u64);
         }
         while self.evicted_records.len().saturating_add(1) > max_records {
-            self.evicted_records.pop_front();
+            if let Some(dropped) = self.evicted_records.pop_front() {
+                self.dropped_from_ledger_frames = self.dropped_from_ledger_frames.saturating_add(1);
+                self.latest_dropped_from_ledger_capture_time_ms = Some(
+                    self.latest_dropped_from_ledger_capture_time_ms
+                        .map_or(dropped.capture_time_ms, |prev| {
+                            prev.max(dropped.capture_time_ms)
+                        }),
+                );
+            }
         }
         self.evicted_records.push_back(EvictedFrameRecord {
             capture_time_ms,
@@ -1007,10 +1073,15 @@ pub struct RetainedCameraClipManifest {
     pre_context_frames: Vec<ClassifiedCameraFrame>,
     event_frames: Vec<ClassifiedCameraFrame>,
     post_context_frames: Vec<ClassifiedCameraFrame>,
+    excluded_cross_version_frames: Vec<ClassifiedCameraFrame>,
+    restriction_intervals_in_window: Vec<(i64, Option<i64>)>,
+    coverage_gaps_in_window: Vec<CoverageGapSpan>,
     context_window: ContextWindowStatus,
     expired_by_window_in_span: u32,
     evicted_by_capacity_in_span: u32,
+    eviction_ledger_truncated: bool,
     dropped_frame_count_in_span: u64,
+    empty_context_window_count: u8,
     missing_pre_context: bool,
     missing_post_context: bool,
     discontinuity_spans_in_window: Vec<FrameDiscontinuitySpan>,
@@ -1097,25 +1168,63 @@ impl RetainedCameraClipManifest {
         &self.post_context_frames
     }
 
+    /// Buffered frames in `[pre_start_ms, post_end_ms]` that were excluded from the manifest because
+    /// they were acquired under a different `source_version` across a restriction/re-registration boundary.
+    #[must_use]
+    pub fn excluded_cross_version_frames(&self) -> &[ClassifiedCameraFrame] {
+        &self.excluded_cross_version_frames
+    }
+
+    /// Restricted/unavailable intervals `(restricted_start_ms, reregistered_end_ms)` overlapping `[pre_start_ms, post_end_ms]`.
+    #[must_use]
+    pub fn restriction_intervals_in_window(&self) -> &[(i64, Option<i64>)] {
+        &self.restriction_intervals_in_window
+    }
+
+    /// Coverage gaps inside `[pre_start_ms, post_end_ms]` exceeding `2 * nominal_interval_ms`.
+    #[must_use]
+    pub fn coverage_gaps_in_window(&self) -> &[CoverageGapSpan] {
+        &self.coverage_gaps_in_window
+    }
+
     /// Shared [`ContextWindowStatus`] directly consumable by [`crate::camera_anomaly::SceneTriggerInput`].
     #[must_use]
     pub fn context_window(&self) -> &ContextWindowStatus {
         &self.context_window
     }
 
+    /// Window-expired frames recorded in the bounded ledger for `[pre_start_ms, post_end_ms]`.
+    /// When [`Self::eviction_ledger_truncated`] is `true`, this is a verified lower bound.
     #[must_use]
     pub const fn expired_by_window_in_span(&self) -> u32 {
         self.expired_by_window_in_span
     }
 
+    /// Capacity-evicted frames recorded in the bounded ledger for `[pre_start_ms, post_end_ms]`.
+    /// When [`Self::eviction_ledger_truncated`] is `true`, this is a verified lower bound.
     #[must_use]
     pub const fn evicted_by_capacity_in_span(&self) -> u32 {
         self.evicted_by_capacity_in_span
     }
 
+    /// True when the per-camera eviction ledger rolled off older records whose capture timestamps
+    /// fell inside `[pre_start_ms, post_end_ms]`, meaning [`Self::expired_by_window_in_span`] and
+    /// [`Self::evicted_by_capacity_in_span`] are verified lower bounds rather than exact counts (`AGENTS.md` §2).
+    #[must_use]
+    pub const fn eviction_ledger_truncated(&self) -> bool {
+        self.eviction_ledger_truncated
+    }
+
     #[must_use]
     pub const fn dropped_frame_count_in_span(&self) -> u64 {
         self.dropped_frame_count_in_span
+    }
+
+    /// Number of requested non-zero context windows (`0..=2`) that were completely empty or incomplete.
+    /// Tracked separately from frame counts (`AGENTS.md` §2).
+    #[must_use]
+    pub const fn empty_context_window_count(&self) -> u8 {
+        self.empty_context_window_count
     }
 
     #[must_use]
@@ -1174,6 +1283,7 @@ pub struct RegisteredCameraEntry {
     intentional_publication: IntentionalPublicationStatus,
     access_status: CameraAccessStatus,
     restricted_since_ms: Option<i64>,
+    restriction_intervals: Vec<(i64, Option<i64>)>,
     view_kind: CameraViewKind,
     privacy_assessment: PrivacyViewAssessment,
     stream_capability: StreamCapability,
@@ -1182,6 +1292,7 @@ pub struct RegisteredCameraEntry {
     terms: CameraSourceTerms,
     position: CameraHorizontalPosition,
     orientation: CameraViewingOrientation,
+    prior_orientations: Vec<CameraViewingOrientation>,
     current_health: SourceLifecycleHealth,
     health_transitions: Vec<SourceHealthTransition>,
     ring_buffer: VecDeque<ClassifiedCameraFrame>,
@@ -1191,6 +1302,7 @@ pub struct RegisteredCameraEntry {
     clip_manifests: Vec<RetainedCameraClipManifest>,
     last_live_ingested_frame: Option<(i64, u64)>,
     last_live_capture_time_ms: Option<i64>,
+    last_substitute_ingested_frame: Option<(i64, u64)>,
     last_archive_ingested_frame: Option<(i64, u64)>,
     last_periodic_still: Option<LastPeriodicStillTracker>,
     non_evidentiary_substitute_count: u64,
@@ -1268,6 +1380,12 @@ impl RegisteredCameraEntry {
         self.restricted_since_ms
     }
 
+    /// Recorded `(restricted_start_ms, reregistered_end_ms)` intervals for this camera.
+    #[must_use]
+    pub fn restriction_intervals(&self) -> &[(i64, Option<i64>)] {
+        &self.restriction_intervals
+    }
+
     #[must_use]
     pub const fn view_kind(&self) -> CameraViewKind {
         self.view_kind
@@ -1306,6 +1424,12 @@ impl RegisteredCameraEntry {
     #[must_use]
     pub fn orientation(&self) -> &CameraViewingOrientation {
         &self.orientation
+    }
+
+    /// Historical orientations recorded before movement invalidation or recalibration (`CAM-05`).
+    #[must_use]
+    pub fn prior_orientations(&self) -> &[CameraViewingOrientation] {
+        &self.prior_orientations
     }
 
     #[must_use]
@@ -2331,14 +2455,15 @@ impl CameraDirectoryRegistry {
             self.limits,
         )?;
 
-        let (access_status, restricted_since_ms) =
+        let (access_status, restricted_since_ms, restriction_intervals) =
             if input.initial_health == SourceLifecycleHealth::UnavailableRestricted {
                 (
                     CameraAccessStatus::RestrictedOrUnavailable,
                     Some(input.registered_at_ms),
+                    vec![(input.registered_at_ms, None)],
                 )
             } else {
-                (CameraAccessStatus::OrdinarilyAccessible, None)
+                (CameraAccessStatus::OrdinarilyAccessible, None, Vec::new())
             };
 
         self.seen_versions.insert(input.source_version.clone());
@@ -2374,6 +2499,7 @@ impl CameraDirectoryRegistry {
             intentional_publication: input.intentional_publication,
             access_status,
             restricted_since_ms,
+            restriction_intervals,
             view_kind: input.view_kind,
             privacy_assessment: input.privacy_assessment,
             stream_capability: input.stream_capability,
@@ -2382,6 +2508,7 @@ impl CameraDirectoryRegistry {
             terms: input.terms,
             position: input.position,
             orientation: input.orientation,
+            prior_orientations: Vec::new(),
             current_health: input.initial_health,
             health_transitions: Vec::new(),
             ring_buffer: VecDeque::new(),
@@ -2391,6 +2518,7 @@ impl CameraDirectoryRegistry {
             clip_manifests: Vec::new(),
             last_live_ingested_frame: None,
             last_live_capture_time_ms: None,
+            last_substitute_ingested_frame: None,
             last_archive_ingested_frame: None,
             last_periodic_still: None,
             non_evidentiary_substitute_count: 0,
@@ -2403,7 +2531,8 @@ impl CameraDirectoryRegistry {
     }
 
     /// Updates a camera's viewing orientation with a new calibrated or reported orientation,
-    /// e.g. after re-calibrating a repositioned camera (`CAM-02`, `CAM-05`).
+    /// e.g. after re-calibrating a repositioned camera (`CAM-02`, `CAM-05`), while preserving
+    /// the prior orientation in [`RegisteredCameraEntry::prior_orientations`].
     pub fn update_camera_orientation(
         &mut self,
         camera_id: &OpaqueId,
@@ -2441,7 +2570,8 @@ impl CameraDirectoryRegistry {
             .cameras
             .get_mut(camera_id)
             .ok_or_else(|| CameraDirectoryError::UnknownCameraId(camera_id.clone()))?;
-        entry.orientation = new_orientation;
+        let old_orientation = std::mem::replace(&mut entry.orientation, new_orientation);
+        entry.prior_orientations.push(old_orientation);
         Ok(entry)
     }
 
@@ -2533,17 +2663,22 @@ impl CameraDirectoryRegistry {
                 } => (prior_calibration_version.clone(), *last_known_azimuth_deg),
                 CameraViewingOrientation::Unknown { .. } => (None, None),
             };
-            entry.orientation = CameraViewingOrientation::InvalidatedByMovement {
-                prior_calibration_version: prior_cal,
-                last_known_azimuth_deg: last_az,
-                detected_at_ms: occurred_at_ms,
-                reason: detail.clone(),
-            };
+            let old_orientation = std::mem::replace(
+                &mut entry.orientation,
+                CameraViewingOrientation::InvalidatedByMovement {
+                    prior_calibration_version: prior_cal,
+                    last_known_azimuth_deg: last_az,
+                    detected_at_ms: occurred_at_ms,
+                    reason: detail.clone(),
+                },
+            );
+            entry.prior_orientations.push(old_orientation);
         }
 
         if effective_to_state == SourceLifecycleHealth::UnavailableRestricted {
             entry.access_status = CameraAccessStatus::RestrictedOrUnavailable;
             entry.restricted_since_ms = Some(occurred_at_ms);
+            entry.restriction_intervals.push((occurred_at_ms, None));
         }
 
         let from_state = entry.current_health;
@@ -2573,7 +2708,7 @@ impl CameraDirectoryRegistry {
     ///   camera endpoint is a separate [`Self::register_camera`] entry with its own access and
     ///   privacy assessment.
     /// - Resets live sequence/still session state for the new `source_version` while preserving
-    ///   prior `source_version`s, health transitions, and per-frame `source_version` provenance.
+    ///   prior `source_version`s, health transitions, restriction intervals, and per-frame `source_version` provenance.
     pub fn reregister_ordinarily_accessible_version(
         &mut self,
         camera_id: &OpaqueId,
@@ -2630,8 +2765,14 @@ impl CameraDirectoryRegistry {
         entry.prior_source_versions.push(old_version);
         entry.access_status = CameraAccessStatus::OrdinarilyAccessible;
         entry.restricted_since_ms = None;
+        if let Some((_, end_slot)) = entry.restriction_intervals.last_mut()
+            && end_slot.is_none()
+        {
+            *end_slot = Some(reregistered_at_ms);
+        }
         entry.last_live_ingested_frame = None;
         entry.last_live_capture_time_ms = None;
+        entry.last_substitute_ingested_frame = None;
         entry.last_periodic_still = None;
         let from_state = entry.current_health;
         entry.current_health = SourceLifecycleHealth::Available;
@@ -2657,8 +2798,9 @@ impl CameraDirectoryRegistry {
     /// - Requires [`CameraHorizontalPosition::KnownWgs84`] with `|latitude_deg| <= MAX_NON_POLAR_CONE_LATITUDE_DEG`;
     ///   approximate centroids, unknown positions, and degenerate geographic-pole apexes (`±90°`) are refused.
     /// - Separates [`ViewingConeClass::CalibratedFieldOfView`] from
-    ///   [`ViewingConeClass::IllustrativeReportedBearing`], records `uncertainty_widened_horizontal_fov_deg`,
-    ///   and refuses unknown or movement-invalidated orientations.
+    ///   [`ViewingConeClass::IllustrativeReportedBearing`], projects both nominal `arc_vertices_lat_lon_deg`
+    ///   and `uncertainty_widened_arc_vertices_lat_lon_deg` (widened by calibration/bearing angular uncertainty
+    ///   plus `atan2(horizontal_uncertainty_m, range_m)`), and refuses unknown or movement-invalidated orientations.
     pub fn compute_viewing_cone(
         &self,
         camera_id: &OpaqueId,
@@ -2741,12 +2883,18 @@ impl CameraDirectoryRegistry {
                 }
             };
 
+        let position_angular_uncertainty_deg = horizontal_uncertainty_m.atan2(range_m).to_degrees();
+        let total_half_widening_deg = angular_uncertainty_deg + position_angular_uncertainty_deg;
         let uncertainty_widened_horizontal_fov_deg =
-            (horizontal_fov_deg + 2.0 * angular_uncertainty_deg).min(359.999_999);
+            (horizontal_fov_deg + 2.0 * total_half_widening_deg).min(359.999_999);
+
         let half_fov = horizontal_fov_deg * 0.5;
         let start_bearing = azimuth_deg - half_fov;
+        let widened_half_fov = uncertainty_widened_horizontal_fov_deg * 0.5;
+        let widened_start_bearing = azimuth_deg - widened_half_fov;
         let step_count = arc_vertex_count.saturating_sub(1);
         let mut arc_vertices_lat_lon_deg = Vec::with_capacity(arc_vertex_count);
+        let mut uncertainty_widened_arc_vertices_lat_lon_deg = Vec::with_capacity(arc_vertex_count);
         for idx in 0..arc_vertex_count {
             let fraction = if step_count == 0 {
                 0.0
@@ -2758,6 +2906,15 @@ impl CameraDirectoryRegistry {
                 apex_latitude_deg,
                 apex_longitude_deg,
                 bearing,
+                range_m,
+            ));
+            let widened_bearing = (widened_start_bearing
+                + uncertainty_widened_horizontal_fov_deg * fraction)
+                .rem_euclid(360.0);
+            uncertainty_widened_arc_vertices_lat_lon_deg.push(project_spherical_point(
+                apex_latitude_deg,
+                apex_longitude_deg,
+                widened_bearing,
                 range_m,
             ));
         }
@@ -2774,6 +2931,7 @@ impl CameraDirectoryRegistry {
             uncertainty_widened_horizontal_fov_deg,
             range_m,
             arc_vertices_lat_lon_deg,
+            uncertainty_widened_arc_vertices_lat_lon_deg,
         })
     }
 
@@ -2783,6 +2941,9 @@ impl CameraDirectoryRegistry {
     /// - Refuses restricted cameras (`SourceRestricted`), policy-disabled cameras (`CameraDisabledByPolicy`),
     ///   and cameras where `automated_processing != Permitted` (`AutomatedProcessingNotPermitted`).
     /// - Enforces privacy view exclusions and required mask zones before admitting frames.
+    /// - Separates sequence spaces for live/still observations, historical archive frames, and
+    ///   non-evidentiary substitutes so substitute or archive submissions never mask or fabricate
+    ///   live sequence discontinuities.
     /// - Evaluates `PeriodicUpstreamStill` freshness against `stale_after_ms`:
     ///   - Stills with an explicit `source_capture_time_ms` within `stale_after_ms` and unchanged hold
     ///     within `stale_after_ms` are classified as `FreshPeriodicStill` (`eligible_as_event_evidence() == true`).
@@ -2896,14 +3057,27 @@ impl CameraDirectoryRegistry {
                     current_sequence: submission.sequence_number,
                 });
             }
-        } else if let Some((prev_ingestion_ms, prev_seq)) = entry.last_live_ingested_frame
-            && (submission.ingestion_time_ms < prev_ingestion_ms
-                || submission.sequence_number <= prev_seq)
+        } else if is_live_or_still_submission {
+            if let Some((prev_ingestion_ms, prev_seq)) = entry.last_live_ingested_frame
+                && (submission.ingestion_time_ms < prev_ingestion_ms
+                    || submission.sequence_number <= prev_seq)
+            {
+                return Err(CameraDirectoryError::OutOfOrderFrameIngestion {
+                    camera_id: camera_id.clone(),
+                    previous_ingestion_ms: prev_ingestion_ms,
+                    previous_sequence: prev_seq,
+                    current_ingestion_ms: submission.ingestion_time_ms,
+                    current_sequence: submission.sequence_number,
+                });
+            }
+        } else if let Some((prev_sub_ms, prev_sub_seq)) = entry.last_substitute_ingested_frame
+            && (submission.ingestion_time_ms < prev_sub_ms
+                || submission.sequence_number <= prev_sub_seq)
         {
             return Err(CameraDirectoryError::OutOfOrderFrameIngestion {
                 camera_id: camera_id.clone(),
-                previous_ingestion_ms: prev_ingestion_ms,
-                previous_sequence: prev_seq,
+                previous_ingestion_ms: prev_sub_ms,
+                previous_sequence: prev_sub_seq,
                 current_ingestion_ms: submission.ingestion_time_ms,
                 current_sequence: submission.sequence_number,
             });
@@ -3112,31 +3286,31 @@ impl CameraDirectoryRegistry {
         if is_archive_submission {
             entry.last_archive_ingested_frame =
                 Some((submission.ingestion_time_ms, submission.sequence_number));
-        } else {
-            if is_live_or_still_submission {
-                if let Some((prev_ingestion_ms, prev_seq)) = entry.last_live_ingested_frame
-                    && submission.sequence_number > prev_seq.saturating_add(1)
-                {
-                    let span_start_ms =
-                        entry.last_live_capture_time_ms.unwrap_or(prev_ingestion_ms);
-                    let span_end_ms = submission
-                        .source_capture_time_ms
-                        .unwrap_or(submission.ingestion_time_ms)
-                        .max(span_start_ms);
-                    entry.discontinuity_spans.push(FrameDiscontinuitySpan {
-                        source_version: entry.source_version.clone(),
-                        previous_sequence_number: prev_seq,
-                        next_sequence_number: submission.sequence_number,
-                        dropped_frame_count: submission.sequence_number - prev_seq - 1,
-                        start_ms: span_start_ms,
-                        end_ms: span_end_ms,
-                    });
-                }
-                if let Some(capture_ms) = submission.source_capture_time_ms {
-                    entry.last_live_capture_time_ms = Some(capture_ms);
-                }
+        } else if is_live_or_still_submission {
+            if let Some((prev_ingestion_ms, prev_seq)) = entry.last_live_ingested_frame
+                && submission.sequence_number > prev_seq.saturating_add(1)
+            {
+                let span_start_ms = entry.last_live_capture_time_ms.unwrap_or(prev_ingestion_ms);
+                let span_end_ms = submission
+                    .source_capture_time_ms
+                    .unwrap_or(submission.ingestion_time_ms)
+                    .max(span_start_ms);
+                entry.discontinuity_spans.push(FrameDiscontinuitySpan {
+                    source_version: entry.source_version.clone(),
+                    previous_sequence_number: prev_seq,
+                    next_sequence_number: submission.sequence_number,
+                    dropped_frame_count: submission.sequence_number - prev_seq - 1,
+                    start_ms: span_start_ms,
+                    end_ms: span_end_ms,
+                });
+            }
+            if let Some(capture_ms) = submission.source_capture_time_ms {
+                entry.last_live_capture_time_ms = Some(capture_ms);
             }
             entry.last_live_ingested_frame =
+                Some((submission.ingestion_time_ms, submission.sequence_number));
+        } else {
+            entry.last_substitute_ingested_frame =
                 Some((submission.ingestion_time_ms, submission.sequence_number));
         }
 
@@ -3255,16 +3429,23 @@ impl CameraDirectoryRegistry {
     /// Extracts a retained evidence clip manifest from a camera's bounded ring buffer (`CAM-04`,
     /// `docs/architecture.md` §8).
     ///
-    /// - Enforces `clip_retention == Permitted` (`ClipRetentionNotPermitted`); for unbuffered
+    /// - Refuses cameras currently in [`SourceLifecycleHealth::DisabledByPolicy`] (`CameraDisabledByPolicy`)
+    ///   and cameras where `clip_retention != Permitted` (`ClipRetentionNotPermitted`); for unbuffered
     ///   cameras, callers use [`RegisteredCameraEntry::omitted_retention_context_status`].
     /// - Filters buffered frames and discontinuities to the acquisition `source_version` of the
-    ///   event's primary frame so frames across a restriction/re-registration boundary are never
-    ///   mixed or mislabeled (`AGENTS.md` §2).
+    ///   event's primary frame while recording any excluded cross-version frames in
+    ///   [`RetainedCameraClipManifest::excluded_cross_version_frames`] and any overlapping restriction
+    ///   intervals in [`RetainedCameraClipManifest::restriction_intervals_in_window`] (`AGENTS.md` §2).
+    /// - Evaluates temporal coverage gaps across `[pre_start_ms, post_end_ms]` against `2 * nominal_interval_ms`
+    ///   and records any exceeded spans in [`RetainedCameraClipManifest::coverage_gaps_in_window`].
+    /// - Tracks [`RetainedCameraClipManifest::eviction_ledger_truncated`] when older per-frame eviction
+    ///   records rolled off the bounded eviction ledger so lower-bound eviction counts are never
+    ///   presented as exact (`AGENTS.md` §2, §3).
     /// - Returns [`ContextWindowStatus::Complete`] **only** when every requested non-zero pre/post
-    ///   context window is populated, `extracted_at_ms >= post_end_ms`, and there are zero window
-    ///   evictions, zero capacity evictions, and zero dropped frames in `[pre_start_ms, post_end_ms]`.
-    ///   Otherwise returns [`ContextWindowStatus::PartialBufferExpired`] with the exact window-scoped
-    ///   missing/expired/dropped frame count (`CAM-04`, `AGENTS.md` §2).
+    ///   context window is populated, `extracted_at_ms >= post_end_ms`, there are zero window evictions,
+    ///   zero capacity evictions, zero ledger truncations, zero dropped frames, zero coverage gaps,
+    ///   zero excluded cross-version frames, and zero restriction intervals in `[pre_start_ms, post_end_ms]`.
+    ///   Otherwise returns [`ContextWindowStatus::PartialBufferExpired`].
     pub fn extract_retained_clip_manifest(
         &mut self,
         camera_id: &OpaqueId,
@@ -3293,6 +3474,11 @@ impl CameraDirectoryRegistry {
             .cameras
             .get(camera_id)
             .ok_or_else(|| CameraDirectoryError::UnknownCameraId(camera_id.clone()))?;
+        if entry.current_health == SourceLifecycleHealth::DisabledByPolicy {
+            return Err(CameraDirectoryError::CameraDisabledByPolicy {
+                camera_id: camera_id.clone(),
+            });
+        }
         if entry.terms.clip_retention != SourceUsePermission::Permitted {
             return Err(CameraDirectoryError::ClipRetentionNotPermitted {
                 camera_id: camera_id.clone(),
@@ -3323,7 +3509,7 @@ impl CameraDirectoryRegistry {
             .event_end_ms
             .saturating_add(i64::try_from(request.requested_post_context_ms).unwrap_or(i64::MAX));
 
-        let mut event_frames = Vec::new();
+        let mut raw_event_frames = Vec::new();
         for frame in &entry.ring_buffer {
             if !frame.eligible_as_event_evidence() {
                 continue;
@@ -3332,11 +3518,11 @@ impl CameraDirectoryRegistry {
                 continue;
             };
             if t >= request.event_start_ms && t < request.event_end_ms {
-                event_frames.push(frame.clone());
+                raw_event_frames.push(frame.clone());
             }
         }
 
-        let Some(first_event_frame) = event_frames.first().cloned() else {
+        let Some(first_event_frame) = raw_event_frames.first().cloned() else {
             return Err(CameraDirectoryError::NoEvidentiaryFramesInEventWindow {
                 camera_id: camera_id.clone(),
                 event_start_ms: request.event_start_ms,
@@ -3344,26 +3530,34 @@ impl CameraDirectoryRegistry {
             });
         };
         let manifest_source_version = first_event_frame.source_version.clone();
-        event_frames.retain(|f| f.source_version == manifest_source_version);
 
         let mut pre_context_frames = Vec::new();
+        let mut event_frames = Vec::new();
         let mut post_context_frames = Vec::new();
+        let mut excluded_cross_version_frames = Vec::new();
         let mut pre_frames = Vec::new();
         let mut post_frames = Vec::new();
 
         for frame in &entry.ring_buffer {
-            if !frame.eligible_as_event_evidence()
-                || frame.source_version != manifest_source_version
-            {
+            if !frame.eligible_as_event_evidence() {
                 continue;
             }
             let Some(t) = frame.source_capture_time_ms else {
                 continue;
             };
-            if t >= pre_start_ms && t < request.event_start_ms {
+            if t < pre_start_ms || t > post_end_ms {
+                continue;
+            }
+            if frame.source_version != manifest_source_version {
+                excluded_cross_version_frames.push(frame.clone());
+                continue;
+            }
+            if t < request.event_start_ms {
                 pre_frames.push(frame.to_retained_frame_ref()?);
                 pre_context_frames.push(frame.clone());
-            } else if t >= request.event_end_ms && t <= post_end_ms {
+            } else if t < request.event_end_ms {
+                event_frames.push(frame.clone());
+            } else {
                 post_frames.push(frame.to_retained_frame_ref()?);
                 post_context_frames.push(frame.clone());
             }
@@ -3382,9 +3576,10 @@ impl CameraDirectoryRegistry {
         }
 
         let primary_frame = first_event_frame.to_retained_frame_ref()?;
-        let (expired_by_window_in_span, evicted_by_capacity_in_span) = entry
-            .eviction_summary
-            .evicted_counts_in_window(pre_start_ms, post_end_ms);
+        let (expired_by_window_in_span, evicted_by_capacity_in_span, eviction_ledger_truncated) =
+            entry
+                .eviction_summary
+                .evicted_counts_in_window(pre_start_ms, post_end_ms);
 
         let discontinuity_spans_in_window: Vec<FrameDiscontinuitySpan> = entry
             .discontinuity_spans
@@ -3402,18 +3597,106 @@ impl CameraDirectoryRegistry {
                 acc.saturating_add(span.dropped_frame_count)
             });
 
+        let restriction_intervals_in_window: Vec<(i64, Option<i64>)> = entry
+            .restriction_intervals
+            .iter()
+            .filter(|&&(r_start, r_end_opt)| {
+                let r_end = r_end_opt.unwrap_or(i64::MAX);
+                r_start < post_end_ms && r_end > pre_start_ms
+            })
+            .copied()
+            .collect();
+
+        let coverage_tolerance_ms = match (entry.stream_capability, entry.still_capability) {
+            (
+                StreamCapability::LiveStreamSupported {
+                    nominal_frame_interval_ms,
+                },
+                _,
+            ) => Some(nominal_frame_interval_ms.saturating_mul(2)),
+            (
+                StreamCapability::None,
+                StillRefreshCapability::PeriodicStillSupported {
+                    nominal_refresh_interval_ms,
+                    ..
+                },
+            ) => Some(nominal_refresh_interval_ms.saturating_mul(2)),
+            (StreamCapability::None, StillRefreshCapability::None) => None,
+        };
+
+        let mut coverage_gaps_in_window = Vec::new();
+        if let Some(tolerance_ms) = coverage_tolerance_ms
+            && (request.requested_pre_context_ms > 0 || request.requested_post_context_ms > 0)
+        {
+            let mut retained_times: Vec<i64> = pre_context_frames
+                .iter()
+                .chain(event_frames.iter())
+                .chain(post_context_frames.iter())
+                .filter_map(|f| f.source_capture_time_ms)
+                .collect();
+            retained_times.sort_unstable();
+
+            if let (Some(&first_t), Some(&last_t)) = (retained_times.first(), retained_times.last())
+            {
+                if request.requested_pre_context_ms > 0 && first_t > pre_start_ms {
+                    let lead_gap_ms = pre_start_ms.abs_diff(first_t);
+                    if lead_gap_ms > tolerance_ms {
+                        coverage_gaps_in_window.push(CoverageGapSpan {
+                            start_ms: pre_start_ms,
+                            end_ms: first_t,
+                            gap_duration_ms: lead_gap_ms,
+                            tolerance_ms,
+                        });
+                    }
+                }
+                for pair in retained_times.windows(2) {
+                    if let [prev_t, next_t] = *pair
+                        && next_t > prev_t
+                    {
+                        let step_gap_ms = prev_t.abs_diff(next_t);
+                        if step_gap_ms > tolerance_ms {
+                            coverage_gaps_in_window.push(CoverageGapSpan {
+                                start_ms: prev_t,
+                                end_ms: next_t,
+                                gap_duration_ms: step_gap_ms,
+                                tolerance_ms,
+                            });
+                        }
+                    }
+                }
+                if request.requested_post_context_ms > 0 && post_end_ms > last_t {
+                    let tail_gap_ms = last_t.abs_diff(post_end_ms);
+                    if tail_gap_ms > tolerance_ms {
+                        coverage_gaps_in_window.push(CoverageGapSpan {
+                            start_ms: last_t,
+                            end_ms: post_end_ms,
+                            gap_duration_ms: tail_gap_ms,
+                            tolerance_ms,
+                        });
+                    }
+                }
+            }
+        }
+
         let missing_pre_context = request.requested_pre_context_ms > 0 && pre_frames.is_empty();
         let missing_post_context = request.requested_post_context_ms > 0
             && (post_frames.is_empty() || request.extracted_at_ms < post_end_ms);
+        let empty_context_window_count =
+            u8::from(missing_pre_context).saturating_add(u8::from(missing_post_context));
 
-        let total_evicted_or_dropped = u64::from(expired_by_window_in_span)
+        let exact_frame_loss_count = u64::from(expired_by_window_in_span)
             .saturating_add(u64::from(evicted_by_capacity_in_span))
             .saturating_add(dropped_frame_count_in_span)
-            .saturating_add(u64::from(missing_pre_context))
-            .saturating_add(u64::from(missing_post_context));
+            .saturating_add(excluded_cross_version_frames.len() as u64);
 
-        let context_window = if total_evicted_or_dropped > 0 {
-            let expired_frame_count = u32::try_from(total_evicted_or_dropped)
+        let is_partial = exact_frame_loss_count > 0
+            || eviction_ledger_truncated
+            || empty_context_window_count > 0
+            || !restriction_intervals_in_window.is_empty()
+            || !coverage_gaps_in_window.is_empty();
+
+        let context_window = if is_partial {
+            let expired_frame_count = u32::try_from(exact_frame_loss_count)
                 .unwrap_or(u32::MAX)
                 .max(1);
             ContextWindowStatus::PartialBufferExpired {
@@ -3449,10 +3732,15 @@ impl CameraDirectoryRegistry {
             pre_context_frames,
             event_frames,
             post_context_frames,
+            excluded_cross_version_frames,
+            restriction_intervals_in_window,
+            coverage_gaps_in_window,
             context_window,
             expired_by_window_in_span,
             evicted_by_capacity_in_span,
+            eviction_ledger_truncated,
             dropped_frame_count_in_span,
+            empty_context_window_count,
             missing_pre_context,
             missing_post_context,
             discontinuity_spans_in_window,

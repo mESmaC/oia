@@ -257,8 +257,8 @@ fn cam01_cam02_directory_registration_permissions_and_privacy_exclusions()
         Err(CameraDirectoryError::UnmaskedPrivacyZone { zone_id: ref z, .. }) if z == &zone_id
     ));
 
-    // 5. `ExcludedPrivateActivity` and `DisabledByPolicy` block both `ingest_frame` and
-    // `to_anomaly_source_profile()` (`B3`, `B6`, `CAM-02`).
+    // 5. `ExcludedPrivateActivity` and `DisabledByPolicy` block `ingest_frame`,
+    // `to_anomaly_source_profile()`, and `extract_retained_clip_manifest` (`B3`, `B6`, `CAM-02`).
     let mut excluded = sample_registration("cam:private-yard", "srcver:4")?;
     excluded.privacy_assessment = PrivacyViewAssessment::ExcludedPrivateActivity {
         assessed_by: ActorId::new("actor:test-operator")?,
@@ -318,6 +318,25 @@ fn cam01_cam02_directory_registration_permissions_and_privacy_exclusions()
             },
         ),
         Err(CameraDirectoryError::CameraDisabledByPolicy {
+            camera_id: disabled_id.clone(),
+        })
+    );
+    assert_eq!(
+        registry.extract_retained_clip_manifest(
+            &disabled_id,
+            ClipExtractionRequest {
+                clip_id: OpaqueId::new("clip:disabled:1")?,
+                clip_version: VersionId::new("clipver:disabled:1")?,
+                source_session_id: OpaqueId::new("sess:disabled:1")?,
+                event_start_ms: 1_000,
+                event_end_ms: 1_200,
+                requested_pre_context_ms: 0,
+                requested_post_context_ms: 0,
+                extracted_at_ms: 1_300,
+                trigger_explanation: "Disabled camera clip".to_owned(),
+            },
+        ),
+        Err(CameraDirectoryError::CameraDisabledByPolicy {
             camera_id: disabled_id,
         })
     );
@@ -335,11 +354,18 @@ fn cam02_cam05_viewing_cone_geometry_movement_invalidation_and_recalibration()
 
     // Calibrated due-north camera (`azimuth_deg = 0.0`, `horizontal_fov_deg = 60.0`):
     // midpoint vertex (`idx = 1` of 3) lies due north of the apex with higher latitude and matching longitude,
-    // and `uncertainty_widened_horizontal_fov_deg` reflects `2 * max_angular_error_mdeg` (`60.2` deg).
+    // and `uncertainty_widened_horizontal_fov_deg` + `uncertainty_widened_arc_vertices_lat_lon_deg`
+    // reflect both `max_angular_error_mdeg` and `atan2(horizontal_uncertainty_m, range_m)`.
     let cone = registry.compute_viewing_cone(&cal_id, 1_000.0, 3)?;
     assert!(cone.is_calibrated());
     assert_eq!(cone.arc_vertices_lat_lon_deg().len(), 3);
-    assert!((cone.uncertainty_widened_horizontal_fov_deg() - 60.2).abs() < 1e-9);
+    assert_eq!(cone.uncertainty_widened_arc_vertices_lat_lon_deg().len(), 3);
+    let expected_widened_fov = 60.0 + 2.0 * (0.1 + (3.0_f64).atan2(1_000.0).to_degrees());
+    assert!((cone.uncertainty_widened_horizontal_fov_deg() - expected_widened_fov).abs() < 1e-9);
+    assert_ne!(
+        cone.arc_vertices_lat_lon_deg()[0],
+        cone.uncertainty_widened_arc_vertices_lat_lon_deg()[0]
+    );
     let (north_lat, north_lon) = cone.arc_vertices_lat_lon_deg()[1];
     assert!(north_lat > cone.apex_latitude_deg());
     assert!((north_lon - cone.apex_longitude_deg()).abs() < 1e-9);
@@ -355,7 +381,7 @@ fn cam02_cam05_viewing_cone_geometry_movement_invalidation_and_recalibration()
     registry.register_camera(approx_reg)?;
     let approx_cone = registry.compute_viewing_cone(&approx_id, 1_000.0, 3)?;
     assert!(!approx_cone.is_calibrated());
-    assert!((approx_cone.uncertainty_widened_horizontal_fov_deg() - 64.0).abs() < 1e-9);
+    assert!(approx_cone.uncertainty_widened_horizontal_fov_deg() > 64.0);
     assert!(matches!(
         approx_cone.cone_class(),
         ViewingConeClass::IllustrativeReportedBearing {
@@ -363,8 +389,9 @@ fn cam02_cam05_viewing_cone_geometry_movement_invalidation_and_recalibration()
         } if (*bearing_uncertainty_deg - 12.0).abs() < f64::EPSILON
     ));
 
-    // Recording `CameraRepositioned` invalidates the calibrated orientation and causes viewing-cone
-    // projection to fail until `update_camera_orientation` supplies a new calibration version (`CAM-05`, `N9`).
+    // Recording `CameraRepositioned` invalidates the calibrated orientation, preserves the old orientation
+    // in `prior_orientations()`, and causes viewing-cone projection to fail until `update_camera_orientation`
+    // supplies a new calibration version (`CAM-05`, `N9`).
     registry.record_health_transition(
         &cal_id,
         OpaqueId::new("trans:cone:repositioned")?,
@@ -374,6 +401,7 @@ fn cam02_cam05_viewing_cone_geometry_movement_invalidation_and_recalibration()
         "PTZ mount slewed 35 deg east during wind gust".to_owned(),
     )?;
     let cal_entry = registry.camera(&cal_id).ok_or("missing camera")?;
+    assert_eq!(cal_entry.prior_orientations().len(), 1);
     assert!(matches!(
         cal_entry.to_anomaly_source_profile()?.calibration,
         CameraCalibrationState::InvalidatedByMovement {
@@ -386,8 +414,9 @@ fn cam02_cam05_viewing_cone_geometry_movement_invalidation_and_recalibration()
         Err(CameraDirectoryError::OrientationUnavailableForViewingCone { .. })
     ));
 
-    // Re-calibrating with a new `calibration_version` restores viewing-cone projection (`N9`).
-    registry.update_camera_orientation(
+    // Re-calibrating with a new `calibration_version` restores viewing-cone projection while preserving
+    // orientation history (`N9`).
+    let recal_entry = registry.update_camera_orientation(
         &cal_id,
         CameraViewingOrientation::Calibrated {
             calibration_version: VersionId::new("cal:srcver:cone:1:v2")?,
@@ -399,6 +428,7 @@ fn cam02_cam05_viewing_cone_geometry_movement_invalidation_and_recalibration()
             max_angular_error_mdeg: 150,
         },
     )?;
+    assert_eq!(recal_entry.prior_orientations().len(), 2);
     assert!(
         registry
             .compute_viewing_cone(&cal_id, 1_000.0, 3)?
@@ -558,7 +588,9 @@ fn cam02_frame_classification_capture_time_honesty_still_freshness_and_archive_b
     );
 
     // 4. Non-evidentiary substitutes (`StillFallback`, `StreetViewFallback`, `SyntheticPlaceholder`)
-    // are never buffered, never eligible as event evidence, and never advance `last_live_capture_time_ms` (`N4`).
+    // are never buffered, never eligible as event evidence, use their own substitute sequence space
+    // (`N12`: `seq = 50..=52` does not mask a live sequence gap between `seq = 3` and `seq = 5`),
+    // and never advance `last_live_capture_time_ms` (`N4`).
     for (idx, sub_kind) in [
         FeedObservationKind::StillFallback,
         FeedObservationKind::StreetViewFallback,
@@ -567,7 +599,7 @@ fn cam02_frame_classification_capture_time_honesty_still_freshness_and_archive_b
     .into_iter()
     .enumerate()
     {
-        let seq = 4 + idx as u64;
+        let seq = 50 + idx as u64;
         let frame = registry.ingest_frame(
             &cam_id,
             CameraFrameSubmission {
@@ -587,8 +619,34 @@ fn cam02_frame_classification_capture_time_honesty_still_freshness_and_archive_b
         assert!(!frame.retained_in_ring_buffer());
     }
 
+    // Live frame at `sequence_number = 5` still records the 1-frame discontinuity after `sequence_number = 3`
+    // despite the intervening substitutes at `50..=52` (`N12`).
+    registry.ingest_frame(
+        &cam_id,
+        CameraFrameSubmission {
+            frame_version: VersionId::new("ver:live:after-sub")?,
+            sha256_hex: hex64('7'),
+            byte_len: 1_024,
+            sequence_number: 5,
+            declared_kind: FeedObservationKind::UpstreamCameraFeed,
+            origin: FrameArtifactOrigin::OriginalRetainedFrame,
+            source_capture_time_ms: Some(13_700),
+            clock_uncertainty_ms: 20,
+            ingestion_time_ms: 13_720,
+            archive_version: None,
+        },
+    )?;
+    assert_eq!(
+        registry
+            .camera(&cam_id)
+            .ok_or("missing")?
+            .discontinuity_spans()
+            .len(),
+        1
+    );
+
     // 5. Historical archive frame inside the verified window `[500, 900]` with matching `archive_version`
-    // uses its own sequence space (`N12`: `sequence_number = 1` does not conflict with live `seq = 6`)
+    // uses its own sequence space (`N12`: `sequence_number = 1` does not conflict with live `seq = 5`)
     // and is eligible as retrospective evidence (`to_retained_frame_ref()` succeeds) without entering the live ring buffer.
     let archive_ok = registry.ingest_frame(
         &cam_id,
@@ -630,7 +688,7 @@ fn cam02_frame_classification_capture_time_honesty_still_freshness_and_archive_b
         Err(CameraDirectoryError::ArchiveFrameOutsideVerifiedWindow { .. })
     ));
 
-    // Live frame exceeding staleness bound (`capture_age_ms = 5_000 > max_retention_window_ms = 2_000`) is rejected (`N3`).
+    // Live frame exceeding staleness bound (`capture_age_ms = 5_200 > max_retention_window_ms = 2_000`) is rejected (`N3`).
     let stale_live_err = registry.ingest_frame(
         &cam_id,
         CameraFrameSubmission {
@@ -640,9 +698,9 @@ fn cam02_frame_classification_capture_time_honesty_still_freshness_and_archive_b
             sequence_number: 7,
             declared_kind: FeedObservationKind::UpstreamCameraFeed,
             origin: FrameArtifactOrigin::OriginalRetainedFrame,
-            source_capture_time_ms: Some(9_000),
+            source_capture_time_ms: Some(13_800),
             clock_uncertainty_ms: 10,
-            ingestion_time_ms: 14_200,
+            ingestion_time_ms: 19_000,
             archive_version: None,
         },
     );
@@ -661,9 +719,9 @@ fn cam02_frame_classification_capture_time_honesty_still_freshness_and_archive_b
             sequence_number: 7,
             declared_kind: FeedObservationKind::UpstreamCameraFeed,
             origin: FrameArtifactOrigin::PredictiveOrGeneratedDerivative,
-            source_capture_time_ms: Some(14_200),
+            source_capture_time_ms: Some(19_100),
             clock_uncertainty_ms: 10,
-            ingestion_time_ms: 14_210,
+            ingestion_time_ms: 19_110,
             archive_version: None,
         },
     );
@@ -681,9 +739,9 @@ fn cam02_frame_classification_capture_time_honesty_still_freshness_and_archive_b
             sequence_number: 7,
             declared_kind: FeedObservationKind::UpstreamCameraFeed,
             origin: FrameArtifactOrigin::OriginalRetainedFrame,
-            source_capture_time_ms: Some(14_200),
+            source_capture_time_ms: Some(19_100),
             clock_uncertainty_ms: MAX_CLOCK_UNCERTAINTY_MS + 1,
-            ingestion_time_ms: 14_210,
+            ingestion_time_ms: 19_110,
             archive_version: None,
         },
     );
@@ -788,7 +846,8 @@ fn cam01_a09_restricted_cutoff_same_listing_reregistration_and_source_version_pr
     ));
 
     // Explicit re-registration on the SAME `listing_reference` (`B4`) with a new `source_version`
-    // succeeds, preserves `prior_source_versions`, and resets live session sequence state (`N12`).
+    // succeeds, preserves `prior_source_versions` and `restriction_intervals`, and resets live session
+    // sequence state (`N12`).
     let updated = registry.reregister_ordinarily_accessible_version(
         &cam_id,
         OpaqueId::new("trans:rest:rereg-ok")?,
@@ -806,6 +865,7 @@ fn cam01_a09_restricted_cutoff_same_listing_reregistration_and_source_version_pr
         updated.prior_source_versions(),
         &[VersionId::new("srcver:rest:1")?]
     );
+    assert_eq!(updated.restriction_intervals(), &[(5_000, Some(6_000))]);
 
     // Ingest a frame in the new session (`srcver:rest:2`) starting at `sequence_number = 1` without
     // triggering a false discontinuity against the pre-restriction session (`seq = 10`).
@@ -825,8 +885,13 @@ fn cam01_a09_restricted_cutoff_same_listing_reregistration_and_source_version_pr
         },
     )?;
 
-    // Extracting a clip over the pre-restriction frame (`4_500` ms) stamps the manifest with its
-    // exact acquisition `source_version = srcver:rest:1` rather than the camera's newer `srcver:rest:2` (`B5`).
+    // Extracting a clip over `[4_400, 4_600)` with a post-context window (`requested_post_context_ms = 1_800`,
+    // `post_end_ms = 6_400`) that spans the restriction interval `[5_000, 6_000]` and the `srcver:rest:2`
+    // frame at `6_100`:
+    // - Stamps the manifest with `srcver:rest:1` (`B5`).
+    // - Records the excluded `srcver:rest:2` frame in `excluded_cross_version_frames()` (`B1'`).
+    // - Records the restriction interval `(5_000, Some(6_000))` in `restriction_intervals_in_window()` (`B1'`).
+    // - Reports `PartialBufferExpired` rather than `Complete` (`B1'`).
     let pre_manifest = registry.extract_retained_clip_manifest(
         &cam_id,
         ClipExtractionRequest {
@@ -836,15 +901,24 @@ fn cam01_a09_restricted_cutoff_same_listing_reregistration_and_source_version_pr
             event_start_ms: 4_400,
             event_end_ms: 4_600,
             requested_pre_context_ms: 0,
-            requested_post_context_ms: 0,
-            extracted_at_ms: 6_200,
-            trigger_explanation: "Pre-restriction event clip".to_owned(),
+            requested_post_context_ms: 1_800,
+            extracted_at_ms: 6_500,
+            trigger_explanation: "Pre-restriction event clip spanning restriction".to_owned(),
         },
     )?;
     assert_eq!(
         pre_manifest.source_version(),
         &VersionId::new("srcver:rest:1")?
     );
+    assert_eq!(pre_manifest.excluded_cross_version_frames().len(), 1);
+    assert_eq!(
+        pre_manifest.restriction_intervals_in_window(),
+        &[(5_000, Some(6_000))]
+    );
+    assert!(matches!(
+        pre_manifest.context_window(),
+        ContextWindowStatus::PartialBufferExpired { .. }
+    ));
 
     Ok(())
 }
@@ -935,7 +1009,8 @@ fn cam04_a09_fifo_eviction_context_completeness_and_anomaly_monitor_bridge()
     // 1. Window `[12_400, 12_600)` with `requested_pre_context_ms = 3_000` (`pre_start_ms = 9_400`)
     // and `requested_post_context_ms = 500` (`post_end_ms = 13_100`), extracted at `13_200`:
     // - 3 expired by window (`f2, f3, f4`) + 1 evicted by capacity (`f1`) + 2 dropped frames (`seq 5, 6`)
-    //   + 1 missing pre-context window = 7 in `PartialBufferExpired.expired_frame_count` (`B1`, `N5`).
+    //   = 6 exact frame losses in `PartialBufferExpired.expired_frame_count`, with `empty_context_window_count == 1`
+    //   kept separate (`B1`, `B7`, `N5`).
     let manifest = registry
         .extract_retained_clip_manifest(
             &cam_id,
@@ -955,7 +1030,9 @@ fn cam04_a09_fifo_eviction_context_completeness_and_anomaly_monitor_bridge()
 
     assert_eq!(manifest.expired_by_window_in_span(), 3);
     assert_eq!(manifest.evicted_by_capacity_in_span(), 1);
+    assert!(!manifest.eviction_ledger_truncated());
     assert_eq!(manifest.dropped_frame_count_in_span(), 2);
+    assert_eq!(manifest.empty_context_window_count(), 1);
     assert!(manifest.missing_pre_context());
     assert!(!manifest.missing_post_context());
     assert_eq!(manifest.post_context_frames().len(), 1);
@@ -964,16 +1041,19 @@ fn cam04_a09_fifo_eviction_context_completeness_and_anomaly_monitor_bridge()
     assert!(matches!(
         manifest.context_window(),
         ContextWindowStatus::PartialBufferExpired {
-            expired_frame_count: 7,
+            expired_frame_count: 6,
             pre_frames,
             post_frames,
         } if pre_frames.is_empty() && post_frames.len() == 1
     ));
 
-    // 2. Ingest Frame 7 at `13_100` ms (seq 9, contiguous), then test `[12_700, 12_900)` with
-    // `pre = 300` (`f5` at `12_500`) and `post = 300` (`f7` at `13_100`, `post_end_ms = 13_200`):
-    // - When `extracted_at_ms = 13_150 < post_end_ms`, `missing_post_context` is true -> `PartialBufferExpired` (`B1`).
-    // - When `extracted_at_ms = 13_300 >= post_end_ms` (and no drops/evictions in `[12_400, 13_200]`),
+    // 2. Ingest Frame 7 at `13_100` ms (seq 9, contiguous), then test `[12_700, 12_900)`:
+    // - With `requested_pre_context_ms = 1_000` (`pre_start_ms = 11_700`, first frame at `12_500`,
+    //   lead gap `800 ms > 2 * 250 ms = 500 ms`), `coverage_gaps_in_window` records the edge gap and
+    //   marks the manifest `PartialBufferExpired` (`B1'`).
+    // - With `pre = 200` and `post = 300`, when `extracted_at_ms = 13_150 < post_end_ms`,
+    //   `missing_post_context` is true -> `PartialBufferExpired` (`B1`).
+    // - When `extracted_at_ms = 13_300 >= post_end_ms` (and no drops/evictions/gaps in `[12_500, 13_200]`),
     //   `ContextWindowStatus::Complete` is returned (`B1`).
     registry.ingest_frame(
         &cam_id,
@@ -991,6 +1071,26 @@ fn cam04_a09_fifo_eviction_context_completeness_and_anomaly_monitor_bridge()
         },
     )?;
 
+    let edge_gap_manifest = registry.extract_retained_clip_manifest(
+        &cam_id,
+        ClipExtractionRequest {
+            clip_id: OpaqueId::new("clip:ring:edge-gap")?,
+            clip_version: VersionId::new("clipver:ring:edge-gap")?,
+            source_session_id: OpaqueId::new("sess:ring:01")?,
+            event_start_ms: 12_700,
+            event_end_ms: 12_900,
+            requested_pre_context_ms: 1_000,
+            requested_post_context_ms: 300,
+            extracted_at_ms: 13_300,
+            trigger_explanation: "Edge gap at start of pre window".to_owned(),
+        },
+    )?;
+    assert_eq!(edge_gap_manifest.coverage_gaps_in_window().len(), 1);
+    assert!(matches!(
+        edge_gap_manifest.context_window(),
+        ContextWindowStatus::PartialBufferExpired { .. }
+    ));
+
     let early_manifest = registry.extract_retained_clip_manifest(
         &cam_id,
         ClipExtractionRequest {
@@ -1006,6 +1106,7 @@ fn cam04_a09_fifo_eviction_context_completeness_and_anomaly_monitor_bridge()
         },
     )?;
     assert!(early_manifest.missing_post_context());
+    assert_eq!(early_manifest.empty_context_window_count(), 1);
     assert!(matches!(
         early_manifest.context_window(),
         ContextWindowStatus::PartialBufferExpired {
@@ -1034,6 +1135,46 @@ fn cam04_a09_fifo_eviction_context_completeness_and_anomaly_monitor_bridge()
             pre_frames,
             post_frames,
         } if pre_frames.len() == 1 && post_frames.len() == 1
+    ));
+
+    // 3. Verify `eviction_ledger_truncated` (`B7`) when more than `max(4 * max_buffered_frames, 16)`
+    // frames are evicted inside `[pre_start_ms, post_end_ms]`:
+    for idx in 10..=30_u64 {
+        let cap_ms = 13_100 + ((idx - 9) as i64) * 50;
+        registry.ingest_frame(
+            &cam_id,
+            CameraFrameSubmission {
+                frame_version: VersionId::new(format!("ver:burst:{idx}"))?,
+                sha256_hex: hex64('8'),
+                byte_len: 1_024,
+                sequence_number: idx,
+                declared_kind: FeedObservationKind::UpstreamCameraFeed,
+                origin: FrameArtifactOrigin::OriginalRetainedFrame,
+                source_capture_time_ms: Some(cap_ms),
+                clock_uncertainty_ms: 20,
+                ingestion_time_ms: cap_ms + 10,
+                archive_version: None,
+            },
+        )?;
+    }
+    let truncated_manifest = registry.extract_retained_clip_manifest(
+        &cam_id,
+        ClipExtractionRequest {
+            clip_id: OpaqueId::new("clip:ring:truncated")?,
+            clip_version: VersionId::new("clipver:ring:truncated")?,
+            source_session_id: OpaqueId::new("sess:ring:01")?,
+            event_start_ms: 14_100,
+            event_end_ms: 14_200,
+            requested_pre_context_ms: 1_500,
+            requested_post_context_ms: 0,
+            extracted_at_ms: 14_300,
+            trigger_explanation: "Eviction ledger rolled off older records in window".to_owned(),
+        },
+    )?;
+    assert!(truncated_manifest.eviction_ledger_truncated());
+    assert!(matches!(
+        truncated_manifest.context_window(),
+        ContextWindowStatus::PartialBufferExpired { .. }
     ));
 
     // Bridge directly into `CameraAnomalyMonitor` (`AGENTS.md` §4).

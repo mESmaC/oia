@@ -1,0 +1,418 @@
+{
+  "format": "oia.evidence-ledger",
+  "schema_version": 1,
+  "entries": [
+    {
+      "record": {
+        "id": "rec:gazette-article",
+        "version": "rec:gazette-article:v1",
+        "schema_version": 1,
+        "object_type": "source_record",
+        "origin": "acquired_source_material",
+        "created_at_ms": 1793707200000,
+        "created_by": "actor:analyst-1",
+        "scope": {
+          "case": "case:reservoir-lights"
+        },
+        "access_policies": [
+          "policy:case-members"
+        ],
+        "provenance": {
+          "acquired": {
+            "source": "src:county-gazette"
+          }
+        },
+        "review": "unreviewed",
+        "availability": "available",
+        "predecessor": null,
+        "revision": null,
+        "attributes": [
+          {
+            "name": "body_excerpt",
+            "value": {
+              "known": {
+                "text": "Residents reported two lights over the reservoir at about 9 p.m.\r\nThe lights moved north."
+              }
+            }
+          },
+          {
+            "name": "byline",
+            "value": {
+              "unknown": "not_recorded_by_source"
+            }
+          },
+          {
+            "name": "headline",
+            "value": {
+              "known": {
+                "text": "Lights over the reservoir"
+              }
+            }
+          },
+          {
+            "name": "page",
+            "value": {
+              "known": {
+                "integer": 3
+              }
+            }
+          }
+        ],
+        "claim": null
+      }
+    },
+    {
+      "record": {
+        "id": "acct:witness-1",
+        "version": "acct:witness-1:v1",
+        "schema_version": 1,
+        "object_type": "observation",
+        "origin": "user_testimony",
+        "created_at_ms": 1793707500000,
+        "created_by": "actor:analyst-1",
+        "scope": {
+          "case": "case:reservoir-lights"
+        },
+        "access_policies": [
+          "policy:case-members"
+        ],
+        "provenance": "manual",
+        "review": "unreviewed",
+        "availability": "available",
+        "predecessor": null,
+        "revision": null,
+        "attributes": [
+          {
+            "name": "duration",
+            "value": {
+              "unknown": "not_reported"
+            }
+          },
+          {
+            "name": "narrative",
+            "value": {
+              "known": {
+                "text": "I saw two steady lights heading north over the water."
+              }
+            }
+          },
+          {
+            "name": "sound",
+            "value": {
+              "unknown": "not_reported"
+            }
+          }
+        ],
+        "claim": null
+      }
+    },
+    {
+      "record": {
+        "id": "obs:light-count",
+        "version": "obs:light-count:v1",
+        "schema_version": 1,
+        "object_type": "observation",
+        "origin": "normalized_observation",
+        "created_at_ms": 1793707800000,
+        "created_by": "actor:analyst-1",
+        "scope": {
+          "case": "case:reservoir-lights"
+        },
+        "access_policies": [
+          "policy:case-members"
+        ],
+        "provenance": {
+          "derived": {
+            "method": "method:manual-normalization",
+            "method_version": "v1",
+            "inputs": [
+              "rec:gazette-article:v1",
+              "acct:witness-1:v1"
+            ]
+          }
+        },
+        "review": "unreviewed",
+        "availability": "available",
+        "predecessor": null,
+        "revision": null,
+        "attributes": [
+          {
+            "name": "altitude",
+            "value": {
+              "unknown": "not_recorded_by_source"
+            }
+          },
+          {
+            "name": "direction",
+            "value": {
+              "known": {
+                "text": "north"
+              }
+            }
+          },
+          {
+            "name": "light_count",
+            "value": {
+              "known": {
+                "integer": 2
+              }
+            }
+          }
+        ],
+        "claim": null
+      }
+    },
+    {
+      "record": {
+        "id": "claim:gazette-time",
+        "version": "claim:gazette-time:v1",
+        "schema_version": 1,
+        "object_type": "claim",
+        "origin": "extracted_claim",
+        "created_at_ms": 1793707920000,
+        "created_by": "actor:analyst-1",
+        "scope": {
+          "case": "case:reservoir-lights"
+        },
+        "access_policies": [
+          "policy:case-members"
+        ],
+        "provenance": {
+          "derived": {
+            "method": "method:claim-extraction",
+            "method_version": "v1",
+            "inputs": [
+              "rec:gazette-article:v1"
+            ]
+          }
+        },
+        "review": "unreviewed",
+        "availability": "available",
+        "predecessor": null,
+        "revision": null,
+        "attributes": [],
+        "claim": {
+          "proposition": "Two lights were seen over the reservoir at about 9 p.m.",
+          "claimant": {
+            "known": "County Gazette"
+          },
+          "assessment": "unresolved"
+        }
+      }
+    },
+    {
+      "record": {
+        "id": "inf:aircraft-hypothesis",
+        "version": "inf:aircraft-hypothesis:v1",
+        "schema_version": 1,
+        "object_type": "analysis_run",
+        "origin": "analytical_inference",
+        "created_at_ms": 1793708400000,
+        "created_by": "actor:analyst-1",
+        "scope": {
+          "case": "case:reservoir-lights"
+        },
+        "access_policies": [
+          "policy:case-members"
+        ],
+        "provenance": {
+          "derived": {
+            "method": "method:flight-overlap",
+            "method_version": "v1",
+            "inputs": [
+              "obs:light-count:v1"
+            ]
+          }
+        },
+        "review": "unreviewed",
+        "availability": "available",
+        "predecessor": null,
+        "revision": null,
+        "attributes": [
+          {
+            "name": "flight_data",
+            "value": {
+              "unknown": "not_yet_processed"
+            }
+          },
+          {
+            "name": "hypothesis",
+            "value": {
+              "known": {
+                "text": "Two aircraft on approach could match the reported lights."
+              }
+            }
+          }
+        ],
+        "claim": null
+      }
+    },
+    {
+      "record": {
+        "id": "sim:two-light-replay",
+        "version": "sim:two-light-replay:v1",
+        "schema_version": 1,
+        "object_type": "analysis_run",
+        "origin": "simulation",
+        "created_at_ms": 1793708700000,
+        "created_by": "actor:analyst-1",
+        "scope": {
+          "case": "case:reservoir-lights"
+        },
+        "access_policies": [
+          "policy:case-members"
+        ],
+        "provenance": "manual",
+        "review": "unreviewed",
+        "availability": "available",
+        "predecessor": null,
+        "revision": null,
+        "attributes": [
+          {
+            "name": "scenario",
+            "value": {
+              "known": {
+                "text": "Two lights moving north at 2 deg/s"
+              }
+            }
+          }
+        ],
+        "claim": null
+      }
+    },
+    {
+      "record": {
+        "id": "inf:replay-comparison",
+        "version": "inf:replay-comparison:v1",
+        "schema_version": 1,
+        "object_type": "analysis_run",
+        "origin": "analytical_inference",
+        "created_at_ms": 1793709000000,
+        "created_by": "actor:analyst-1",
+        "scope": {
+          "case": "case:reservoir-lights"
+        },
+        "access_policies": [
+          "policy:case-members"
+        ],
+        "provenance": {
+          "derived": {
+            "method": "method:replay-comparison",
+            "method_version": "v1",
+            "inputs": [
+              "inf:aircraft-hypothesis:v1",
+              "sim:two-light-replay:v1"
+            ]
+          }
+        },
+        "review": "unreviewed",
+        "availability": "available",
+        "predecessor": null,
+        "revision": null,
+        "attributes": [
+          {
+            "name": "summary",
+            "value": {
+              "known": {
+                "text": "The simulated motion is compatible with the hypothesis."
+              }
+            }
+          }
+        ],
+        "claim": null
+      }
+    },
+    {
+      "relation": {
+        "id": "rel:count-supports-claim",
+        "kind": "supports",
+        "dependent": "claim:gazette-time:v1",
+        "upstream": "obs:light-count:v1",
+        "created_at_ms": 1793709300000,
+        "created_by": "actor:analyst-1",
+        "review": "unreviewed",
+        "evidence": [],
+        "rationale": {
+          "known": "The normalized count matches the article wording."
+        }
+      }
+    },
+    {
+      "relation": {
+        "id": "rel:account-article-event",
+        "kind": "possible_same_event",
+        "dependent": "acct:witness-1:v1",
+        "upstream": "rec:gazette-article:v1",
+        "created_at_ms": 1793709360000,
+        "created_by": "actor:analyst-1",
+        "review": "unreviewed",
+        "evidence": [],
+        "rationale": {
+          "unknown": "not_yet_processed"
+        }
+      }
+    },
+    {
+      "record": {
+        "id": "rec:gazette-article",
+        "version": "rec:gazette-article:v2",
+        "schema_version": 1,
+        "object_type": "source_record",
+        "origin": "acquired_source_material",
+        "created_at_ms": 1793710800000,
+        "created_by": "actor:analyst-1",
+        "scope": {
+          "case": "case:reservoir-lights"
+        },
+        "access_policies": [
+          "policy:case-members"
+        ],
+        "provenance": {
+          "acquired": {
+            "source": "src:county-gazette"
+          }
+        },
+        "review": "unreviewed",
+        "availability": "available",
+        "predecessor": "rec:gazette-article:v1",
+        "revision": {
+          "reason": "source_correction",
+          "rationale": "The Gazette corrected the reported time from about 9 p.m. to about 10 p.m."
+        },
+        "attributes": [
+          {
+            "name": "body_excerpt",
+            "value": {
+              "known": {
+                "text": "Residents reported two lights over the reservoir at about 10 p.m.\r\nThe lights moved north."
+              }
+            }
+          },
+          {
+            "name": "byline",
+            "value": {
+              "unknown": "not_recorded_by_source"
+            }
+          },
+          {
+            "name": "headline",
+            "value": {
+              "known": {
+                "text": "Lights over the reservoir"
+              }
+            }
+          },
+          {
+            "name": "page",
+            "value": {
+              "known": {
+                "integer": 3
+              }
+            }
+          }
+        ],
+        "claim": null
+      }
+    }
+  ]
+}

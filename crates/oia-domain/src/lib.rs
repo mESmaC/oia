@@ -1,10 +1,14 @@
 //! `oia-domain` — Core domain identifiers and schema version primitives for Open Intelligence Agency (`#9`).
 //!
 //! This crate has zero dependencies on UI toolkits, HTTP clients, database engines, model
-//! services, or vendor SDKs (`docs/architecture.md` Section 1.2). Versioned evidence records,
-//! provenance graphs, and content hashes follow in `#10`.
+//! services, or vendor SDKs (`docs/architecture.md` Section 1.2). Its only third-party
+//! dependencies are `serde`/`serde_json`, used for the ADR 0006 JSON form of [`evidence`].
+//! [`evidence`] holds the canonical origin classes, common envelope, relations, claim/review
+//! states and append-only reassessment ledger (`#10`). Content hashes and persistence follow
+//! in `#11`.
 
 pub mod collaboration;
+pub mod evidence;
 pub mod ids;
 pub mod text;
 pub mod witness;

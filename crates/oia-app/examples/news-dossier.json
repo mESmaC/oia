@@ -16,11 +16,14 @@
       "origin_id": "notice-origin",
       "event_id": "harbor-activity",
       "kind": "plan",
-      "publication_state": "published",
       "published_time": "2024-03-12T09:00:00Z",
       "updated_time": null,
       "event_time": "Planned for March 13; exact time unreported",
-      "text": "SYNTHETIC EXAMPLE - NOT OBSERVED EVIDENCE. A channel calibration exercise is planned for March 13. This notice describes a plan, not an observation of vessel movement."
+      "text": "SYNTHETIC EXAMPLE - NOT OBSERVED EVIDENCE. A channel calibration exercise is planned for March 13. This notice describes a plan, not an observation of vessel movement.",
+      "availability": "available",
+      "retraction_status": "not_retracted",
+      "predecessor_version_id": null,
+      "superseded_by_version_id": null
     },
     {
       "record_id": "wire-account",
@@ -33,11 +36,14 @@
       "origin_id": "watch-log",
       "event_id": "harbor-activity",
       "kind": "allegation",
-      "publication_state": "published",
       "published_time": "2024-03-13T20:00:00Z",
       "updated_time": null,
       "event_time": "March 13, approximately 19:15 UTC; not independently checked",
-      "text": "SYNTHETIC EXAMPLE - NOT OBSERVED EVIDENCE. A watch log alleges fourteen vessels near the channel. The source does not establish their mission or destination."
+      "text": "SYNTHETIC EXAMPLE - NOT OBSERVED EVIDENCE. A watch log alleges fourteen vessels near the channel. The source does not establish their mission or destination.",
+      "availability": "available",
+      "retraction_status": "corrected_by_later_version",
+      "predecessor_version_id": null,
+      "superseded_by_version_id": "wire-account@v2"
     },
     {
       "record_id": "digest-copy",
@@ -50,11 +56,14 @@
       "origin_id": "watch-log",
       "event_id": "harbor-activity",
       "kind": "allegation",
-      "publication_state": "published",
       "published_time": "2024-03-13T20:30:00Z",
       "updated_time": null,
       "event_time": null,
-      "text": "SYNTHETIC EXAMPLE - NOT OBSERVED EVIDENCE. A watch log alleges fourteen vessels near the channel. The source does not establish their mission or destination."
+      "text": "SYNTHETIC EXAMPLE - NOT OBSERVED EVIDENCE. A watch log alleges fourteen vessels near the channel. The source does not establish their mission or destination.",
+      "availability": "available",
+      "retraction_status": "not_retracted",
+      "predecessor_version_id": null,
+      "superseded_by_version_id": null
     },
     {
       "record_id": "wire-account",
@@ -67,11 +76,14 @@
       "origin_id": "watch-log",
       "event_id": "harbor-activity",
       "kind": "attributed_statement",
-      "publication_state": "corrected",
       "published_time": "2024-03-13T20:00:00Z",
       "updated_time": "2024-03-14T08:00:00Z",
       "event_time": null,
-      "text": "SYNTHETIC EXAMPLE - NOT OBSERVED EVIDENCE. The log keeper says four vessels were listed. The prior version said fourteen. Both versions remain available for inspection; this statement is not automatically endorsed."
+      "text": "SYNTHETIC EXAMPLE - NOT OBSERVED EVIDENCE. The log keeper says four vessels were listed. The prior version said fourteen. Both versions remain available for inspection; this statement is not automatically endorsed.",
+      "availability": "available",
+      "retraction_status": "correction_issued",
+      "predecessor_version_id": "wire-account@v1",
+      "superseded_by_version_id": null
     },
     {
       "record_id": "removed-page",
@@ -84,11 +96,28 @@
       "origin_id": null,
       "event_id": null,
       "kind": "allegation",
-      "publication_state": "unavailable",
       "published_time": null,
       "updated_time": null,
       "event_time": null,
-      "text": null
+      "text": null,
+      "availability": "missing",
+      "retraction_status": "not_retracted",
+      "predecessor_version_id": null,
+      "superseded_by_version_id": null
+    }
+  ],
+  "lineage": [
+    {
+      "edge_id": "digest-republishes-wire",
+      "relation_kind": "republishes",
+      "from_version_id": "digest-copy@v1",
+      "to_version_id": "wire-account@v1"
+    },
+    {
+      "edge_id": "wire-correction",
+      "relation_kind": "supersedes",
+      "from_version_id": "wire-account@v2",
+      "to_version_id": "wire-account@v1"
     }
   ]
 }

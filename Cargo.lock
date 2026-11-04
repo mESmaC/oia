@@ -2435,6 +2435,7 @@ dependencies = [
  "oia-jpeg-privacy",
  "oia-media",
  "oia-models",
+ "oia-news-claims",
  "oia-png-privacy",
  "oia-query",
  "oia-store",

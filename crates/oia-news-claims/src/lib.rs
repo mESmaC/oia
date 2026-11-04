@@ -1,3 +1,4 @@
+pub mod publication;
 pub mod review;
 
 use std::error::Error;
@@ -440,6 +441,10 @@ pub enum ClaimCheckError {
         edge_id: String,
         reason: &'static str,
     },
+    InvalidPublication {
+        record_version_id: String,
+        reason: &'static str,
+    },
     RemovedPageAutoRetracted {
         record_version_id: String,
     },
@@ -528,6 +533,12 @@ impl fmt::Display for ClaimCheckError {
             ),
             Self::InvalidLineageEdge { edge_id, reason } => {
                 write!(f, "invalid lineage edge {edge_id}: {reason}")
+            }
+            Self::InvalidPublication {
+                record_version_id,
+                reason,
+            } => {
+                write!(f, "invalid publication {record_version_id}: {reason}")
             }
             Self::RemovedPageAutoRetracted { record_version_id } => write!(
                 f,
@@ -886,50 +897,16 @@ pub fn verify_corpus<'a>(
     }
 
     // 3. Validate LineageEdges (NEWS-01, INTEL-01)
-    for (idx, edge) in input.lineage_edges.iter().enumerate() {
-        check_control().map_err(ClaimCheckError::Stopped)?;
-        if edge.edge_id.is_empty()
-            || input
-                .lineage_edges
-                .get(..idx)
-                .is_some_and(|prior| prior.iter().any(|e| e.edge_id == edge.edge_id))
-        {
-            return Err(ClaimCheckError::DuplicateIdentifier {
-                kind: "edge_id",
-                id: edge.edge_id.to_owned(),
-            });
-        }
-        if find_record(input.records, edge.from_version_id).is_none() {
-            return Err(ClaimCheckError::UnknownReference {
-                context: format!("lineage edge {}", edge.edge_id),
-                target: edge.from_version_id.to_owned(),
-            });
-        }
-        if find_record(input.records, edge.to_version_id).is_none() {
-            return Err(ClaimCheckError::UnknownReference {
-                context: format!("lineage edge {}", edge.edge_id),
-                target: edge.to_version_id.to_owned(),
-            });
-        }
-        if edge.from_version_id == edge.to_version_id {
-            return Err(ClaimCheckError::InvalidLineageEdge {
-                edge_id: edge.edge_id.to_owned(),
-                reason: "self-referential lineage edge is not permitted",
-            });
-        }
-        if matches!(
-            edge.relation_kind,
-            LineageRelationKind::Quotes
-                | LineageRelationKind::Republishes
-                | LineageRelationKind::Supersedes
-        ) && edge.preserves_independent_corroboration
-        {
-            return Err(ClaimCheckError::InvalidLineageEdge {
-                edge_id: edge.edge_id.to_owned(),
-                reason: "quotes, republishes, and supersedes edges must not count as independent corroboration",
-            });
-        }
-    }
+    publication::validate_declared_lineage(
+        &input
+            .records
+            .iter()
+            .map(|record| record.version_id)
+            .collect::<Vec<_>>(),
+        input.lineage_edges,
+        limits,
+        &mut check_control,
+    )?;
 
     // 4. Validate EventCandidates (NEWS-02 guard)
     for cand in input.candidates {

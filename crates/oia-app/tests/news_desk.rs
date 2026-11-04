@@ -14,12 +14,15 @@ fn versions_and_unknown_origins_survive_filtered_views() -> Result<(), Box<dyn s
         (view.total.versions, view.total.records, view.total.sources),
         (5, 4, 4)
     );
+    assert_eq!(view.total.unknown_origin_versions, 1);
+    assert_eq!(view.articles[2].lineage[0].to_version_id, "wire-account@v1");
+    assert!(matches!(
+        view.articles[1].article.retraction_status,
+        oia_app::news::RetractionStatus::CorrectedByLaterVersion
+    ));
     assert_eq!(
-        (
-            view.total.declared_origins,
-            view.total.unknown_origin_versions
-        ),
-        (2, 1)
+        view.articles[3].article.predecessor_version_id.as_deref(),
+        Some("wire-account@v1")
     );
     assert_eq!(
         (
@@ -36,9 +39,19 @@ fn versions_and_unknown_origins_survive_filtered_views() -> Result<(), Box<dyn s
     );
     assert_ne!(view.articles[1].article.text, view.articles[3].article.text);
     assert!(matches!(
-        view.articles[4].article.publication_state,
-        oia_app::news::PublicationState::Unavailable
+        view.articles[4].article.availability,
+        oia_app::news::AvailabilityState::Missing
     ));
+    assert!(matches!(
+        view.articles[4].article.retraction_status,
+        oia_app::news::RetractionStatus::NotRetracted
+    ));
+    assert!(
+        serde_json::to_value(&view)?
+            .get("total")
+            .and_then(|counts| counts.get("declared_origins"))
+            .is_none()
+    );
     let filtered = dossier.view(
         &Filter {
             query: "fourteen".to_string(),
@@ -51,9 +64,9 @@ fn versions_and_unknown_origins_survive_filtered_views() -> Result<(), Box<dyn s
         (
             filtered.visible.versions,
             filtered.visible.sources,
-            filtered.visible.declared_origins
+            filtered.visible.unknown_origin_versions
         ),
-        (2, 2, 1)
+        (2, 2, 0)
     );
     assert_eq!(filtered.total.versions, 5);
     assert_eq!(filtered.source_roster.len(), 2);
@@ -91,6 +104,16 @@ fn malformed_oversized_and_cancelled_imports_are_refused() -> Result<(), Box<dyn
     oversized["articles"][0]["text"] = serde_json::json!("x".repeat(64 * 1024 + 1));
     let mut invalid_kind = input.clone();
     invalid_kind["articles"][0]["kind"] = serde_json::json!("confirmed_truth");
+    let mut dangling = input.clone();
+    dangling["lineage"][0]["to_version_id"] = serde_json::json!("absent@v1");
+    let mut broken_correction = input.clone();
+    broken_correction["articles"][3]["predecessor_version_id"] = serde_json::Value::Null;
+    let mut cycle = input.clone();
+    cycle["articles"][1]["predecessor_version_id"] = serde_json::json!("wire-account@v2");
+    cycle["articles"][3]["superseded_by_version_id"] = serde_json::json!("wire-account@v1");
+    let mut removed_retracted = input.clone();
+    removed_retracted["articles"][4]["availability"] = serde_json::json!("removed");
+    removed_retracted["articles"][4]["retraction_status"] = serde_json::json!("retracted");
     let mut unknown_field = input;
     unknown_field["permission_to_execute"] = serde_json::json!(true);
     for invalid in [
@@ -99,6 +122,10 @@ fn malformed_oversized_and_cancelled_imports_are_refused() -> Result<(), Box<dyn
         oversized,
         invalid_kind,
         unknown_field,
+        dangling,
+        broken_correction,
+        cycle,
+        removed_retracted,
     ] {
         assert_eq!(
             Dossier::parse(&serde_json::to_vec(&invalid)?, &control)

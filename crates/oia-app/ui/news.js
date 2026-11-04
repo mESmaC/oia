@@ -7,7 +7,11 @@ const News = (() => {
     plan: 'Plan', reported_observation: 'Reported observation', allegation: 'Allegation',
     arrest: 'Arrest', charge: 'Charge', judgment: 'Judgment', attributed_statement: 'Attributed statement'
   };
-  const states = { published: 'Published', corrected: 'Corrected', retracted: 'Retracted', unavailable: 'Unavailable' };
+  const states = {
+    not_retracted: 'Not retracted', corrected_by_later_version: 'Corrected by later version',
+    correction_issued: 'Correction issued', retracted: 'Retracted'
+  };
+  const publication = article => states[article.retraction_status] + ' / availability: ' + article.availability;
   let view = null;
   let selectedId = null;
   let busy = false;
@@ -52,7 +56,7 @@ const News = (() => {
     const article = selected();
     element('news-reader-title').textContent = article ? safeText(article.title) : 'No article version selected';
     element('news-reader-meta').textContent = article
-      ? safeText(article.publisher + ' / ' + article.version_id + ' / ' + kinds[article.kind] + ' / declared ' + states[article.publication_state])
+      ? safeText(article.publisher + ' / ' + article.version_id + ' / ' + kinds[article.kind] + ' / declared ' + publication(article))
       : 'A zero-match filter says nothing about material outside this dossier.';
     element('news-text').textContent = article
       ? (article.text === null ? 'Text not retained. No inference about retraction or the truth of this account follows.' : safeText(article.text))
@@ -64,7 +68,11 @@ const News = (() => {
       ['Record ID', article.record_id], ['Version ID', article.version_id],
       ['Source ID', article.source_id], ['Publisher', article.publisher],
       ['Declared region', article.region], ['Declared origin', article.origin_id], ['Proposed event', article.event_id],
-      ['Category', kinds[article.kind]], ['Declared state', states[article.publication_state]],
+      ['Category', kinds[article.kind]], ['Declared retraction status', states[article.retraction_status]],
+      ['Declared availability', article.availability],
+      ['Predecessor version', article.predecessor_version_id], ['Superseded by version', article.superseded_by_version_id],
+      ['Declared lineage (not independent support)', article.lineage.length
+        ? article.lineage.map(edge => edge.relation_kind + ' -> ' + edge.to_version_id + ' [' + edge.edge_id + ']').join('; ') : null],
       ['Publication time (declared)', article.published_time], ['Update time (declared)', article.updated_time],
       ['Event time (declared)', article.event_time], ['Reference (not fetched)', article.url],
       ['Text SHA-256', article.text_sha256]
@@ -82,7 +90,7 @@ const News = (() => {
     if (view) {
       for (const [count, label] of [
         [view.visible.versions, 'Visible versions'], [view.visible.records, 'Article records'],
-        [view.visible.sources, 'Declared source IDs'], [view.visible.declared_origins, 'Declared origin groups']
+        [view.visible.sources, 'Declared source IDs'], [view.visible.missing_text_versions, 'Text not retained']
       ]) {
         const card = node('div', undefined, 'news-stat');
         card.append(node('b', count), node('span', label));
@@ -91,13 +99,13 @@ const News = (() => {
       element('news-coverage').textContent = 'Collection coverage declared ' + view.collection_coverage + ': ' + safeText(view.coverage_note);
       element('news-results-note').textContent = view.visible.versions + ' of ' + view.total.versions + ' retained versions. ' +
         view.visible.proposed_events + ' proposed event groups; ' + view.visible.ungrouped_versions + ' ungrouped versions; ' +
-        view.visible.unknown_origin_versions + ' with unknown origin; ' + view.visible.missing_text_versions + ' without retained text. Counts describe the visible subset only.';
+        view.visible.unknown_origin_versions + ' with unknown origin; ' + view.visible.missing_text_versions + ' without retained text. Counts describe the visible subset only; origin/independence totals are not assessed.';
       for (const article of view.articles) {
         const row = node('button', undefined, 'news-row');
         row.type = 'button';
         row.dataset.version = article.version_id;
         row.setAttribute('aria-pressed', String(article.version_id === selectedId));
-        row.append(node('span', kinds[article.kind] + ' / declared ' + states[article.publication_state], 'news-category'));
+        row.append(node('span', kinds[article.kind] + ' / declared ' + publication(article), 'news-category'));
         row.append(node('strong', article.title), node('span', article.publisher + ' / ' + article.version_id));
         row.append(node('span', 'Origin: ' + (article.origin_id ?? 'unknown') + ' / Event: ' + (article.event_id ?? 'ungrouped')));
         row.onclick = () => { selectedId = article.version_id; renderSelection(); };
@@ -106,7 +114,7 @@ const News = (() => {
         element('news-list').append(item);
       }
       for (const source of view.source_roster) {
-        element('news-sources').append(node('li', source.publisher + ' [' + source.source_id + '] / ' + source.counts.versions + ' versions / ' + source.counts.records + ' records / ' + source.counts.declared_origins + ' declared origins'));
+        element('news-sources').append(node('li', source.publisher + ' [' + source.source_id + '] / ' + source.counts.versions + ' versions / ' + source.counts.records + ' records'));
       }
       details('news-snapshot', [
         ['Schema', 'oia-news-dossier/1'], ['Original bytes', String(view.original_bytes)],

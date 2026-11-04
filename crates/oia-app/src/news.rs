@@ -1,4 +1,9 @@
 use crate::local_tools::{Control, Result, ToolError};
+use oia_news_claims::publication::{
+    Publication, publication_inventory, validate_correction_links, validate_declared_lineage,
+};
+use oia_news_claims::{AssessmentLimits, ClaimCheckError, LineageEdgeInput, StopReason};
+pub use oia_news_claims::{AvailabilityState, LineageRelationKind, RetractionStatus};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -24,13 +29,44 @@ pub enum ReportKind {
     AttributedStatement,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PublicationState {
-    Published,
-    Corrected,
+#[derive(Deserialize, Serialize)]
+#[serde(remote = "RetractionStatus", rename_all = "snake_case")]
+enum RetractionStatusDef {
+    NotRetracted,
+    CorrectedByLaterVersion,
+    CorrectionIssued,
     Retracted,
-    Unavailable,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(remote = "AvailabilityState", rename_all = "snake_case")]
+enum AvailabilityStateDef {
+    Available,
+    ReferenceOnly,
+    Missing,
+    Restricted,
+    Removed,
+    Expired,
+    Corrupt,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(remote = "LineageRelationKind", rename_all = "snake_case")]
+enum LineageRelationKindDef {
+    Quotes,
+    Republishes,
+    Supersedes,
+    Supports,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LineageDeclaration {
+    pub edge_id: String,
+    #[serde(with = "LineageRelationKindDef")]
+    pub relation_kind: LineageRelationKind,
+    pub from_version_id: String,
+    pub to_version_id: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -54,7 +90,12 @@ pub struct Article {
     pub origin_id: Option<String>,
     pub event_id: Option<String>,
     pub kind: ReportKind,
-    pub publication_state: PublicationState,
+    #[serde(with = "RetractionStatusDef")]
+    pub retraction_status: RetractionStatus,
+    #[serde(with = "AvailabilityStateDef")]
+    pub availability: AvailabilityState,
+    pub predecessor_version_id: Option<String>,
+    pub superseded_by_version_id: Option<String>,
     pub published_time: Option<String>,
     pub updated_time: Option<String>,
     pub event_time: Option<String>,
@@ -70,6 +111,8 @@ struct Input {
     collection_coverage: CollectionCoverage,
     coverage_note: String,
     articles: Vec<Article>,
+    #[serde(default)]
+    lineage: Vec<LineageDeclaration>,
 }
 
 #[derive(Debug)]
@@ -92,7 +135,7 @@ pub struct Counts {
     pub versions: usize,
     pub records: usize,
     pub sources: usize,
-    pub declared_origins: usize,
+
     pub unknown_origin_versions: usize,
     pub proposed_events: usize,
     pub ungrouped_versions: usize,
@@ -104,6 +147,7 @@ pub struct ArticleView {
     #[serde(flatten)]
     pub article: Article,
     pub text_sha256: Option<String>,
+    pub lineage: Vec<LineageDeclaration>,
 }
 
 #[derive(Debug, Serialize)]
@@ -155,24 +199,61 @@ fn identifier(value: &str, field: &str) -> Result<()> {
     Ok(())
 }
 
-fn counts(articles: &[&Article]) -> Counts {
-    Counts {
-        versions: articles.len(),
-        records: articles
-            .iter()
-            .map(|article| &article.record_id)
-            .collect::<BTreeSet<_>>()
-            .len(),
-        sources: articles
-            .iter()
-            .map(|article| &article.source_id)
-            .collect::<BTreeSet<_>>()
-            .len(),
-        declared_origins: articles
-            .iter()
-            .filter_map(|article| article.origin_id.as_ref())
-            .collect::<BTreeSet<_>>()
-            .len(),
+fn limits() -> Result<AssessmentLimits> {
+    AssessmentLimits::new(
+        MAX_VERSIONS,
+        MAX_VERSIONS,
+        1,
+        MAX_VERSIONS * 2,
+        1,
+        1,
+        1,
+        MAX_VERSIONS,
+        MAX_BYTES,
+    )
+    .map_err(invalid)
+}
+
+fn check(control: &Control) -> std::result::Result<(), StopReason> {
+    control.check().map_err(|error| {
+        if error.code == "cancelled" {
+            StopReason::Cancelled
+        } else {
+            StopReason::DeadlineExceeded
+        }
+    })
+}
+
+fn domain_error(error: ClaimCheckError) -> ToolError {
+    match error {
+        ClaimCheckError::Stopped(StopReason::Cancelled) => ToolError::new("cancelled", error),
+        ClaimCheckError::Stopped(_) => ToolError::new("deadline", error),
+        _ => invalid(error),
+    }
+}
+
+fn publications<'a>(articles: &[&'a Article]) -> Vec<Publication<'a>> {
+    articles
+        .iter()
+        .map(|article| Publication {
+            record_id: &article.record_id,
+            version_id: &article.version_id,
+            source_id: &article.source_id,
+            availability: article.availability,
+            retraction_status: article.retraction_status,
+            predecessor_version_id: article.predecessor_version_id.as_deref(),
+            superseded_by_version_id: article.superseded_by_version_id.as_deref(),
+        })
+        .collect()
+}
+
+fn counts(articles: &[&Article], control: &Control) -> Result<Counts> {
+    let inventory = publication_inventory(&publications(articles), limits()?, || check(control))
+        .map_err(domain_error)?;
+    Ok(Counts {
+        versions: inventory.versions,
+        records: inventory.records,
+        sources: inventory.sources.len(),
         unknown_origin_versions: articles
             .iter()
             .filter(|article| article.origin_id.is_none())
@@ -190,7 +271,7 @@ fn counts(articles: &[&Article]) -> Counts {
             .iter()
             .filter(|article| article.text.is_none())
             .count(),
-    }
+    })
 }
 
 impl Dossier {
@@ -211,27 +292,12 @@ impl Dossier {
                 "A dossier may contain at most 200 article versions.",
             ));
         }
-        let mut versions = BTreeSet::new();
-        let mut records = BTreeMap::new();
         let mut publishers = BTreeMap::new();
         for article in &input.articles {
             control.check()?;
             identifier(&article.record_id, "record_id")?;
             identifier(&article.version_id, "version_id")?;
             identifier(&article.source_id, "source_id")?;
-            if !versions.insert(&article.version_id) {
-                return Err(invalid(
-                    "Duplicate version_id; retain each exact version only once.",
-                ));
-            }
-            if records
-                .insert(&article.record_id, &article.source_id)
-                .is_some_and(|source| source != &article.source_id)
-            {
-                return Err(invalid(
-                    "Versions of a record must keep the same source_id.",
-                ));
-            }
             text_field(&article.publisher, "publisher", 512)?;
             if publishers
                 .insert(&article.source_id, &article.publisher)
@@ -245,6 +311,11 @@ impl Dossier {
             for (field, value) in [
                 ("origin_id", &article.origin_id),
                 ("event_id", &article.event_id),
+                ("predecessor_version_id", &article.predecessor_version_id),
+                (
+                    "superseded_by_version_id",
+                    &article.superseded_by_version_id,
+                ),
             ] {
                 if let Some(value) = value {
                     identifier(value, field)?;
@@ -263,6 +334,33 @@ impl Dossier {
                 }
             }
         }
+        let all: Vec<_> = input.articles.iter().collect();
+        validate_correction_links(&publications(&all), limits()?, || check(control))
+            .map_err(domain_error)?;
+        if input.lineage.len() > MAX_VERSIONS * 2 {
+            return Err(invalid(
+                "A dossier may contain at most 400 lineage declarations.",
+            ));
+        }
+        let mut edges = Vec::new();
+        for relation in &input.lineage {
+            identifier(&relation.edge_id, "edge_id")?;
+            identifier(&relation.from_version_id, "from_version_id")?;
+            identifier(&relation.to_version_id, "to_version_id")?;
+            edges.push(LineageEdgeInput {
+                edge_id: &relation.edge_id,
+                relation_kind: relation.relation_kind,
+                from_version_id: &relation.from_version_id,
+                to_version_id: &relation.to_version_id,
+                preserves_independent_corroboration: false,
+            });
+        }
+        let version_ids: Vec<_> = all
+            .iter()
+            .map(|article| article.version_id.as_str())
+            .collect();
+        validate_declared_lineage(&version_ids, &edges, limits()?, || check(control))
+            .map_err(domain_error)?;
         control.check()?;
         Ok(Self {
             input,
@@ -341,12 +439,14 @@ impl Dossier {
         }
         let source_roster = sources
             .into_iter()
-            .map(|(source_id, (publisher, articles))| SourceView {
-                source_id: source_id.to_string(),
-                publisher: publisher.to_string(),
-                counts: counts(&articles),
+            .map(|(source_id, (publisher, articles))| {
+                Ok(SourceView {
+                    source_id: source_id.to_string(),
+                    publisher: publisher.to_string(),
+                    counts: counts(&articles, control)?,
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         let view = View {
             title: self.input.title.clone(),
             synthetic: self.input.synthetic,
@@ -354,8 +454,8 @@ impl Dossier {
             original_bytes: self.original.len(),
             collection_coverage: self.input.collection_coverage,
             coverage_note: self.input.coverage_note.clone(),
-            total: counts(&all),
-            visible: counts(&matching),
+            total: counts(&all, control)?,
+            visible: counts(&matching, control)?,
             source_roster,
             regions: all
                 .iter()
@@ -367,6 +467,13 @@ impl Dossier {
                 .into_iter()
                 .map(|article| ArticleView {
                     article: article.clone(),
+                    lineage: self
+                        .input
+                        .lineage
+                        .iter()
+                        .filter(|relation| relation.from_version_id == article.version_id)
+                        .cloned()
+                        .collect(),
                     text_sha256: article
                         .text
                         .as_ref()

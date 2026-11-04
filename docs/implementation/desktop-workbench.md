@@ -14,6 +14,8 @@ The pinned Rust toolchain is 1.99.0. First builds need the locked Cargo dependen
 
 ## Available workflows
 
+The [local News desk](news-desk.md) (#156) adds explicit JSON-dossier import, filtered article-version reading, shared publication inventory and declared lineage inspection and provenance inspection. It is session-only, unreviewed, and has no connected feeds. The fictional example loads only on request.
+
 1. **Document reader:** select a UTF-8 file through a native dialog, read line passages, search exact case-sensitive text, and select a match to focus its original source line. Byte offsets are zero-based/end-exclusive and remain anchored to the opened bytes. Pagination presents 100 passages at a time without changing extraction coverage.
 2. **File privacy:** select a PNG/JPEG, inspect container classifications and coverage, choose removable metadata categories, and save a cleaned copy through a native dialog. The original stays unchanged. The existing kernels reinspect the output and check their exact container-preservation contracts before the copy is published. This is not full image decoding, content anonymization, or proof that every identifying field was removed.
 3. **Witness capture:** capture one reported or simulated account with all FIELD-02 text fields, retain the initial version read-only, expose only an unassessed static explanation checklist through an explicit recorded transition, and append rationale-required revisions with expected-version checks. Rust owns identifiers and state. The account is memory-only and discarded on exit; this demonstrates workflow ordering but does not meet the durable-evidence host requirement. See [witness capture](witness-capture.md).

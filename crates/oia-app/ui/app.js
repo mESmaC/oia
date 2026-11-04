@@ -7,7 +7,7 @@ const invoke = (command, args) => window.__TAURI__.core.invoke(command, args);
 const SCHEMA = 'oia-local-tools/1';
 const PAGE_SIZE = 100;
 const QUERY_BYTE_LIMIT = 512; // Rust measures UTF-8 bytes, not characters.
-const INSTRUMENTS = ['session', 'documents', 'witness', 'privacy', 'globe', 'media'];
+const INSTRUMENTS = ['session', 'documents', 'witness', 'privacy', 'globe', 'media', 'news'];
 const SNAPSHOT_SCHEME = 'oia-snapshot'; // Rust-owned read-only scheme serving the held image by its hash
 const TARGETS = {
   text: ['Text metadata', 'PNG text containers'],
@@ -104,13 +104,13 @@ function updateQueryState() {
   return over;
 }
 function renderShell() {
-  const names = { session: '', documents: 'Documents', witness: 'Witness', privacy: 'Privacy', globe: 'Globe', media: 'Media' };
+  const names = { session: '', documents: 'Documents', witness: 'Witness', privacy: 'Privacy', globe: 'Globe', media: 'Media', news: 'News' };
   const view = currentView();
   $('crumb-sep').hidden = $('crumb-instrument').hidden = instrument === 'session';
   $('crumb-instrument').textContent = names[instrument];
   const loaded = Number(!!documentView) + Number(!!imageView) + Number(!!corpusView);
   const witnessLoaded = Witness.summary().loaded;
-  const sessionRecords = loaded + Number(witnessLoaded);
+  const sessionRecords = loaded + Number(witnessLoaded) + Number(News.summary().loaded);
   $('crumb-chip').textContent = sessionRecords ? `${sessionRecords} session ${sessionRecords === 1 ? 'record' : 'records'} · no case` : 'No case · memory only';
 
   setText('ro-source', view ? view.file.name : '—', view ? 'v' : 'v none');
@@ -136,6 +136,12 @@ function renderShell() {
     setText('ro-coverage', f ? (f.partial ? 'cues partial' : 'cue profile complete') : 'cues not run', f && !f.partial ? 'v' : f ? 'v est' : 'v none');
     const block = f && selectedBlock !== null ? f.report.repeated_blocks.result?.candidates[selectedBlock] : null;
     setText('ro-selection', block ? `${pad2(selectedBlock + 1)} block · ${block.first.x},${block.first.y} ↔ ${block.repeated.x},${block.repeated.y}` : 'none', block ? 'v' : 'v none');
+  } else if (instrument === 'news') {
+    const news = News.summary();
+    setText('ro-source', (news.synthetic ? 'Declared synthetic / not observed evidence / ' : '') + news.source, news.loaded ? 'v' : 'v none');
+    setText('ro-hash', news.hash, news.loaded ? 'v' : 'v none');
+    setText('ro-coverage', news.coverage, 'v est');
+    setText('ro-selection', news.selection, news.loaded ? 'v' : 'v none');
   } else if (instrument === 'witness') {
     const w = Witness.summary();
     setText('ro-source', w.source, w.loaded ? 'v' : 'v none');
@@ -172,7 +178,7 @@ function renderShell() {
 
   // Session instrument
   $('session-title').textContent = sessionRecords ? 'Records in this session' : 'No session records';
-  $('session-prompt').textContent = sessionRecords ? 'Select a record to open its instrument. Nothing is saved; files carry no recorded position or time, and witness text is not normalized into measurements.' : 'Open a UTF-8 document or PNG/JPEG image, or capture a witness account. Everything stays in memory for this session.';
+  $('session-prompt').textContent = sessionRecords ? 'Select a record to open its instrument. Nothing is saved; imported declarations and witness accounts are not normalized into measurements.' : 'Open a UTF-8 document or PNG/JPEG image, capture a witness account, or import a local News dossier. Everything stays in memory for this session.';
   const tray = $('session-tray'), list = $('session-sources');
   tray.replaceChildren(); list.replaceChildren();
   let n = 0;
@@ -200,6 +206,15 @@ function renderShell() {
       const t = tag(n, `${w.source} · ${w.selection}`);
       t.onclick = () => showInstrument('witness', true);
       host.append(t);
+    }
+  }
+  if (News.summary().loaded) {
+    n += 1;
+    const news = News.summary();
+    for (const host of [tray, list]) {
+      const entry = tag(n, (news.synthetic ? 'Declared synthetic / not observed evidence / ' : '') + news.source + ' / News dossier');
+      entry.onclick = () => showInstrument('news', true);
+      host.append(entry);
     }
   }
   if (!n) list.append(node('p', 'No records in this session.'));
@@ -868,6 +883,7 @@ document.addEventListener('keydown', event => {
 });
 Globe.onView(() => { if (instrument === 'globe') renderShell(); });
 Witness.onView(() => renderShell());
+News.onView(() => renderShell());
 if (window.matchMedia('(prefers-reduced-transparency: reduce)').matches) setPresentation('reduced', true);
 renderMedia();
 renderDocuments();

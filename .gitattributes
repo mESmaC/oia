@@ -2,3 +2,4 @@
 *.sh text eol=lf
 # Canonical domain fixtures are compared byte-for-byte; keep LF in every checkout.
 fixtures/domain/*.json text eol=lf
+crates/oia-app/examples/news-dossier.json -text

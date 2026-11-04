@@ -30,6 +30,8 @@ Verification claims will be limited to the properties and implementation connect
 
 ## Current status
 
+The desktop [News desk](docs/implementation/news-desk.md) supports bounded local JSON dossiers, article-version inspection, exact-text filtering and shared publication inventory and declared lineage inspection. It is session-only and unreviewed; live feeds and persistent news cases remain unimplemented. A clearly labeled synthetic example loads only when requested.
+
 The repository currently includes the **#9 Rust workspace bootstrap**, platform decision records, and standalone document/privacy kernels:
 
 - **Rust workspace** (`Cargo.toml`, `rustc 1.99.0`, `edition = "2024"`, `#![forbid(unsafe_code)]`, dual-licensed `MIT OR Apache-2.0`):
@@ -37,7 +39,8 @@ The repository currently includes the **#9 Rust workspace bootstrap**, platform 
   - `oia-forecast` provides a standalone [binary scoring kernel](docs/implementation/forecast-scoring.md); forecast issuance, chronological validation, persistence, calibration, and application integration remain open in `#43`.
   - `oia-market` provides standalone [point-in-time market normalization](docs/implementation/market-point-in-time.md); provider, storage, application, and full A14 integration remain open in `#41`.
   - `oia-market` also provides a standalone [daily event-study kernel](docs/implementation/market-event-study.md) with explicit windows, benchmarks, and gaps. Charts, exposure graphs, briefs, and application integration remain open in `#42`.
-  - Workspace boundary stubs awaiting split P0–P6 implementation PRs (`#10`–`#15` and subsequent phases): `oia-time-geo`, `oia-store`, `oia-ingest`, `oia-query`, `oia-analysis`, `oia-models`, `oia-media`, `oia-devices`, and `oia-export`.
+  - `oia-time-geo` owns [shared WGS84 point/box, altitude-category and UTC interval primitives](docs/implementation/shared-time-geo.md), used by geographic context and imagery kernels; UAV telemetry shares its altitude-reference enum. Timezone/scientific-time/clock and height-conversion work remains in #12.
+  - Workspace boundary stubs awaiting split P0–P6 implementation PRs (`#10`–`#15` and subsequent phases): `oia-store`, `oia-ingest`, `oia-query`, `oia-analysis`, `oia-models`, `oia-media`, `oia-devices`, and `oia-export`.
 - **Lean model proofs** ([manifest and commands](proofs/README.md)): frame selection, dependency propagation, and forecast cutoff properties; a shared 24-case fixture tests the merged Rust forecast cutoff path. Model proofs and finite Rust correspondence evidence are distinct.
 - **Architecture Decision Records (`docs/adr/`)**:
   - [ADR 0001 (D01): Deployment and UI boundary (Accepted)](docs/adr/0001-d01-deployment-and-ui-boundary.md)

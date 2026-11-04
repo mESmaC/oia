@@ -101,6 +101,10 @@ An unsupported claim is not necessarily false. A reviewed claim is not necessari
 
 ## 3. Time, geometry, and numerical contracts
 
+The implemented [shared geometry/UTC interval slice](implementation/shared-time-geo.md)
+owns the migrated analysis primitives and UAV altitude categories. The broader time,
+uncertainty and conversion contracts below remain targets where the slice states a gap.
+
 ### 3.1 Time model
 
 Represent exact instants, bounded intervals, calendar-only dates, approximate dates, and unknown times. Preserve original text and precision. Date-only historical records must not appear as accurately observed midnight timestamps.

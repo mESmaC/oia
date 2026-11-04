@@ -7,10 +7,6 @@
 //! 4. Empty-scene prevention: absent tracks produce `InconclusiveUnobserved` when sensors are missing, offline, or stale.
 //! 5. Dateline-crossing spatial query envelope (crossing 180° antimeridian).
 
-use oia_analysis::geo_context::provisional::{
-    Altitude, AltitudeBand, AltitudeReference, GeoBoundingBoxWgs84, GeoPointWgs84, GeoPosition,
-    TimeWindow,
-};
 use oia_analysis::geo_context::{
     AircraftTrack, AircraftTrackPoint, CloudCoverage, CloudLayer, ContextLimits,
     ContextReconstructionInputs, METHOD_ID, MaritimeTrackPoint, MaritimeVesselTrack,
@@ -20,6 +16,10 @@ use oia_analysis::geo_context::{
     reconstruct_geographic_context,
 };
 use oia_domain::{OpaqueId, VersionId};
+use oia_time_geo::{
+    Altitude, AltitudeBand, AltitudeReference, GeoBoundingBoxWgs84, GeoPointWgs84, GeoPosition,
+    TimeWindow,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== OIA Geographic Context Reconstruction Example ===");

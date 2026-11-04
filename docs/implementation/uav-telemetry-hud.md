@@ -13,6 +13,11 @@ domain/replay subset of `A12` in [the product specification](../spec.md),
 - `oia_devices::uav::ForensicFrameHandoff`
 - `oia_devices::uav::OnboardRecordingLink`
 
+`AltitudeReference` is re-exported from [`oia-time-geo`](shared-time-geo.md),
+so UAV and geographic analysis share one reference-category vocabulary. Device
+position/uncertainty, clock alignment, telemetry ranges and session-local takeoff
+origins remain owned by this kernel; this migration does not perform height conversions.
+
 ## Contract
 
 1. **Capability-scoped registration and passive receive-only boundary (`DEVICE-01`, `DEVICE-04`, `A12`):**

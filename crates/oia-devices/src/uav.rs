@@ -677,25 +677,8 @@ pub struct Wgs84Position {
     pub horizontal_uncertainty_m: Option<f64>,
 }
 
-/// Vertical datum or height reference for an altitude measurement (`DEVICE-02`, `docs/architecture.md` §3.2).
-///
-/// Barometric altitude must not be treated as physically corrected orthometric or ellipsoidal
-/// height by merely adding geoid undulation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AltitudeReference {
-    /// Height above the WGS84 reference ellipsoid.
-    Wgs84Ellipsoid,
-    /// Orthometric height above mean sea level (geoid-referenced).
-    OrthometricMsl,
-    /// Measured or terrain-referenced height above local ground level (AGL).
-    AboveGroundLevel,
-    /// Uncorrected barometric pressure altitude.
-    BarometricUnadjusted,
-    /// Height relative to the takeoff or home point.
-    RelativeToTakeoff,
-    /// Unlabeled or unverified altitude datum (`docs/architecture.md` §3.2).
-    Unknown,
-}
+/// Shared vertical reference category, including a device-local takeoff origin.
+pub use oia_time_geo::AltitudeReference;
 
 /// Validated altitude measurement in meters with explicit [`AltitudeReference`] (`DEVICE-02`).
 #[derive(Debug, Clone, Copy, PartialEq)]

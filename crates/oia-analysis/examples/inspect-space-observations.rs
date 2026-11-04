@@ -1,7 +1,7 @@
 //! Runnable inspection example for space imagery catalog, scientific provenance, and mission stream classification (`SPACE-01`–`SPACE-03`, `A05`).
 
-use oia_analysis::geo_context::provisional::{GeoBoundingBoxWgs84, TimeWindow};
 use oia_analysis::space_imagery::*;
+use oia_time_geo::{GeoBoundingBoxWgs84, TimeWindow};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== OIA Space Imagery and Scientific Observation Catalog (v0.1, #26) ===\n");

@@ -21,7 +21,7 @@ pub use notices::*;
 pub use tracks::*;
 pub use weather::*;
 
-use provisional::{
+use oia_time_geo::{
     Altitude, AltitudeBand, AltitudeReference, GeoBoundingBoxWgs84, GeoPointWgs84, GeoPosition,
     TimeWindow,
 };
@@ -34,7 +34,7 @@ pub const METHOD_ID: &str = "oia-geo-context-reconstruction-v1";
 pub const INTERPOLATION_METHOD_ID: &str = "bounded-great-circle-spherical-v1";
 
 /// Mean Earth radius in metres (IUGG R1 spherical mean approximation; Moritz 2000).
-pub const EARTH_RADIUS_METERS: f64 = 6_371_008.8;
+pub use oia_time_geo::EARTH_RADIUS_METERS;
 
 // Maintain single definition across crate
 pub use crate::multilingual::StopReason;
@@ -271,6 +271,35 @@ impl fmt::Display for GeoContextError {
 
 impl std::error::Error for GeoContextError {}
 
+impl From<oia_time_geo::TimeGeoError> for GeoContextError {
+    fn from(error: oia_time_geo::TimeGeoError) -> Self {
+        use oia_time_geo::TimeGeoError;
+        match error {
+            TimeGeoError::InvalidCoordinates { lat, lon, reason } => {
+                Self::InvalidCoordinates { lat, lon, reason }
+            }
+            TimeGeoError::InvalidTimeWindow {
+                start_utc_ms,
+                end_utc_ms,
+            } => Self::InvalidTimeWindow {
+                start_utc_ms,
+                end_utc_ms,
+            },
+            TimeGeoError::InvalidAltitudeBand {
+                min_meters,
+                max_meters,
+            } => Self::InvalidAltitudeBand {
+                min_meters,
+                max_meters,
+            },
+            TimeGeoError::NonFiniteValue(field) => Self::NonFiniteValue(field),
+            TimeGeoError::IncompatibleAltitudeReferences { actual, expected } => {
+                Self::IncompatibleAltitudeReferences { actual, expected }
+            }
+        }
+    }
+}
+
 /// Spherical linear interpolation (SLERP) along the great circle between two points on the WGS84 unit sphere.
 ///
 /// Converts geodetic latitude/longitude to 3D Cartesian coordinates on the unit sphere,
@@ -333,7 +362,7 @@ pub fn spherical_slerp(
     let lat_deg = nz.clamp(-1.0, 1.0).asin().to_degrees();
     let lon_deg = ny.atan2(nx).to_degrees();
 
-    GeoPointWgs84::new(lat_deg, lon_deg)
+    Ok(GeoPointWgs84::new(lat_deg, lon_deg)?)
 }
 
 /// 4D spatio-temporal query envelope (`GEO-02`, `GEO-05`, `A04`).
@@ -386,7 +415,7 @@ impl SpatioTemporalEnvelope {
         }
         if let Some(ref band) = self.altitude_band {
             match position.altitude() {
-                Some(ref alt) => band.contains_altitude(alt),
+                Some(ref alt) => Ok(band.contains_altitude(alt)?),
                 None => Ok(false),
             }
         } else {

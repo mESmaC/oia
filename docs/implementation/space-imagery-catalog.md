@@ -11,6 +11,10 @@ This package is a local, provider-independent Rust kernel with zero external net
 Live provider ingestion, SQLite storage, raster pixel decoding, and UI visualization remain open in [#13](https://github.com/mESmaC/oia/issues/13),
 [#11](https://github.com/mESmaC/oia/issues/11), and [#16](https://github.com/mESmaC/oia/issues/16).
 
+Bounding boxes and UTC windows use the [shared time/geometry primitives](shared-time-geo.md).
+Seam edge and pole contact count as closed-extent overlap, but not positive interior
+area in composite planning. Tolerances are explicit angular comparison allowances.
+
 ### Boundary and Evidence Semantics
 
 The `oia_analysis::space_imagery` module enforces six analytical and evidence integrity contracts:

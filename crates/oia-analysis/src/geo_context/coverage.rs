@@ -2,10 +2,10 @@
 
 use std::fmt;
 
-use crate::geo_context::provisional::{AltitudeBand, GeoBoundingBoxWgs84, TimeWindow};
 use crate::geo_context::tracks::PositionSource;
 use crate::geo_context::{ContextLimits, GeoContextError, SpatioTemporalEnvelope};
 use oia_domain::OpaqueId;
+use oia_time_geo::{AltitudeBand, GeoBoundingBoxWgs84, TimeWindow};
 
 /// Surveillance sensor registration mask describing operational bounds and feed freshness.
 #[derive(Debug, Clone, PartialEq)]

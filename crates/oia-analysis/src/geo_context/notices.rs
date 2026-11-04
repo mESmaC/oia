@@ -1,10 +1,8 @@
 //! Airspace and maritime navigation notice context types (`INTEL-03`).
 
-use crate::geo_context::provisional::{
-    Altitude, GeoBoundingBoxWgs84, GeoPointWgs84, GeoPosition, TimeWindow,
-};
 use crate::geo_context::{GeoContextError, SpatioTemporalEnvelope};
 use oia_domain::OpaqueId;
+use oia_time_geo::{Altitude, GeoBoundingBoxWgs84, GeoPointWgs84, GeoPosition, TimeWindow};
 
 /// Airspace or maritime notice classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

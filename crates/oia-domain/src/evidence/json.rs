@@ -13,6 +13,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use super::ledger::PropagationBudget;
 use super::{
     AttributeName, AttributeValue, Availability, ClaimAssessment, ClaimFields, EvidenceError,
     EvidenceLedger, FieldValue, LedgerEntry, LedgerLimits, ObjectType, OriginClass, Provenance,
@@ -226,7 +227,9 @@ impl EvidenceLedger {
     /// Parses and replays a ledger document under `limits`.
     ///
     /// Inputs larger than [`MAX_LEDGER_JSON_BYTES`] are refused before parsing. Import stops at
-    /// the first rejected entry and returns no partial ledger.
+    /// the first rejected entry and returns no partial ledger. Each operation obeys
+    /// [`LedgerLimits::max_propagation_steps`], and all replayed operations together obey
+    /// [`LedgerLimits::max_import_propagation_steps`]. Work limits never truncate flags.
     pub fn from_json(input: &str, limits: LedgerLimits) -> Result<Self, CodecError> {
         if input.len() > MAX_LEDGER_JSON_BYTES {
             return Err(CodecError::Oversized {
@@ -246,6 +249,7 @@ impl EvidenceLedger {
             return Err(CodecError::UnsupportedSchema(doc.schema_version));
         }
         let mut ledger = Self::new(limits);
+        let mut work = PropagationBudget::for_import(limits);
         for (index, entry) in doc.entries.into_iter().enumerate() {
             let rejected = |source| CodecError::Rejected {
                 entry: index,
@@ -258,10 +262,12 @@ impl EvidenceLedger {
                     }
                     let (fields, predecessor, revision) = record_from_doc(index, *record)?;
                     match (predecessor, revision) {
-                        (None, None) => ledger.issue(fields).map_err(rejected)?,
+                        (None, None) => ledger
+                            .issue_with_budget(fields, &mut work)
+                            .map_err(rejected)?,
                         (Some(predecessor), Some(revision)) => {
                             ledger
-                                .revise(fields, &predecessor, revision)
+                                .revise_with_budget(fields, &predecessor, revision, &mut work)
                                 .map_err(rejected)?;
                         }
                         (None, Some(_)) | (Some(_), None) => {
@@ -273,7 +279,9 @@ impl EvidenceLedger {
                 }
                 EntryDoc::Relation(relation) => {
                     let relation = relation_from_doc(index, relation)?;
-                    ledger.relate(relation).map_err(rejected)?;
+                    ledger
+                        .relate_with_budget(relation, &mut work)
+                        .map_err(rejected)?;
                 }
             }
         }

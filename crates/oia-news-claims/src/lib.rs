@@ -614,22 +614,7 @@ fn is_valid_lower_hex_sha256(hex: &str) -> bool {
 
 /// Validates strict 20-byte RFC 3339 UTC timestamp format `YYYY-MM-DDTHH:MM:SSZ`.
 fn is_valid_rfc3339_utc_second(ts: &str) -> bool {
-    let bytes = ts.as_bytes();
-    if bytes.len() != 20 {
-        return false;
-    }
-    let digit_indices = [0usize, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18];
-    for idx in digit_indices {
-        if !bytes.get(idx).is_some_and(u8::is_ascii_digit) {
-            return false;
-        }
-    }
-    bytes.get(4) == Some(&b'-')
-        && bytes.get(7) == Some(&b'-')
-        && bytes.get(10) == Some(&b'T')
-        && bytes.get(13) == Some(&b':')
-        && bytes.get(16) == Some(&b':')
-        && bytes.get(19) == Some(&b'Z')
+    oia_time_geo::has_rfc3339_utc_second_shape(ts)
 }
 
 fn find_record<'a, 'b>(

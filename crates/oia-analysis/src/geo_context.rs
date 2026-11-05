@@ -296,6 +296,40 @@ impl From<oia_time_geo::TimeGeoError> for GeoContextError {
             TimeGeoError::IncompatibleAltitudeReferences { actual, expected } => {
                 Self::IncompatibleAltitudeReferences { actual, expected }
             }
+            TimeGeoError::InvalidApproximateBounds {
+                earliest_utc_ms,
+                latest_utc_ms,
+            } => Self::InvalidTimeWindow {
+                start_utc_ms: earliest_utc_ms,
+                end_utc_ms: latest_utc_ms,
+            },
+            TimeGeoError::InvalidCalendarDate { .. } => {
+                Self::InvalidTemporalOrdering("invalid proleptic Gregorian calendar date")
+            }
+            TimeGeoError::InvalidRfc3339Timestamp { .. } => {
+                Self::InvalidTemporalOrdering("invalid RFC 3339 UTC timestamp")
+            }
+            TimeGeoError::InvalidUtcOffsetMinutes(_) => {
+                Self::InvalidTemporalOrdering("UTC offset minutes out of valid range")
+            }
+            TimeGeoError::EmptyField(_) => {
+                Self::InvalidTemporalOrdering("temporal metadata field must not be empty")
+            }
+            TimeGeoError::PreLeapSecondEpoch(_) => Self::InvalidTemporalOrdering(
+                "timestamp precedes the 1972-01-01T00:00:00Z IERS leap-second epoch",
+            ),
+            TimeGeoError::LeapTableExpired { .. } => {
+                Self::InvalidTemporalOrdering("leap-second table has expired for timestamp")
+            }
+            TimeGeoError::UnsynchronizedClock => Self::InvalidTemporalOrdering(
+                "source clock is unsynchronized; receipt time cannot substitute for capture time",
+            ),
+            TimeGeoError::ClockAlignmentOutOfWindow { .. } => Self::InvalidTemporalOrdering(
+                "source timestamp falls outside clock alignment calibration window",
+            ),
+            TimeGeoError::TimestampArithmeticOverflow => Self::InvalidTemporalOrdering(
+                "timestamp arithmetic overflowed i64 millisecond bounds",
+            ),
         }
     }
 }

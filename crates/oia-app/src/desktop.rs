@@ -2,6 +2,7 @@
 //! plus the globe and witness instruments' state.
 use crate::globe::{
     CameraView, GlobeState, GlobeView,
+    annotations::{AnnotationDraft, AnnotationEdit},
     imagery::{CivilDate, ImagerySelection},
     layers::AlprFilterId,
     traffic,
@@ -709,6 +710,52 @@ fn globe_traffic_cancel(globe: State<'_, Globe>) -> Result<Envelope<GlobeView>> 
     state.view().map(envelope)
 }
 
+/// OIA's own creation time for an annotation, Unix milliseconds UTC. A clock that cannot be
+/// read is refused rather than recorded as 1970.
+fn annotation_clock_ms() -> Result<i64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
+        .ok_or_else(|| {
+            ToolError::new(
+                "clock_unavailable",
+                "The system clock reads before 1970, so the annotation's creation time cannot be recorded.",
+            )
+        })
+}
+
+#[tauri::command]
+fn globe_annotate(globe: State<'_, Globe>, draft: AnnotationDraft) -> Result<Envelope<GlobeView>> {
+    let now_ms = annotation_clock_ms()?;
+    let mut state = globe.lock()?;
+    state.annotate(draft, now_ms)?;
+    state.view().map(envelope)
+}
+
+#[tauri::command]
+fn globe_annotation_revise(
+    globe: State<'_, Globe>,
+    annotation_id: String,
+    edit: AnnotationEdit,
+) -> Result<Envelope<GlobeView>> {
+    let now_ms = annotation_clock_ms()?;
+    let mut state = globe.lock()?;
+    state.revise_annotation(&annotation_id, edit, now_ms)?;
+    state.view().map(envelope)
+}
+
+/// Deletes one annotation, or all of this session's annotations when `annotation_id` is null.
+#[tauri::command]
+fn globe_annotation_delete(
+    globe: State<'_, Globe>,
+    annotation_id: Option<String>,
+) -> Result<Envelope<GlobeView>> {
+    let mut state = globe.lock()?;
+    state.delete_annotation(annotation_id.as_deref())?;
+    state.view().map(envelope)
+}
+
 /// Witness capture is independent of file work and globe rendering. Its transitions are
 /// synchronous, bounded by the domain kernel, and never published as durable evidence.
 #[derive(Clone, Debug, Default)]
@@ -866,6 +913,9 @@ pub fn run() -> std::result::Result<(), tauri::Error> {
             globe_traffic_catalog,
             globe_traffic_frame,
             globe_traffic_cancel,
+            globe_annotate,
+            globe_annotation_revise,
+            globe_annotation_delete,
             witness_view,
             witness_capture,
             witness_revise,

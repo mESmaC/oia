@@ -127,3 +127,40 @@
 .gcard.traffic .rows { grid-template-columns: minmax(0, 110px) minmax(0, 1fr); }
 .gcard.traffic .rows dd { min-width: 0; }
 .gcard.traffic > button { margin: 0 8px 4px 0; }
+
+/* Analyst annotations (#165). Neutral marks with their own glyph and tag, never a status
+   colour: amber, red and violet keep their v2 §5.1 meanings, and the accent stays the
+   selection colour. */
+.globe-leaders .ann path { stroke: var(--text); stroke-dasharray: 3 2; }
+.globe-leaders .ann circle { fill: var(--text); }
+.gtag.ann { border-style: dashed; }
+.gtag.ann i { color: var(--text); }
+.gtag.ann[aria-pressed="true"] { border-style: solid; border-color: var(--accent); }
+.globe-wrap.drawing .globe-canvas { cursor: crosshair; }
+.globe-wrap.drawing .gtag { pointer-events: none; }
+
+/* Centre crosshair for keyboard drawing: pan under it, then add a vertex with V. */
+.gcross { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; }
+.gcross i { position: absolute; background: var(--text); box-shadow: 0 0 0 1px rgba(0,0,0,.6); }
+.gcross i:nth-child(1) { left: -9px; top: 0; width: 18px; height: 1px; }
+.gcross i:nth-child(2) { left: 0; top: -9px; width: 1px; height: 18px; }
+
+/* Draw bar in the target card's place; the card returns when drawing ends. */
+.globe-wrap.drawing .gcard { display: none; }
+.gdraw { position: absolute; left: 16px; top: 16px; width: min(320px, calc(100% - 32px)); padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 7px; z-index: 1; }
+.gdraw .head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.gdraw .shapes { display: flex; gap: 4px; }
+.gdraw .shapes button { flex: 1; font: 11px var(--mono); letter-spacing: .06em; text-transform: uppercase; padding: 5px 6px; border: 1px solid var(--line); border-radius: var(--r-ctl); color: var(--text-2); background: var(--fill); }
+.gdraw .shapes button:hover { color: var(--text); background: var(--fill-2); }
+.gdraw .shapes button[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+.gdraw .status { margin: 0; font: 12px var(--mono); color: var(--text-2); }
+.gdraw .status.warn { color: var(--amber); }
+.gdraw .keys { margin: 0; font: 11px var(--mono); color: var(--text-3); }
+.gdraw .actions { display: flex; flex-wrap: wrap; gap: 5px; }
+.gdraw .actions .btn { padding: 5px 8px; font-size: 11px; }
+.gdraw .labelling, .gannot { display: flex; flex-direction: column; gap: 6px; }
+.gdraw label, .gannot label { display: flex; flex-direction: column; gap: 3px; font: 11px var(--mono); letter-spacing: .04em; color: var(--text-2); }
+.gdraw input, .gdraw textarea, .gdraw select, .gannot input, .gannot textarea, .gannot select { font: 13px var(--sans); color: var(--text); background: var(--solid); border: 1px solid var(--line-2); border-radius: var(--r-ctl); padding: 5px 7px; color-scheme: dark; }
+.gdraw textarea, .gannot textarea { resize: vertical; min-height: 2.6em; }
+.gannot .actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.gdraw .actions .keys { flex-basis: 100%; }

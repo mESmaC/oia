@@ -6,11 +6,13 @@
 //! kept minimal and validated (finite, in range, bounded text) so that no unchecked value
 //! reaches the renderer, and a record without recorded geometry is never given a position.
 
+pub mod annotations;
 pub mod imagery;
 pub mod layers;
 pub mod traffic;
 
 use crate::local_tools::{Result, ToolError};
+use annotations::{AnnotationDraft, AnnotationEdit, AnnotationLayerView, AnnotationState};
 use imagery::{CivilDate, ImagerySelection, ImageryView};
 use layers::{AlprFilterId, CameraLayerView, LayerState, LayerView};
 use serde::{Deserialize, Serialize};
@@ -524,6 +526,8 @@ pub struct GlobeView {
     /// fixture parsed; drawn by the page only while its layer is visible.
     pub cameras: Option<CameraLayerView>,
     pub traffic: traffic::TrafficView,
+    /// Analyst annotations of this session (`#165`); drawn only while their layer is visible.
+    pub annotations: AnnotationLayerView,
     pub renderer: RendererInfo,
     pub limits: GlobeLimits,
 }
@@ -532,7 +536,7 @@ pub struct GlobeView {
 #[derive(Clone, Debug)]
 pub struct GlobeState {
     fixture: std::result::Result<GlobeCaseFixture, ToolError>,
-    /// A case record id or a camera feature id (`alpr:<osm id>`).
+    /// A case record id, a camera feature id (`alpr:<osm id>`) or an annotation id (`ann-<n>`).
     selection: Option<String>,
     camera: CameraView,
     layers: LayerState,
@@ -541,6 +545,7 @@ pub struct GlobeState {
     /// so a clock that moves cannot turn an accepted selection into a failing view. `None`
     /// only if the registry's default basemap cannot be resolved, which is a build defect.
     imagery: Option<ImageryView>,
+    annotations: AnnotationState,
 }
 
 impl Default for GlobeState {
@@ -571,6 +576,7 @@ impl GlobeState {
             layers: LayerState::default(),
             traffic: traffic::TrafficState::default(),
             imagery,
+            annotations: AnnotationState::default(),
         }
     }
 
@@ -605,12 +611,13 @@ impl GlobeState {
                 .map(|f| f.records.iter().any(|r| &r.id == id))
                 .unwrap_or(false)
                 || self.layers.camera_selectable(id)
-                || self.traffic.selectable(id);
+                || self.traffic.selectable(id)
+                || self.annotations.selectable(id);
             if !known {
                 return Err(ToolError::new(
                     "unknown_record",
                     format!(
-                        "{id:?} is not a record of the open case or a drawn feature of a visible layer."
+                        "{id:?} is not a record of the open case, a drawn feature of a visible layer or a shown annotation."
                     ),
                 ));
             }
@@ -630,6 +637,18 @@ impl GlobeState {
                     .selection
                     .as_deref()
                     .is_some_and(|id| id.starts_with("traffic:"))
+            {
+                self.selection = None;
+            }
+            return Ok(());
+        }
+        if layer_id == annotations::LAYER_ANNOTATIONS {
+            self.annotations.set_visible(visible);
+            if !visible
+                && self
+                    .selection
+                    .as_deref()
+                    .is_some_and(AnnotationState::is_annotation_id)
             {
                 self.selection = None;
             }
@@ -689,6 +708,76 @@ impl GlobeState {
         }
     }
 
+    fn known_record(
+        fixture: &std::result::Result<GlobeCaseFixture, ToolError>,
+    ) -> impl Fn(&str) -> bool + '_ {
+        move |id| {
+            fixture
+                .as_ref()
+                .is_ok_and(|f| f.records.iter().any(|r| r.id == id))
+        }
+    }
+
+    /// Adds an analyst annotation drawn on the globe and selects it. The case records are not
+    /// changed; a referenced record must exist. `now_ms` is OIA's creation time (UTC).
+    pub fn annotate(&mut self, draft: AnnotationDraft, now_ms: i64) -> Result<String> {
+        let id = {
+            let known = Self::known_record(&self.fixture);
+            self.annotations.create(draft, now_ms, &known)?
+        };
+        self.select(Some(id.clone()))?;
+        Ok(id)
+    }
+
+    /// Revises an annotation's label, note or record reference.
+    pub fn revise_annotation(
+        &mut self,
+        annotation_id: &str,
+        edit: AnnotationEdit,
+        now_ms: i64,
+    ) -> Result<()> {
+        let known = Self::known_record(&self.fixture);
+        self.annotations.update(annotation_id, edit, now_ms, &known)
+    }
+
+    /// Deletes one annotation, or every annotation when `annotation_id` is `None`. A selection
+    /// of a deleted annotation is cleared.
+    pub fn delete_annotation(&mut self, annotation_id: Option<&str>) -> Result<()> {
+        match annotation_id {
+            Some(id) => self.annotations.delete(id)?,
+            None => self.annotations.clear(),
+        }
+        if let Some(selected) = self.selection.as_deref()
+            && AnnotationState::is_annotation_id(selected)
+            && !self.annotations.selectable(selected)
+        {
+            self.selection = None;
+        }
+        Ok(())
+    }
+
+    fn annotation_layer(&self) -> layers::LayerView {
+        let count = self.annotations.count();
+        layers::LayerView {
+            id: annotations::LAYER_ANNOTATIONS,
+            label: "Analyst annotations",
+            kind: "annotations",
+            visible: self.annotations.visible(),
+            origin_class: "analyst annotation",
+            requirement: "CASE-03 · GEO-01",
+            source_label: "Drawn in this session".to_owned(),
+            fixture_path: None,
+            statement: "Pins, lines, areas and range rings drawn by the analyst. They are notes on the map, not observations, and never change the case records they refer to. Session only: not saved.",
+            attribution: "Analyst-authored in OIA",
+            license: "Not applicable: authored by the user",
+            extent: None,
+            shown: count,
+            total: count,
+            coverage: "all annotations drawn in this session".to_owned(),
+            error: None,
+        }
+    }
+
     pub fn view(&self) -> Result<GlobeView> {
         let imagery = self.imagery.clone().ok_or_else(|| {
             ToolError::new(
@@ -708,6 +797,14 @@ impl GlobeState {
             layers: Vec::new(),
             cameras: None,
             traffic: self.traffic.view(),
+            annotations: self.annotations.view(&|id| {
+                self.fixture.as_ref().ok().and_then(|f| {
+                    f.records
+                        .iter()
+                        .find(|r| r.id == id)
+                        .map(|r| r.label.clone())
+                })
+            }),
             renderer: RendererInfo {
                 name: "CesiumJS",
                 pinned_version: RENDERER_VERSION,
@@ -727,7 +824,8 @@ impl GlobeState {
             Ok(fixture) => fixture,
             Err(error) => {
                 view.fixture_error = Some(format!("{FIXTURE_PATH}: {}", error.message));
-                let (layers, cameras) = self.layers.views(None, 0);
+                let (mut layers, cameras) = self.layers.views(None, 0);
+                layers.push(self.annotation_layer());
                 view.layers = layers;
                 view.layers.push(self.traffic.layer());
                 view.cameras = cameras;
@@ -786,9 +884,10 @@ impl GlobeState {
             plotted_count: view.plotted.len(),
             not_plotted_count: view.not_plotted.len(),
         });
-        let (layers, cameras) = self
+        let (mut layers, cameras) = self
             .layers
             .views(Some(&fixture.case.label), fixture.records.len());
+        layers.push(self.annotation_layer());
         view.layers = layers;
         view.layers.push(self.traffic.layer());
         view.cameras = cameras;
@@ -909,6 +1008,206 @@ mod tests {
         state.set_layer_visible(layers::LAYER_ALPR, false)?;
         assert_eq!(state.view()?.selection, None);
         assert!(state.set_layer_visible(layers::LAYER_CASE, false).is_err());
+        Ok(())
+    }
+
+    // #165 / CASE-03 / AGENTS.md §2 and §5: an annotation about a case record leaves the record
+    // unchanged; malformed drafts are refused without changing state rather than repaired; the
+    // stated measure follows the documented spherical model; hiding or deleting clears selection.
+    #[test]
+    fn annotations_refuse_bad_drafts_and_leave_records_unchanged() -> Result<()> {
+        use annotations::{AnnotationDraft, AnnotationEdit, AnnotationGeometry as G};
+        let p = |lat_deg, lon_deg| Wgs84Point { lat_deg, lon_deg };
+        let draft = |geometry, about: Option<&str>| AnnotationDraft {
+            label: "Check this treeline".to_owned(),
+            note: String::new(),
+            about_record: about.map(str::to_owned),
+            geometry,
+        };
+        let mut state = GlobeState::default();
+        let before = state.view()?.plotted;
+        let refused = [
+            (
+                draft(
+                    G::Pin {
+                        point: p(91.0, 0.0),
+                    },
+                    None,
+                ),
+                "value_out_of_range",
+            ),
+            (
+                draft(
+                    G::Line {
+                        vertices: vec![p(39.4, -105.6), p(39.4, -105.6)],
+                    },
+                    None,
+                ),
+                "annotation_invalid",
+            ),
+            (
+                draft(
+                    G::Area {
+                        ring: vec![
+                            p(39.4, -105.6),
+                            p(39.5, -105.6),
+                            p(39.5, -105.5),
+                            p(39.4, -105.6),
+                        ],
+                    },
+                    None,
+                ),
+                "annotation_invalid",
+            ),
+            (
+                draft(
+                    G::Ring {
+                        centre: p(39.4, -105.6),
+                        edge: p(39.4, -105.6),
+                    },
+                    None,
+                ),
+                "annotation_invalid",
+            ),
+            (
+                draft(
+                    G::Pin {
+                        point: p(39.4, -105.6),
+                    },
+                    Some("no-such-record"),
+                ),
+                "unknown_record",
+            ),
+            (
+                AnnotationDraft {
+                    label: " ".to_owned(),
+                    ..draft(
+                        G::Pin {
+                            point: p(39.4, -105.6),
+                        },
+                        None,
+                    )
+                },
+                "annotation_invalid",
+            ),
+        ];
+        for (bad, code) in refused {
+            assert_eq!(state.annotate(bad, 1).err().map(|e| e.code), Some(code));
+        }
+        assert!(state.view()?.annotations.items.is_empty());
+
+        let id = state.annotate(
+            draft(
+                G::Line {
+                    vertices: vec![p(39.0, -105.6), p(40.0, -105.6)],
+                },
+                Some("acct-a"),
+            ),
+            1_000,
+        )?;
+        let view = state.view()?;
+        assert_eq!(
+            view.plotted, before,
+            "an annotation must not change any case record"
+        );
+        assert_eq!(view.selection.as_deref(), Some(id.as_str()));
+        let item = &view.annotations.items[0];
+        assert_eq!(item.about_label.as_deref(), Some("Account A"));
+        // One degree of latitude on the IUGG mean sphere: R·π/180.
+        let expected = oia_time_geo::EARTH_RADIUS_METERS * std::f64::consts::PI / 180.0;
+        assert!(
+            item.measures
+                .length_m
+                .is_some_and(|m| (m - expected).abs() < 1e-6)
+        );
+
+        let edit = AnnotationEdit {
+            label: "Treeline, revised".to_owned(),
+            note: "Second look".to_owned(),
+            about_record: None,
+        };
+        state.revise_annotation(&id, edit, 2_000)?;
+        let item = &state.view()?.annotations.items[0];
+        assert_eq!(
+            (item.revision, item.revised_at_ms, item.created_at_ms),
+            (1, Some(2_000), 1_000)
+        );
+        assert_eq!(state.view()?.plotted, before);
+
+        // The drawn ring outline lies at the measured radius on the same sphere, across the
+        // antimeridian too.
+        state.annotate(
+            draft(
+                G::Ring {
+                    centre: p(-16.5, 179.9),
+                    edge: p(-16.5, -179.5),
+                },
+                None,
+            ),
+            3_000,
+        )?;
+        let view = state.view()?;
+        let ring = &view.annotations.items[1];
+        let (Some(radius), Some(outline)) = (ring.measures.radius_m, ring.outline.as_ref()) else {
+            return Err(ToolError::new("test", "ring without radius or outline"));
+        };
+        let centre = oia_time_geo::GeoPointWgs84::new(-16.5, 179.9)
+            .map_err(|e| ToolError::new("test", e))?;
+        assert_eq!(outline.len(), 72);
+        for q in outline {
+            let q = oia_time_geo::GeoPointWgs84::new(q.lat_deg, q.lon_deg)
+                .map_err(|e| ToolError::new("test", e))?;
+            assert!((centre.great_circle_distance_m(q) - radius).abs() < 1e-3);
+        }
+        state.select(Some(id.clone()))?;
+
+        state.set_layer_visible(annotations::LAYER_ANNOTATIONS, false)?;
+        assert_eq!(state.view()?.selection, None);
+        assert!(state.select(Some(id.clone())).is_err());
+        state.set_layer_visible(annotations::LAYER_ANNOTATIONS, true)?;
+        state.select(Some(id.clone()))?;
+        state.delete_annotation(Some(&id))?;
+        assert_eq!(state.view()?.selection, None);
+        assert_eq!(
+            state.delete_annotation(Some(&id)).err().map(|e| e.code),
+            Some("unknown_annotation")
+        );
+        Ok(())
+    }
+    // A new annotation changes the shared selection; a pending camera request must
+    // be cancelled rather than publishing a frame under the annotation's card.
+    #[test]
+    fn annotation_selection_cancels_camera_work_and_layers_remain_independent() -> Result<()> {
+        let mut state = GlobeState::default();
+        let (token, _) = state.traffic.begin_catalog(4)?;
+        let json = br#"{"data":[{"cctv":{"index":"1","inService":"true","location":{"district":"4","latitude":"37.8","longitude":"-122.2","locationName":"Synthetic contract camera"},"imageData":{"static":{"currentImageURL":"https://cwwp2.dot.ca.gov/data/d4/cctv/image/cam/cam.jpg"}}}}]}"#;
+        let catalog = traffic::parse_catalog(json.to_vec(), 4, 1)?;
+        state.traffic_catalog_finished(token, 4, Ok(catalog));
+        let camera = "traffic:4:1".to_owned();
+        state.select(Some(camera.clone()))?;
+        let (_, control, _, _, _) = state.traffic.begin_frame()?;
+        let id = state.annotate(
+            AnnotationDraft {
+                label: "Contract pin".to_owned(),
+                note: String::new(),
+                about_record: None,
+                geometry: annotations::AnnotationGeometry::Pin {
+                    point: Wgs84Point {
+                        lat_deg: 37.8,
+                        lon_deg: -122.2,
+                    },
+                },
+            },
+            1_000,
+        )?;
+        assert!(control.check().is_err());
+        assert_eq!(state.view()?.selection.as_deref(), Some(id.as_str()));
+        state.set_layer_visible(traffic::LAYER_ID, false)?;
+        assert_eq!(state.view()?.selection.as_deref(), Some(id.as_str()));
+        state.set_layer_visible(traffic::LAYER_ID, true)?;
+        state.select(Some(camera.clone()))?;
+        state.set_layer_visible(annotations::LAYER_ANNOTATIONS, false)?;
+        assert_eq!(state.view()?.selection, Some(camera));
         Ok(())
     }
 }

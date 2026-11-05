@@ -369,65 +369,30 @@ pub struct CivilDate {
 impl CivilDate {
     /// Strict `YYYY-MM-DD`, with the day checked against the month and leap years.
     pub fn parse(text: &str) -> Result<Self> {
-        let bytes = text.as_bytes();
-        let invalid = || {
+        let parsed = oia_time_geo::CalendarDate::parse_yyyy_mm_dd(text).map_err(|_| {
             ToolError::new(
                 "date_invalid",
                 format!("Expected YYYY-MM-DD, got {text:?}."),
             )
-        };
-        if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
-            return Err(invalid());
-        }
-        let number = |range: std::ops::Range<usize>| -> Result<i64> {
-            let slice = text.get(range).ok_or_else(invalid)?;
-            if !slice.bytes().all(|b| b.is_ascii_digit()) {
-                return Err(invalid());
-            }
-            slice.parse::<i64>().map_err(|_| invalid())
-        };
-        let year = number(0..4)?;
-        let month = u8::try_from(number(5..7)?).map_err(|_| invalid())?;
-        let day = u8::try_from(number(8..10)?).map_err(|_| invalid())?;
-        if !(1..=12).contains(&month) || day == 0 || day > days_in_month(year, month) {
-            return Err(invalid());
-        }
-        Ok(Self { year, month, day })
+        })?;
+        Ok(Self {
+            year: i64::from(parsed.year()),
+            month: parsed.month(),
+            day: parsed.day(),
+        })
     }
 
     /// Days since 1970-01-01 (Howard Hinnant's `days_from_civil`).
     #[must_use]
     pub fn to_days(self) -> i64 {
-        let y = if self.month <= 2 {
-            self.year - 1
-        } else {
-            self.year
-        };
-        let era = if y >= 0 { y } else { y - 399 } / 400;
-        let yoe = y - era * 400;
-        let m = i64::from(self.month);
-        let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + i64::from(self.day) - 1;
-        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-        era * 146_097 + doe - 719_468
+        oia_time_geo::days_from_civil(self.year, self.month, self.day)
     }
 
     /// Inverse of [`to_days`](Self::to_days) (Hinnant's `civil_from_days`).
     #[must_use]
     pub fn from_days(days: i64) -> Self {
-        let z = days + 719_468;
-        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-        let doe = z - era * 146_097;
-        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-        let y = yoe + era * 400;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-        let mp = (5 * doy + 2) / 153;
-        let day = doy - (153 * mp + 2) / 5 + 1;
-        let month = if mp < 10 { mp + 3 } else { mp - 9 };
-        Self {
-            year: if month <= 2 { y + 1 } else { y },
-            month: u8::try_from(month).unwrap_or(1),
-            day: u8::try_from(day).unwrap_or(1),
-        }
+        let (year, month, day) = oia_time_geo::civil_from_days(days);
+        Self { year, month, day }
     }
 
     #[must_use]
@@ -443,15 +408,6 @@ impl CivilDate {
 impl std::fmt::Display for CivilDate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:04}-{:02}-{:02}", self.year, self.month, self.day)
-    }
-}
-
-fn days_in_month(year: i64, month: u8) -> u8 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
-        _ => 28,
     }
 }
 

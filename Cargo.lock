@@ -2516,6 +2516,9 @@ dependencies = [
 [[package]]
 name = "oia-documents"
 version = "0.1.0"
+dependencies = [
+ "oia-time-geo",
+]
 
 [[package]]
 name = "oia-domain"
@@ -2607,6 +2610,9 @@ dependencies = [
 [[package]]
 name = "oia-news-claims"
 version = "0.1.0"
+dependencies = [
+ "oia-time-geo",
+]
 
 [[package]]
 name = "oia-png-privacy"

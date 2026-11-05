@@ -1,6 +1,9 @@
+use oia_domain::evidence::UnknownReason;
 use oia_time_geo::{
-    Altitude, AltitudeBand, AltitudeReference, EARTH_RADIUS_METERS, GeoBoundingBoxWgs84,
-    GeoPointWgs84, GeoPosition, TimeGeoError, TimeWindow,
+    Altitude, AltitudeBand, AltitudeReference, CalendarDate, ClockAlignment, ClockSyncState,
+    DstAmbiguity, EARTH_RADIUS_METERS, GeoBoundingBoxWgs84, GeoPointWgs84, GeoPosition,
+    LeapSecondTable, LocalTimeContext, TT_MINUS_TAI_MS, TimeGeoError, TimeRepresentation,
+    TimeWindow, parse_rfc3339_utc_nanos, parse_rfc3339_utc_seconds,
 };
 
 /// A04: seam aliases, world coverage and poles must not cause false missing coverage.
@@ -106,5 +109,127 @@ fn exact_utc_interval_boundaries() -> Result<(), TimeGeoError> {
     assert!(all.contains_window(&left) && all.contains_window(&right));
     assert!(TimeWindow::new(0, 0).is_err());
     assert!(TimeWindow::new(1, 0).is_err());
+    Ok(())
+}
+
+/// GEO-01 / SPACE-05 / DEVICE-04: calendar/RFC 3339 boundaries, date-only non-promotion,
+/// unresolved DST fold ambiguity, IERS leap-second conversions/expiry, and unsynchronized clock refusal.
+#[test]
+fn temporal_representations_leap_seconds_and_clock_alignment_contract() -> Result<(), TimeGeoError>
+{
+    // 1. Civil calendar round-trip and RFC 3339 boundary validation.
+    let epoch = CalendarDate::parse_yyyy_mm_dd("1970-01-01")?;
+    assert_eq!(epoch.to_epoch_days(), 0);
+    assert_eq!(CalendarDate::from_epoch_days(0)?, epoch);
+    let leap = CalendarDate::parse_yyyy_mm_dd("2024-02-29")?;
+    assert_eq!(CalendarDate::from_epoch_days(leap.to_epoch_days())?, leap);
+    assert!(CalendarDate::parse_yyyy_mm_dd("2026-02-29").is_err());
+    assert_eq!(parse_rfc3339_utc_seconds("1970-01-01T00:00:00Z")?, 0);
+    assert!(parse_rfc3339_utc_seconds("2016-12-31T23:59:60Z").is_err());
+    // End-of-UTC-day leap second is valid in nanosecond parser, mid-day `:60` is rejected.
+    assert_eq!(
+        parse_rfc3339_utc_nanos("2016-12-31T23:59:60Z")?,
+        1_483_228_799_999_999_999
+    );
+    assert_eq!(
+        parse_rfc3339_utc_nanos("2017-01-01T01:59:60+02:00")?,
+        1_483_228_799_999_999_999
+    );
+    assert!(parse_rfc3339_utc_nanos("2016-12-31T12:00:60Z").is_err());
+
+    // 2. Date-only and unknown times never silently promote to midnight UTC; unresolved DST fold
+    //    returns None when only one candidate falls inside the query window.
+    let window = TimeWindow::new(1_000, 5_000)?;
+    let date_only = TimeRepresentation::CalendarDate {
+        date: CalendarDate::new(1947, 6, 24)?,
+        original_text: "June 24, 1947".to_owned(),
+    };
+    date_only.validate()?;
+    assert_eq!(date_only.overlaps_utc_window(&window), None);
+
+    let unknown = TimeRepresentation::UnknownTime {
+        reason: UnknownReason::NotReported,
+        original_text: Some("sometime that winter".to_owned()),
+    };
+    unknown.validate()?;
+    assert_eq!(unknown.overlaps_utc_window(&window), None);
+
+    let fold = TimeRepresentation::ExactInstant {
+        utc_ms: 2_000,
+        local: Some(LocalTimeContext {
+            zone_name: "America/New_York".to_owned(),
+            utc_offset_minutes: None,
+            ambiguity: DstAmbiguity::AmbiguousFoldUnresolved {
+                earlier_utc_ms: 2_000,
+                later_utc_ms: 8_000,
+            },
+            original_text: "01:30 local".to_owned(),
+        }),
+    };
+    fold.validate()?;
+    assert_eq!(fold.overlaps_utc_window(&window), None);
+    assert_eq!(
+        fold.overlaps_utc_window(&TimeWindow::new(1_000, 10_000)?),
+        Some(true)
+    );
+    assert!(
+        LocalTimeContext {
+            zone_name: "UTC+15".to_owned(),
+            utc_offset_minutes: Some(841),
+            ambiguity: DstAmbiguity::Unambiguous,
+            original_text: "bad offset".to_owned(),
+        }
+        .validate()
+        .is_err()
+    );
+
+    // 3. Complete 28-step IERS leap-second table: pre-1972 refusal, historical steps, and expiry refusal.
+    let table = LeapSecondTable::iers_standard();
+    assert!(matches!(
+        table.tai_minus_utc_seconds(63_071_999_999),
+        Err(TimeGeoError::PreLeapSecondEpoch(_))
+    ));
+    assert_eq!(table.tai_minus_utc_seconds(63_072_000_000)?, 10); // 1972-01-01T00:00:00Z
+    assert_eq!(table.tai_minus_utc_seconds(858_297_600_000)?, 30); // 1997-03-14T00:00:00Z
+    assert_eq!(table.tai_minus_utc_seconds(1_100_390_400_000)?, 32); // 2004-11-14T00:00:00Z
+    let utc_2026_ms = 1_793_577_600_000_i64;
+    let tai_ms = table.utc_to_tai_ms(utc_2026_ms)?;
+    let tt_ms = table.utc_to_tt_ms(utc_2026_ms)?;
+    assert_eq!(tai_ms - utc_2026_ms, 37_000);
+    assert_eq!(tt_ms - tai_ms, TT_MINUS_TAI_MS);
+    assert!(matches!(
+        table.tai_minus_utc_seconds(table.expires_at_utc_ms),
+        Err(TimeGeoError::LeapTableExpired { .. })
+    ));
+
+    // 4. Clock alignment: unsynchronized refuses receipt-time substitution; drift inflates uncertainty.
+    let valid_window = TimeWindow::new(10_000, 110_000)?;
+    let unsynced = ClockAlignment {
+        reference_clock: "GNSS_PPS".to_owned(),
+        method: "1PPS".to_owned(),
+        offset_ms: 500,
+        drift_ppm: 25,
+        uncertainty_ms: 10,
+        validity_window: valid_window,
+        sync_state: ClockSyncState::Unsynchronized,
+    };
+    assert_eq!(
+        unsynced.align_device_time(20_000),
+        Err(TimeGeoError::UnsynchronizedClock)
+    );
+
+    let degraded = ClockAlignment {
+        sync_state: ClockSyncState::DegradedDrift,
+        ..unsynced
+    };
+    let aligned = degraded.align_device_time(89_500)?; // aligned_utc_ms = 90_000, elapsed = 80_000 ms
+    assert_eq!(aligned.aligned_utc_ms, 90_000);
+    // 80_000 ms * 25 ppm = 2 ms drift penalty -> 10 + 2 = 12 ms effective uncertainty.
+    assert_eq!(aligned.effective_uncertainty_ms, 12);
+    assert!(matches!(
+        degraded.align_device_time(200_000),
+        Err(TimeGeoError::ClockAlignmentOutOfWindow { .. })
+    ));
+
     Ok(())
 }

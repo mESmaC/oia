@@ -542,31 +542,6 @@ pub enum TemporalComparisonOutcome {
     CalendarDateOnlyCannotResolveSubDayGap { minimum_whole_day_separation: u64 },
 }
 
-const fn is_leap_year(year: i32) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
-}
-
-const fn days_in_month(year: i32, month: u8) -> Option<u8> {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => Some(31),
-        4 | 6 | 9 | 11 => Some(30),
-        2 => Some(if is_leap_year(year) { 29 } else { 28 }),
-        _ => None,
-    }
-}
-
-/// Howard Hinnant civil-date-to-days algorithm (days relative to `1970-01-01`).
-const fn days_from_civil(year: i32, month: u8, day: u8) -> i64 {
-    let y = (year as i64) - if month <= 2 { 1 } else { 0 };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = (y - era * 400) as u64;
-    let m = month as u64;
-    let d = day as u64;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + (doe as i64) - 719_468
-}
-
 /// Reported time for an evidence item participating in clustering (`GEO-01`, `GEO-03`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportedClusteringTime {
@@ -670,20 +645,13 @@ impl ReportedClusteringTime {
                 Ok(())
             }
             ClusteringTimePrecision::CalendarDateOnly { year, month, day } => {
-                let Some(max_day) = days_in_month(*year, *month) else {
-                    return Err(GeoClusteringError::InvalidCalendarDate {
+                oia_time_geo::CalendarDate::new(*year, *month, *day).map_err(|_| {
+                    GeoClusteringError::InvalidCalendarDate {
                         year: *year,
                         month: *month,
                         day: *day,
-                    });
-                };
-                if *day == 0 || *day > max_day || !(-9999..=9999).contains(year) {
-                    return Err(GeoClusteringError::InvalidCalendarDate {
-                        year: *year,
-                        month: *month,
-                        day: *day,
-                    });
-                }
+                    }
+                })?;
                 Ok(())
             }
         }
@@ -733,8 +701,8 @@ impl ReportedClusteringTime {
                     day: d2,
                 },
             ) => {
-                let days1 = days_from_civil(*y1, *m1, *d1);
-                let days2 = days_from_civil(*y2, *m2, *d2);
+                let days1 = oia_time_geo::days_from_civil(i64::from(*y1), *m1, *d1);
+                let days2 = oia_time_geo::days_from_civil(i64::from(*y2), *m2, *d2);
                 TemporalComparisonOutcome::CalendarDateSeparationDays(days1.abs_diff(days2))
             }
             (
@@ -745,7 +713,7 @@ impl ReportedClusteringTime {
                 ClusteringTimePrecision::ExactInstant { utc_ms },
                 ClusteringTimePrecision::CalendarDateOnly { year, month, day },
             ) => {
-                let cal_day = days_from_civil(*year, *month, *day);
+                let cal_day = oia_time_geo::days_from_civil(i64::from(*year), *month, *day);
                 let instant_utc_day = utc_ms.div_euclid(86_400_000);
                 // Because local timezone offset may shift the UTC date by up to +14/-12 hours
                 // (1 day) and a calendar date spans an entire 24-hour day (1 day), a valid
@@ -772,7 +740,7 @@ impl ReportedClusteringTime {
                 },
                 ClusteringTimePrecision::CalendarDateOnly { year, month, day },
             ) => {
-                let cal_day = days_from_civil(*year, *month, *day);
+                let cal_day = oia_time_geo::days_from_civil(i64::from(*year), *month, *day);
                 let start_day = start_utc_ms.div_euclid(86_400_000);
                 let end_day = end_utc_ms.saturating_sub(1).div_euclid(86_400_000);
                 let raw_diff = if cal_day < start_day {
@@ -786,6 +754,7 @@ impl ReportedClusteringTime {
                     minimum_whole_day_separation: raw_diff.saturating_sub(2),
                 }
             }
+
             (
                 ClusteringTimePrecision::ExactInstant { utc_ms: a_ms },
                 ClusteringTimePrecision::ExactInstant { utc_ms: b_ms },

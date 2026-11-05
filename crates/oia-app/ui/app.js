@@ -74,6 +74,7 @@ function showInstrument(name, focus = false) {
   document.querySelectorAll('.media-tool').forEach(button => { button.hidden = instrument !== 'media'; });
   if (instrument === 'globe') Globe.activate(); else Globe.deactivate();
   if (instrument === 'witness') Witness.activate(); else Witness.deactivate();
+  PublicCollection.activate(instrument);
   if (instrument === 'media') positionBlocks();
   if (focus) (instrument === 'globe' ? $('globe-canvas') : $('canvas')).focus();
   renderShell();
@@ -137,13 +138,13 @@ function renderShell() {
     const block = f && selectedBlock !== null ? f.report.repeated_blocks.result?.candidates[selectedBlock] : null;
     setText('ro-selection', block ? `${pad2(selectedBlock + 1)} block · ${block.first.x},${block.first.y} ↔ ${block.repeated.x},${block.repeated.y}` : 'none', block ? 'v' : 'v none');
   } else if (instrument === 'news') {
-    const news = News.summary();
+    const news = (!document.getElementById('news-local').open && PublicCollection.summary('news')) || News.summary();
     setText('ro-source', (news.synthetic ? 'Declared synthetic / not observed evidence / ' : '') + news.source, news.loaded ? 'v' : 'v none');
     setText('ro-hash', news.hash, news.loaded ? 'v' : 'v none');
     setText('ro-coverage', news.coverage, 'v est');
     setText('ro-selection', news.selection, news.loaded ? 'v' : 'v none');
   } else if (instrument === 'witness') {
-    const w = Witness.summary();
+    const w = (!Witness.summary().loaded && PublicCollection.summary('reports')) || Witness.summary();
     setText('ro-source', w.source, w.loaded ? 'v' : 'v none');
     setText('ro-hash', '—', 'v none');
     setText('ro-coverage', w.coverage, 'v est');
@@ -229,6 +230,7 @@ function setBusy(value, message, cls) {
   setText('status', message, `count ${cls || (value ? 'busy' : '')}`);
   updateExport();
   renderShell();
+  if (!value) PublicCollection.workspaceIdle();
 }
 async function operation(command, args, message, apply) {
   if (busy) return;
@@ -884,6 +886,9 @@ document.addEventListener('keydown', event => {
 Globe.onView(() => { if (instrument === 'globe') renderShell(); });
 Witness.onView(() => renderShell());
 News.onView(() => renderShell());
+$('news-local').ontoggle = () => renderShell();
+PublicCollection.onView(() => renderShell());
+PublicCollection.onBusy((value, message) => setBusy(value, message), () => busy);
 if (window.matchMedia('(prefers-reduced-transparency: reduce)').matches) setPresentation('reduced', true);
 renderMedia();
 renderDocuments();

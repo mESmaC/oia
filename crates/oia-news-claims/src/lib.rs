@@ -161,6 +161,7 @@ pub enum AvailabilityState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RetractionStatus {
+    Unknown,
     NotRetracted,
     CorrectedByLaterVersion,
     CorrectionIssued,

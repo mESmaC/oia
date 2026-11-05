@@ -32,6 +32,7 @@ pub enum ReportKind {
 #[derive(Deserialize, Serialize)]
 #[serde(remote = "RetractionStatus", rename_all = "snake_case")]
 enum RetractionStatusDef {
+    Unknown,
     NotRetracted,
     CorrectedByLaterVersion,
     CorrectionIssued,
@@ -79,6 +80,18 @@ pub enum CollectionCoverage {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct ArticleProvenance {
+    pub retrieved_time: String,
+    pub excerpt_locator: String,
+    pub original_excerpt_html: String,
+    pub extraction_note: String,
+    pub attribution: String,
+    pub rights_url: String,
+    pub usage_note: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Article {
     pub record_id: String,
     pub version_id: String,
@@ -100,6 +113,7 @@ pub struct Article {
     pub updated_time: Option<String>,
     pub event_time: Option<String>,
     pub text: Option<String>,
+    pub provenance: Option<ArticleProvenance>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -308,6 +322,23 @@ impl Dossier {
                 ));
             }
             text_field(&article.title, "article title", 512)?;
+            if let Some(provenance) = &article.provenance {
+                for (field, value, limit) in [
+                    ("retrieved_time", &provenance.retrieved_time, 160),
+                    ("excerpt_locator", &provenance.excerpt_locator, 2048),
+                    (
+                        "original_excerpt_html",
+                        &provenance.original_excerpt_html,
+                        MAX_TEXT_BYTES,
+                    ),
+                    ("extraction_note", &provenance.extraction_note, 2048),
+                    ("attribution", &provenance.attribution, 512),
+                    ("rights_url", &provenance.rights_url, 2048),
+                    ("usage_note", &provenance.usage_note, 4096),
+                ] {
+                    text_field(value, field, limit)?;
+                }
+            }
             for (field, value) in [
                 ("origin_id", &article.origin_id),
                 ("event_id", &article.event_id),

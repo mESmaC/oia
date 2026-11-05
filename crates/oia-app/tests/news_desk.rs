@@ -1,6 +1,51 @@
 use oia_app::local_tools::Control;
-use oia_app::news::{Dossier, EXAMPLE, Filter, MAX_BYTES, ReportKind};
+use oia_app::news::{Dossier, EXAMPLE as WEB_SNAPSHOT, Filter, MAX_BYTES, ReportKind};
 use sha2::{Digest, Sha256};
+
+const EXAMPLE: &[u8] = include_bytes!("fixtures/synthetic-news-dossier.json");
+
+#[test]
+fn real_snapshot_retains_provenance_without_inventing_lifecycle()
+-> Result<(), Box<dyn std::error::Error>> {
+    let control = Control::default();
+    let dossier = Dossier::parse(WEB_SNAPSHOT, &control)?;
+    let view = dossier.view(&Filter::default(), &control)?;
+    assert!(!view.synthetic);
+    assert!(matches!(
+        view.collection_coverage,
+        oia_app::news::CollectionCoverage::Partial
+    ));
+    assert_eq!((view.total.versions, view.total.sources), (3, 1));
+    assert_eq!(dossier.original_bytes(), WEB_SNAPSHOT);
+    for entry in &view.articles {
+        let article = &entry.article;
+        assert!(matches!(
+            article.retraction_status,
+            oia_app::news::RetractionStatus::Unknown
+        ));
+        assert!(article.event_time.is_none() && article.origin_id.is_none());
+        assert!(article.event_id.is_none() && article.predecessor_version_id.is_none());
+        let provenance = article.provenance.as_ref().ok_or("Missing provenance")?;
+        assert!(provenance.original_excerpt_html.starts_with("<p "));
+        assert!(provenance.retrieved_time.starts_with("2026-11-05T"));
+        assert_eq!(article.published_time.as_ref().map(String::len), Some(10));
+        let text = article.text.as_ref().ok_or("Missing excerpt")?;
+        assert_eq!(
+            entry.text_sha256,
+            Some(format!("{:x}", Sha256::digest(text)))
+        );
+    }
+    let mut oversized: serde_json::Value = serde_json::from_slice(WEB_SNAPSHOT)?;
+    oversized["articles"][0]["provenance"]["original_excerpt_html"] =
+        serde_json::json!("x".repeat(64 * 1024 + 1));
+    assert_eq!(
+        Dossier::parse(&serde_json::to_vec(&oversized)?, &control)
+            .err()
+            .map(|error| error.code),
+        Some("invalid_news")
+    );
+    Ok(())
+}
 
 #[test]
 fn versions_and_unknown_origins_survive_filtered_views() -> Result<(), Box<dyn std::error::Error>> {

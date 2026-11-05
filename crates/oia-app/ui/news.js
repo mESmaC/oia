@@ -8,6 +8,7 @@ const News = (() => {
     arrest: 'Arrest', charge: 'Charge', judgment: 'Judgment', attributed_statement: 'Attributed statement'
   };
   const states = {
+    unknown: 'Unknown / not assessed',
     not_retracted: 'Not retracted', corrected_by_later_version: 'Corrected by later version',
     correction_issued: 'Correction issued', retracted: 'Retracted'
   };
@@ -84,6 +85,13 @@ const News = (() => {
         ? article.lineage.map(edge => edge.relation_kind + ' -> ' + edge.to_version_id + ' [' + edge.edge_id + ']').join('; ') : null],
       ['Publication time (declared)', article.published_time], ['Update time (declared)', article.updated_time],
       ['Event time (declared)', article.event_time], ['Reference (not fetched)', article.url],
+      ['Retrieval time (declared)', article.provenance?.retrieved_time ?? null],
+      ['Excerpt location', article.provenance?.excerpt_locator ?? null],
+      ['Extraction / omissions', article.provenance?.extraction_note ?? null],
+      ['Attribution', article.provenance?.attribution ?? null],
+      ['Rights policy (not fetched)', article.provenance?.rights_url ?? null],
+      ['Access / processing / retention / redistribution', article.provenance?.usage_note ?? null],
+      ['Original excerpt HTML (inert text)', article.provenance?.original_excerpt_html ?? null],
       ['Text SHA-256', article.text_sha256]
     ] : [['Selection', null]]);
     if (listener) listener();
@@ -195,7 +203,7 @@ const News = (() => {
     element('news-filter').reset();
     element('news-pending').hidden = true;
     render();
-    status('Dossier unloaded. Import a local JSON file or explicitly load the synthetic example.');
+    status('Dossier unloaded. Import a local JSON file or load the dated web news snapshot (partial, not live).');
   });
   element('news-cancel').onclick = async () => {
     try {

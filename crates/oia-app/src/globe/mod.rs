@@ -9,6 +9,7 @@
 pub mod annotations;
 pub mod imagery;
 pub mod layers;
+pub mod traffic;
 
 use crate::local_tools::{Result, ToolError};
 use annotations::{AnnotationDraft, AnnotationEdit, AnnotationLayerView, AnnotationState};
@@ -524,6 +525,7 @@ pub struct GlobeView {
     /// The ALPR camera layer's features and kernel evaluation, present whenever the
     /// fixture parsed; drawn by the page only while its layer is visible.
     pub cameras: Option<CameraLayerView>,
+    pub traffic: traffic::TrafficView,
     /// Analyst annotations of this session (`#165`); drawn only while their layer is visible.
     pub annotations: AnnotationLayerView,
     pub renderer: RendererInfo,
@@ -538,6 +540,7 @@ pub struct GlobeState {
     selection: Option<String>,
     camera: CameraView,
     layers: LayerState,
+    pub traffic: traffic::TrafficState,
     /// Resolved once, when selected, against the date given then. Viewing never re-validates,
     /// so a clock that moves cannot turn an accepted selection into a failing view. `None`
     /// only if the registry's default basemap cannot be resolved, which is a build defect.
@@ -571,6 +574,7 @@ impl GlobeState {
             selection: None,
             camera,
             layers: LayerState::default(),
+            traffic: traffic::TrafficState::default(),
             imagery,
             annotations: AnnotationState::default(),
         }
@@ -607,6 +611,7 @@ impl GlobeState {
                 .map(|f| f.records.iter().any(|r| &r.id == id))
                 .unwrap_or(false)
                 || self.layers.camera_selectable(id)
+                || self.traffic.selectable(id)
                 || self.annotations.selectable(id);
             if !known {
                 return Err(ToolError::new(
@@ -617,6 +622,7 @@ impl GlobeState {
                 ));
             }
         }
+        self.traffic.select(record_id.as_deref());
         self.selection = record_id;
         Ok(())
     }
@@ -624,6 +630,18 @@ impl GlobeState {
     /// Shows or hides a registered layer. Hiding a layer clears a selection inside it,
     /// so a target card never describes something that is not drawn.
     pub fn set_layer_visible(&mut self, layer_id: &str, visible: bool) -> Result<()> {
+        if layer_id == traffic::LAYER_ID {
+            self.traffic.set_visible(visible);
+            if !visible
+                && self
+                    .selection
+                    .as_deref()
+                    .is_some_and(|id| id.starts_with("traffic:"))
+            {
+                self.selection = None;
+            }
+            return Ok(());
+        }
         if layer_id == annotations::LAYER_ANNOTATIONS {
             self.annotations.set_visible(visible);
             if !visible
@@ -638,6 +656,7 @@ impl GlobeState {
         }
         self.layers.set_visible(layer_id, visible)?;
         if !visible
+            && layer_id == layers::LAYER_ALPR
             && self
                 .selection
                 .as_deref()
@@ -672,6 +691,23 @@ impl GlobeState {
         Ok(())
     }
 
+    pub fn traffic_catalog_finished(
+        &mut self,
+        token: u64,
+        district: u8,
+        result: Result<traffic::Catalog>,
+    ) {
+        let replaced = self.traffic.finish_catalog(token, district, result);
+        if replaced
+            && self
+                .selection
+                .as_deref()
+                .is_some_and(|id| id.starts_with("traffic:"))
+        {
+            self.selection = None;
+        }
+    }
+
     fn known_record(
         fixture: &std::result::Result<GlobeCaseFixture, ToolError>,
     ) -> impl Fn(&str) -> bool + '_ {
@@ -685,9 +721,11 @@ impl GlobeState {
     /// Adds an analyst annotation drawn on the globe and selects it. The case records are not
     /// changed; a referenced record must exist. `now_ms` is OIA's creation time (UTC).
     pub fn annotate(&mut self, draft: AnnotationDraft, now_ms: i64) -> Result<String> {
-        let known = Self::known_record(&self.fixture);
-        let id = self.annotations.create(draft, now_ms, &known)?;
-        self.selection = Some(id.clone());
+        let id = {
+            let known = Self::known_record(&self.fixture);
+            self.annotations.create(draft, now_ms, &known)?
+        };
+        self.select(Some(id.clone()))?;
         Ok(id)
     }
 
@@ -758,6 +796,7 @@ impl GlobeState {
             imagery,
             layers: Vec::new(),
             cameras: None,
+            traffic: self.traffic.view(),
             annotations: self.annotations.view(&|id| {
                 self.fixture.as_ref().ok().and_then(|f| {
                     f.records
@@ -788,6 +827,7 @@ impl GlobeState {
                 let (mut layers, cameras) = self.layers.views(None, 0);
                 layers.push(self.annotation_layer());
                 view.layers = layers;
+                view.layers.push(self.traffic.layer());
                 view.cameras = cameras;
                 return Ok(view);
             }
@@ -849,6 +889,7 @@ impl GlobeState {
             .views(Some(&fixture.case.label), fixture.records.len());
         layers.push(self.annotation_layer());
         view.layers = layers;
+        view.layers.push(self.traffic.layer());
         view.cameras = cameras;
         Ok(view)
     }
@@ -1131,6 +1172,42 @@ mod tests {
             state.delete_annotation(Some(&id)).err().map(|e| e.code),
             Some("unknown_annotation")
         );
+        Ok(())
+    }
+    // A new annotation changes the shared selection; a pending camera request must
+    // be cancelled rather than publishing a frame under the annotation's card.
+    #[test]
+    fn annotation_selection_cancels_camera_work_and_layers_remain_independent() -> Result<()> {
+        let mut state = GlobeState::default();
+        let (token, _) = state.traffic.begin_catalog(4)?;
+        let json = br#"{"data":[{"cctv":{"index":"1","inService":"true","location":{"district":"4","latitude":"37.8","longitude":"-122.2","locationName":"Synthetic contract camera"},"imageData":{"static":{"currentImageURL":"https://cwwp2.dot.ca.gov/data/d4/cctv/image/cam/cam.jpg"}}}}]}"#;
+        let catalog = traffic::parse_catalog(json.to_vec(), 4, 1)?;
+        state.traffic_catalog_finished(token, 4, Ok(catalog));
+        let camera = "traffic:4:1".to_owned();
+        state.select(Some(camera.clone()))?;
+        let (_, control, _, _, _) = state.traffic.begin_frame()?;
+        let id = state.annotate(
+            AnnotationDraft {
+                label: "Contract pin".to_owned(),
+                note: String::new(),
+                about_record: None,
+                geometry: annotations::AnnotationGeometry::Pin {
+                    point: Wgs84Point {
+                        lat_deg: 37.8,
+                        lon_deg: -122.2,
+                    },
+                },
+            },
+            1_000,
+        )?;
+        assert!(control.check().is_err());
+        assert_eq!(state.view()?.selection.as_deref(), Some(id.as_str()));
+        state.set_layer_visible(traffic::LAYER_ID, false)?;
+        assert_eq!(state.view()?.selection.as_deref(), Some(id.as_str()));
+        state.set_layer_visible(traffic::LAYER_ID, true)?;
+        state.select(Some(camera.clone()))?;
+        state.set_layer_visible(annotations::LAYER_ANNOTATIONS, false)?;
+        assert_eq!(state.view()?.selection, Some(camera));
         Ok(())
     }
 }

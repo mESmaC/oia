@@ -52,7 +52,7 @@
     <hr>
     <button type="button" data-instrument="news"><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4z"/><path d="M8 10h8M8 14h5"/></svg><span>News</span></button>
     <button type="button" data-instrument="globe" title="Ctrl+G"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c3 3 3 13 0 16M12 4c-3 3-3 13 0 16"/></svg><span>Globe</span></button>
-    <button type="button" aria-disabled="true" title="Not in this build"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="13" height="10" rx="1"/><path d="M16 11l5-2v6l-5-2z"/></svg><span>Cameras</span></button>
+    <button type="button" id="open-globe-cameras" title="Highway stills in the Globe"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="13" height="10" rx="1"/><path d="M16 11l5-2v6l-5-2z"/></svg><span>Cameras</span></button>
     <button type="button" data-instrument="media" title="Ctrl+M"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="1"/><path d="M3 15l5-5 4 4 3-3 6 6"/><circle cx="16" cy="9" r="1.5"/></svg><span>Media</span></button>
     <div class="spacer"></div>
     <hr>
@@ -361,10 +361,10 @@
       <div class="head"><span class="k">Inspect · session</span><h2>Local session</h2><div class="chips"><span class="chip">▮ Memory only</span><span class="chip">No case store</span></div></div>
       <div class="body" tabindex="0">
         <section class="sec"><span class="k">Session record</span>
-          <dl class="kv"><dt>Storage</dt><dd>Memory · discarded on exit</dd><dt>Acquisition</dt><dd>User-selected local files</dd><dt>Publication</dt><dd class="none">— none</dd><dt>Network</dt><dd>Only the registered imagery source, from the Globe</dd></dl>
+          <dl class="kv"><dt>Storage</dt><dd>Memory · discarded on exit</dd><dt>Acquisition</dt><dd>User-selected local files</dd><dt>Publication</dt><dd class="none">— none</dd><dt>Network</dt><dd>Registered globe imagery; explicitly requested Caltrans cameras via Rust</dd></dl>
         </section>
         <section class="sec"><span class="k">Loaded sources</span><div id="session-sources" class="source-list"></div></section>
-        <section class="sec"><span class="k">Not in this build</span><p class="note">Persistent cases, PDF and OCR, remote document sources, AI summaries, and reports. Windows WebView2 may contact Microsoft on its own; this interface contacts only the imagery origin shown in the Globe inspector.</p></section>
+        <section class="sec"><span class="k">Not in this build</span><p class="note">Persistent cases, PDF and OCR, remote document sources, AI summaries, and reports. Windows WebView2 may contact Microsoft on its own; the page contacts only the registered imagery origins shown in the Globe inspector. Rust also contacts Caltrans for explicitly requested highway-camera catalogs and stills.</p></section>
       </div>
     </div>
     <div class="ipanel" id="insp-news" hidden>
@@ -443,7 +443,7 @@
     <!-- Globe inspector -->
     <div class="ipanel" id="insp-globe" hidden>
       <div class="head"><span class="k">Inspect · globe</span><h2 id="insp-globe-title">Globe</h2><div class="chips" id="insp-globe-chips"></div></div>
-      <div class="tabs" role="tablist"><button type="button" role="tab" aria-selected="true" data-tab="globe-record">Record</button><button type="button" role="tab" aria-selected="false" data-tab="globe-annotations">Notes</button><button type="button" role="tab" aria-selected="false" data-tab="globe-layers">Layers</button><button type="button" role="tab" aria-selected="false" data-tab="globe-imagery">Imagery</button><button type="button" role="tab" aria-selected="false" data-tab="globe-limits">Limits</button></div>
+      <div class="tabs" role="tablist"><button type="button" role="tab" aria-selected="true" data-tab="globe-record">Record</button><button type="button" role="tab" aria-selected="false" data-tab="globe-annotations">Notes</button><button type="button" role="tab" aria-selected="false" data-tab="globe-layers">Layers</button><button type="button" role="tab" aria-selected="false" data-tab="globe-traffic">Cameras</button><button type="button" role="tab" aria-selected="false" data-tab="globe-imagery">Imagery</button><button type="button" role="tab" aria-selected="false" data-tab="globe-limits">Limits</button></div>
       <div class="body" tabindex="0">
         <section class="sec" data-pane="globe-record"><span class="k">Selected record</span><dl class="kv" id="globe-record"></dl><p class="note" id="globe-record-note"></p></section>
         <section class="sec" data-pane="globe-record"><span class="k">Records</span><div class="source-list globe-record-list" id="globe-records"></div></section>
@@ -458,11 +458,19 @@
           <dl class="kv" id="globe-alpr-details"></dl>
           <p class="note" id="globe-alpr-statement"></p>
         </section>
+        <section class="sec" data-pane="globe-traffic" hidden><span class="k">Highway ground views / Caltrans</span>
+          <p class="note">Browse current traffic stills beside satellite and aerial imagery. Choose a district, select a camera, then request its still. No archive or calibrated ground projection.</p>
+          <form id="globe-traffic-form" class="gform"><label for="globe-traffic-district">California district</label><select id="globe-traffic-district" aria-label="Caltrans district"></select><button type="submit" id="globe-traffic-load">Load district cameras</button></form>
+          <button type="button" id="globe-traffic-cancel" hidden>Cancel camera request</button>
+          <p class="note" id="globe-traffic-status" role="status"></p>
+          <label for="globe-traffic-camera">Select a highway camera</label><select id="globe-traffic-camera" aria-label="Highway camera"></select>
+          <p class="note" id="globe-traffic-note"></p><details><summary>Source and request details</summary><dl class="kv" id="globe-traffic-details"></dl></details>
+        </section>
         <section class="sec" data-pane="globe-imagery" hidden><span class="k">Basemap</span><form class="gform" id="globe-imagery-form"></form></section>
         <section class="sec" data-pane="globe-imagery" hidden><span class="k">Active layer</span><dl class="kv" id="globe-imagery-active"></dl><p class="note" id="globe-ack"></p></section>
         <section class="sec" data-pane="globe-imagery" hidden><span class="k">Detail when zoomed in</span><div id="globe-imagery-detail" class="gdetail"></div></section>
         <section class="sec" data-pane="globe-imagery" hidden><span class="k">Renderer</span><dl class="kv" id="globe-renderer"></dl><span class="k">Renderer messages · this session</span><ul class="glog" id="globe-log"></ul></section>
-        <section class="sec" data-pane="globe-limits" hidden><span class="k">Limits</span><p class="note">The case and the camera directory are bundled synthetic fixtures; nothing drawn is an observation. Points, rings and regions come only from recorded geometry; a record without geometry is listed, not placed. A camera wedge is an illustrative bearing from a numeric tag, never a calibrated field of view, and a camera without a tag has no wedge. Imagery is a live request to the registered sources: the basemap for the layer and UTC day shown, and, when zoomed in, finer detail tiers that are other capture periods (a yearly Sentinel-2 composite, United States aerial orthoimagery). None shows the case period, and a missing or unpublished tile is a coverage gap. Tile counts are what this renderer observed in this session. No terrain, labels, roads or tracks are drawn, because none is registered. Camera position is a view setting, not a measurement. Analyst annotations are notes drawn in this session: they are not observations, never change a case record, are measured on a sphere, and are not saved when OIA closes. Persistent cases, clustering, footprints and live directory queries are not in this build.</p></section>
+        <section class="sec" data-pane="globe-limits" hidden><span class="k">Limits</span><p class="note">The case and ALPR directory are bundled synthetic fixtures. Caltrans is a separately requested real highway-camera catalog and still preview; capture time and freshness are unknown, and previews are not admitted as event evidence. Points, rings and regions come only from recorded geometry; a record without geometry is listed, not placed. A camera wedge is an illustrative bearing from a numeric tag, never a calibrated field of view, and a camera without a tag has no wedge. Imagery is a live request to the registered sources: the basemap for the layer and UTC day shown, and, when zoomed in, finer detail tiers that are other capture periods (a yearly Sentinel-2 composite, United States aerial orthoimagery). None shows the case period, and a missing or unpublished tile is a coverage gap. Tile counts are what this renderer observed in this session. No terrain, labels, roads or tracks are drawn, because none is registered. Camera position is a view setting, not a measurement. Analyst annotations are notes drawn in this session: they are not observations, never change a case record, are measured on a sphere, and are not saved when OIA closes. Persistent cases, clustering, calibrated footprints and live ALPR directory queries are not in this build.</p></section>
       </div>
     </div>
     <!-- Media inspector -->

@@ -81,6 +81,8 @@ From the repository root, run `cargo run -p oia-app --locked` or `.\scripts\run.
 
 Files and the witness account are held in memory for this session. Persistent investigations, PDF/OCR, AI summaries and report integration are not yet implemented. The only remote origins the bundled UI contacts are the four registered imagery origins shown in the Globe inspector ([ADR 0008 §10](docs/adr/0008-d01-workspace-renderer.md#10-amendment-registered-online-imagery-in-the-webview-2026-11-03)); Windows WebView2 may make its own background connections. See the [workbench contract, limits and validation](docs/implementation/desktop-workbench.md) and the [Globe instrument note](docs/implementation/globe-instrument.md).
 
+The Globe's **Cameras** inspector can explicitly load a real Caltrans California highway-camera district and request a selected current still. Cyan markers and a keyboard-accessible camera selector connect ground views to the existing satellite/aerial imagery. Rust acquires bounded catalogs/JPEGs from `cwwp2.dot.ca.gov`; the page displays the selected still through the local snapshot scheme. Capture time/freshness and camera calibration remain unknown; stills are separate from the historical case and overhead mosaics. No polling, archive, recording or export is provided. See [source conditions, limits and verification](docs/implementation/globe-instrument.md#highway-camera-imagery-164).
+
 ## Build and run
 
 For an unsigned local Windows development ZIP, see the [packaging instructions](docs/implementation/windows-package.md). Public release gates, installers, signing and updates remain open under #49.

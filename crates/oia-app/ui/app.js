@@ -752,6 +752,10 @@ function updateExport() {
 }
 
 // ---- Wiring ----
+$('open-globe-cameras').onclick = () => {
+  showInstrument('globe', true);
+  document.querySelector('[data-tab="globe-traffic"]').click();
+};
 document.querySelectorAll('[data-instrument]').forEach(button => { button.onclick = () => showInstrument(button.dataset.instrument, true); });
 document.querySelectorAll('[role="tablist"]').forEach(list => {
   const tabs = [...list.querySelectorAll('[role="tab"]')];
@@ -881,7 +885,13 @@ document.addEventListener('keydown', event => {
     else if (document.body.classList.contains('focused')) { setPresentation('focused', false); $('focus').focus(); }
   }
 });
-Globe.onView(() => { if (instrument === 'globe') renderShell(); });
+let cameraWasBusy = false;
+Globe.onView(g => {
+  if (!busy && g.traffic_busy) setText('status', 'Caltrans camera request running; cancel in Globe / Cameras', 'count busy');
+  else if (!busy && cameraWasBusy) setText('status', 'Camera request finished; inspect camera source status', 'count');
+  cameraWasBusy = !!g.traffic_busy;
+  if (instrument === 'globe') renderShell();
+});
 Witness.onView(() => renderShell());
 News.onView(() => renderShell());
 if (window.matchMedia('(prefers-reduced-transparency: reduce)').matches) setPresentation('reduced', true);

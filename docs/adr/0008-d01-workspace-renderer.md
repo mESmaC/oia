@@ -134,6 +134,8 @@ The first registered origin is `https://gibs.earthdata.nasa.gov` (NASA GIBS, key
 
 ## 11. Clarification: internet acquisition is product scope (2026-11-03)
 
+**Caltrans acquisition slice (2026-11-05, #164).** A provider-specific Rust worker retrieves explicitly requested public highway camera catalogs and current stills from `https://cwwp2.dot.ca.gov`, under bounded bytes/time/concurrency and pinned-path rules. The page receives no new remote permission: the existing `oia-snapshot` scheme also serves the one selected, visible traffic still at `traffic/<sha256>` from held memory with no-store headers. This applies §11's Rust-acquisition boundary rather than widening §10's direct-renderer allow-list. Catalog edits, retrieval and unknown capture times stay distinct; ground frames are separate from overhead mosaics. [Implementation and terms](../implementation/globe-instrument.md#highway-camera-imagery-164); shared source/jobs/storage integration remains open.
+
 The owner's follow-up specification audit, tracked in [#110](https://github.com/mESmaC/oia/issues/110), confirms that public internet collection and construction of intelligence from it are central to OIA. This clarification replaces §4 rule 3's broad “no network client” wording. Section 10 records the current direct-renderer imagery capability; it is not an exclusive list of product acquisition methods. No runtime configuration or provider support changes in this documentation amendment.
 
 | Audit finding | Scope and resolution |

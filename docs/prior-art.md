@@ -114,6 +114,12 @@ Also inspected God's Eye View `src/data/lifecycle.js` at `0d1a68160e532ba65dc34b
 
 ## Candidate port workflow
 
+### Caltrans ground imagery reference study (2026-11-05)
+
+For #164, read God's Eye View at `0d1a68160e532ba65dc34b48ea205de6de4028fc`: `src/layers/cctv/sourcePolicy.js`, `server/providers/cctv/constants.js`, `catalog.js`, and `sources.js` (Caltrans loader). Its official district endpoint and pinned-host pattern informed independent Rust implementation. No source code/assets were copied. Deliberate differences: no fabricated heading, pitch, FOV, range, mount height or fallback elevation; no video proxy, alternate source, previous-frame archive assumption or automatic polling. Raw catalog bytes and edit times are retained separately from still retrieval time; capture/freshness remain unknown. Critical source-admission and cancellation assertions use newly authored synthetic JSON rather than upstream imagery. The reference app/tests were not run. MIT source attribution: Bilawal Sidhu; upstream Caltrans data are separately governed by [their conditions](https://dot.ca.gov/conditions-of-use).
+
+Also read World Monitor at `fb266469d595b4626e420236bbfa57fed4587263`, `src/components/map/webcam-click.ts`, for individual-camera navigation. It is AGPL-3.0; no code/assets were copied. OIA uses its own selector and local still card, without Windy player URLs, provider credentials, clustering or browser-tab spawning. Caltrans primary documentation and a bounded official catalog were checked independently; reference integration does not establish current imagery availability or rights.
+
 ### Port checklist
 
 1. Choose one capability that supports an OIA investigation workflow.

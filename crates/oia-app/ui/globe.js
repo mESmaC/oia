@@ -22,6 +22,8 @@ const Globe = (() => {
   let plottedKey = '';
   let cameraTimer = null;
   let suppressCameraReport = false;
+  let trafficRequest = false;
+  let trafficCatalogKey = null;
   let layerVisibility = {};   // layer id -> visible, as last drawn; a layer turning on flies to its extent
   let layersPanel = true;     // presentation only: the floating layers panel
   // Annotation drawing (#165): the shape being drawn and the clicked vertices. Rust validates
@@ -80,6 +82,67 @@ const Globe = (() => {
       showError(error?.message || String(error));
       return false;
     }
+  }
+
+  async function trafficCall(command, args = {}) {
+    if (trafficRequest) return;
+    trafficRequest = true;
+    renderTraffic(); notify();
+    try { return await call(command, args); }
+    finally { trafficRequest = false; renderTraffic(); notify(); }
+  }
+  function selectedTraffic() { return view?.traffic.visible ? view.traffic.cameras.find(c => c.id === view.selection) || null : null; }
+  function visibleTraffic() { return view?.traffic.visible ? view.traffic.cameras : []; }
+  const retrievalTime = ms => ms === null || ms === undefined ? 'not requested' : new Date(ms).toISOString();
+  function trafficRows(camera) {
+    return [['Position', `${deg(camera.lat_deg)}, ${deg(camera.lon_deg)} (provider listing)`], ['Road direction', camera.direction_text || 'not supplied; not a calibrated camera bearing'], ['Catalog edit', [camera.record_date, camera.record_time].filter(Boolean).join(' ') || 'not supplied'], ['Capture time', 'unknown; catalog edit is not image capture'], ['Pose / footprint', 'uncalibrated / not plotted'], ['Source', view.traffic.attribution]];
+  }
+  function renderTraffic() {
+    if (!view) return;
+    const t = view.traffic, busy = trafficRequest || t.busy;
+    $('globe-traffic-load').disabled = busy;
+    $('globe-traffic-district').disabled = busy;
+    $('globe-traffic-cancel').hidden = !busy;
+    $('globe-traffic-status').textContent = t.error ? `${t.error}${t.district ? ` Last successful catalog: district ${t.district}.` : ''}` : busy ? 'Request in progress. Cancelled requests keep their slot until the bounded worker exits.' : t.district ? `District ${t.district}: ${fmt(t.cameras.length)} plottable cameras / ${fmt(t.total)} listed; ${fmt(t.out_of_service)} out of service, ${fmt(t.invalid)} invalid or unsupported records omitted. Partial geographic coverage.` : 'No camera source requested.';
+    $('globe-traffic-status').classList.toggle('bad', !!t.error);
+    kv($('globe-traffic-details'), [['Retrieved UTC', retrievalTime(t.retrieved_at_ms)], ['Catalog SHA-256', t.catalog_sha256], ['Retained catalog', `${fmt(t.catalog_bytes)} bytes, session only`], ['Source documentation', t.source_url], ['Terms', t.terms_url], ['Access', 'Caltrans supported public API; free, no key'], ['Limits', 'One request; 20 s / 4 MiB catalog / 2 MiB JPEG; 15 s between catalog requests or between still requests'], ['Retention', 'Session-only original bytes; one still; no recording or export'], ['Attribution', t.attribution]]);
+    const list = $('globe-traffic-camera');
+    if (trafficCatalogKey !== t.catalog_sha256) {
+      trafficCatalogKey = t.catalog_sha256;
+      list.replaceChildren(new Option('Choose a camera...', ''));
+      for (const camera of t.cameras) list.append(new Option(camera.label, camera.id));
+    }
+    list.disabled = !t.visible || !t.cameras.length;
+    list.value = selectedTraffic()?.id || '';
+    $('globe-traffic-note').textContent = t.statement;
+    $('globe-layers-chip').textContent = t.district ? 'case fixture + Caltrans' : 'synthetic case';
+    const button = $('globe-traffic-still');
+    if (button) button.disabled = busy;
+  }
+  function appendTrafficCard(card, camera) {
+    const t = view.traffic, f = t.frame;
+    card.append(node('span', 'CCTV / highway ground view', 'k'), node('h3', camera.label));
+    const button = node('button', f ? 'Request a new still' : 'Request current still');
+    button.id = 'globe-traffic-still'; button.type = 'button'; button.disabled = trafficRequest || t.busy;
+    button.onclick = () => trafficCall('globe_traffic_frame');
+    const fly = node('button', 'Fly to camera'); fly.type = 'button'; fly.disabled = rendererState !== 'ready';
+    fly.onclick = () => setCamera({ lat_deg: camera.lat_deg, lon_deg: camera.lon_deg, height_m: 3000, heading_deg: 0, pitch_deg: -90 }, true);
+    card.append(button, fly);
+    if (f?.camera_id === camera.id) {
+      const image = node('img');
+      image.alt = `${camera.label} - Caltrans still; capture time unknown`;
+      image.src = `${window.__TAURI__.core.convertFileSrc('traffic', 'oia-snapshot')}/${encodeURIComponent(f.sha256)}`;
+      image.onerror = () => { image.hidden = true; status.textContent += ' / Still could not be displayed. Source bytes remain unchanged; no substitute used.'; };
+      const status = node('p', `Retrieved ${retrievalTime(f.retrieved_at_ms)} / ${f.width} x ${f.height} / ${fmt(f.bytes)} bytes${f.same_bytes_as_previous ? ' / unchanged bytes on refresh; freshness still unknown' : ''}`, 'note');
+      card.append(image, status);
+      const provenance = node('details'), heading = node('summary', 'Still source and integrity');
+      const details = node('dl', undefined, 'rows');
+      kv(details, [['Source URL', f.source_url], ['SHA-256', f.sha256], ['Catalog SHA-256', f.catalog_sha256], ['Event evidence', 'not eligible: capture time / freshness unverified']]);
+      provenance.append(heading, details); card.append(provenance);
+    } else card.append(node('p', 'No still requested for this camera. A provider listing does not establish frame availability.', 'note'));
+    if (t.error) card.append(node('p', `${t.error}${f ? ' Showing the last successful retrieval, with its original time.' : ''}`, 'note bad'));
+    const rows = node('dl', undefined, 'rows'); kv(rows, trafficRows(camera)); card.append(rows);
+    card.append(node('p', 'Capture time and freshness unknown. A provider JPEG may be an unavailable notice; content is not automatically classified. Ground view is separate from the basemap and historical case; no calibrated projection or archive.', 'note'));
   }
 
   // ---- Renderer lifecycle ----
@@ -399,7 +462,7 @@ const Globe = (() => {
   function visibleAnnotations() {
     return view?.annotations?.visible ? view.annotations.items : [];
   }
-  function buildGeometry(plotted, cameras, notes) {
+  function buildGeometry(plotted, cameras, notes = visibleAnnotations(), traffic = visibleTraffic()) {
     const Cesium = window.Cesium;
     viewer.entities.removeAll();
     drawn.clear();
@@ -422,6 +485,12 @@ const Globe = (() => {
         viewer.entities.add({ id: `${cam.id}:wedge-outline`, polyline: { positions: [anchor, left, right, anchor], width: 1, material: TEXT.withAlpha(0.55) } });
       }
       drawn.set(cam.id, { anchor, points, kind: 'camera', cls: 'cam' });
+    }
+    for (const camera of traffic) {
+      // Ellipsoid is a display anchor only; no camera altitude or optical cone is inferred.
+      const anchor = Cesium.Cartesian3.fromDegrees(camera.lon_deg, camera.lat_deg, 0);
+      viewer.entities.add({ id: camera.id, position: anchor, point: { pixelSize: camera.id === view.selection ? 10 : 5, color: Cesium.Color.fromCssColorString('#45d1ff'), outlineColor: Cesium.Color.BLACK, outlineWidth: 1, disableDepthTestDistance: Number.POSITIVE_INFINITY } });
+      drawn.set(camera.id, { anchor, points: [anchor], kind: 'traffic', cls: 'cam' });
     }
     for (const record of plotted) {
       const g = record.geometry;
@@ -516,6 +585,12 @@ const Globe = (() => {
       tag.onclick = () => select(view.selection === cam.id ? null : cam.id);
       host.append(tag);
       tagEls.set(cam.id, tag);
+    }
+    const traffic = selectedTraffic();
+    if (traffic) {
+      const tag = node('button', undefined, 'gtag cam'); tag.type = 'button'; tag.hidden = true;
+      tag.append(node('i', 'CCTV'), node('b', traffic.label));
+      tag.onclick = () => select(null); host.append(tag); tagEls.set(traffic.id, tag);
     }
     for (const record of plotted) {
       const d = drawn.get(record.id);
@@ -653,9 +728,12 @@ const Globe = (() => {
     const record = selectedRecord();
     const cam = selectedCamera();
     const note = selectedAnnotation();
-    if ((!record || !record.geometry) && !cam && !note || !overlays) { card.hidden = true; return; }
+    const traffic = selectedTraffic();
+    card.classList.toggle('traffic', !!traffic);
+    if ((!record || !record.geometry) && !cam && !traffic && !note || !overlays) { card.hidden = true; return; }
     card.hidden = false;
     card.replaceChildren(node('span', undefined, 'corner tl'), node('span', undefined, 'corner tr'), node('span', undefined, 'corner bl'), node('span', undefined, 'corner br'));
+    if (traffic) { appendTrafficCard(card, traffic); return; }
     const rows = node('dl', undefined, 'rows');
     let list;
     if (note) {
@@ -818,8 +896,9 @@ const Globe = (() => {
     if (record) chip(record.geometry ? (record.geometry.kind === 'region' ? '▦ Region' : record.geometry.kind === 'approximate_centroid' ? '◌ Approximate' : '◉ Point') : '○ Not plotted');
     if (rendererState === 'ready' && tiles.loaded > 0) chip('▮ Imagery live from source');
     else chip(`○ Imagery not loaded · renderer ${rendererState}`, 'warn');
-    kv($('globe-record'), note ? [['Annotation', `${note.tag} · ${note.label}`], ...annotationRows(note)] : cam ? [['Camera', cam.display_id], ['Layer', 'ALPR camera directory'], ...cameraRows(cam)] : record ? [['Record', record.label], ['Kind', record.kind], ...geometryRows(record), ...timeRows(record), ['Source', record.source_label]] : [['Record', 'none selected']]);
-    $('globe-record-note').textContent = note ? (note.note || 'No note. Edit it in the Notes tab.') : cam ? (cam.details.join(' · ') + (cam.note ? ` · ${cam.note}` : '')) : record ? record.notes : 'Select a tag on the globe, a record below, a camera from a visible layer, or an entry in the not-plotted tray.';
+    const traffic = selectedTraffic();
+    kv($('globe-record'), note ? [['Annotation', `${note.tag} / ${note.label}`], ...annotationRows(note)] : traffic ? [['Camera', traffic.label], ...trafficRows(traffic)] : cam ? [['Camera', cam.display_id], ['Layer', 'ALPR camera directory'], ...cameraRows(cam)] : record ? [['Record', record.label], ['Kind', record.kind], ...geometryRows(record), ...timeRows(record), ['Source', record.source_label]] : [['Record', 'none selected']]);
+    $('globe-record-note').textContent = note ? (note.note || 'No note. Edit it in the Notes tab.') : traffic ? view.traffic.statement : cam ? (cam.details.join(' · ') + (cam.note ? ` · ${cam.note}` : '')) : record ? record.notes : 'Select a tag on the globe, a record below, a camera from a visible layer, or an entry in the not-plotted tray.';
     const list = $('globe-records');
     list.replaceChildren();
     const all = [...view.plotted.map(r => ({ r, plotted: true })), ...view.not_plotted.map(r => ({ r, plotted: false }))].sort((a, b) => a.r.order - b.r.order);
@@ -1114,14 +1193,17 @@ const Globe = (() => {
       setImagery(view.imagery);
       const cameras = visibleCameras();
       const notes = visibleAnnotations();
-      const key = JSON.stringify([view.plotted, cameras, notes]);
+      const key = JSON.stringify([view.plotted, cameras, notes, visibleTraffic(), selectedTraffic()?.id]);
       if (key !== plottedKey) { plottedKey = key; buildGeometry(view.plotted, cameras, notes); buildTags(view.plotted, cameras, notes); }
       if (first) setCamera(view.camera, false);
       // A layer the user just turned on is brought into view once; later moves are theirs.
       for (const layer of view.layers) {
         if (layer.visible && layerVisibility[layer.id] === false && layer.extent) flyToExtent(layer.extent);
       }
-      if (view.selection && view.selection !== previousSelection) {
+      const trafficSelection = selectedTraffic();
+      if (trafficSelection && view.selection !== previousSelection) {
+        setCamera({ lat_deg: trafficSelection.lat_deg, lon_deg: trafficSelection.lon_deg, height_m: 3000, heading_deg: 0, pitch_deg: -90 }, true);
+      } else if (view.selection && view.selection !== previousSelection) {
         const d = drawn.get(view.selection);
         if (d) {
           const Cesium = window.Cesium;
@@ -1137,7 +1219,7 @@ const Globe = (() => {
       viewer.scene.requestRender();
     }
     layerVisibility = Object.fromEntries(view.layers.map(l => [l.id, l.visible]));
-    renderCard(); renderTray(); renderLayers(); renderAttribution(); renderState(); renderInspector();
+    renderCard(); renderTray(); renderLayers(); renderAttribution(); renderState(); renderInspector(); renderTraffic();
     if (onViewListener) onViewListener(summary());
   }
   function summary() {
@@ -1146,10 +1228,11 @@ const Globe = (() => {
     const cam = selectedCamera();
     const note = selectedAnnotation();
     return {
-      source: view.case ? `${view.case.label}` : 'no case',
+      source: selectedTraffic() ? `Caltrans district ${view.traffic.district}` : view.case ? `${view.case.label}` : 'no case',
+      traffic_busy: trafficRequest || view.traffic.busy,
       coverage: rendererState === 'ready' ? `tiles ${fmt(tiles.loaded)} ok · ${fmt(tiles.failed)} failed` : `renderer ${rendererState}`,
       partial: tiles.failed > 0 || rendererState !== 'ready',
-      selection: note ? `${note.tag} ${note.label} (annotation)` : cam ? `CAM ${cam.display_id}` : record ? `${pad2(record.order)} ${record.label}` : 'none',
+      selection: note ? `${note.tag} ${note.label} (annotation)` : selectedTraffic() ? `CCTV ${selectedTraffic().label}` : cam ? `CAM ${cam.display_id}` : record ? `${pad2(record.order)} ${record.label}` : 'none',
       loaded: true
     };
   }
@@ -1161,7 +1244,10 @@ const Globe = (() => {
     if (rendererState === 'idle') loadCesium();
     if (viewer) { viewer.resize(); viewer.scene.requestRender(); }
   }
-  function deactivate() { active = false; }
+  function deactivate() {
+    if (trafficRequest || view?.traffic.busy) call('globe_traffic_cancel');
+    active = false;
+  }
   function setReduced(on) {
     reduced = on;
     if (!viewer) return;
@@ -1193,6 +1279,20 @@ const Globe = (() => {
     return true;
   }
   function wire() {
+    const district = $('globe-traffic-district');
+    for (const [id, name] of [[1,'Eureka'],[2,'Redding'],[3,'Marysville / Sacramento'],[4,'San Francisco Bay Area'],[5,'San Luis Obispo'],[6,'Fresno'],[7,'Los Angeles'],[8,'San Bernardino'],[9,'Bishop'],[10,'Stockton'],[11,'San Diego'],[12,'Orange County']]) district.append(new Option(`${id} / ${name}`, String(id)));
+    district.value = '4';
+    $('globe-traffic-form').onsubmit = async event => {
+      event.preventDefault();
+      const previousRetrieval = view?.traffic.retrieved_at_ms;
+      const accepted = await trafficCall('globe_traffic_catalog', { district: Number(district.value) });
+      if (accepted && viewer && rendererState === 'ready' && view.traffic.retrieved_at_ms !== previousRetrieval) {
+        const extent = view.layers.find(l => l.id === 'traffic-cameras')?.extent;
+        if (extent) flyToExtent(extent);
+      }
+    };
+    $('globe-traffic-camera').onchange = event => select(event.target.value || null);
+    $('globe-traffic-cancel').onclick = () => call('globe_traffic_cancel');
     $('globe-home').onclick = home;
     $('globe-world').onclick = world;
     $('globe-overlays').onclick = () => toggleOverlays();

@@ -5,6 +5,7 @@ use crate::globe::{
     annotations::{AnnotationDraft, AnnotationEdit},
     imagery::{CivilDate, ImagerySelection},
     layers::AlprFilterId,
+    traffic,
 };
 use crate::local_tools::{
     self as tools, CitationView, Control, CorpusSearchView, CorpusView, DocumentView, FileKind,
@@ -575,6 +576,16 @@ fn snapshot_protocol(
             .unwrap_or_else(|_| tauri::http::Response::new(Vec::new()))
     };
     let path = request.uri().path().trim_start_matches('/');
+    if let Some(hash) = path.strip_prefix("traffic/") {
+        if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return respond(404, "text/plain", Vec::new());
+        }
+        let globe = ctx.app_handle().state::<Globe>();
+        return match globe.lock().ok().and_then(|g| g.traffic.image(hash)) {
+            Some(bytes) => respond(200, "image/jpeg", bytes),
+            None => respond(404, "text/plain", Vec::new()),
+        };
+    }
     let valid = path.len() == 64 && path.bytes().all(|b| b.is_ascii_hexdigit());
     if !valid {
         return respond(404, "text/plain", b"not found".to_vec());
@@ -659,6 +670,43 @@ fn globe_layer(
 fn globe_alpr_filter(globe: State<'_, Globe>, filter: AlprFilterId) -> Result<Envelope<GlobeView>> {
     let mut state = globe.lock()?;
     state.set_alpr_filter(filter)?;
+    state.view().map(envelope)
+}
+
+/// Explicit provider work releases the globe mutex while the bounded HTTP worker runs.
+#[tauri::command]
+async fn globe_traffic_catalog(
+    globe: State<'_, Globe>,
+    district: u8,
+) -> Result<Envelope<GlobeView>> {
+    let (token, control) = globe.lock()?.traffic.begin_catalog(district)?;
+    let shared = globe.inner().clone();
+    worker(move || {
+        let result = traffic::fetch_catalog(district, &control);
+        let mut state = shared.lock()?;
+        state.traffic_catalog_finished(token, district, result);
+        state.view().map(envelope)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn globe_traffic_frame(globe: State<'_, Globe>) -> Result<Envelope<GlobeView>> {
+    let (token, control, camera, catalog_hash, district) = globe.lock()?.traffic.begin_frame()?;
+    let shared = globe.inner().clone();
+    worker(move || {
+        let result = traffic::fetch_frame(&camera, &catalog_hash, district, &control);
+        let mut state = shared.lock()?;
+        state.traffic.finish_frame(token, &camera.id, result);
+        state.view().map(envelope)
+    })
+    .await
+}
+
+#[tauri::command]
+fn globe_traffic_cancel(globe: State<'_, Globe>) -> Result<Envelope<GlobeView>> {
+    let mut state = globe.lock()?;
+    state.traffic.cancel();
     state.view().map(envelope)
 }
 
@@ -862,6 +910,9 @@ pub fn run() -> std::result::Result<(), tauri::Error> {
             globe_imagery,
             globe_layer,
             globe_alpr_filter,
+            globe_traffic_catalog,
+            globe_traffic_frame,
+            globe_traffic_cancel,
             globe_annotate,
             globe_annotation_revise,
             globe_annotation_delete,

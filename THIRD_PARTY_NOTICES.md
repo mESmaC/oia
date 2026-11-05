@@ -97,6 +97,27 @@ SOFTWARE.
 
 ---
 
+## Runtime public feeds and archival catalogue metadata (#166)
+
+- **NASA:** https://www.nasa.gov/feed/ ? publisher-provided news RSS, attributed to
+  NASA. NASA informational-use guidance: https://www.nasa.gov/nasa-brand-center/images-and-media/.
+  Third-party credits and protected marks remain separate.
+- **BBC News, World:** https://feeds.bbci.co.uk/news/world/rss.xml ? BBC copyright;
+  personal, non-commercial feed reading under https://www.bbc.co.uk/usingthebbc/terms-of-use/#15metadataandrssfeeds.
+  Full articles are not acquired or republished by this workflow.
+- **The National Archives:** https://discovery.nationalarchives.gov.uk/API/help ?
+  public Discovery catalogue descriptions and references under the published
+  https://www.nationalarchives.gov.uk/legal/terms-of-use/. Underlying scans/testimony
+  may have separate rights and are not acquired.
+- **Scope:** runtime-only bounded session responses, with source-specific access,
+  automation, retention and redistribution conditions in the shared source registry
+  and [implementation note](docs/implementation/public-collection.md). No live
+  feed/API response is committed as a fixture or distributed with the source code;
+  no payload export, model processing, endorsement or independent-verification
+  claim is made. User-added feeds retain their own, explicitly unknown reuse rights.
+
+---
+
 ## SQLite evidence-ledger adapter
 
 - **Dependencies:** `rusqlite` 0.41.1 and `libsqlite3-sys` 0.39.1 (MIT), https://github.com/rusqlite/rusqlite. Used only by `oia-store`; pins and transitive resolution are in `Cargo.lock`.

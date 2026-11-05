@@ -10,6 +10,7 @@
 <script src="globe.js" defer></script>
 <script src="witness.js" defer></script>
 <script src="news.js" defer></script>
+<script src="collection.js" defer></script>
 <script src="app.js" defer></script>
 </head>
 <body>
@@ -91,7 +92,9 @@
       </div>
     </section>
 
-    <section class="view news-view" id="view-news" hidden aria-label="Local News desk">
+    <section class="view news-view" id="view-news" hidden aria-label="News desk">
+      <div id="collection-news"></div>
+      <details id="news-local" class="collection-local glass"><summary>Import your own news dossier / offline sample</summary>
       <header class="news-heading">
         <div><span class="k">News desk / local dossiers</span><h1 id="news-title">Inspect the reporting, not just the headline.</h1></div>
         <span class="chip warn" id="news-origin">No dossier loaded</span>
@@ -102,7 +105,7 @@
         <button type="button" class="btn" id="news-clear" disabled>Unload dossier</button>
         <button type="button" class="btn" id="news-cancel" disabled>Cancel operation</button>
       </div>
-      <p class="note">Local, session-only inspection. The bundled web news is a dated offline snapshot with partial coverage, not live news. No feeds are connected, no links are fetched, and imported declarations are not independently verified. Original dossier bytes remain in memory until replaced, unloaded or exit.</p>
+      <p class="note">Local dossier inspection. The bundled web news is a dated offline snapshot with partial coverage, not live news. Imported declarations are not independently verified, and dossier links are not fetched. Original dossier bytes remain in memory until replaced, unloaded or exit. Public collection above has its own coverage and retained source responses.</p>
       <form id="news-filter" class="news-filter glass" aria-label="Filter imported news">
         <label>Exact text<input type="search" id="news-query" maxlength="256" placeholder="Title, publisher or retained text" disabled></label>
         <label>Declared region<select id="news-region" disabled><option value="">All regions, including unreported</option></select></label>
@@ -133,6 +136,7 @@
           <p class="note">Text is imported, not fetched or authenticated. Hidden controls are displayed as Unicode escapes. A text hash establishes byte identity only.</p>
         </article>
       </div>
+      </details>
     </section>
 
     <!-- Documents view -->
@@ -170,7 +174,9 @@
     <!-- Witness view: session-only capture, not durable evidence -->
     <section class="view" id="view-witness" hidden>
       <div class="witness-scroll">
+        <div id="collection-reports"></div>
         <p class="coverage partial" id="witness-retention">Memory only; discarded on exit.</p>
+        <details class="collection-local glass"><summary>Add your own witness account</summary>
         <section class="witness-panel glass" id="witness-capture-panel" aria-labelledby="witness-capture-title">
           <div class="witness-panel-head"><span class="k">FIELD-02 · initial account</span><h2 id="witness-capture-title">Capture a witness account</h2><span class="chip warn">▮ Not a durable save</span></div>
           <p class="note">Record the account before exposing candidate explanation prompts. Optional fields remain unreported when empty; nonempty wording is sent without trimming or measurement conversion.</p>
@@ -189,6 +195,7 @@
           </form>
         </section>
 
+        </details>
         <div id="witness-account" hidden>
           <section class="witness-panel glass" aria-labelledby="witness-initial-title">
             <div class="witness-panel-head"><span class="k">Original wording · read-only</span><h2 id="witness-initial-title">Initial account</h2><div class="chips"><span class="chip" id="witness-account-origin"></span><span class="chip" id="witness-initial-version"></span></div></div>
@@ -361,14 +368,15 @@
       <div class="head"><span class="k">Inspect · session</span><h2>Local session</h2><div class="chips"><span class="chip">▮ Memory only</span><span class="chip">No case store</span></div></div>
       <div class="body" tabindex="0">
         <section class="sec"><span class="k">Session record</span>
-          <dl class="kv"><dt>Storage</dt><dd>Memory · discarded on exit</dd><dt>Acquisition</dt><dd>User-selected local files</dd><dt>Publication</dt><dd class="none">— none</dd><dt>Network</dt><dd>Only the registered imagery source, from the Globe</dd></dl>
+          <dl class="kv"><dt>Storage</dt><dd>Memory · discarded on exit</dd><dt>Acquisition</dt><dd>Public feeds and archive references; user-selected local files</dd><dt>Publication</dt><dd class="none">— none</dd><dt>Network</dt><dd>Bounded Rust public-source collection; registered Globe imagery</dd></dl>
         </section>
         <section class="sec"><span class="k">Loaded sources</span><div id="session-sources" class="source-list"></div></section>
-        <section class="sec"><span class="k">Not in this build</span><p class="note">Persistent cases, PDF and OCR, remote document sources, AI summaries, and reports. Windows WebView2 may contact Microsoft on its own; this interface contacts only the imagery origin shown in the Globe inspector.</p></section>
+        <section class="sec"><span class="k">Not in this build</span><p class="note">Persistent cases, PDF and OCR, full archive testimony, AI summaries, and reports. Rust retrieves the registered feeds and archive API; the WebView displays their text. Windows WebView2 may contact Microsoft on its own.</p></section>
       </div>
     </div>
     <div class="ipanel" id="insp-news" hidden>
-      <div class="head"><span class="k">Inspect / news provenance</span><h2>Declarations, not endorsements</h2><span class="chip warn">Memory only / unreviewed</span></div>
+      <p class="note">Public source provenance is available with the selected item on the canvas. These inspector fields describe the secondary local dossier.</p>
+      <div class="head"><span class="k">Inspect / imported dossier</span><h2>Local dossier declarations</h2><span class="chip warn">Memory only / unreviewed</span></div>
       <div class="body" tabindex="0">
         <section class="sec"><span class="k">Selected version</span><dl class="kv" id="news-record"></dl></section>
         <section class="sec"><span class="k">Dossier snapshot</span><dl class="kv" id="news-snapshot"></dl></section>

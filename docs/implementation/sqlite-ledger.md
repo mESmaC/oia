@@ -107,14 +107,12 @@ Focused critical-contract assertions are in
    and foreign databases retain their original bytes; malformed payloads are not
    repaired or discarded.
 
-Local validation (2026-11-05): Windows x86_64, pinned Rust 1.99.0, base `main` at
-`f039c66`:
+Local validation (2026-11-05): Windows x86_64, pinned Rust 1.99.0, after merging
+`main` at `98afcae` into the existing PR branch:
 
 - `cargo fmt --all -- --check`: passed.
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`: passed.
-  After adding the final append/reopen assertions, the changed crate's all-target
-  Clippy check passed again.
-- `cargo test --workspace --locked`: 230 passed, zero failed, including the three
+- `cargo test --workspace --locked`: 233 passed, zero failed, including the three
   storage tests above. The child interruption process is part of its parent test.
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 proofs`:
   Lean 4.35.0 gate passed, 290 declarations audited, cutoff fixture bytes matched.

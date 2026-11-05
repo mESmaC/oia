@@ -62,7 +62,7 @@ structured `ChangeExplanation` under explicit `ChangeExplanationLimits`
 (`1..=16,384` lines per capture and `1..=1,024` emitted hunks; defaults `4,096`
 lines and `256` hunks):
 
-- `ChangeExplanation::Changed` (`EXPLANATION_METHOD_ID = "exact-utf8-line-segments-v1"`):
+- `ChangeExplanation::Changed` (`EXPLANATION_METHOD_ID = "exact-utf8-line-segments-v2"`):
   splits both complete captures with `split_inclusive('\n')` and computes a
   deterministic 64-bit FNV-1a hash per line so exact line endings (`\r\n` versus
   `\n`) and trailing newline differences are preserved without normalization. Using an
@@ -72,29 +72,50 @@ lines and `256` hunks):
      it runs exact line-level dynamic-programming LCS in $O(n \cdot m)$ time, allocating
      an $(n + 1)(m + 1)$ `u32` DP table (at most ~1 MiB).
   3. When a residual sub-window exceeds `MAX_LCS_CELLS` and cumulative alignment work is
-     within `MAX_ALIGNMENT_STEPS = 1_048_576`, it first extracts the longest increasing
-     subsequence (LIS) of lines that appear **exactly once** in both sub-windows
-     (Patience unique-line anchors in $O((n + m) \log(n + m))$ time via sorted
-     `(hash, len, text)` indices and binary-searched LIS tails) and recursively splits
-     the sub-window around those anchors, trimming any adjacent non-unique common lines.
+     strictly below `MAX_ALIGNMENT_STEPS = 1_048_576`, it first extracts the longest
+     increasing subsequence (LIS) of lines that appear **exactly once** in both
+     sub-windows (Patience unique-line anchors in $O((n + m) \log(n + m))$ time via
+     iterative bottom-up merge sort on `(hash, len, text)` indices and binary-searched
+     LIS tails, charging 1 step per comparison and checking `check_control` every 1,024
+     steps) and recursively splits the sub-window around those anchors, trimming any
+     adjacent non-unique common lines.
   4. If an oversized sub-window has no unique common lines (for example, repeated
      boilerplate lines between distant edits), it runs bounded forward Myers alignment up
      to `MAX_MYERS_EDIT_DISTANCE = 256` edits ($O((n + m) D)$ time, allocating a
-     $(D_{\max} + 1)(2 D_{\max} + 3)$ `usize` trace buffer of ~1 MiB at $D_{\max} = 256$).
-  5. Only when an individual unanchored residual sub-window exceeds both `MAX_LCS_CELLS`
-     and `MAX_MYERS_EDIT_DISTANCE` (or `MAX_ALIGNMENT_STEPS`) does *that* sub-window
+     $(D_{\max} + 1)(2 D_{\max} + 3)$ `usize` trace buffer of ~1 MiB at $D_{\max} = 256$)
+     using checked index arithmetic and enforcing `MAX_ALIGNMENT_STEPS` inside the
+     diagonal and snake loops.
+  5. Only when an individual unanchored residual sub-window exceeds `MAX_LCS_CELLS` and
+     cannot be aligned via unique anchors or bounded Myers does *that* sub-window
      coalesce into a single bounded `Modified` hunk while other sub-windows retain exact
-     hunks. When no sub-window coalesces, `line_counts` is
-     `LineChangeCounts::Exact { unchanged_lines, inserted_lines, removed_lines }`. When
-     any sub-window coalesces, `line_counts` switches to
-     `LineChangeCounts::CoalescedWindowUpperBound { trimmed_unchanged_lines, coalesced_before_window_lines, coalesced_after_window_lines }`
-     so coalesced window sizes (upper bounds on removed and inserted lines) are never
-     presented as measured line-edit counts.
+     hunks.
+  - **Per-hunk alignment provenance (`HunkAlignment`) and `LineChangeCounts`:**
+    Every `ChangeHunk` carries an explicit `HunkAlignment` marker (`hunk.alignment()`):
+    - `HunkAlignment::ExactMinimal`: globally minimal alignment on the full non-identical
+      window (via prefix/suffix trimming, direct `MAX_LCS_CELLS` DP, or direct
+      `MAX_MYERS_EDIT_DISTANCE` Myers without unique-anchor partitioning). When all hunks
+      are `ExactMinimal`, `line_counts` is
+      `LineChangeCounts::Exact { unchanged_lines, inserted_lines, removed_lines }`.
+    - `HunkAlignment::UniqueAnchorPartitioned`: exact alignment within a sub-window
+      produced by Patience unique-line anchor partitioning. Because unique anchors pin
+      human-meaningful landmarks across large files, duplicate lines moved across a
+      pinned unique anchor are emitted as removed and re-inserted rather than globally
+      minimal (`AGENTS.md` §3). When unique-anchor partitioning is used and no sub-window
+      coalesces, `line_counts` is
+      `LineChangeCounts::AnchorPartitioned { matched_unchanged_lines, inserted_lines, removed_lines }`.
+    - `HunkAlignment::Coalesced(CoalescedReason)`: quality-reducing coalesced replacement
+      hunk for an unanchored sub-window that exceeded `MAX_LCS_CELLS`, recording whether
+      it coalesced due to `CoalescedReason::NoUniqueAnchorsOverEditBudget` or
+      `CoalescedReason::AlignmentStepBudgetExceeded`. When any hunk is `Coalesced`,
+      `line_counts` is
+      `LineChangeCounts::CoalescedWindowUpperBound { trimmed_unchanged_lines, coalesced_before_window_lines, coalesced_after_window_lines }`
+      so coalesced window sizes (upper bounds on removed and inserted lines) are never
+      presented as measured line-edit counts (`AGENTS.md` §2).
   Emitted `ChangeHunk` records (`Inserted`, `Removed`, `Modified`) are ordered and
   non-overlapping, with exact half-open UTF-8 byte ranges (`before_bytes`, `after_bytes`)
   and 1-indexed inclusive line ranges (`before_lines`, `after_lines`). Applying the
   emitted hunks in reverse byte order reconstructs the exact current UTF-8 text from
-  the baseline text.
+  the baseline text (and vice versa).
 - `ChangeExplanation::Unchanged`: counts lines in a single linear pass with zero
   heap allocation when both complete captures are byte-identical (without failing
   `LineLimitExceeded` on large unchanged captures).
@@ -151,11 +172,20 @@ explanations are each limited to 4,096 bytes and must contain non-whitespace tex
 Oversized inputs produce typed errors without truncation. There is no quadratic
 diff matrix, output-text copy, or allocation in `evaluate`. `explain_changes`
 enforces `max_lines_per_capture` (`<= 16,384`), `max_hunks` (`<= 1,024`),
-`MAX_LCS_CELLS` (`262,144`), `MAX_MYERS_EDIT_DISTANCE` (`256`), and
-`MAX_ALIGNMENT_STEPS` (`1,048,576`), using fallible `try_reserve` allocations and
-returning typed `ChangeError` variants (`LineLimitExceeded`, `HunkLimitExceeded`,
+`MAX_LCS_CELLS` (`262,144`), `MAX_MYERS_EDIT_DISTANCE` (`256`), and a strict ceiling
+of `MAX_ALIGNMENT_STEPS` (`1,048,576`) across cumulative sub-quadratic partitioning
+and Myers steps, using fallible `try_reserve` allocations and returning typed
+`ChangeError` variants (`LineLimitExceeded`, `HunkLimitExceeded`,
 `InvalidExplanationLimits`, `AllocationFailed`) rather than silently truncating
-hunks. `explain_notification` converts `LineLimitExceeded` and `HunkLimitExceeded`
+hunks. Across an entire `explain_changes` invocation, total sub-quadratic partitioning
+and Myers work is strictly capped at `MAX_ALIGNMENT_STEPS` (`1,048,576` steps), and
+because each unique-anchor split consumes at least one line from both captures and
+disjoint sub-windows satisfy $\sum n_i \le N \le 16,384$ and $\sum m_i \le M \le 16,384$
+with $n_i m_i \le \text{MAX\_LCS\_CELLS}$ (`262,144`) per DP leaf, total DP cells
+across all leaves are bounded by $\sum n_i m_i \le \max(N, M) \cdot \sqrt{\text{MAX\_LCS\_CELLS}} \approx 8.39 \times 10^6$
+cells, while peak transient heap memory is at most ~2 MiB (`LineSlice` tables for
+both captures, the work stack, and at most one active ~1 MiB DP or Myers table at a
+time). `explain_notification` converts `LineLimitExceeded` and `HunkLimitExceeded`
 into `ChangeExplanation::Unavailable` while still propagating `Stopped(StopReason)`
 and `AllocationFailed`. `StopReason` is re-exported from
 `oia_analysis::multilingual::StopReason` (`Cancelled`, `DeadlineExceeded`,

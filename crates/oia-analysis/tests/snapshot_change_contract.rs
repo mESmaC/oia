@@ -2,7 +2,8 @@
 //! measured provider integration or full A18 acceptance.
 use oia_analysis::snapshot_change::{
     Capture, CaptureCoverageSummary, ChangeError, ChangeExplanation, ChangeExplanationLimits,
-    ChangeHunkKind, ChangeRule, EXPLANATION_METHOD_ID, LineChangeCounts, MAX_TEXT_BYTES,
+    ChangeHunkKind, ChangeRule, CoalescedReason, EXPLANATION_METHOD_ID,
+    ExplanationUnavailableReason, HunkAlignment, LineChangeCounts, MAX_TEXT_BYTES,
     RULE_CRITERION_ID, RetrievalFreshness, RuleDecision, Snapshot, SnapshotInput, SnapshotScope,
     StopReason, TextComparison, UnavailableReason, evaluate,
 };
@@ -103,7 +104,7 @@ fn exact_spans_preserve_unicode_and_versions_without_promoting_missing_coverage(
                 assert_eq!(result.decision(), RuleDecision::ChangeDetected);
                 assert_eq!(notification.decision(), RuleDecision::ChangeDetected);
 
-                // Verify line-level hunks reconstruct `right` from `left` exactly.
+                // Verify line-level hunks reconstruct `right` from `left` and `left` from `right` byte-for-byte.
                 match notification.explanation() {
                     ChangeExplanation::Changed {
                         method_id,
@@ -123,22 +124,28 @@ fn exact_spans_preserve_unicode_and_versions_without_promoting_missing_coverage(
                                 assert_eq!(*before_line_count, unchanged_lines + removed_lines);
                                 assert_eq!(*after_line_count, unchanged_lines + inserted_lines);
                             }
-                            LineChangeCounts::CoalescedWindowUpperBound { .. } => {
-                                return Err(
-                                    "small synthetic pair unexpectedly used coalesced fallback"
-                                        .into(),
-                                );
+                            other => {
+                                return Err(format!(
+                                    "small synthetic pair unexpectedly used {other:?}"
+                                )
+                                .into());
                             }
                         }
                         let mut by_hunks = left.to_owned();
+                        let mut reverse_by_hunks = right.to_owned();
                         for hunk in hunks.iter().rev() {
+                            assert_eq!(hunk.alignment(), HunkAlignment::ExactMinimal);
                             let rep = right
                                 .get(hunk.after_bytes())
                                 .ok_or("hunk after_bytes not UTF-8 boundary")?;
-                            assert!(left.get(hunk.before_bytes()).is_some());
+                            let orig = left
+                                .get(hunk.before_bytes())
+                                .ok_or("hunk before_bytes not UTF-8 boundary")?;
                             by_hunks.replace_range(hunk.before_bytes(), rep);
+                            reverse_by_hunks.replace_range(hunk.after_bytes(), orig);
                         }
                         assert_eq!(by_hunks, right);
+                        assert_eq!(reverse_by_hunks, left);
                     }
                     other => {
                         return Err(format!("expected Changed explanation, got {other:?}").into());
@@ -186,6 +193,7 @@ fn exact_spans_preserve_unicode_and_versions_without_promoting_missing_coverage(
         );
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].kind(), ChangeHunkKind::Modified);
+        assert_eq!(hunks[0].alignment(), HunkAlignment::ExactMinimal);
         assert_eq!(hunks[0].before_lines(), Some(1..=1));
         assert_eq!(hunks[0].after_lines(), Some(1..=1));
         assert_eq!(hunks[0].before_bytes(), 0..3);
@@ -218,27 +226,176 @@ fn exact_spans_preserve_unicode_and_versions_without_promoting_missing_coverage(
     if let ChangeExplanation::Changed { hunks, .. } = multi_expl {
         assert_eq!(hunks.len(), 2);
         assert_eq!(hunks[0].kind(), ChangeHunkKind::Modified);
+        assert_eq!(hunks[0].alignment(), HunkAlignment::ExactMinimal);
         assert_eq!(hunks[0].before_lines(), Some(2..=2));
         assert_eq!(hunks[0].after_lines(), Some(2..=2));
         assert_eq!(hunks[1].kind(), ChangeHunkKind::Inserted);
+        assert_eq!(hunks[1].alignment(), HunkAlignment::ExactMinimal);
         assert_eq!(hunks[1].before_lines(), None);
         assert_eq!(hunks[1].after_lines(), Some(5..=5));
     } else {
         return Err("expected multi-hunk Changed explanation".into());
     }
 
-    // Verify the MAX_LCS_CELLS fallback reports CoalescedWindowUpperBound rather than
-    // presenting a coalesced interior window as measured line-change counts.
-    let mut fallback_left = String::new();
-    let mut fallback_right = String::new();
-    for line_no in 1..=600 {
-        fallback_left.push_str(&format!("line-{line_no}\n"));
-        if line_no == 2 || line_no == 599 {
-            fallback_right.push_str(&format!("line-{line_no}-edited\n"));
+    // Verify distant edits separated by > MAX_LCS_CELLS:
+    // - Unique lines use Patience LIS anchor partitioning (`LineChangeCounts::AnchorPartitioned`
+    //   and `HunkAlignment::UniqueAnchorPartitioned`).
+    // - Duplicate lines without unique anchors use bounded Myers (`LineChangeCounts::Exact`
+    //   and `HunkAlignment::ExactMinimal`).
+    for use_unique_lines in [true, false] {
+        let mut distant_left = String::new();
+        let mut distant_right = String::new();
+        for line_no in 1..=1_200 {
+            if line_no == 2 || line_no == 1_199 {
+                distant_left.push_str(&format!("line-{line_no}-before\n"));
+                distant_right.push_str(&format!("line-{line_no}-edited\n"));
+            } else {
+                let base_line = if use_unique_lines {
+                    format!("line-{line_no}\n")
+                } else {
+                    "repeated-boilerplate-line\n".to_owned()
+                };
+                distant_left.push_str(&base_line);
+                distant_right.push_str(&base_line);
+            }
+        }
+        let dist_before = snapshot(Capture::Complete(&distant_left), "dist-v1", 10)?;
+        let dist_after = snapshot(Capture::Complete(&distant_right), "dist-v2", 20)?;
+        let dist_eval = evaluate(
+            &rule,
+            &dist_before,
+            &dist_after,
+            UNIX_EPOCH + Duration::from_secs(25),
+            || Ok(()),
+        )?;
+        if let ChangeExplanation::Changed {
+            before_line_count,
+            after_line_count,
+            line_counts,
+            hunks,
+            ..
+        } = dist_eval.explain_changes(ChangeExplanationLimits::default_limits(), || Ok(()))?
+        {
+            assert_eq!(before_line_count, 1_200);
+            assert_eq!(after_line_count, 1_200);
+            let expected_alignment = if use_unique_lines {
+                assert_eq!(
+                    line_counts,
+                    LineChangeCounts::AnchorPartitioned {
+                        matched_unchanged_lines: 1_198,
+                        inserted_lines: 2,
+                        removed_lines: 2,
+                    }
+                );
+                HunkAlignment::UniqueAnchorPartitioned
+            } else {
+                assert_eq!(
+                    line_counts,
+                    LineChangeCounts::Exact {
+                        unchanged_lines: 1_198,
+                        inserted_lines: 2,
+                        removed_lines: 2,
+                    }
+                );
+                HunkAlignment::ExactMinimal
+            };
+            assert_eq!(hunks.len(), 2);
+            assert_eq!(hunks[0].kind(), ChangeHunkKind::Modified);
+            assert_eq!(hunks[0].alignment(), expected_alignment);
+            assert_eq!(hunks[0].before_lines(), Some(2..=2));
+            assert_eq!(hunks[0].after_lines(), Some(2..=2));
+            assert_eq!(hunks[1].kind(), ChangeHunkKind::Modified);
+            assert_eq!(hunks[1].alignment(), expected_alignment);
+            assert_eq!(hunks[1].before_lines(), Some(1_199..=1_199));
+            assert_eq!(hunks[1].after_lines(), Some(1_199..=1_199));
+            let mut reconstructed = distant_left.clone();
+            let mut reverse_reconstructed = distant_right.clone();
+            for hunk in hunks.iter().rev() {
+                let rep = distant_right
+                    .get(hunk.after_bytes())
+                    .ok_or("invalid distant after_bytes")?;
+                let orig = distant_left
+                    .get(hunk.before_bytes())
+                    .ok_or("invalid distant before_bytes")?;
+                reconstructed.replace_range(hunk.before_bytes(), rep);
+                reverse_reconstructed.replace_range(hunk.after_bytes(), orig);
+            }
+            assert_eq!(reconstructed, distant_right);
+            assert_eq!(reverse_reconstructed, distant_left);
         } else {
-            fallback_right.push_str(&format!("line-{line_no}\n"));
+            return Err("expected Changed explanation for distant edits".into());
         }
     }
+
+    // Verify `[P, x×600, Q]` vs `[Q, x×600, P]`: pinning unique anchor `P` causes duplicate
+    // `x` lines moved across `P` to be emitted as removed and re-inserted, and the explanation
+    // explicitly reports `LineChangeCounts::AnchorPartitioned` and `HunkAlignment::UniqueAnchorPartitioned`
+    // rather than claiming a globally minimal `LineChangeCounts::Exact` edit script.
+    let mut swap_left = String::from("P-unique\n");
+    let mut swap_right = String::from("Q-unique\n");
+    for _ in 0..600 {
+        swap_left.push_str("dup-x\n");
+        swap_right.push_str("dup-x\n");
+    }
+    swap_left.push_str("Q-unique\n");
+    swap_right.push_str("P-unique\n");
+    let swap_before = snapshot(Capture::Complete(&swap_left), "swap-v1", 10)?;
+    let swap_after = snapshot(Capture::Complete(&swap_right), "swap-v2", 20)?;
+    let swap_eval = evaluate(
+        &rule,
+        &swap_before,
+        &swap_after,
+        UNIX_EPOCH + Duration::from_secs(25),
+        || Ok(()),
+    )?;
+    if let ChangeExplanation::Changed {
+        line_counts, hunks, ..
+    } = swap_eval.explain_changes(ChangeExplanationLimits::default_limits(), || Ok(()))?
+    {
+        assert_eq!(
+            line_counts,
+            LineChangeCounts::AnchorPartitioned {
+                matched_unchanged_lines: 1,
+                inserted_lines: 601,
+                removed_lines: 601,
+            }
+        );
+        assert_eq!(hunks.len(), 2);
+        assert!(
+            hunks
+                .iter()
+                .all(|h| h.alignment() == HunkAlignment::UniqueAnchorPartitioned)
+        );
+        assert_eq!(hunks[0].kind(), ChangeHunkKind::Removed);
+        assert_eq!(hunks[0].before_lines(), Some(1..=601));
+        assert_eq!(hunks[0].after_lines(), None);
+        assert_eq!(hunks[1].kind(), ChangeHunkKind::Inserted);
+        assert_eq!(hunks[1].before_lines(), None);
+        assert_eq!(hunks[1].after_lines(), Some(2..=602));
+    } else {
+        return Err("expected AnchorPartitioned Changed explanation".into());
+    }
+
+    // Verify selective sub-window coalescing: when a capture has an edit separated by
+    // unique anchors from a 550-line unanchored rewrite block (> MAX_LCS_CELLS and > MAX_MYERS_EDIT_DISTANCE),
+    // the early edit is marked `UniqueAnchorPartitioned` while the unanchored rewrite block is marked
+    // `Coalesced(NoUniqueAnchorsOverEditBudget)` and reports `CoalescedWindowUpperBound`.
+    let mut fallback_left = String::new();
+    let mut fallback_right = String::new();
+    fallback_left.push_str("header-1\nedit-2-before\n");
+    fallback_right.push_str("header-1\nedit-2-after\n");
+    for anchor_no in 3..=10 {
+        let anchor = format!("anchor-{anchor_no}\n");
+        fallback_left.push_str(&anchor);
+        fallback_right.push_str(&anchor);
+    }
+    for rewrite_no in 11..=560 {
+        fallback_left.push_str(&format!("old-block-{rewrite_no}\n"));
+        fallback_right.push_str(&format!("new-block-{rewrite_no}\n"));
+    }
+    fallback_left.push_str("footer-561\n");
+    fallback_right.push_str("footer-561\n");
+
     let fb_before = snapshot(Capture::Complete(&fallback_left), "fb-v1", 10)?;
     let fb_after = snapshot(Capture::Complete(&fallback_right), "fb-v2", 20)?;
     let fb_eval = evaluate(
@@ -256,28 +413,87 @@ fn exact_spans_preserve_unicode_and_versions_without_promoting_missing_coverage(
         ..
     } = fb_eval.explain_changes(ChangeExplanationLimits::default_limits(), || Ok(()))?
     {
-        assert_eq!(before_line_count, 600);
-        assert_eq!(after_line_count, 600);
+        assert_eq!(before_line_count, 561);
+        assert_eq!(after_line_count, 561);
         assert_eq!(
             line_counts,
             LineChangeCounts::CoalescedWindowUpperBound {
-                trimmed_unchanged_lines: 2,
-                coalesced_before_window_lines: 598,
-                coalesced_after_window_lines: 598,
+                trimmed_unchanged_lines: 10,
+                coalesced_before_window_lines: 551,
+                coalesced_after_window_lines: 551,
             }
         );
-        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks.len(), 2);
         assert_eq!(hunks[0].kind(), ChangeHunkKind::Modified);
-        assert_eq!(hunks[0].before_lines(), Some(2..=599));
-        assert_eq!(hunks[0].after_lines(), Some(2..=599));
+        assert_eq!(hunks[0].alignment(), HunkAlignment::UniqueAnchorPartitioned);
+        assert_eq!(hunks[0].before_lines(), Some(2..=2));
+        assert_eq!(hunks[0].after_lines(), Some(2..=2));
+        assert_eq!(hunks[1].kind(), ChangeHunkKind::Modified);
+        assert_eq!(
+            hunks[1].alignment(),
+            HunkAlignment::Coalesced(CoalescedReason::NoUniqueAnchorsOverEditBudget)
+        );
+        assert_eq!(hunks[1].before_lines(), Some(11..=560));
+        assert_eq!(hunks[1].after_lines(), Some(11..=560));
         let mut reconstructed = fallback_left.clone();
-        let rep = fallback_right
-            .get(hunks[0].after_bytes())
-            .ok_or("invalid fallback after_bytes")?;
-        reconstructed.replace_range(hunks[0].before_bytes(), rep);
+        let mut reverse_reconstructed = fallback_right.clone();
+        for hunk in hunks.iter().rev() {
+            let rep = fallback_right
+                .get(hunk.after_bytes())
+                .ok_or("invalid fallback after_bytes")?;
+            let orig = fallback_left
+                .get(hunk.before_bytes())
+                .ok_or("invalid fallback before_bytes")?;
+            reconstructed.replace_range(hunk.before_bytes(), rep);
+            reverse_reconstructed.replace_range(hunk.after_bytes(), orig);
+        }
         assert_eq!(reconstructed, fallback_right);
+        assert_eq!(reverse_reconstructed, fallback_left);
     } else {
         return Err("expected Changed explanation for coalesced fallback".into());
+    }
+
+    // Verify strict `MAX_ALIGNMENT_STEPS` ceiling: when repeated oversized unanchored duplicate
+    // blocks exhaust `MAX_ALIGNMENT_STEPS` inside `try_bounded_myers`, the remaining sub-window
+    // coalesces with `HunkAlignment::Coalesced(CoalescedReason::AlignmentStepBudgetExceeded)`.
+    let mut step_left = String::new();
+    let mut step_right = String::new();
+    for block in 0..16 {
+        for idx in 0..520 {
+            if !(130..518).contains(&idx) {
+                step_left.push_str("dup-only-left\n");
+                step_right.push_str("dup-only-right\n");
+            } else {
+                step_left.push_str("dup-shared\n");
+                step_right.push_str("dup-shared\n");
+            }
+        }
+        let sep = format!("unique-sep-{block}\n");
+        step_left.push_str(&sep);
+        step_right.push_str(&sep);
+    }
+    let step_before = snapshot(Capture::Complete(&step_left), "step-v1", 10)?;
+    let step_after = snapshot(Capture::Complete(&step_right), "step-v2", 20)?;
+    let step_eval = evaluate(
+        &rule,
+        &step_before,
+        &step_after,
+        UNIX_EPOCH + Duration::from_secs(25),
+        || Ok(()),
+    )?;
+    if let ChangeExplanation::Changed {
+        line_counts, hunks, ..
+    } = step_eval.explain_changes(ChangeExplanationLimits::new(16_384, 64)?, || Ok(()))?
+    {
+        assert!(matches!(
+            line_counts,
+            LineChangeCounts::CoalescedWindowUpperBound { .. }
+        ));
+        assert!(hunks.iter().any(|h| {
+            h.alignment() == HunkAlignment::Coalesced(CoalescedReason::AlignmentStepBudgetExceeded)
+        }));
+    } else {
+        return Err("expected Changed explanation for step-budget coalescing".into());
     }
 
     let before = snapshot(Capture::Complete("old"), "before", 10)?;
@@ -421,12 +637,32 @@ fn invalid_scope_time_budget_and_cancellation_cannot_publish_a_comparison()
         20,
     )?;
     let multi_eval = evaluate(&rule, &multi_before, &multi_after, at, || Ok(()))?;
+    let line_limited = ChangeExplanationLimits::new(3, 10)?;
     assert_eq!(
-        multi_eval.explain_changes(ChangeExplanationLimits::new(3, 10)?, || Ok(())),
+        multi_eval.explain_changes(line_limited, || Ok(())),
         Err(ChangeError::LineLimitExceeded {
             actual_lines: 5,
             max_lines: 3,
         })
+    );
+    // Notification projection preserves the rule decision and replacement span while marking
+    // the line-level explanation Unavailable when a line or hunk limit is hit.
+    let line_limited_notif = multi_eval.explain_notification(line_limited, || Ok(()))?;
+    assert_eq!(line_limited_notif.decision(), RuleDecision::ChangeDetected);
+    assert_eq!(
+        line_limited_notif.replacement_span(),
+        multi_eval.comparison()
+    );
+    assert_eq!(
+        line_limited_notif.explanation(),
+        &ChangeExplanation::Unavailable {
+            before_line_count: 5,
+            after_line_count: 5,
+            reason: ExplanationUnavailableReason::LineLimitExceeded {
+                actual_lines: 5,
+                max_lines: 3,
+            },
+        }
     );
     // Unchanged captures over max_lines_per_capture still succeed without allocating a line table.
     let same_after = snapshot(
@@ -436,20 +672,39 @@ fn invalid_scope_time_budget_and_cancellation_cannot_publish_a_comparison()
     )?;
     let same_eval = evaluate(&rule, &multi_before, &same_after, at, || Ok(()))?;
     assert_eq!(
-        same_eval.explain_changes(ChangeExplanationLimits::new(3, 10)?, || Ok(())),
+        same_eval.explain_changes(line_limited, || Ok(())),
         Ok(ChangeExplanation::Unchanged {
             method_id: EXPLANATION_METHOD_ID,
             line_count: 5,
         })
     );
+    let hunk_limited = ChangeExplanationLimits::new(10, 1)?;
     assert_eq!(
-        multi_eval.explain_changes(ChangeExplanationLimits::new(10, 1)?, || Ok(())),
+        multi_eval.explain_changes(hunk_limited, || Ok(())),
         Err(ChangeError::HunkLimitExceeded { max_hunks: 1 })
+    );
+    let hunk_limited_notif = multi_eval.explain_notification(hunk_limited, || Ok(()))?;
+    assert_eq!(hunk_limited_notif.decision(), RuleDecision::ChangeDetected);
+    assert_eq!(
+        hunk_limited_notif.replacement_span(),
+        multi_eval.comparison()
+    );
+    assert_eq!(
+        hunk_limited_notif.explanation(),
+        &ChangeExplanation::Unavailable {
+            before_line_count: 5,
+            after_line_count: 5,
+            reason: ExplanationUnavailableReason::HunkLimitExceeded { max_hunks: 1 },
+        }
     );
     assert_eq!(
         multi_eval.explain_changes(ChangeExplanationLimits::default_limits(), || {
             Err(StopReason::Superseded)
         }),
+        Err(ChangeError::Stopped(StopReason::Superseded))
+    );
+    assert_eq!(
+        multi_eval.explain_notification(line_limited, || Err(StopReason::Superseded)),
         Err(ChangeError::Stopped(StopReason::Superseded))
     );
     Ok(())

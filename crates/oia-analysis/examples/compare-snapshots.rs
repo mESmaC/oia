@@ -225,6 +225,17 @@ fn run() -> Result<ExitCode, Box<dyn Error>> {
                         hunks.len()
                     )?;
                 }
+                LineChangeCounts::AnchorPartitioned {
+                    matched_unchanged_lines,
+                    inserted_lines,
+                    removed_lines,
+                } => {
+                    writeln!(
+                        output,
+                        "explanation_method={method_id}; before_lines={before_line_count}; after_lines={after_line_count}; line_counts=AnchorPartitioned; matched_unchanged_lines={matched_unchanged_lines}; inserted_lines={inserted_lines}; removed_lines={removed_lines}; hunk_count={}; partitioned around unique common line anchors so duplicate lines moved across an anchor are reported as removed and re-inserted",
+                        hunks.len()
+                    )?;
+                }
                 LineChangeCounts::CoalescedWindowUpperBound {
                     trimmed_unchanged_lines,
                     coalesced_before_window_lines,
@@ -232,7 +243,7 @@ fn run() -> Result<ExitCode, Box<dyn Error>> {
                 } => {
                     writeln!(
                         output,
-                        "explanation_method={method_id}; before_lines={before_line_count}; after_lines={after_line_count}; line_counts=CoalescedWindowUpperBound; trimmed_unchanged_lines={trimmed_unchanged_lines}; coalesced_before_window_upper_bound={coalesced_before_window_lines}; coalesced_after_window_upper_bound={coalesced_after_window_lines}; hunk_count={}; interior window exceeded MAX_LCS_CELLS and coalesced into one Modified hunk that may include unchanged lines",
+                        "explanation_method={method_id}; before_lines={before_line_count}; after_lines={after_line_count}; line_counts=CoalescedWindowUpperBound; trimmed_unchanged_lines={trimmed_unchanged_lines}; coalesced_before_window_upper_bound={coalesced_before_window_lines}; coalesced_after_window_upper_bound={coalesced_after_window_lines}; hunk_count={}; at least one unanchored sub-window coalesced into a Modified hunk (see per-hunk alignment) that may include unchanged lines",
                         hunks.len()
                     )?;
                 }
@@ -240,8 +251,9 @@ fn run() -> Result<ExitCode, Box<dyn Error>> {
             for (idx, hunk) in hunks.iter().enumerate() {
                 writeln!(
                     output,
-                    "hunk[{idx}] kind={:?}; before_lines={:?}; after_lines={:?}; before_bytes={:?}; after_bytes={:?}",
+                    "hunk[{idx}] kind={:?}; alignment={:?}; before_lines={:?}; after_lines={:?}; before_bytes={:?}; after_bytes={:?}",
                     hunk.kind(),
+                    hunk.alignment(),
                     hunk.before_lines(),
                     hunk.after_lines(),
                     hunk.before_bytes(),
@@ -283,6 +295,16 @@ fn run() -> Result<ExitCode, Box<dyn Error>> {
             writeln!(
                 output,
                 "explanation_status=Inconclusive; baseline_coverage={baseline_coverage:?}; current_coverage={current_coverage:?}"
+            )?;
+        }
+        ChangeExplanation::Unavailable {
+            before_line_count,
+            after_line_count,
+            reason,
+        } => {
+            writeln!(
+                output,
+                "explanation_status=Unavailable; before_lines={before_line_count}; after_lines={after_line_count}; reason={reason:?}; top-level comparison and rule decision remain valid"
             )?;
         }
     }

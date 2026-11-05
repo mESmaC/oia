@@ -43,7 +43,7 @@ pub const ID_PREFIX: &str = "ann-";
 /// Bearing step of a range ring's drawn outline.
 pub const RING_OUTLINE_STEP_DEG: u32 = 5;
 
-const MEASURE_METHOD: &str = "Great-circle distance on a sphere of radius 6,371,008.8 m (IUGG mean radius, oia-time-geo). Not an ellipsoidal geodesic or a survey; positions are where the analyst clicked on the WGS84 ellipsoid with no terrain.";
+const MEASURE_METHOD: &str = "Great-circle distance on a sphere of radius 6,371,008.8 m (IUGG mean radius, oia-time-geo). Not an ellipsoidal geodesic or a survey; positions are WGS84 longitude/latitude projected from the displayed surface where the analyst clicked; heights are not retained.";
 const STATEMENT: &str = "Drawn by the analyst in this session. Annotations are analyst notes on the map, not observations, and never change the case records they refer to. Kept in memory only: they are lost when OIA closes.";
 
 fn invalid(message: impl ToString) -> ToolError {

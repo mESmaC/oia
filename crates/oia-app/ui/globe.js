@@ -14,6 +14,7 @@ const Globe = (() => {
 
   let view = null;            // last GlobeView from Rust
   let viewer = null;          // Cesium.Viewer
+  let terrainDisplay = null;
   let rendererState = 'idle'; // idle | loading | ready | unavailable
   let overlays = true;
   let reduced = false;
@@ -151,6 +152,7 @@ const Globe = (() => {
       creditContainer: $('globe-credit-sink')
     });
     const scene = viewer.scene;
+    terrainDisplay = GlobeTerrain.create(viewer, () => { renderAttribution(); renderTerrainStatus(); notify(); }, note);
     scene.backgroundColor = Cesium.Color.BLACK;
     scene.globe.baseColor = Cesium.Color.fromCssColorString('#0b0d10'); // missing tiles show as dark surface, not sea
     scene.globe.enableLighting = false; // a live sun would be a live cue on a historical case
@@ -175,7 +177,7 @@ const Globe = (() => {
     handler.setInputAction(() => { if (draw && draw.stage === 'vertices') finishShape(); }, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
     handler.setInputAction(movement => {
       if (!draw || draw.stage !== 'vertices') return;
-      drawCursor = viewer.camera.pickEllipsoid(movement.endPosition, Cesium.Ellipsoid.WGS84) || null;
+      drawCursor = pickSurface(movement.endPosition) || null;
       viewer.scene.requestRender();
     }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
     drawSource = new Cesium.CustomDataSource('oia-annotation-draft');
@@ -237,6 +239,31 @@ const Globe = (() => {
     if (dx) viewer.camera.moveRight(dx * step);
     if (dy) viewer.camera.moveUp(dy * step);
     viewer.scene.requestRender();
+  }
+  function pickSurface(position) {
+    const ray = viewer.camera.getPickRay(position);
+    return ray ? viewer.scene.globe.pick(ray, viewer.scene) : undefined;
+  }
+  function perspective(id) {
+    if (!viewer || !view) return;
+    const Cesium = window.Cesium;
+    const preset = view.perspectives.find(p => p.id === id);
+    if (!preset) return;
+    const selected = drawn.get(view.selection);
+    const canvas = viewer.scene.canvas;
+    const ray = viewer.camera.getPickRay(new Cesium.Cartesian2(canvas.clientWidth / 2, canvas.clientHeight / 2));
+    const target = (selected && terrainDisplay.surfacePoint(selected.anchor)) || (ray && viewer.scene.globe.pick(ray, viewer.scene));
+    if (!target) { showError('Point the camera at the globe or select a plotted record before changing perspective. Terrain may still be loading.'); return; }
+    const range = Math.max(500, Math.min(60000000, Cesium.Cartesian3.distance(viewer.camera.positionWC, target)));
+    clearTimeout(cameraTimer);
+    suppressCameraReport = true;
+    viewer.camera.cancelFlight();
+    viewer.camera.lookAt(target, new Cesium.HeadingPitchRange(viewer.camera.heading, Cesium.Math.toRadians(preset.pitch_deg), range));
+    viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY); // release the pivot for ordinary navigation
+    suppressCameraReport = false;
+    const height = viewer.camera.positionCartographic.height;
+    if (height < view.limits.min_camera_height_m || height > view.limits.max_camera_height_m) setCamera(currentCamera(), false);
+    reportCamera(); viewer.scene.requestRender();
   }
   function zoom(direction) {
     if (!viewer) return;
@@ -411,15 +438,15 @@ const Globe = (() => {
       // A camera is a mapped assertion: a small neutral square. A wedge is drawn only from
       // the kernel's illustrative bearing geometry, never derived here.
       const anchor = Cesium.Cartesian3.fromDegrees(cam.lon_deg, cam.lat_deg, 0);
-      viewer.entities.add({ id: cam.id, position: anchor, point: { pixelSize: 6, color: TEXT.withAlpha(0.9), outlineColor: Cesium.Color.BLACK, outlineWidth: 1.5, disableDepthTestDistance: Number.POSITIVE_INFINITY } });
+      viewer.entities.add({ id: cam.id, position: anchor, point: { heightReference: Cesium.HeightReference.CLAMP_TO_GROUND, pixelSize: 6, color: TEXT.withAlpha(0.9), outlineColor: Cesium.Color.BLACK, outlineWidth: 1.5, disableDepthTestDistance: Number.POSITIVE_INFINITY } });
       let points = [anchor];
       if (cam.wedge) {
         const w = cam.wedge;
         const left = Cesium.Cartesian3.fromDegrees(w.left_lon_deg, w.left_lat_deg, 0);
         const right = Cesium.Cartesian3.fromDegrees(w.right_lon_deg, w.right_lat_deg, 0);
         points = [anchor, left, right];
-        viewer.entities.add({ id: `${cam.id}:wedge`, polygon: { hierarchy: points, height: 0, material: TEXT.withAlpha(0.14), outline: false } });
-        viewer.entities.add({ id: `${cam.id}:wedge-outline`, polyline: { positions: [anchor, left, right, anchor], width: 1, material: TEXT.withAlpha(0.55) } });
+        viewer.entities.add({ id: `${cam.id}:wedge`, polygon: { hierarchy: points, material: TEXT.withAlpha(0.14), outline: false } });
+        viewer.entities.add({ id: `${cam.id}:wedge-outline`, polyline: { clampToGround: true, positions: [anchor, left, right, anchor], width: 1, material: TEXT.withAlpha(0.55) } });
       }
       drawn.set(cam.id, { anchor, points, kind: 'camera', cls: 'cam' });
     }
@@ -427,23 +454,23 @@ const Globe = (() => {
       const g = record.geometry;
       if (g.kind === 'point') {
         const anchor = Cesium.Cartesian3.fromDegrees(g.lon_deg, g.lat_deg, 0);
-        viewer.entities.add({ id: record.id, position: anchor, point: { pixelSize: 7, color: ACCENT, outlineColor: Cesium.Color.BLACK, outlineWidth: 1.5, disableDepthTestDistance: Number.POSITIVE_INFINITY } });
+        viewer.entities.add({ id: record.id, position: anchor, point: { heightReference: Cesium.HeightReference.CLAMP_TO_GROUND, pixelSize: 7, color: ACCENT, outlineColor: Cesium.Color.BLACK, outlineWidth: 1.5, disableDepthTestDistance: Number.POSITIVE_INFINITY } });
         let points = [anchor];
         if (g.horizontal_uncertainty_m) {
           points = circle(anchor, g.horizontal_uncertainty_m);
-          viewer.entities.add({ id: `${record.id}:uncertainty`, polyline: { positions: [...points, points[0]], width: 1.5, material: ACCENT.withAlpha(0.8), clampToGround: false } });
+          viewer.entities.add({ id: `${record.id}:uncertainty`, polyline: { clampToGround: true, positions: [...points, points[0]], width: 1.5, material: ACCENT.withAlpha(0.8) } });
         }
         drawn.set(record.id, { anchor, points, kind: 'point', cls: '' });
       } else if (g.kind === 'approximate_centroid') {
         const anchor = Cesium.Cartesian3.fromDegrees(g.lon_deg, g.lat_deg, 0);
         const points = circle(anchor, g.radius_m);
-        viewer.entities.add({ id: record.id, position: anchor, point: { pixelSize: 6, color: NONE, outlineColor: AMBER, outlineWidth: 1.5, disableDepthTestDistance: Number.POSITIVE_INFINITY } });
-        viewer.entities.add({ id: `${record.id}:radius`, polyline: { positions: [...points, points[0]], width: 1.5, material: new Cesium.PolylineDashMaterialProperty({ color: AMBER, dashLength: 12 }) } });
+        viewer.entities.add({ id: record.id, position: anchor, point: { heightReference: Cesium.HeightReference.CLAMP_TO_GROUND, pixelSize: 6, color: NONE, outlineColor: AMBER, outlineWidth: 1.5, disableDepthTestDistance: Number.POSITIVE_INFINITY } });
+        viewer.entities.add({ id: `${record.id}:radius`, polyline: { clampToGround: true, positions: [...points, points[0]], width: 1.5, material: new Cesium.PolylineDashMaterialProperty({ color: AMBER, dashLength: 12 }) } });
         drawn.set(record.id, { anchor, points, kind: 'approximate_centroid', cls: 'approx' });
       } else if (g.kind === 'region') {
         const ring = g.ring.map(p => Cesium.Cartesian3.fromDegrees(p.lon_deg, p.lat_deg, 0));
-        viewer.entities.add({ id: record.id, polygon: { hierarchy: ring, height: 0, material: new Cesium.StripeMaterialProperty({ evenColor: TEXT.withAlpha(0.16), oddColor: NONE, repeat: 48, orientation: Cesium.StripeOrientation.VERTICAL }), outline: false } });
-        viewer.entities.add({ id: `${record.id}:outline`, polyline: { positions: [...ring, ring[0]], width: 1.2, material: new Cesium.PolylineDashMaterialProperty({ color: TEXT.withAlpha(0.7), dashLength: 10 }) } });
+        viewer.entities.add({ id: record.id, polygon: { hierarchy: ring, material: new Cesium.StripeMaterialProperty({ evenColor: TEXT.withAlpha(0.16), oddColor: NONE, repeat: 48, orientation: Cesium.StripeOrientation.VERTICAL }), outline: false } });
+        viewer.entities.add({ id: `${record.id}:outline`, polyline: { clampToGround: true, positions: [...ring, ring[0]], width: 1.2, material: new Cesium.PolylineDashMaterialProperty({ color: TEXT.withAlpha(0.7), dashLength: 10 }) } });
         // The tag leads to the northernmost vertex: an edge of the area, never a derived centre.
         let anchor = ring[0], best = -Infinity;
         g.ring.forEach((p, i) => { if (p.lat_deg > best) { best = p.lat_deg; anchor = ring[i]; } });
@@ -457,16 +484,16 @@ const Globe = (() => {
       const stroke = TEXT.withAlpha(0.92);
       if (g.shape === 'pin') {
         const anchor = at(g.point);
-        viewer.entities.add({ id: a.id, position: anchor, point: { pixelSize: 9, color: NONE, outlineColor: TEXT, outlineWidth: 2.5, disableDepthTestDistance: Number.POSITIVE_INFINITY } });
+        viewer.entities.add({ id: a.id, position: anchor, point: { heightReference: Cesium.HeightReference.CLAMP_TO_GROUND, pixelSize: 9, color: NONE, outlineColor: TEXT, outlineWidth: 2.5, disableDepthTestDistance: Number.POSITIVE_INFINITY } });
         drawn.set(a.id, { anchor, points: [anchor], kind: 'annotation', cls: 'ann' });
       } else if (g.shape === 'line') {
         const points = g.vertices.map(at);
-        viewer.entities.add({ id: a.id, polyline: { positions: points, width: 2, material: stroke } });
+        viewer.entities.add({ id: a.id, polyline: { clampToGround: true, positions: points, width: 2, material: stroke } });
         drawn.set(a.id, { anchor: points[0], points, kind: 'annotation', cls: 'ann' });
       } else if (g.shape === 'area') {
         const ring = g.ring.map(at);
-        viewer.entities.add({ id: a.id, polygon: { hierarchy: ring, height: 0, material: TEXT.withAlpha(0.10), outline: false } });
-        viewer.entities.add({ id: `${a.id}:outline`, polyline: { positions: [...ring, ring[0]], width: 2, material: stroke } });
+        viewer.entities.add({ id: a.id, polygon: { hierarchy: ring, material: TEXT.withAlpha(0.10), outline: false } });
+        viewer.entities.add({ id: `${a.id}:outline`, polyline: { clampToGround: true, positions: [...ring, ring[0]], width: 2, material: stroke } });
         // Tag at the northernmost vertex, as for case regions: an edge, not a derived centre.
         let anchor = ring[0], best = -Infinity;
         g.ring.forEach((p, i) => { if (p.lat_deg > best) { best = p.lat_deg; anchor = ring[i]; } });
@@ -474,8 +501,8 @@ const Globe = (() => {
       } else if (g.shape === 'ring' && a.outline) {
         const anchor = at(g.centre);
         const ring = a.outline.map(at);
-        viewer.entities.add({ id: a.id, position: anchor, point: { pixelSize: 5, color: TEXT, outlineColor: Cesium.Color.BLACK, outlineWidth: 1, disableDepthTestDistance: Number.POSITIVE_INFINITY } });
-        viewer.entities.add({ id: `${a.id}:outline`, polyline: { positions: [...ring, ring[0]], width: 2, material: stroke } });
+        viewer.entities.add({ id: a.id, position: anchor, point: { heightReference: Cesium.HeightReference.CLAMP_TO_GROUND, pixelSize: 5, color: TEXT, outlineColor: Cesium.Color.BLACK, outlineWidth: 1, disableDepthTestDistance: Number.POSITIVE_INFINITY } });
+        viewer.entities.add({ id: `${a.id}:outline`, polyline: { clampToGround: true, positions: [...ring, ring[0]], width: 2, material: stroke } });
         drawn.set(a.id, { anchor, points: ring, kind: 'annotation', cls: 'ann' });
       }
     }
@@ -543,7 +570,8 @@ const Globe = (() => {
     for (const [id, d] of drawn) {
       const tag = tagEls.get(id);
       if (!tag) continue;
-      const win = overlays && occluder.isPointVisible(d.anchor) ? Cesium.SceneTransforms.worldToWindowCoordinates(scene, d.anchor) : undefined;
+      const anchor = terrainDisplay.surfacePoint(d.anchor);
+      const win = overlays && anchor && occluder.isPointVisible(anchor) ? Cesium.SceneTransforms.worldToWindowCoordinates(scene, anchor) : undefined;
       const inside = win && win.x >= -40 && win.y >= -40 && win.x <= scene.canvas.clientWidth + 40 && win.y <= scene.canvas.clientHeight + 40;
       if (!inside) { tag.hidden = true; continue; }
       tag.hidden = false;
@@ -571,8 +599,9 @@ const Globe = (() => {
       if (view.selection === id) {
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         for (const p of d.points) {
-          if (!occluder.isPointVisible(p)) continue;
-          const w = Cesium.SceneTransforms.worldToWindowCoordinates(scene, p);
+          const surface = terrainDisplay.surfacePoint(p);
+          if (!surface || !occluder.isPointVisible(surface)) continue;
+          const w = Cesium.SceneTransforms.worldToWindowCoordinates(scene, surface);
           if (!w) continue;
           minX = Math.min(minX, w.x); minY = Math.min(minY, w.y); maxX = Math.max(maxX, w.x); maxY = Math.max(maxY, w.y);
         }
@@ -775,6 +804,7 @@ const Globe = (() => {
     if (drawnDetail.length && a.date) el.append(node('span', ` · zoomed detail is not ${a.date}`, 'warn'));
     if (view.imagery.coastlines) el.append(node('span', ` · + ${view.imagery.coastlines.source.layer} (${view.imagery.coastlines.source.attribution})`));
     el.append(node('span', ` · tiles ${fmt(tiles.loaded)} loaded`));
+    el.append(node('span', ` · Terrain: ${terrainDisplay ? terrainDisplay.summary() : 'renderer not ready'}${view.terrain.selection.enabled ? ` · ${view.terrain.source.attribution}` : ''}`));
     if (tiles.failed) el.append(node('span', `, ${fmt(tiles.failed)} failed (gap, not empty scene)`, 'warn'));
     if (tiles.absent) el.append(node('span', `, ${fmt(tiles.absent)} not published by the source`));
     if (tiles.pending) el.append(node('span', `, ${fmt(tiles.pending)} pending`));
@@ -1001,7 +1031,7 @@ const Globe = (() => {
     if (!draw) { viewer.scene.requestRender(); return; }
     const TEXT = Cesium.Color.fromCssColorString('#e9edf0');
     const pts = draw.vertices.map(p => Cesium.Cartesian3.fromDegrees(p.lon_deg, p.lat_deg, 0));
-    for (const p of pts) drawSource.entities.add({ position: p, point: { pixelSize: 6, color: TEXT, outlineColor: Cesium.Color.BLACK, outlineWidth: 1, disableDepthTestDistance: Number.POSITIVE_INFINITY } });
+    for (const p of pts) drawSource.entities.add({ position: p, point: { heightReference: Cesium.HeightReference.CLAMP_TO_GROUND, pixelSize: 6, color: TEXT, outlineColor: Cesium.Color.BLACK, outlineWidth: 1, disableDepthTestDistance: Number.POSITIVE_INFINITY } });
     if (draw.stage !== 'vertices' || draw.shape === 'pin') { viewer.scene.requestRender(); return; }
     const dash = new Cesium.PolylineDashMaterialProperty({ color: TEXT.withAlpha(0.9), dashLength: 10 });
     const band = new Cesium.CallbackProperty(() => {
@@ -1009,8 +1039,8 @@ const Globe = (() => {
       const line = [...pts, ...tail];
       return draw && draw.shape === 'area' && line.length > 2 ? [...line, line[0]] : line;
     }, false);
-    if (draw.shape !== 'ring') drawSource.entities.add({ polyline: { positions: band, width: 2, material: dash } });
-    else if (pts.length === 1) drawSource.entities.add({ polyline: { positions: new Cesium.CallbackProperty(() => drawCursor ? [pts[0], drawCursor] : [], false), width: 2, material: dash } });
+    if (draw.shape !== 'ring') drawSource.entities.add({ polyline: { clampToGround: true, positions: band, width: 2, material: dash } });
+    else if (pts.length === 1) drawSource.entities.add({ polyline: { clampToGround: true, positions: new Cesium.CallbackProperty(() => drawCursor ? [pts[0], drawCursor] : [], false), width: 2, material: dash } });
     viewer.scene.requestRender();
   }
   function setShape(shape) {
@@ -1054,7 +1084,7 @@ const Globe = (() => {
       // Cesium's canvas does not take focus on click; keep Enter, Backspace and Escape working.
       $('globe-canvas').focus({ preventScroll: true });
     }
-    const hit = viewer.camera.pickEllipsoid(position, Cesium.Ellipsoid.WGS84);
+    const hit = pickSurface(position);
     if (!hit) { drawStatus('That point is off the globe; nothing was added.', true); return; }
     const c = Cesium.Cartographic.fromCartesian(hit);
     const vertex = { lat_deg: Cesium.Math.toDegrees(c.latitude), lon_deg: Cesium.Math.toDegrees(c.longitude) };
@@ -1105,6 +1135,39 @@ const Globe = (() => {
     if (await call('globe_annotate', { draft })) endDraw();
   }
 
+  function renderTerrainStatus() {
+    $('globe-terrain-status').textContent = terrainDisplay ? `${terrainDisplay.summary()} · Last tile received: ${terrainDisplay.retrievalTime() || 'none this session'}` : 'Renderer not ready; no elevation tiles requested.';
+  }
+  function renderTerrain() {
+    if (!view) return;
+    const form = $('globe-terrain-form');
+    if (!form.elements.enabled) {
+      const label = node('label');
+      const enabled = node('input'); enabled.type = 'checkbox'; enabled.name = 'enabled';
+      label.append(enabled, document.createTextNode(' Elevation heightmap'));
+      const scaleLabel = node('label', 'Vertical exaggeration · display only');
+      const scale = node('select'); scale.name = 'exaggeration';
+      for (let i = 1; i <= 5; i++) { const option = node('option', `${i}×${i === 1 ? ' · natural scale' : ' · exaggerated'}`); option.value = i; scale.append(option); }
+      scaleLabel.append(scale); form.append(label, scaleLabel);
+      form.onsubmit = event => event.preventDefault();
+      form.onchange = () => call('globe_terrain', { selection: { enabled: enabled.checked, exaggeration: Number(scale.value) } }).then(ok => { if (!ok) renderTerrain(); });
+    }
+    form.elements.enabled.checked = view.terrain.selection.enabled;
+    form.elements.exaggeration.value = view.terrain.selection.exaggeration;
+    form.elements.exaggeration.disabled = !view.terrain.selection.enabled;
+    const s = view.terrain.source;
+    kv($('globe-terrain-details'), [['Source', s.label], ['Origin', s.origin], ['Coverage', s.coverage], ['Resolution', s.resolution], ['Height reference', s.height_reference, 'est'], ['Capture', s.capture_statement], ['Limits', `${s.max_requests_in_flight} concurrent · ${s.deadline_ms / 1000} s/tile · ${fmt(s.max_tile_bytes)} bytes/tile · no retained tiles`], ['Licence', s.license], ['Attribution', s.contributor_attribution], ['Terms', s.terms_url], ['Checked', s.checked_on]]);
+    $('globe-terrain-statement').textContent = view.terrain.statement;
+    const perspectives = $('globe-perspectives');
+    if (!perspectives.childElementCount) for (const p of view.perspectives) {
+      const button = node('button', p.label, 'btn'); button.type = 'button';
+      button.title = `${p.key} key with globe focused · keep selected record or centre of view`;
+      button.onclick = () => perspective(p.id); perspectives.append(button);
+    }
+    for (const button of perspectives.children) button.disabled = rendererState !== 'ready';
+    renderTerrainStatus();
+  }
+
   // ---- View application ----
   function applyView(next) {
     const first = !view;
@@ -1112,6 +1175,7 @@ const Globe = (() => {
     view = next;
     if (viewer && rendererState === 'ready') {
       setImagery(view.imagery);
+      terrainDisplay.apply(view.terrain);
       const cameras = visibleCameras();
       const notes = visibleAnnotations();
       const key = JSON.stringify([view.plotted, cameras, notes]);
@@ -1126,7 +1190,8 @@ const Globe = (() => {
         if (d) {
           const Cesium = window.Cesium;
           const occluder = new Cesium.EllipsoidalOccluder(Cesium.Ellipsoid.WGS84, viewer.scene.camera.positionWC);
-          const win = occluder.isPointVisible(d.anchor) ? Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene, d.anchor) : undefined;
+          const anchor = terrainDisplay.surfacePoint(d.anchor);
+          const win = anchor && occluder.isPointVisible(anchor) ? Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene, anchor) : undefined;
           const c = viewer.scene.canvas;
           if (!win || win.x < 0 || win.y < 0 || win.x > c.clientWidth || win.y > c.clientHeight) {
             const carto = Cesium.Cartographic.fromCartesian(d.anchor);
@@ -1137,7 +1202,7 @@ const Globe = (() => {
       viewer.scene.requestRender();
     }
     layerVisibility = Object.fromEntries(view.layers.map(l => [l.id, l.visible]));
-    renderCard(); renderTray(); renderLayers(); renderAttribution(); renderState(); renderInspector();
+    renderCard(); renderTray(); renderLayers(); renderAttribution(); renderState(); renderInspector(); renderTerrain();
     if (onViewListener) onViewListener(summary());
   }
   function summary() {
@@ -1147,8 +1212,8 @@ const Globe = (() => {
     const note = selectedAnnotation();
     return {
       source: view.case ? `${view.case.label}` : 'no case',
-      coverage: rendererState === 'ready' ? `tiles ${fmt(tiles.loaded)} ok · ${fmt(tiles.failed)} failed` : `renderer ${rendererState}`,
-      partial: tiles.failed > 0 || rendererState !== 'ready',
+      coverage: rendererState === 'ready' ? `tiles ${fmt(tiles.loaded)} ok · ${fmt(tiles.failed)} failed${terrainDisplay?.hasFailures() ? ' · terrain gaps' : ''}` : `renderer ${rendererState}`,
+      partial: tiles.failed > 0 || !!terrainDisplay?.hasFailures() || rendererState !== 'ready',
       selection: note ? `${note.tag} ${note.label} (annotation)` : cam ? `CAM ${cam.display_id}` : record ? `${pad2(record.order)} ${record.label}` : 'none',
       loaded: true
     };
@@ -1182,7 +1247,7 @@ const Globe = (() => {
     if (!active || !viewer || rendererState !== 'ready') return false;
     const inCanvas = $('globe-canvas').contains(document.activeElement) || document.activeElement === $('globe-canvas');
     if (!inCanvas) return false;
-    const map = { ArrowLeft: () => pan(-1, 0), ArrowRight: () => pan(1, 0), ArrowUp: () => pan(0, 1), ArrowDown: () => pan(0, -1), '+': () => zoom(1), '=': () => zoom(1), '-': () => zoom(-1), Home: home, '0': world };
+    const map = { ArrowLeft: () => pan(-1, 0), ArrowRight: () => pan(1, 0), ArrowUp: () => pan(0, 1), ArrowDown: () => pan(0, -1), '+': () => zoom(1), '=': () => zoom(1), '-': () => zoom(-1), Home: home, '0': world, '1': () => perspective('top_down'), '2': () => perspective('oblique'), '3': () => perspective('horizon') };
     const plain = !event.ctrlKey && !event.metaKey && !event.altKey;
     if (plain && draw && draw.stage === 'vertices') Object.assign(map, { v: addVertexAtCrosshair, V: addVertexAtCrosshair, Enter: finishShape, Backspace: undoVertex });
     else if (plain && !draw) Object.assign(map, { a: startDraw, A: startDraw });

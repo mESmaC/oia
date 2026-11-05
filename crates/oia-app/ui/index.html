@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="globe.css">
 <link rel="stylesheet" href="news.css">
+<script src="globe-terrain.js" defer></script>
 <script src="globe.js" defer></script>
 <script src="witness.js" defer></script>
 <script src="news.js" defer></script>
@@ -287,7 +288,8 @@
     <!-- Globe view -->
     <section class="view" id="view-globe" hidden>
       <div class="globe-wrap">
-        <div id="globe-canvas" class="globe-canvas" tabindex="0" role="application" aria-label="Globe. Arrow keys pan, plus and minus zoom, Home returns to the case anchor, 0 shows the whole globe, Escape clears the selection. Drag to orbit, wheel to zoom."></div>
+        <div id="globe-canvas" class="globe-canvas" tabindex="0" role="application" aria-label="Globe. Arrow keys pan, plus and minus zoom, 1 top-down, 2 oblique, 3 horizon, Home returns to the case anchor, 0 shows the whole globe, A draws an annotation, Escape cancels drawing or clears the selection. Drag to orbit, wheel to zoom, right-drag or Ctrl-drag to tilt."></div>
+        <div class="gperspectives glass" id="globe-perspectives" role="group" aria-label="Camera perspectives"></div>
         <svg class="globe-leaders" id="globe-leaders" aria-hidden="true"></svg>
         <div class="globe-tags" id="globe-tags"></div>
         <div class="gbracket" id="globe-bracket" hidden aria-hidden="true"><i></i><i></i><i></i><i></i></div>
@@ -459,10 +461,11 @@
           <p class="note" id="globe-alpr-statement"></p>
         </section>
         <section class="sec" data-pane="globe-imagery" hidden><span class="k">Basemap</span><form class="gform" id="globe-imagery-form"></form></section>
+        <section class="sec" data-pane="globe-imagery" hidden><span class="k">Terrain · display only</span><form class="gform" id="globe-terrain-form"></form><p class="note" id="globe-terrain-status" role="status"></p><dl class="kv" id="globe-terrain-details"></dl><p class="note" id="globe-terrain-statement"></p></section>
         <section class="sec" data-pane="globe-imagery" hidden><span class="k">Active layer</span><dl class="kv" id="globe-imagery-active"></dl><p class="note" id="globe-ack"></p></section>
         <section class="sec" data-pane="globe-imagery" hidden><span class="k">Detail when zoomed in</span><div id="globe-imagery-detail" class="gdetail"></div></section>
         <section class="sec" data-pane="globe-imagery" hidden><span class="k">Renderer</span><dl class="kv" id="globe-renderer"></dl><span class="k">Renderer messages · this session</span><ul class="glog" id="globe-log"></ul></section>
-        <section class="sec" data-pane="globe-limits" hidden><span class="k">Limits</span><p class="note">The case and the camera directory are bundled synthetic fixtures; nothing drawn is an observation. Points, rings and regions come only from recorded geometry; a record without geometry is listed, not placed. A camera wedge is an illustrative bearing from a numeric tag, never a calibrated field of view, and a camera without a tag has no wedge. Imagery is a live request to the registered sources: the basemap for the layer and UTC day shown, and, when zoomed in, finer detail tiers that are other capture periods (a yearly Sentinel-2 composite, United States aerial orthoimagery). None shows the case period, and a missing or unpublished tile is a coverage gap. Tile counts are what this renderer observed in this session. No terrain, labels, roads or tracks are drawn, because none is registered. Camera position is a view setting, not a measurement. Analyst annotations are notes drawn in this session: they are not observations, never change a case record, are measured on a sphere, and are not saved when OIA closes. Persistent cases, clustering, footprints and live directory queries are not in this build.</p></section>
+        <section class="sec" data-pane="globe-limits" hidden><span class="k">Limits</span><p class="note">The case and the camera directory are bundled synthetic fixtures; nothing drawn is an observation. Points, rings and regions come only from recorded geometry; a record without geometry is listed, not placed. A camera wedge is an illustrative bearing from a numeric tag, never a calibrated field of view, and a camera without a tag has no wedge. Imagery is a live request to the registered sources: the basemap for the layer and UTC day shown, and, when zoomed in, finer detail tiers that are other capture periods (a yearly Sentinel-2 composite, United States aerial orthoimagery). None shows the case period, and a missing or unpublished tile is a coverage gap. Tile counts are what this renderer observed in this session. Optional Mapzen elevation is a derived display surface with source-dependent height reference, not a measured evidence altitude. Labels, roads and tracks are not registered. Camera position is a view setting, not a measurement. Analyst annotations are notes drawn in this session: they are not observations, never change a case record, are measured on a sphere, and are not saved when OIA closes. Persistent cases, clustering, footprints and live directory queries are not in this build.</p></section>
       </div>
     </div>
     <!-- Media inspector -->

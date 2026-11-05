@@ -5,6 +5,7 @@ use crate::globe::{
     annotations::{AnnotationDraft, AnnotationEdit},
     imagery::{CivilDate, ImagerySelection},
     layers::AlprFilterId,
+    terrain::TerrainSelection,
 };
 use crate::local_tools::{
     self as tools, CitationView, Control, CorpusSearchView, CorpusView, DocumentView, FileKind,
@@ -634,6 +635,16 @@ fn globe_camera(globe: State<'_, Globe>, camera: CameraView) -> Result<Envelope<
 }
 
 #[tauri::command]
+fn globe_terrain(
+    globe: State<'_, Globe>,
+    selection: TerrainSelection,
+) -> Result<Envelope<GlobeView>> {
+    let mut state = globe.lock()?;
+    state.set_terrain(selection)?;
+    state.view().map(envelope)
+}
+
+#[tauri::command]
 fn globe_imagery(
     globe: State<'_, Globe>,
     selection: ImagerySelection,
@@ -859,6 +870,7 @@ pub fn run() -> std::result::Result<(), tauri::Error> {
             globe_view,
             globe_select,
             globe_camera,
+            globe_terrain,
             globe_imagery,
             globe_layer,
             globe_alpr_filter,

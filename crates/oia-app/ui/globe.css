@@ -5,6 +5,10 @@
 .globe-wrap { position: absolute; inset: 0; overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-panel); background: #000; }
 .globe-canvas { position: absolute; inset: 0; outline: none; }
 .globe-canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+.gperspectives { position: absolute; top: 12px; left: 12px; display: flex; gap: 4px; padding: 5px; max-width: calc(100% - 24px); flex-wrap: wrap; z-index: 2; }
+.gperspectives button { font-size: 11px; padding: 6px 9px; }
+.gperspectives ~ .gcard { top: 60px; }
+.globe-wrap.drawing .gperspectives { display: none; }
 
 /* The few CesiumJS widget rules OIA needs; the widget stylesheet is not vendored. */
 .cesium-viewer { position: relative; display: block; width: 100%; height: 100%; overflow: hidden; }

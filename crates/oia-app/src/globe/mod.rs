@@ -9,6 +9,7 @@
 pub mod annotations;
 pub mod imagery;
 pub mod layers;
+pub mod terrain;
 
 use crate::local_tools::{Result, ToolError};
 use annotations::{AnnotationDraft, AnnotationEdit, AnnotationLayerView, AnnotationState};
@@ -16,6 +17,7 @@ use imagery::{CivilDate, ImagerySelection, ImageryView};
 use layers::{AlprFilterId, CameraLayerView, LayerState, LayerView};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use terrain::{Perspective, TerrainSelection, TerrainView};
 
 /// Fixture schema accepted by this build.
 pub const FIXTURE_SCHEMA: &str = "oia.fixture.globe-case/1";
@@ -519,6 +521,8 @@ pub struct GlobeView {
     pub camera: CameraView,
     pub home: CameraView,
     pub imagery: ImageryView,
+    pub terrain: TerrainView,
+    pub perspectives: [Perspective; 3],
     /// Registered context layers, in registry order; the case layer is first.
     pub layers: Vec<LayerView>,
     /// The ALPR camera layer's features and kernel evaluation, present whenever the
@@ -543,6 +547,7 @@ pub struct GlobeState {
     /// only if the registry's default basemap cannot be resolved, which is a build defect.
     imagery: Option<ImageryView>,
     annotations: AnnotationState,
+    terrain: TerrainSelection,
 }
 
 impl Default for GlobeState {
@@ -573,6 +578,7 @@ impl GlobeState {
             layers: LayerState::default(),
             imagery,
             annotations: AnnotationState::default(),
+            terrain: TerrainSelection::default(),
         }
     }
 
@@ -666,6 +672,12 @@ impl GlobeState {
         Ok(())
     }
 
+    pub fn set_terrain(&mut self, selection: TerrainSelection) -> Result<()> {
+        selection.validate()?;
+        self.terrain = selection;
+        Ok(())
+    }
+
     /// Validates the selection against the registry and `today`, then keeps the resolved view.
     pub fn set_imagery(&mut self, selection: ImagerySelection, today: CivilDate) -> Result<()> {
         self.imagery = Some(imagery::resolve(&selection, today)?);
@@ -756,6 +768,8 @@ impl GlobeState {
             camera: self.camera,
             home: Self::home_for(&self.fixture),
             imagery,
+            terrain: terrain::view(self.terrain),
+            perspectives: terrain::PERSPECTIVES,
             layers: Vec::new(),
             cameras: None,
             annotations: self.annotations.view(&|id| {
@@ -772,7 +786,7 @@ impl GlobeState {
                 bundled_version: BUNDLED_RENDERER_VERSION,
                 bundle: RendererBundle::classify(RENDERER_VERSION, BUNDLED_RENDERER_VERSION),
                 ion: "disabled: no token, no Ion assets",
-                terrain: "WGS84 ellipsoid; no terrain source is registered",
+                terrain: "Mapzen Terrarium heightmap display (optional); source-dependent vertical reference, no scientific height claim",
             },
             limits: GlobeLimits {
                 max_records: MAX_RECORDS,
@@ -886,6 +900,40 @@ mod tests {
                 && matches!(&r.geometry, RecordGeometry::Region { ring, .. } if ring.len() >= 3)
         }));
         assert_eq!(view.camera, view.home);
+        Ok(())
+    }
+
+    // AGENTS.md §5: malformed fixtures and camera values are refused, not clamped or defaulted.
+    #[test]
+    fn terrain_settings_preserve_evidence_and_refuse_invalid_scale() -> Result<()> {
+        let mut state = GlobeState::default();
+        let before = state.view()?;
+        assert_eq!(
+            state
+                .set_terrain(TerrainSelection {
+                    enabled: true,
+                    exaggeration: 0
+                })
+                .err()
+                .map(|e| e.code),
+            Some("terrain_invalid")
+        );
+        assert_eq!(state.terrain, before.terrain.selection);
+        state.set_terrain(TerrainSelection {
+            enabled: false,
+            exaggeration: 5,
+        })?;
+        let after = state.view()?;
+        assert_eq!(before.plotted, after.plotted);
+        assert_eq!(before.not_plotted, after.not_plotted);
+        assert_eq!(before.camera, after.camera);
+        assert_eq!(
+            after.terrain.selection,
+            TerrainSelection {
+                enabled: false,
+                exaggeration: 5
+            }
+        );
         Ok(())
     }
 

@@ -94,3 +94,24 @@ SOFTWARE.
 - **Service:** https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer (description and bounded export checked 2026-11-03).
 - **Licence and attribution:** Public domain USDA/USGS work; https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits. Shown as “USDA NAIP / USGS The National Map: NAIP Imagery”. No endorsement implied.
 - **Use:** Visible-view 256 × 256 transparent PNG exports, bands 0/1/2, nearest-neighbour sampling, levels 16–18, six requests in flight, continental-US bounds. No bulk download or retained tile artifacts. These are orthorectified aerial mosaics, primarily 0.6 m with variable flight dates/resolution, not raw satellite data. Metadata grid spacing (0.3 m) is not asserted as native resolution.
+
+---
+
+## Runtime public feeds and archival catalogue metadata (#166)
+
+- **NASA:** https://www.nasa.gov/feed/ ? publisher-provided news RSS, attributed to
+  NASA. NASA informational-use guidance: https://www.nasa.gov/nasa-brand-center/images-and-media/.
+  Third-party credits and protected marks remain separate.
+- **BBC News, World:** https://feeds.bbci.co.uk/news/world/rss.xml ? BBC copyright;
+  personal, non-commercial feed reading under https://www.bbc.co.uk/usingthebbc/terms-of-use/#15metadataandrssfeeds.
+  Full articles are not acquired or republished by this workflow.
+- **The National Archives:** https://discovery.nationalarchives.gov.uk/API/help ?
+  public Discovery catalogue descriptions and references under the published
+  https://www.nationalarchives.gov.uk/legal/terms-of-use/. Underlying scans/testimony
+  may have separate rights and are not acquired.
+- **Scope:** runtime-only bounded session responses, with source-specific access,
+  automation, retention and redistribution conditions in the shared source registry
+  and [implementation note](docs/implementation/public-collection.md). No live
+  feed/API response is committed as a fixture or distributed with the source code;
+  no payload export, model processing, endorsement or independent-verification
+  claim is made. User-added feeds retain their own, explicitly unknown reuse rights.

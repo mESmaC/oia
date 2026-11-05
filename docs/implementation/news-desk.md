@@ -2,9 +2,13 @@
 
 Implemented, session-only desktop slice of [#156](https://github.com/mESmaC/oia/issues/156), supporting the accounting and inspection subsets of NEWS-01, NEWS-02, NEWS-05, GEO-03 and A06. It replaces the disabled News rail item with a working local dossier reader. It does **not** complete [#20](https://github.com/mESmaC/oia/issues/20), live feed acquisition, source authorization, durable cases, reversible event editing, claim review or full A06/A19. Shared evidence/services remain with #10/#11/#13/#14/#17/#19.
 
+Public feeds now load automatically above this local reader through the separate
+[shared collection service](public-collection.md) (#166). This note describes the
+secondary local dossier workflow; its offline sample remains dated and partial.
+
 ## Use
 
-Run the existing desktop workbench with `cargo run -p oia-app --locked` and select **News**. **Import news JSON** opens a native file picker. **Load web news snapshot** explicitly loads the real, attributed [example dossier](../../crates/oia-app/examples/news-dossier.json): a dated offline snapshot with partial coverage, not live news. The same file can be imported through the picker. Nothing is preloaded. Filter by exact text, declared region and report category, then select an article version to inspect its text and provenance. **Reset filters** restores the full dossier; **Unload dossier** removes the Rust-held snapshot and presentation view. Replacement discards the previous session snapshot only after success. No files are modified.
+Run the existing desktop workbench with `cargo run -p oia-app --locked` and select **News**, then expand **Import your own news dossier / offline sample**. **Import news JSON** opens a native file picker. **Load web news snapshot** explicitly loads the real, attributed [example dossier](../../crates/oia-app/examples/news-dossier.json): a dated offline snapshot with partial coverage, not live news. The same file can be imported through the picker. No local dossier is preloaded; the public panel has its own automatic acquisition and source coverage. Filter by exact text, declared region and report category, then select an article version to inspect its text and provenance. **Reset filters** restores the full dossier; **Unload dossier** removes the Rust-held snapshot and presentation view. Replacement discards the previous session snapshot only after success. No files are modified.
 
 The same Rust path can be exercised without a GUI or desktop dependencies:
 
@@ -13,7 +17,7 @@ cargo run -p oia-app --example inspect-news --no-default-features --locked --off
 cargo run -p oia-app --example inspect-news --no-default-features --locked --offline -- crates/oia-app/examples/news-dossier.json Dimorphos
 ```
 
-With no arguments, that explicit example command inspects the real-news snapshot, including its dated title, partial coverage and provenance. `.gitattributes` disables text conversion for the sample and regression fixture. Output is a JSON view, including retained text, so treat redirected output according to the imported material's permissions. No runtime network acquisition or bundle export is implemented.
+With no arguments, that explicit example command inspects the real-news snapshot, including its dated title, partial coverage and provenance. `.gitattributes` disables text conversion for the sample and regression fixture. Output is a JSON view, including retained text, so treat redirected output according to the imported material's permissions. The local reader/CLI does not acquire network content or export bundles; public collection is documented separately above.
 
 ## Bundled web-source snapshot (#163)
 

@@ -14,6 +14,9 @@ use crate::local_tools::{
 use crate::news::{self, Dossier, Filter as NewsFilter, View as NewsView};
 use crate::recreation::{RecreationRequest, RecreationState, RecreationView};
 use crate::witness::{WitnessFormData, WitnessOrigin, WitnessState, WitnessView};
+use oia_ingest::collection::{
+    Category as SourceCategory, Registry as SourceRegistry, View as CollectionView,
+};
 use serde::Serialize;
 use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::{Manager, State};
@@ -28,6 +31,7 @@ struct Inner {
     /// Session-only citation records in creation order, valid and invalid alike.
     citations: Vec<CitationView>,
     news: Option<Arc<Dossier>>,
+    collection: SourceRegistry,
 }
 #[derive(Clone, Debug, Default)]
 struct Services(Arc<Mutex<Inner>>);
@@ -181,6 +185,74 @@ async fn worker<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send + 'stati
     tauri::async_runtime::spawn_blocking(f)
         .await
         .map_err(|_| ToolError::new("worker", "The operation worker stopped unexpectedly."))?
+}
+
+#[tauri::command]
+fn collection_view(
+    state: State<'_, Services>,
+    category: SourceCategory,
+) -> Result<Envelope<CollectionView>> {
+    crate::collection::view(&state.lock()?.collection, category).map(envelope)
+}
+
+#[tauri::command]
+async fn collection_refresh(
+    state: State<'_, Services>,
+    category: SourceCategory,
+    query: String,
+) -> Result<Envelope<CollectionView>> {
+    let operation = state.begin()?;
+    let mut registry = state.lock()?.collection.clone();
+    worker(move || {
+        let view = crate::collection::refresh(&mut registry, category, &query, &operation.control)?;
+        operation.publish(|state| {
+            state.collection = registry;
+            Ok(envelope(view))
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+fn collection_add_feed(
+    state: State<'_, Services>,
+    category: SourceCategory,
+    name: String,
+    endpoint: String,
+) -> Result<Envelope<CollectionView>> {
+    let operation = state.begin()?;
+    let mut registry = state.lock()?.collection.clone();
+    registry
+        .add_feed(name, endpoint, category)
+        .map_err(crate::collection::tool_error)?;
+    let view = crate::collection::view(&registry, category)?;
+    operation.publish(|state| {
+        state.collection = registry;
+        Ok(envelope(view))
+    })
+}
+
+#[tauri::command]
+fn collection_clear(
+    state: State<'_, Services>,
+    category: SourceCategory,
+) -> Result<Envelope<CollectionView>> {
+    let operation = state.begin()?;
+    operation.publish(|state| {
+        state.collection.clear(category);
+        crate::collection::view(&state.collection, category).map(envelope)
+    })
+}
+
+#[tauri::command]
+fn collection_original(
+    state: State<'_, Services>,
+    source_id: String,
+    sha256: String,
+    request_url: String,
+) -> Result<Envelope<crate::collection::OriginalView>> {
+    crate::collection::original(&state.lock()?.collection, &source_id, &sha256, &request_url)
+        .map(envelope)
 }
 
 #[tauri::command]
@@ -839,6 +911,11 @@ pub fn run() -> std::result::Result<(), tauri::Error> {
         .manage(Witness::default())
         .manage(Recreation::default())
         .invoke_handler(tauri::generate_handler![
+            collection_view,
+            collection_refresh,
+            collection_add_feed,
+            collection_clear,
+            collection_original,
             open_news,
             news_example,
             news_query,

@@ -460,7 +460,7 @@ fn exact_spans_preserve_unicode_and_versions_without_promoting_missing_coverage(
     let mut step_right = String::new();
     for block in 0..16 {
         for idx in 0..520 {
-            if idx < 130 || idx >= 518 {
+            if !(130..518).contains(&idx) {
                 step_left.push_str("dup-only-left\n");
                 step_right.push_str("dup-only-right\n");
             } else {

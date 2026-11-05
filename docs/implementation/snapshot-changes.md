@@ -177,14 +177,18 @@ of `MAX_ALIGNMENT_STEPS` (`1,048,576`) across cumulative sub-quadratic partition
 and Myers steps, using fallible `try_reserve` allocations and returning typed
 `ChangeError` variants (`LineLimitExceeded`, `HunkLimitExceeded`,
 `InvalidExplanationLimits`, `AllocationFailed`) rather than silently truncating
-hunks. Across an entire `explain_changes` invocation, total sub-quadratic partitioning
-and Myers work is strictly capped at `MAX_ALIGNMENT_STEPS` (`1,048,576` steps), and
+hunks. Across an entire `explain_changes` invocation, the explicit alignment-step
+counter across sub-quadratic partitioning comparisons and Myers diagonal/snake probes
+is strictly capped at `MAX_ALIGNMENT_STEPS` (`1,048,576` counted steps, with bounded
+linear merge-copy and anchor-reconstruction passes per partition), and
 because each unique-anchor split consumes at least one line from both captures and
 disjoint sub-windows satisfy $\sum n_i \le N \le 16,384$ and $\sum m_i \le M \le 16,384$
 with $n_i m_i \le \text{MAX\_LCS\_CELLS}$ (`262,144`) per DP leaf, total DP cells
 across all leaves are bounded by $\sum n_i m_i \le \max(N, M) \cdot \sqrt{\text{MAX\_LCS\_CELLS}} \approx 8.39 \times 10^6$
-cells, while peak transient heap memory is at most ~2 MiB (`LineSlice` tables for
-both captures, the work stack, and at most one active ~1 MiB DP or Myers table at a
+cells. Peak transient heap memory derived from 64-bit type sizes at the `16,384`-line
+and `1,024`-hunk ceilings is at most ~2.65 MiB (two `LineSlice` tables at 48 bytes/line
+$\approx 1.50\text{ MiB}$, up to `1,024` `ChangeHunk` records $\approx 88\text{ KiB}$, the
+work stack, and at most one active ~1.06 MiB DP or ~1.03 MiB Myers table at a
 time). `explain_notification` converts `LineLimitExceeded` and `HunkLimitExceeded`
 into `ChangeExplanation::Unavailable` while still propagating `Stopped(StopReason)`
 and `AllocationFailed`. `StopReason` is re-exported from

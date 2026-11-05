@@ -97,11 +97,11 @@
       </header>
       <div class="news-actions">
         <button type="button" class="btn primary" id="news-open">Import news JSON</button>
-        <button type="button" class="btn" id="news-example">Load synthetic example</button>
+        <button type="button" class="btn" id="news-example">Load web news snapshot</button>
         <button type="button" class="btn" id="news-clear" disabled>Unload dossier</button>
         <button type="button" class="btn" id="news-cancel" disabled>Cancel operation</button>
       </div>
-      <p class="note">Local, session-only inspection. No feeds are connected, no links are fetched, and imported declarations are not independently verified. Original dossier bytes remain in memory until replaced, unloaded or exit.</p>
+      <p class="note">Local, session-only inspection. The bundled web news is a dated offline snapshot with partial coverage, not live news. No feeds are connected, no links are fetched, and imported declarations are not independently verified. Original dossier bytes remain in memory until replaced, unloaded or exit.</p>
       <form id="news-filter" class="news-filter glass" aria-label="Filter imported news">
         <label>Exact text<input type="search" id="news-query" maxlength="256" placeholder="Title, publisher or retained text" disabled></label>
         <label>Declared region<select id="news-region" disabled><option value="">All regions, including unreported</option></select></label>

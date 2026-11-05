@@ -30,7 +30,7 @@ Verification claims will be limited to the properties and implementation connect
 
 ## Current status
 
-The desktop [News desk](docs/implementation/news-desk.md) supports bounded local JSON dossiers, article-version inspection, exact-text filtering and shared publication inventory and declared lineage inspection. It is session-only and unreviewed; live feeds and persistent news cases remain unimplemented. A clearly labeled synthetic example loads only when requested.
+The desktop [News desk](docs/implementation/news-desk.md) supports bounded local JSON dossiers, article-version inspection, exact-text filtering and shared publication inventory and declared lineage inspection. It is session-only and unreviewed; live feeds and persistent news cases remain unimplemented. An explicitly loaded historical NASA news snapshot contains real, attributed excerpts and retrieval/extraction/rights metadata; it is partial and not live.
 
 The repository currently includes the **#9 Rust workspace bootstrap**, platform decision records, and standalone document/privacy kernels:
 

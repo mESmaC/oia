@@ -94,3 +94,35 @@ SOFTWARE.
 - **Service:** https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer (description and bounded export checked 2026-11-03).
 - **Licence and attribution:** Public domain USDA/USGS work; https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits. Shown as “USDA NAIP / USGS The National Map: NAIP Imagery”. No endorsement implied.
 - **Use:** Visible-view 256 × 256 transparent PNG exports, bands 0/1/2, nearest-neighbour sampling, levels 16–18, six requests in flight, continental-US bounds. No bulk download or retained tile artifacts. These are orthorectified aerial mosaics, primarily 0.6 m with variable flight dates/resolution, not raw satellite data. Metadata grid spacing (0.3 m) is not asserted as native resolution.
+
+---
+
+## SQLite evidence-ledger adapter
+
+- **Dependencies:** `rusqlite` 0.41.1 and `libsqlite3-sys` 0.39.1 (MIT), https://github.com/rusqlite/rusqlite. Used only by `oia-store`; pins and transitive resolution are in `Cargo.lock`.
+- **Bundled engine:** SQLite 3.54.1, public domain, https://sqlite.org/copyright.html. No OIA source license is asserted over SQLite.
+- **Scope:** Local evidence-ledger persistence; see [the implementation note](docs/implementation/sqlite-ledger.md). This entry is not a complete transitive dependency distribution audit.
+
+The following MIT notice applies to rusqlite and libsqlite3-sys:
+
+```text
+Copyright (c) 2014 The rusqlite developers
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```

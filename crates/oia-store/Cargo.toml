@@ -9,6 +9,10 @@ publish.workspace = true
 oia-domain = { path = "../oia-domain" }
 oia-time-geo = { path = "../oia-time-geo" }
 oia-analysis = { path = "../oia-analysis" }
+rusqlite = { version = "=0.41.1", features = ["bundled", "limits"] }
+
+[dev-dependencies]
+tempfile = "=3.27.0"
 
 [lints]
 workspace = true

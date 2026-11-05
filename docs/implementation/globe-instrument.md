@@ -38,7 +38,7 @@ Rust reports the embedded build in `GlobeView.renderer` (`bundled_version`, and 
 
 ## Boundary
 
-Rust owns the state (ADR 0008 §4 rule 1): the parsed case, the imagery registry and selection, the layer registry with each layer's visibility and the ALPR local filter, the camera and the selected record or camera feature live in `GlobeState`, exposed through six commands (`globe_view`, `globe_select`, `globe_camera`, `globe_imagery`, `globe_layer`, `globe_alpr_filter`) that return the whole `GlobeView` in the `oia-local-tools/1` envelope. `ui/globe.js` draws that view and sends intents; its own state is the Cesium objects, projected screen positions, the overlays and layers-panel toggles and tile counters it observed. It computes no domain value: positions, radii, wedge vertices, times, zones and labels are printed as sent, and the only arithmetic is projection to the screen and camera motion.
+Rust owns the state (ADR 0008 §4 rule 1): the parsed case, the imagery registry and selection, the layer registry with each layer's visibility and the ALPR local filter, the camera and the selected record or camera feature live in `GlobeState`, exposed through nine commands (`globe_view`, `globe_select`, `globe_camera`, `globe_imagery`, `globe_layer`, `globe_alpr_filter`, and `globe_annotate`, `globe_annotation_revise`, `globe_annotation_delete` for [analyst annotations](#analyst-annotations-165)) that return the whole `GlobeView` in the `oia-local-tools/1` envelope. `ui/globe.js` draws that view and sends intents; its own state is the Cesium objects, projected screen positions, the overlays and layers-panel toggles and tile counters it observed. It computes no domain value: positions, radii, wedge vertices, times, zones and labels are printed as sent, and the only arithmetic is projection to the screen and camera motion.
 
 Geometry and time types are provisional pending `#12` (`oia-time-geo`), kept to a validated WGS84 point, a reported-time record with a precision kind, and a camera view. They are not a second domain model and should be replaced by the shared primitives when they merge.
 
@@ -115,6 +115,41 @@ The CSP gained `'wasm-unsafe-eval'` for Cesium's bundled WebAssembly modules (co
 - `fetch-ui-vendor.ps1` was run from a Git Bash shell whose environment came from PowerShell 7. It failed twice before installing anything: `Get-FileHash` was not found (Windows PowerShell 5.1 cannot autoload its module from a PowerShell 7 `PSModulePath`), and Git's GNU `tar`, first on that PATH, read `C:\…` as `host:path`. The script now hashes with .NET `SHA512` and calls `%SystemRoot%\System32\tar.exe`. It then installed 1.147.0 with the SHA-512 verified. From an ordinary PowerShell 7 terminal, both commands already resolved to the Windows versions.
 - Not exercised in the real app: `version_mismatch`, and a present bundle whose script defines no `Cesium`. Both are page branches on values Rust reports.
 
+## Analyst annotations (#165)
+
+Implemented for `CASE-03` (save annotations; source records stay unchanged) and the drawing subset of `GEO-01`, after God's Eye View's manual whiteboard tool ([prior art](../prior-art.md#map-whiteboard-annotations-srcannotations)). The analyst draws a **pin**, **line**, **area** or **range ring** on the globe, labels it, optionally adds a note and a case record it is about, and saves it.
+
+- **Drawing.** *Annotate* on the canvas toolbar, or `A` with the globe focused, opens the draw bar in the target card's place. Click the globe to add vertices; a dashed rubber band follows the pointer. For the keyboard, pan the view under the centre crosshair with the arrow keys and press `V`. Enter or a double-click finishes a line or area, Backspace removes the last vertex, Escape cancels. A pin finishes on its vertex, a range ring on its edge. The draft is presentation state in its own Cesium data source until it is saved; the page refocuses the globe after each click because Cesium's canvas does not take focus. Starting to draw turns Clean evidence off, visibly, so the result is not hidden.
+- **Rust owns them.** `crates/oia-app/src/globe/annotations.rs` keeps the session's annotations in `GlobeState` and revalidates the whole draft on save: finite WGS84 vertices through `oia_time_geo::GeoPointWgs84`; 2 to 512 line vertices and 3 to 256 area vertices; consecutive vertices at least 0.5 m apart, which also refuses an area whose last vertex repeats its first; no segment longer than 19,000 km (ends nearly antipodal, so the great-circle path is ambiguous); a ring radius from 0.5 m to 10,000 km; a one-line label of up to 256 bytes and a note of up to 2,048; a referenced record that exists; at most 120 annotations. A refused draft changes nothing and stays on screen with the reason. Nothing is clamped, snapped or simplified.
+- **Measures.** Rust computes a line's length, an area's perimeter and a ring's radius as great-circle distances on the IUGG mean sphere (`oia-time-geo`, R = 6,371,008.8 m) and sends a ring's outline as spherical destination points every 5° of bearing, so the page computes no geometry. The card and inspector label each measure *spherical*; it is not an ellipsoidal geodesic, a survey or a terrain distance. Area (square metres) and self-crossing rings are not computed or checked in this slice. Cesium draws lines and outlines as ellipsoid geodesics between the stored vertices, which can differ slightly from the spherical measure.
+- **Not evidence.** Each annotation is `ObjectType::Annotation` (`oia_domain::evidence`), tagged `◆ A<n>` with a dashed tag and neutral marks, and its card says *analyst annotation*, *not an observation* and *session only*. There is no colour choice: amber, red and violet keep their v2 §5.1 meanings and the accent stays the selection colour. Referencing a case record does not change it; a targeted test compares every plotted record before and after.
+- **Layer, selection and editing.** *Analyst annotations* is a layer in the Layers panel and inspector with its count; hiding it, or Clean evidence, hides every mark and tag, and hiding it clears an annotation selection. Selecting a tag or a list entry shows the card (shape, vertices, measure, record, OIA creation time in UTC) and the inspector's **Notes** tab, where the label, note and record reference can be revised (the revision number and time are kept) and an annotation, or all of them, deleted. Geometry is not edited in place; redraw it. Ids are `ann-<n>` and are not reused after a delete.
+- **Session only.** Annotations live in memory and are lost when OIA closes, as the layer, card and Notes tab say. Durable storage waits on `#11`/`#14`, and export into report bundles on `#22`/`#39`. The creation time is OIA's clock (Unix milliseconds, UTC); a clock reading before 1970 is refused rather than recorded.
+
+| Bound | Value |
+| --- | --- |
+| Annotations per session | 120 |
+| Line / area vertices | 2 to 512 / 3 to 256 |
+| Consecutive vertex spacing | at least 0.5 m |
+| Segment length | at most 19,000 km |
+| Ring radius | 0.5 m to 10,000 km |
+| Label / note | 256 / 2,048 bytes |
+
+### Validation: analyst annotations (2026-11-05, Windows 11, Rust 1.99.0)
+
+- New targeted test `annotations_refuse_bad_drafts_and_leave_records_unchanged` (`crates/oia-app/src/globe/mod.rs`): refusals for an out-of-range pin, a repeated line vertex, an area whose last vertex repeats its first, a zero-radius ring, an unknown record and a blank label, each leaving no annotation; every plotted case record identical after an annotation about one of them is created and revised (`CASE-03`); one degree of latitude measured as R·π/180 within 1e-6 m; a ring across the antimeridian whose 72 outline points all lie at the measured radius within 1 mm; hiding the layer and deleting the annotation clear its selection, and a second delete is refused.
+- Real application (`target/debug/oia.exe` with the pinned CesiumJS 1.147.0 bundle, driven through the WebView2 DevTools protocol on a local debug port; captures inspected, not committed), at the case anchor at 80 km:
+  - Area of four mouse clicks finished with Enter (the globe kept focus after the clicks), labelled, with a note and *About record* Account C: saved as `A1`, selected, card `Perimeter 54.4 km · spherical`, `About Account C`.
+  - Pin by keyboard only: `A`, Pin, an arrow-key pan, `V`, a label and Enter: saved as `A2`.
+  - Range ring by two clicks: saved as `A3`, radius 8,149.2 m, 72 outline points drawn as a circle.
+  - Line of two clicks finished by a double-click on the last vertex (the second click of the double-click added no vertex): saved as `A4`, length 9,110.2 m.
+  - The Layers panel listed `Analyst annotations 4 / 4`; revising `A1` in the Notes tab showed `Revision 1` with its time, and Account C's region still had its 6 vertices.
+  - A line with two identical vertices sent straight to `globe_annotate` was refused: `annotation_invalid: line: Vertices 0 and 1 are 0.00 m apart …`.
+  - Clean evidence hid all annotation tags; hiding the layer removed them and cleared the selection; deleting `A1` left `A2` to `A4`; Escape after a clicked vertex cancelled the draft without saving.
+  - The renderer messages were the four inline-style CSP refusals from Cesium's widget code, present before any drawing.
+- Earlier walkthrough findings fixed before delivery: the draw bar first sat at top centre and covered the Layers panel on a 906 px canvas, so it now replaces the target card while drawing; and Enter, Backspace and Escape did not reach the draw tool after a mouse click until the globe was refocused on each vertex.
+- Not run: screen readers, touch, Linux and macOS WebViews, very large rings near a pole in the real renderer, and the 120-annotation and 512-vertex limits in the real application (they are enforced in Rust and covered by code reading, not by the test above).
+
 ## Follow-ups
 
 - Replace the provisional point, time and camera types with `oia-time-geo` when `#12` merges, and carry the case from the persistent store when `#14` lands; the fixture loader is the seam.
@@ -125,6 +160,7 @@ The CSP gained `'wasm-unsafe-eval'` for Cesium's bundled WebAssembly modules (co
 - Sub-metre imagery outside the US. The free keyless sources registered here stop at 10 m (Sentinel-2). Sources with global sub-metre imagery (Esri World Imagery, Bing, Google, Mapbox) need an account, a key, or terms that are not open, so they would need an owner decision and a credential reference. Alaska, Hawaii and territory orthoimagery need their own rectangles and licence checks.
 - Per-tile acquisition dates: neither detail source exposes them through its tile endpoint. EOX publishes per-scene metadata for its mosaics, and USGS publishes NAIP footprints with dates. Querying either is a #26 adapter.
 - Tag placement at the nearest visible vertex for regions, and a timeline strip for the reported windows (v2 §4.11).
+- Analyst annotations: durable storage with the case (`#11`/`#14`), inclusion in report and bundle exports (`#22`/`#39`), area in square metres with a stated method, a self-crossing check for areas, and geometry revision as a new version rather than redraw.
 
 
 ## Closer detail and source products (2026-11-03, #23)

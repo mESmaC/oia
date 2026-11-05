@@ -74,6 +74,7 @@
         <button type="button" id="globe-home" class="globe-tool" title="Home key, with the globe focused" hidden>Case anchor</button>
         <button type="button" id="globe-world" class="globe-tool" title="0 key, with the globe focused" hidden>Whole globe</button>
         <button type="button" id="globe-layers-toggle" class="globe-tool" aria-pressed="true" aria-controls="globe-layers" title="Show or hide the layers panel" hidden>Layers</button>
+        <button type="button" id="globe-annotate" class="globe-tool" aria-pressed="false" aria-controls="globe-draw" title="A, with the globe focused · draw a pin, line, area or range ring as an analyst annotation" hidden>Annotate</button>
         <button type="button" id="globe-overlays" class="globe-tool" aria-pressed="false" title="Ctrl+Shift+E · hide tags, leaders, brackets and drawn geometry; values are unchanged" hidden>Clean evidence</button>
         <button type="button" id="media-run" class="media-tool" data-operation title="Run the forensic cue profile on the open image" hidden>Run cues</button>
         <button type="button" id="exit-focus" class="exit-focus" title="Escape" hidden>Exit focus</button>
@@ -295,6 +296,31 @@
           <div class="head"><span class="k">Layers</span><span class="chip fx" id="globe-layers-chip">◇ synthetic</span></div>
           <div id="globe-layer-list" class="glayer-list"></div>
         </aside>
+        <div class="gcross" id="globe-cross" hidden aria-hidden="true"><i></i><i></i></div>
+        <form class="gdraw glass" id="globe-draw" hidden aria-label="Draw an annotation">
+          <div class="head"><span class="k">Annotate</span><span class="chip">✎ analyst · not an observation</span></div>
+          <div class="shapes" role="group" aria-label="Shape" id="globe-draw-shapes">
+            <button type="button" data-shape="pin" aria-pressed="true">Pin</button><button type="button" data-shape="line" aria-pressed="false">Line</button><button type="button" data-shape="area" aria-pressed="false">Area</button><button type="button" data-shape="ring" aria-pressed="false">Range ring</button>
+          </div>
+          <p class="status" id="globe-draw-status" aria-live="polite"></p>
+          <div class="actions" id="globe-draw-vertex-actions">
+            <button type="button" class="btn" id="globe-draw-add" title="V, with the globe focused: add a vertex under the centre crosshair">At crosshair</button>
+            <button type="button" class="btn" id="globe-draw-undo" title="Backspace, with the globe focused">Undo</button>
+            <button type="button" class="btn primary" id="globe-draw-finish" title="Enter or double-click">Finish</button>
+            <button type="button" class="btn" id="globe-draw-cancel" title="Escape">Cancel</button>
+            <p class="keys">Click the globe, or pan and press V · Enter or double-click finishes · Backspace undoes · Esc cancels</p>
+          </div>
+          <div class="labelling" id="globe-draw-label" hidden>
+            <label>Label<input type="text" id="globe-draw-label-input" maxlength="256" required autocomplete="off"></label>
+            <label>Note<textarea id="globe-draw-note" rows="2"></textarea></label>
+            <label>About record<select id="globe-draw-about"></select></label>
+            <div class="actions">
+              <button type="submit" class="btn primary">Save annotation</button>
+              <button type="button" class="btn" id="globe-draw-back">Back to vertices</button>
+              <button type="button" class="btn" id="globe-draw-discard">Discard</button>
+            </div>
+          </div>
+        </form>
         <div class="gtray glass" id="globe-tray" hidden><span class="k">Not plotted</span><div id="globe-tray-items" class="tray"></div></div>
         <div class="gattrib glass" id="globe-attrib" aria-live="polite"></div>
         <div class="gstate glass" id="globe-view-state"></div>
@@ -417,11 +443,14 @@
     <!-- Globe inspector -->
     <div class="ipanel" id="insp-globe" hidden>
       <div class="head"><span class="k">Inspect · globe</span><h2 id="insp-globe-title">Globe</h2><div class="chips" id="insp-globe-chips"></div></div>
-      <div class="tabs" role="tablist"><button type="button" role="tab" aria-selected="true" data-tab="globe-record">Record</button><button type="button" role="tab" aria-selected="false" data-tab="globe-layers">Layers</button><button type="button" role="tab" aria-selected="false" data-tab="globe-imagery">Imagery</button><button type="button" role="tab" aria-selected="false" data-tab="globe-limits">Limits</button></div>
+      <div class="tabs" role="tablist"><button type="button" role="tab" aria-selected="true" data-tab="globe-record">Record</button><button type="button" role="tab" aria-selected="false" data-tab="globe-annotations">Notes</button><button type="button" role="tab" aria-selected="false" data-tab="globe-layers">Layers</button><button type="button" role="tab" aria-selected="false" data-tab="globe-imagery">Imagery</button><button type="button" role="tab" aria-selected="false" data-tab="globe-limits">Limits</button></div>
       <div class="body" tabindex="0">
         <section class="sec" data-pane="globe-record"><span class="k">Selected record</span><dl class="kv" id="globe-record"></dl><p class="note" id="globe-record-note"></p></section>
         <section class="sec" data-pane="globe-record"><span class="k">Records</span><div class="source-list globe-record-list" id="globe-records"></div></section>
         <section class="sec" data-pane="globe-record"><span class="k">Case</span><dl class="kv" id="globe-case"></dl></section>
+        <section class="sec" data-pane="globe-annotations" hidden><span class="k">Analyst annotations · this session</span><div class="source-list globe-record-list" id="globe-annotation-list"></div><p class="note" id="globe-annotation-statement"></p><button type="button" class="btn" id="globe-annotation-clear">Delete all annotations</button></section>
+        <section class="sec" data-pane="globe-annotations" hidden><span class="k">Selected annotation</span><form class="gform gannot" id="globe-annotation-form"></form></section>
+        <section class="sec" data-pane="globe-annotations" hidden><span class="k">Measures and limits</span><dl class="kv" id="globe-annotation-limits"></dl></section>
         <section class="sec" data-pane="globe-layers" hidden><span class="k">Registered layers</span><div id="globe-layer-details" class="glayer-details"></div></section>
         <section class="sec" data-pane="globe-layers" hidden><span class="k">ALPR camera directory · CAM-06</span>
           <div id="globe-alpr-filters" class="gform"></div>
@@ -433,7 +462,7 @@
         <section class="sec" data-pane="globe-imagery" hidden><span class="k">Active layer</span><dl class="kv" id="globe-imagery-active"></dl><p class="note" id="globe-ack"></p></section>
         <section class="sec" data-pane="globe-imagery" hidden><span class="k">Detail when zoomed in</span><div id="globe-imagery-detail" class="gdetail"></div></section>
         <section class="sec" data-pane="globe-imagery" hidden><span class="k">Renderer</span><dl class="kv" id="globe-renderer"></dl><span class="k">Renderer messages · this session</span><ul class="glog" id="globe-log"></ul></section>
-        <section class="sec" data-pane="globe-limits" hidden><span class="k">Limits</span><p class="note">The case and the camera directory are bundled synthetic fixtures; nothing drawn is an observation. Points, rings and regions come only from recorded geometry; a record without geometry is listed, not placed. A camera wedge is an illustrative bearing from a numeric tag, never a calibrated field of view, and a camera without a tag has no wedge. Imagery is a live request to the registered sources: the basemap for the layer and UTC day shown, and, when zoomed in, finer detail tiers that are other capture periods (a yearly Sentinel-2 composite, United States aerial orthoimagery). None shows the case period, and a missing or unpublished tile is a coverage gap. Tile counts are what this renderer observed in this session. No terrain, labels, roads or tracks are drawn, because none is registered. Camera position is a view setting, not a measurement. Persistent cases, clustering, footprints and live directory queries are not in this build.</p></section>
+        <section class="sec" data-pane="globe-limits" hidden><span class="k">Limits</span><p class="note">The case and the camera directory are bundled synthetic fixtures; nothing drawn is an observation. Points, rings and regions come only from recorded geometry; a record without geometry is listed, not placed. A camera wedge is an illustrative bearing from a numeric tag, never a calibrated field of view, and a camera without a tag has no wedge. Imagery is a live request to the registered sources: the basemap for the layer and UTC day shown, and, when zoomed in, finer detail tiers that are other capture periods (a yearly Sentinel-2 composite, United States aerial orthoimagery). None shows the case period, and a missing or unpublished tile is a coverage gap. Tile counts are what this renderer observed in this session. No terrain, labels, roads or tracks are drawn, because none is registered. Camera position is a view setting, not a measurement. Analyst annotations are notes drawn in this session: they are not observations, never change a case record, are measured on a sphere, and are not saved when OIA closes. Persistent cases, clustering, footprints and live directory queries are not in this build.</p></section>
       </div>
     </div>
     <!-- Media inspector -->

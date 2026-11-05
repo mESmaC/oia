@@ -24,6 +24,13 @@ const Globe = (() => {
   let suppressCameraReport = false;
   let layerVisibility = {};   // layer id -> visible, as last drawn; a layer turning on flies to its extent
   let layersPanel = true;     // presentation only: the floating layers panel
+  // Annotation drawing (#165): the shape being drawn and the clicked vertices. Rust validates
+  // and keeps an annotation only when it is saved; until then this is an unsent draft.
+  let draw = null;            // { shape, vertices: [{ lat_deg, lon_deg }], stage: 'vertices' | 'label' }
+  let drawShape = 'pin';
+  let drawSource = null;      // Cesium.CustomDataSource for the draft preview, apart from viewer.entities
+  let drawCursor = null;      // Cartesian3 under the pointer, for the rubber band
+  let lastClick = null;       // { x, y, t } to ignore the second click of a double-click
   const tiles = { loaded: 0, failed: 0, absent: 0, cancelled: 0, pending: 0 }; // totals this renderer observed
   const sourceTiles = new Map(); // source id -> { loaded, failed, absent, cancelled, deepest } for the current layers
   let drawnNow = [];             // source ids whose pixels Cesium drew in the last rendered frame (per-tile credits)
@@ -162,6 +169,17 @@ const Globe = (() => {
     viewer.camera.moveEnd.addEventListener(onCameraMoveEnd);
     const handler = new Cesium.ScreenSpaceEventHandler(scene.canvas);
     handler.setInputAction(onClick, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+    // The viewer's own double-click tracks the entity under the pointer; OIA uses double-click
+    // only to finish a drawn shape.
+    viewer.cesiumWidget.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+    handler.setInputAction(() => { if (draw && draw.stage === 'vertices') finishShape(); }, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+    handler.setInputAction(movement => {
+      if (!draw || draw.stage !== 'vertices') return;
+      drawCursor = viewer.camera.pickEllipsoid(movement.endPosition, Cesium.Ellipsoid.WGS84) || null;
+      viewer.scene.requestRender();
+    }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+    drawSource = new Cesium.CustomDataSource('oia-annotation-draft');
+    viewer.dataSources.add(drawSource);
     rendererState = 'ready';
     $('globe-unavailable').hidden = true;
     if (view) {
@@ -378,7 +396,10 @@ const Globe = (() => {
     const layer = view?.layers.find(l => l.id === view.cameras?.layer_id);
     return layer && layer.visible && view.cameras ? view.cameras.cameras : [];
   }
-  function buildGeometry(plotted, cameras) {
+  function visibleAnnotations() {
+    return view?.annotations?.visible ? view.annotations.items : [];
+  }
+  function buildGeometry(plotted, cameras, notes) {
     const Cesium = window.Cesium;
     viewer.entities.removeAll();
     drawn.clear();
@@ -429,10 +450,40 @@ const Globe = (() => {
         drawn.set(record.id, { anchor, points: ring, kind: 'region', cls: 'region' });
       }
     }
+    for (const a of notes) {
+      // Analyst annotations: solid neutral marks, positions exactly as Rust returned them.
+      const g = a.geometry;
+      const at = p => Cesium.Cartesian3.fromDegrees(p.lon_deg, p.lat_deg, 0);
+      const stroke = TEXT.withAlpha(0.92);
+      if (g.shape === 'pin') {
+        const anchor = at(g.point);
+        viewer.entities.add({ id: a.id, position: anchor, point: { pixelSize: 9, color: NONE, outlineColor: TEXT, outlineWidth: 2.5, disableDepthTestDistance: Number.POSITIVE_INFINITY } });
+        drawn.set(a.id, { anchor, points: [anchor], kind: 'annotation', cls: 'ann' });
+      } else if (g.shape === 'line') {
+        const points = g.vertices.map(at);
+        viewer.entities.add({ id: a.id, polyline: { positions: points, width: 2, material: stroke } });
+        drawn.set(a.id, { anchor: points[0], points, kind: 'annotation', cls: 'ann' });
+      } else if (g.shape === 'area') {
+        const ring = g.ring.map(at);
+        viewer.entities.add({ id: a.id, polygon: { hierarchy: ring, height: 0, material: TEXT.withAlpha(0.10), outline: false } });
+        viewer.entities.add({ id: `${a.id}:outline`, polyline: { positions: [...ring, ring[0]], width: 2, material: stroke } });
+        // Tag at the northernmost vertex, as for case regions: an edge, not a derived centre.
+        let anchor = ring[0], best = -Infinity;
+        g.ring.forEach((p, i) => { if (p.lat_deg > best) { best = p.lat_deg; anchor = ring[i]; } });
+        drawn.set(a.id, { anchor, points: ring, kind: 'annotation', cls: 'ann' });
+      } else if (g.shape === 'ring' && a.outline) {
+        const anchor = at(g.centre);
+        const ring = a.outline.map(at);
+        viewer.entities.add({ id: a.id, position: anchor, point: { pixelSize: 5, color: TEXT, outlineColor: Cesium.Color.BLACK, outlineWidth: 1, disableDepthTestDistance: Number.POSITIVE_INFINITY } });
+        viewer.entities.add({ id: `${a.id}:outline`, polyline: { positions: [...ring, ring[0]], width: 2, material: stroke } });
+        drawn.set(a.id, { anchor, points: ring, kind: 'annotation', cls: 'ann' });
+      }
+    }
     viewer.scene.requestRender();
   }
   function onClick(movement) {
     if (!viewer || !view) return;
+    if (draw) { if (draw.stage === 'vertices') addVertexAt(movement.position, true); return; }
     const picked = viewer.scene.pick(movement.position);
     const id = picked?.id?.id;
     // Entity ids are the feature id plus an optional part suffix; camera ids themselves contain a colon.
@@ -441,10 +492,21 @@ const Globe = (() => {
   }
 
   // ---- Overlays: tags, leaders, bracket ----
-  function buildTags(plotted, cameras) {
+  const SHAPE_WORD = { pin: 'pin', line: 'line', area: 'area', ring: 'range ring' };
+  function buildTags(plotted, cameras, notes) {
     const host = $('globe-tags');
     host.replaceChildren();
     tagEls.clear();
+    for (const a of notes) {
+      const tag = node('button', undefined, 'gtag ann');
+      tag.type = 'button';
+      tag.hidden = true;
+      tag.append(node('i', `◆ ${a.tag}`), node('b', a.label));
+      tag.setAttribute('aria-label', `${a.tag}, analyst annotation, ${SHAPE_WORD[a.shape]}: ${a.label}`);
+      tag.onclick = () => select(view.selection === a.id ? null : a.id);
+      host.append(tag);
+      tagEls.set(a.id, tag);
+    }
     for (const cam of cameras) {
       const tag = node('button', undefined, 'gtag cam');
       tag.type = 'button';
@@ -538,6 +600,25 @@ const Globe = (() => {
     if (!view || !view.selection || !view.cameras) return null;
     return view.cameras.cameras.find(c => c.id === view.selection) || null;
   }
+  function selectedAnnotation() {
+    if (!view || !view.selection) return null;
+    return view.annotations.items.find(a => a.id === view.selection) || null;
+  }
+  const distance = m => m >= 10000 ? `${fmt(Math.round(m / 100) / 10)} km` : `${fmt(Math.round(m * 10) / 10)} m`;
+  const utc = ms => new Date(ms).toISOString().replace('T', ' ').replace(/\.\d+Z$/, 'Z');
+  function annotationRows(a) {
+    const m = a.measures;
+    const rows = [['Shape', SHAPE_WORD[a.shape]], ['Vertices', fmt(m.vertices)]];
+    if (a.shape === 'pin') rows.push(['Position', `${deg(a.geometry.point.lat_deg)}, ${deg(a.geometry.point.lon_deg)}`]);
+    if (a.shape === 'ring') rows.push(['Centre', `${deg(a.geometry.centre.lat_deg)}, ${deg(a.geometry.centre.lon_deg)}`]);
+    if (m.length_m !== null) rows.push(['Length', `${distance(m.length_m)} · spherical`]);
+    if (m.perimeter_m !== null) rows.push(['Perimeter', `${distance(m.perimeter_m)} · spherical`]);
+    if (m.radius_m !== null) rows.push(['Radius', `${distance(m.radius_m)} · spherical`]);
+    rows.push(['About', a.about_record ? (a.about_label || a.about_record) : 'no record']);
+    rows.push(['Created', `${utc(a.created_at_ms)} (OIA time)`]);
+    rows.push(['Revision', a.revision ? `${a.revision} · ${utc(a.revised_at_ms)}` : 'as drawn']);
+    return rows;
+  }
   function cameraRows(cam) {
     const w = cam.wedge;
     return [
@@ -571,12 +652,19 @@ const Globe = (() => {
     const card = $('globe-card');
     const record = selectedRecord();
     const cam = selectedCamera();
-    if ((!record || !record.geometry) && !cam || !overlays) { card.hidden = true; return; }
+    const note = selectedAnnotation();
+    if ((!record || !record.geometry) && !cam && !note || !overlays) { card.hidden = true; return; }
     card.hidden = false;
     card.replaceChildren(node('span', undefined, 'corner tl'), node('span', undefined, 'corner tr'), node('span', undefined, 'corner bl'), node('span', undefined, 'corner br'));
     const rows = node('dl', undefined, 'rows');
     let list;
-    if (cam) {
+    if (note) {
+      card.append(node('span', `◆ ${note.tag} · selected`, 'k'), node('h3', note.label));
+      const chips = node('div', undefined, 'chips');
+      chips.append(node('span', '✎ analyst annotation', 'chip'), node('span', 'not an observation', 'chip'), node('span', 'session only', 'chip warn'));
+      card.append(chips);
+      list = annotationRows(note).filter(r => r[0] !== 'Revision');
+    } else if (cam) {
       card.append(node('span', 'CAM · selected', 'k'), node('h3', cam.display_id));
       const chips = node('div', undefined, 'chips');
       if (cam.synthetic) chips.append(node('span', '◇ synthetic fixture', 'chip fx'));
@@ -631,7 +719,7 @@ const Globe = (() => {
       row.append(node('b', layer.label), node('span', layer.error ? '✕ fixture error' : layer.visible ? '▮ shown' : '○ hidden', `chip${layer.error ? ' bad' : ''}`));
       entry.append(row);
       const dl = node('dl', undefined, 'kv');
-      kv(dl, [['Source', layer.source_label], ['Origin', layer.origin_class, 'fx'], ['Requirement', layer.requirement], ['Features', `${fmt(layer.shown)} shown / ${fmt(layer.total)} in extent`], ['Coverage', layer.coverage, layer.coverage.startsWith('complete') || layer.coverage.startsWith('all') ? '' : 'est'], ['Extent', layer.extent ? `${deg(layer.extent.south, 3)}..${deg(layer.extent.north, 3)} N · ${deg(layer.extent.west, 3)}..${deg(layer.extent.east, 3)} E` : null], ['Attribution', layer.attribution], ['Licence', layer.license], ['Fixture', layer.fixture_path]]);
+      kv(dl, [['Source', layer.source_label], ['Origin', layer.origin_class, layer.origin_class === 'synthetic' ? 'fx' : ''], ['Requirement', layer.requirement], ['Features', `${fmt(layer.shown)} shown / ${fmt(layer.total)} in extent`], ['Coverage', layer.coverage, layer.coverage.startsWith('complete') || layer.coverage.startsWith('all') ? '' : 'est'], ['Extent', layer.extent ? `${deg(layer.extent.south, 3)}..${deg(layer.extent.north, 3)} N · ${deg(layer.extent.west, 3)}..${deg(layer.extent.east, 3)} E` : null], ['Attribution', layer.attribution], ['Licence', layer.license], ['Fixture', layer.fixture_path || (layer.kind === 'annotations' ? 'none: drawn in this session' : null)]]);
       entry.append(dl, node('p', layer.error || layer.statement, `note${layer.error ? ' bad' : ''}`));
       details.append(entry);
     }
@@ -719,17 +807,19 @@ const Globe = (() => {
     if (!view) return;
     const record = selectedRecord();
     const cam = selectedCamera();
-    $('insp-globe-title').textContent = cam ? cam.display_id : record ? record.label : (view.case ? view.case.label : 'Globe');
+    const note = selectedAnnotation();
+    $('insp-globe-title').textContent = note ? `${note.tag} · ${note.label}` : cam ? cam.display_id : record ? record.label : (view.case ? view.case.label : 'Globe');
     const chips = $('insp-globe-chips');
     chips.replaceChildren();
     const chip = (text, cls) => { const c = node('span', text, `chip${cls ? ` ${cls}` : ''}`); chips.append(c); };
-    if (cam) { if (cam.synthetic) chip('◇ synthetic fixture', 'fx'); chip('▣ Mapped ALPR camera'); }
+    if (note) { chip('✎ Analyst annotation'); chip('session only', 'warn'); }
+    else if (cam) { if (cam.synthetic) chip('◇ synthetic fixture', 'fx'); chip('▣ Mapped ALPR camera'); }
     else if (view.case) chip(`◇ ${view.case.origin_class} case`, 'fx');
     if (record) chip(record.geometry ? (record.geometry.kind === 'region' ? '▦ Region' : record.geometry.kind === 'approximate_centroid' ? '◌ Approximate' : '◉ Point') : '○ Not plotted');
     if (rendererState === 'ready' && tiles.loaded > 0) chip('▮ Imagery live from source');
     else chip(`○ Imagery not loaded · renderer ${rendererState}`, 'warn');
-    kv($('globe-record'), cam ? [['Camera', cam.display_id], ['Layer', 'ALPR camera directory'], ...cameraRows(cam)] : record ? [['Record', record.label], ['Kind', record.kind], ...geometryRows(record), ...timeRows(record), ['Source', record.source_label]] : [['Record', 'none selected']]);
-    $('globe-record-note').textContent = cam ? (cam.details.join(' · ') + (cam.note ? ` · ${cam.note}` : '')) : record ? record.notes : 'Select a tag on the globe, a record below, a camera from a visible layer, or an entry in the not-plotted tray.';
+    kv($('globe-record'), note ? [['Annotation', `${note.tag} · ${note.label}`], ...annotationRows(note)] : cam ? [['Camera', cam.display_id], ['Layer', 'ALPR camera directory'], ...cameraRows(cam)] : record ? [['Record', record.label], ['Kind', record.kind], ...geometryRows(record), ...timeRows(record), ['Source', record.source_label]] : [['Record', 'none selected']]);
+    $('globe-record-note').textContent = note ? (note.note || 'No note. Edit it in the Notes tab.') : cam ? (cam.details.join(' · ') + (cam.note ? ` · ${cam.note}` : '')) : record ? record.notes : 'Select a tag on the globe, a record below, a camera from a visible layer, or an entry in the not-plotted tray.';
     const list = $('globe-records');
     list.replaceChildren();
     const all = [...view.plotted.map(r => ({ r, plotted: true })), ...view.not_plotted.map(r => ({ r, plotted: false }))].sort((a, b) => a.r.order - b.r.order);
@@ -747,6 +837,7 @@ const Globe = (() => {
       kv($('globe-case'), [['Case', 'none'], ['Fixture', view.fixture_error || 'not loaded']]);
     }
     renderLayerInspector();
+    renderAnnotationInspector();
     renderImageryForm();
     const a = view.imagery.active;
     kv($('globe-imagery-active'), [['Layer', a.source.layer], ['Provider', a.source.provider], ['Origin', a.source.origin], ['Date', a.date ? `${a.date} (UTC day)` : 'composite · none'], ['Capture', a.source.capture_statement], ['Tiles', `${countsText(a.source.id)} · ${fmt(tiles.pending)} pending (all layers)`, sourceTiles.get(a.source.id)?.failed ? 'est' : ''], ['Drawn now', drawnNow.includes(a.source.id) ? (drawnSources().some(e => e.tier) ? 'yes, beneath the detail tiers or at the edges' : 'yes') : 'no: every drawn surface tile uses a detail tier'], ['Overlay', view.imagery.coastlines ? `${view.imagery.coastlines.source.layer} · ${view.imagery.coastlines.source.license} · ${view.imagery.coastlines.source.attribution}` : 'none'], ['Coverage note', a.coverage_note || null], ['Licence', a.source.license], ['Attribution', a.source.attribution], ['Checked', `capabilities ${a.source.capabilities_checked_on}`]]);
@@ -834,6 +925,186 @@ const Globe = (() => {
     };
   }
 
+  // ---- Annotations: inspector ----
+  function recordOptions(select, current) {
+    // Every record of the open case, plotted or not; the record itself is never changed.
+    select.replaceChildren();
+    const none = node('option', 'No record'); none.value = ''; select.append(none);
+    const all = [...view.plotted, ...view.not_plotted].sort((a, b) => a.order - b.order);
+    for (const r of all) { const o = node('option', `${pad2(r.order)} ${r.label}`); o.value = r.id; select.append(o); }
+    select.value = current || '';
+  }
+  function renderAnnotationInspector() {
+    const layer = view.annotations;
+    const list = $('globe-annotation-list');
+    list.replaceChildren();
+    if (!layer.items.length) list.append(node('p', 'None yet. Choose Annotate on the canvas toolbar (or press A with the globe focused) to draw a pin, line, area or range ring.', 'note'));
+    for (const a of layer.items) {
+      const tag = node('button', undefined, 'tag');
+      tag.type = 'button';
+      tag.append(node('i', a.tag), node('b', `${a.label} · ${SHAPE_WORD[a.shape]}${layer.visible ? '' : ' · layer hidden'}`));
+      tag.setAttribute('aria-pressed', String(view.selection === a.id));
+      tag.disabled = !layer.visible;
+      tag.onclick = () => select(view.selection === a.id ? null : a.id);
+      list.append(tag);
+    }
+    $('globe-annotation-statement').textContent = layer.statement;
+    $('globe-annotation-clear').disabled = !layer.items.length;
+    const l = layer.limits;
+    kv($('globe-annotation-limits'), [['Object type', layer.object_type], ['Retention', layer.retention, 'est'], ['Measures', layer.items[0]?.measures.method || 'Great-circle distance on the IUGG mean sphere (oia-time-geo); not a geodesic or a survey.'], ['Count', `${fmt(layer.items.length)} of ${fmt(l.max_annotations)}`], ['Line', `2 to ${fmt(l.max_line_vertices)} vertices`], ['Area', `3 to ${fmt(l.max_area_vertices)} vertices, closed automatically; self-crossing rings are not checked`], ['Ring radius', `${l.min_separation_m} m to ${fmt(l.max_ring_radius_m / 1000)} km`], ['Spacing', `consecutive vertices at least ${l.min_separation_m} m apart`], ['Label', `one line, up to ${fmt(l.max_label_bytes)} bytes`], ['Note', `up to ${fmt(l.max_note_bytes)} bytes`]]);
+    // The edit form is rebuilt only when the selected annotation or its revision changes, so a
+    // tile-count refresh never discards what is being typed.
+    const form = $('globe-annotation-form');
+    const a = selectedAnnotation();
+    const stamp = a ? `${a.id}:${a.revision}` : 'none';
+    if (form.dataset.rendered === stamp) return;
+    form.dataset.rendered = stamp;
+    form.replaceChildren();
+    if (!a) { form.append(node('p', 'Select an annotation on the globe or in the list above to edit its label, note or record reference.', 'note')); return; }
+    const field = (text, el) => { const label = node('label', text); label.append(el); form.append(label); return el; };
+    const label = field('Label', node('input')); label.type = 'text'; label.maxLength = l.max_label_bytes; label.required = true; label.value = a.label;
+    const text = field('Note', node('textarea')); text.rows = 3; text.value = a.note;
+    const about = field('About record', node('select')); recordOptions(about, a.about_record);
+    const actions = node('div', undefined, 'actions');
+    const save = node('button', 'Save changes', 'btn primary'); save.type = 'submit';
+    const del = node('button', `Delete ${a.tag}`, 'btn'); del.type = 'button';
+    del.onclick = () => call('globe_annotation_delete', { annotationId: a.id });
+    actions.append(save, del);
+    form.append(actions, node('p', 'Geometry is kept as drawn; to change it, draw a new annotation and delete this one.', 'note'));
+    form.onsubmit = event => {
+      event.preventDefault();
+      call('globe_annotation_revise', { annotationId: a.id, edit: { label: label.value, note: text.value, about_record: about.value || null } });
+    };
+  }
+
+  // ---- Annotations: drawing ----
+  const MIN_VERTICES = { pin: 1, line: 2, area: 3, ring: 2 };
+  const MAX_VERTICES = { pin: 1, line: 512, area: 256, ring: 2 };
+  function drawStatus(text, warn) {
+    const el = $('globe-draw-status');
+    el.textContent = text;
+    el.className = `status${warn ? ' warn' : ''}`;
+  }
+  function drawHint() {
+    if (!draw) return;
+    const n = draw.vertices.length, need = MIN_VERTICES[draw.shape];
+    const what = { pin: 'place the pin', line: 'add vertices in order', area: 'add corners; it closes itself', ring: n ? 'now the edge' : 'centre first, then the edge' }[draw.shape];
+    drawStatus(`${SHAPE_WORD[draw.shape].toUpperCase()} · ${n} ${n === 1 ? 'vertex' : 'vertices'}${n < need ? ` of ${need} needed` : ''} · ${what}`);
+    $('globe-draw-undo').disabled = !n;
+    $('globe-draw-finish').disabled = n < need;
+  }
+  function renderDraft() {
+    // Preview only: the unsent draft and a rubber band to the pointer. Nothing here is kept.
+    if (!drawSource) return;
+    const Cesium = window.Cesium;
+    drawSource.entities.removeAll();
+    if (!draw) { viewer.scene.requestRender(); return; }
+    const TEXT = Cesium.Color.fromCssColorString('#e9edf0');
+    const pts = draw.vertices.map(p => Cesium.Cartesian3.fromDegrees(p.lon_deg, p.lat_deg, 0));
+    for (const p of pts) drawSource.entities.add({ position: p, point: { pixelSize: 6, color: TEXT, outlineColor: Cesium.Color.BLACK, outlineWidth: 1, disableDepthTestDistance: Number.POSITIVE_INFINITY } });
+    if (draw.stage !== 'vertices' || draw.shape === 'pin') { viewer.scene.requestRender(); return; }
+    const dash = new Cesium.PolylineDashMaterialProperty({ color: TEXT.withAlpha(0.9), dashLength: 10 });
+    const band = new Cesium.CallbackProperty(() => {
+      const tail = drawCursor && draw && pts.length && pts.length < MAX_VERTICES[draw.shape] ? [drawCursor] : [];
+      const line = [...pts, ...tail];
+      return draw && draw.shape === 'area' && line.length > 2 ? [...line, line[0]] : line;
+    }, false);
+    if (draw.shape !== 'ring') drawSource.entities.add({ polyline: { positions: band, width: 2, material: dash } });
+    else if (pts.length === 1) drawSource.entities.add({ polyline: { positions: new Cesium.CallbackProperty(() => drawCursor ? [pts[0], drawCursor] : [], false), width: 2, material: dash } });
+    viewer.scene.requestRender();
+  }
+  function setShape(shape) {
+    drawShape = shape;
+    document.querySelectorAll('#globe-draw-shapes [data-shape]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.shape === shape)));
+    if (draw) { draw = { shape, vertices: [], stage: 'vertices' }; showVertexStage(); }
+  }
+  function showVertexStage() {
+    $('globe-draw-label').hidden = true;
+    $('globe-draw-vertex-actions').hidden = false;
+    $('globe-draw-shapes').hidden = false;
+    drawHint(); renderDraft();
+  }
+  function startDraw() {
+    if (!viewer || rendererState !== 'ready' || !view) return;
+    if (!overlays) toggleOverlays(true); // annotations are overlays; drawing with them hidden would hide the result
+    draw = { shape: drawShape, vertices: [], stage: 'vertices' };
+    $('globe-draw').hidden = false;
+    $('globe-cross').hidden = false;
+    $('globe-annotate').setAttribute('aria-pressed', 'true');
+    document.querySelector('.globe-wrap').classList.add('drawing');
+    showVertexStage();
+    $('globe-canvas').focus();
+  }
+  function endDraw() {
+    draw = null; drawCursor = null; lastClick = null;
+    $('globe-draw').hidden = true;
+    $('globe-cross').hidden = true;
+    $('globe-annotate').setAttribute('aria-pressed', 'false');
+    document.querySelector('.globe-wrap').classList.remove('drawing');
+    renderDraft();
+  }
+  function addVertexAt(position, fromPointer) {
+    if (!draw || draw.stage !== 'vertices') return;
+    const Cesium = window.Cesium;
+    // The second click of a double-click lands on the first; it finishes the shape instead.
+    const now = performance.now();
+    if (fromPointer && lastClick && Math.hypot(position.x - lastClick.x, position.y - lastClick.y) < 4 && now - lastClick.t < 500) return;
+    if (fromPointer) {
+      lastClick = { x: position.x, y: position.y, t: now };
+      // Cesium's canvas does not take focus on click; keep Enter, Backspace and Escape working.
+      $('globe-canvas').focus({ preventScroll: true });
+    }
+    const hit = viewer.camera.pickEllipsoid(position, Cesium.Ellipsoid.WGS84);
+    if (!hit) { drawStatus('That point is off the globe; nothing was added.', true); return; }
+    const c = Cesium.Cartographic.fromCartesian(hit);
+    const vertex = { lat_deg: Cesium.Math.toDegrees(c.latitude), lon_deg: Cesium.Math.toDegrees(c.longitude) };
+    if (draw.vertices.length >= MAX_VERTICES[draw.shape]) {
+      if (draw.shape !== 'pin') { drawStatus(`A ${SHAPE_WORD[draw.shape]} takes at most ${MAX_VERTICES[draw.shape]} vertices; finish it or undo one.`, true); return; }
+      draw.vertices = [];
+    }
+    draw.vertices.push(vertex);
+    drawHint(); renderDraft();
+    if (draw.vertices.length === MAX_VERTICES[draw.shape] && (draw.shape === 'pin' || draw.shape === 'ring')) finishShape();
+  }
+  function addVertexAtCrosshair() {
+    const canvas = viewer.scene.canvas;
+    addVertexAt(new window.Cesium.Cartesian2(canvas.clientWidth / 2, canvas.clientHeight / 2), false);
+  }
+  function undoVertex() {
+    if (!draw || draw.stage !== 'vertices' || !draw.vertices.length) return;
+    draw.vertices.pop(); lastClick = null;
+    drawHint(); renderDraft();
+  }
+  function finishShape() {
+    if (!draw || draw.stage !== 'vertices') return;
+    if (draw.vertices.length < MIN_VERTICES[draw.shape]) { drawHint(); return; }
+    draw.stage = 'label';
+    $('globe-draw-vertex-actions').hidden = true;
+    $('globe-draw-shapes').hidden = true;
+    $('globe-draw-label').hidden = false;
+    drawStatus(`${SHAPE_WORD[draw.shape].toUpperCase()} · ${draw.vertices.length} ${draw.vertices.length === 1 ? 'vertex' : 'vertices'} · label it to save; every vertex is checked on save`);
+    const input = $('globe-draw-label-input');
+    input.value = ''; $('globe-draw-note').value = '';
+    const record = selectedRecord();
+    recordOptions($('globe-draw-about'), record ? record.id : '');
+    renderDraft();
+    input.focus();
+  }
+  function draftGeometry() {
+    const v = draw.vertices;
+    if (draw.shape === 'pin') return { shape: 'pin', point: v[0] };
+    if (draw.shape === 'line') return { shape: 'line', vertices: v };
+    if (draw.shape === 'area') return { shape: 'area', ring: v };
+    return { shape: 'ring', centre: v[0], edge: v[1] };
+  }
+  async function saveDraft(event) {
+    event.preventDefault();
+    if (!draw || draw.stage !== 'label') return;
+    const draft = { label: $('globe-draw-label-input').value, note: $('globe-draw-note').value, about_record: $('globe-draw-about').value || null, geometry: draftGeometry() };
+    // A refusal is shown by `call` and the draft is kept, so it can be corrected or redrawn.
+    if (await call('globe_annotate', { draft })) endDraw();
+  }
+
   // ---- View application ----
   function applyView(next) {
     const first = !view;
@@ -842,8 +1113,9 @@ const Globe = (() => {
     if (viewer && rendererState === 'ready') {
       setImagery(view.imagery);
       const cameras = visibleCameras();
-      const key = JSON.stringify([view.plotted, cameras]);
-      if (key !== plottedKey) { plottedKey = key; buildGeometry(view.plotted, cameras); buildTags(view.plotted, cameras); }
+      const notes = visibleAnnotations();
+      const key = JSON.stringify([view.plotted, cameras, notes]);
+      if (key !== plottedKey) { plottedKey = key; buildGeometry(view.plotted, cameras, notes); buildTags(view.plotted, cameras, notes); }
       if (first) setCamera(view.camera, false);
       // A layer the user just turned on is brought into view once; later moves are theirs.
       for (const layer of view.layers) {
@@ -872,11 +1144,12 @@ const Globe = (() => {
     if (!view) return { source: '—', coverage: '—', selection: '—', loaded: false };
     const record = selectedRecord();
     const cam = selectedCamera();
+    const note = selectedAnnotation();
     return {
       source: view.case ? `${view.case.label}` : 'no case',
       coverage: rendererState === 'ready' ? `tiles ${fmt(tiles.loaded)} ok · ${fmt(tiles.failed)} failed` : `renderer ${rendererState}`,
       partial: tiles.failed > 0 || rendererState !== 'ready',
-      selection: cam ? `CAM ${cam.display_id}` : record ? `${pad2(record.order)} ${record.label}` : 'none',
+      selection: note ? `${note.tag} ${note.label} (annotation)` : cam ? `CAM ${cam.display_id}` : record ? `${pad2(record.order)} ${record.label}` : 'none',
       loaded: true
     };
   }
@@ -910,6 +1183,9 @@ const Globe = (() => {
     const inCanvas = $('globe-canvas').contains(document.activeElement) || document.activeElement === $('globe-canvas');
     if (!inCanvas) return false;
     const map = { ArrowLeft: () => pan(-1, 0), ArrowRight: () => pan(1, 0), ArrowUp: () => pan(0, 1), ArrowDown: () => pan(0, -1), '+': () => zoom(1), '=': () => zoom(1), '-': () => zoom(-1), Home: home, '0': world };
+    const plain = !event.ctrlKey && !event.metaKey && !event.altKey;
+    if (plain && draw && draw.stage === 'vertices') Object.assign(map, { v: addVertexAtCrosshair, V: addVertexAtCrosshair, Enter: finishShape, Backspace: undoVertex });
+    else if (plain && !draw) Object.assign(map, { a: startDraw, A: startDraw });
     const action = map[event.key];
     if (!action) return false;
     event.preventDefault();
@@ -926,9 +1202,21 @@ const Globe = (() => {
       $('globe-layers-toggle').setAttribute('aria-pressed', String(layersPanel));
     };
     $('globe-canvas').addEventListener('keydown', event => {
+      if (event.key === 'Escape' && draw) { event.preventDefault(); event.stopPropagation(); endDraw(); return; }
       if (event.key === 'Escape' && view?.selection) { event.preventDefault(); select(null); return; }
       onKey(event);
     });
+    $('globe-annotate').onclick = () => { if (draw) endDraw(); else startDraw(); };
+    document.querySelectorAll('#globe-draw-shapes [data-shape]').forEach(b => { b.onclick = () => setShape(b.dataset.shape); });
+    $('globe-draw-add').onclick = () => { addVertexAtCrosshair(); };
+    $('globe-draw-undo').onclick = undoVertex;
+    $('globe-draw-finish').onclick = finishShape;
+    $('globe-draw-cancel').onclick = endDraw;
+    $('globe-draw-discard').onclick = endDraw;
+    $('globe-draw-back').onclick = () => { if (draw) { draw.stage = 'vertices'; showVertexStage(); $('globe-canvas').focus(); } };
+    $('globe-draw').onsubmit = saveDraft;
+    $('globe-draw').addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); endDraw(); $('globe-canvas').focus(); } });
+    $('globe-annotation-clear').onclick = () => call('globe_annotation_delete', { annotationId: null });
     window.addEventListener('resize', () => { if (viewer && active) viewer.resize(); });
   }
   wire();

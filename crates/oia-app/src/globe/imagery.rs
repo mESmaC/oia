@@ -637,8 +637,13 @@ mod tests {
     use super::*;
 
     /// Every registered origin; the CSP must allow exactly these.
-    const REGISTERED_ORIGINS: [&str; 4] =
-        [GIBS_ORIGIN, EOX_ORIGIN, USGS_TNM_ORIGIN, USGS_NAIP_ORIGIN];
+    const REGISTERED_ORIGINS: [&str; 5] = [
+        GIBS_ORIGIN,
+        EOX_ORIGIN,
+        USGS_TNM_ORIGIN,
+        USGS_NAIP_ORIGIN,
+        super::super::terrain::ORIGIN,
+    ];
 
     fn day(text: &str) -> CivilDate {
         CivilDate::parse(text).unwrap_or(CivilDate {

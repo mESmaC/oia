@@ -8,6 +8,7 @@
 
 pub mod imagery;
 pub mod layers;
+pub mod traffic;
 
 use crate::local_tools::{Result, ToolError};
 use imagery::{CivilDate, ImagerySelection, ImageryView};
@@ -522,6 +523,7 @@ pub struct GlobeView {
     /// The ALPR camera layer's features and kernel evaluation, present whenever the
     /// fixture parsed; drawn by the page only while its layer is visible.
     pub cameras: Option<CameraLayerView>,
+    pub traffic: traffic::TrafficView,
     pub renderer: RendererInfo,
     pub limits: GlobeLimits,
 }
@@ -534,6 +536,7 @@ pub struct GlobeState {
     selection: Option<String>,
     camera: CameraView,
     layers: LayerState,
+    pub traffic: traffic::TrafficState,
     /// Resolved once, when selected, against the date given then. Viewing never re-validates,
     /// so a clock that moves cannot turn an accepted selection into a failing view. `None`
     /// only if the registry's default basemap cannot be resolved, which is a build defect.
@@ -566,6 +569,7 @@ impl GlobeState {
             selection: None,
             camera,
             layers: LayerState::default(),
+            traffic: traffic::TrafficState::default(),
             imagery,
         }
     }
@@ -600,7 +604,8 @@ impl GlobeState {
                 .as_ref()
                 .map(|f| f.records.iter().any(|r| &r.id == id))
                 .unwrap_or(false)
-                || self.layers.camera_selectable(id);
+                || self.layers.camera_selectable(id)
+                || self.traffic.selectable(id);
             if !known {
                 return Err(ToolError::new(
                     "unknown_record",
@@ -610,6 +615,7 @@ impl GlobeState {
                 ));
             }
         }
+        self.traffic.select(record_id.as_deref());
         self.selection = record_id;
         Ok(())
     }
@@ -617,8 +623,21 @@ impl GlobeState {
     /// Shows or hides a registered layer. Hiding a layer clears a selection inside it,
     /// so a target card never describes something that is not drawn.
     pub fn set_layer_visible(&mut self, layer_id: &str, visible: bool) -> Result<()> {
+        if layer_id == traffic::LAYER_ID {
+            self.traffic.set_visible(visible);
+            if !visible
+                && self
+                    .selection
+                    .as_deref()
+                    .is_some_and(|id| id.starts_with("traffic:"))
+            {
+                self.selection = None;
+            }
+            return Ok(());
+        }
         self.layers.set_visible(layer_id, visible)?;
         if !visible
+            && layer_id == layers::LAYER_ALPR
             && self
                 .selection
                 .as_deref()
@@ -653,6 +672,23 @@ impl GlobeState {
         Ok(())
     }
 
+    pub fn traffic_catalog_finished(
+        &mut self,
+        token: u64,
+        district: u8,
+        result: Result<traffic::Catalog>,
+    ) {
+        let replaced = self.traffic.finish_catalog(token, district, result);
+        if replaced
+            && self
+                .selection
+                .as_deref()
+                .is_some_and(|id| id.starts_with("traffic:"))
+        {
+            self.selection = None;
+        }
+    }
+
     pub fn view(&self) -> Result<GlobeView> {
         let imagery = self.imagery.clone().ok_or_else(|| {
             ToolError::new(
@@ -671,6 +707,7 @@ impl GlobeState {
             imagery,
             layers: Vec::new(),
             cameras: None,
+            traffic: self.traffic.view(),
             renderer: RendererInfo {
                 name: "CesiumJS",
                 pinned_version: RENDERER_VERSION,
@@ -692,6 +729,7 @@ impl GlobeState {
                 view.fixture_error = Some(format!("{FIXTURE_PATH}: {}", error.message));
                 let (layers, cameras) = self.layers.views(None, 0);
                 view.layers = layers;
+                view.layers.push(self.traffic.layer());
                 view.cameras = cameras;
                 return Ok(view);
             }
@@ -752,6 +790,7 @@ impl GlobeState {
             .layers
             .views(Some(&fixture.case.label), fixture.records.len());
         view.layers = layers;
+        view.layers.push(self.traffic.layer());
         view.cameras = cameras;
         Ok(view)
     }

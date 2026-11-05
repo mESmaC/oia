@@ -116,3 +116,14 @@
 .globe-record-list .tag[aria-pressed="true"] { border-color: var(--accent); }
 .glog { list-style: none; padding: 0; margin: 6px 0 0; display: flex; flex-direction: column; gap: 4px; font: 11px/1.4 var(--mono); color: var(--text-2); overflow-wrap: anywhere; }
 .glog:empty::before { content: "none"; color: var(--text-3); }
+
+/* A ground still remains visibly separate from projected map imagery. */
+.gcard.traffic { width: min(440px, calc(100% - 32px)); max-height: calc(100% - 128px); overflow-y: auto; overflow-x: hidden; }
+.gcard.traffic img { display: block; width: 100%; height: auto; max-height: 300px; object-fit: contain; margin: 10px 0 6px; background: #000; }
+.gcard.traffic .note { margin: 8px 0; font: 12px/1.45 var(--sans); }
+.gcard.traffic details { margin-bottom: 10px; }
+#globe-traffic-camera, #globe-traffic-district { width: 100%; max-width: 100%; margin: 6px 0 10px; }
+
+.gcard.traffic .rows { grid-template-columns: minmax(0, 110px) minmax(0, 1fr); }
+.gcard.traffic .rows dd { min-width: 0; }
+.gcard.traffic > button { margin: 0 8px 4px 0; }

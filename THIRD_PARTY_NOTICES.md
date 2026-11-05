@@ -94,3 +94,10 @@ SOFTWARE.
 - **Service:** https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer (description and bounded export checked 2026-11-03).
 - **Licence and attribution:** Public domain USDA/USGS work; https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits. Shown as “USDA NAIP / USGS The National Map: NAIP Imagery”. No endorsement implied.
 - **Use:** Visible-view 256 × 256 transparent PNG exports, bands 0/1/2, nearest-neighbour sampling, levels 16–18, six requests in flight, continental-US bounds. No bulk download or retained tile artifacts. These are orthorectified aerial mosaics, primarily 0.6 m with variable flight dates/resolution, not raw satellite data. Metadata grid spacing (0.3 m) is not asserted as native resolution.
+
+## 8. Caltrans highway camera catalog and still previews
+
+- **Source:** [CWWP2 CCTV](https://cwwp2.dot.ca.gov/documentation/cctv/cctv.htm), `https://cwwp2.dot.ca.gov`, checked 2026-11-05 UTC. District location/status catalogs are explicitly available for application integration at no charge; footage and stills are neither retained nor archived by Caltrans.
+- **Conditions:** [Caltrans Conditions of Use](https://dot.ca.gov/conditions-of-use) generally identify Caltrans-created information as public domain, except where indicated; third-party copyrighted material may require separate permission. No blanket licence to redistribute every photograph is asserted. No availability/accuracy warranty or endorsement is implied.
+- **Attribution:** “Caltrans — California Department of Transportation”, visible in the camera inspector/card and registered layer. Source documentation and terms addresses remain inspectable.
+- **Scope:** Explicit Rust acquisition of one district catalog and one selected current JPEG; bounded session-memory originals only. No polling, video, historical archive, recording, export or redistributed image assets. No Caltrans images are committed. Camera poses/freshness are unverified and previews are not event evidence. Broader automated analysis, retention and redistribution need their own source-use assessment.

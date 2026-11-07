@@ -20,6 +20,11 @@ pub struct LedgerLimits {
     pub max_relations: usize,
     /// Maximum stored reassessment flags across the ledger.
     pub max_flags: usize,
+    /// Maximum inherited flags and propagating edges examined by one mutation, including
+    /// candidates that are already flagged or reached by another path.
+    pub max_propagation_steps: usize,
+    /// Maximum propagation steps across all operations in one JSON import.
+    pub max_import_propagation_steps: usize,
     /// Maximum derivation inputs per version.
     pub max_inputs: usize,
     pub max_attributes: usize,
@@ -35,6 +40,8 @@ impl Default for LedgerLimits {
             max_versions: 65_536,
             max_relations: 262_144,
             max_flags: 1_048_576,
+            max_propagation_steps: 262_144,
+            max_import_propagation_steps: 1_048_576,
             max_inputs: 64,
             max_attributes: 64,
             max_access_policies: 16,
@@ -50,6 +57,8 @@ pub enum LimitKind {
     Versions,
     Relations,
     Flags,
+    PropagationSteps,
+    ImportPropagationSteps,
     Inputs,
     Attributes,
     AccessPolicies,
@@ -63,6 +72,8 @@ impl fmt::Display for LimitKind {
             Self::Versions => "max_versions",
             Self::Relations => "max_relations",
             Self::Flags => "max_flags",
+            Self::PropagationSteps => "max_propagation_steps",
+            Self::ImportPropagationSteps => "max_import_propagation_steps",
             Self::Inputs => "max_inputs",
             Self::Attributes => "max_attributes",
             Self::AccessPolicies => "max_access_policies",
@@ -292,6 +303,58 @@ pub struct EvidenceLedger {
 
 type PlannedFlags = Vec<(VersionId, ReassessmentFlag)>;
 
+/// Transient planning budget, never ledger state. Import shares one across replayed operations;
+/// direct mutations get a fresh one. Charge before cloning a flag or queuing an edge candidate.
+pub(super) struct PropagationBudget {
+    operation_limit: usize,
+    operation_remaining: usize,
+    import: Option<(usize, usize)>, // (remaining, limit)
+}
+
+impl PropagationBudget {
+    fn new(limits: LedgerLimits) -> Self {
+        Self {
+            operation_limit: limits.max_propagation_steps,
+            operation_remaining: limits.max_propagation_steps,
+            import: None,
+        }
+    }
+
+    pub(super) fn for_import(limits: LedgerLimits) -> Self {
+        Self {
+            import: Some((
+                limits.max_import_propagation_steps,
+                limits.max_import_propagation_steps,
+            )),
+            ..Self::new(limits)
+        }
+    }
+
+    fn begin_operation(&mut self) {
+        self.operation_remaining = self.operation_limit;
+    }
+
+    fn charge(&mut self) -> Result<(), EvidenceError> {
+        if self.operation_remaining == 0 {
+            return Err(EvidenceError::LimitExceeded {
+                kind: LimitKind::PropagationSteps,
+                limit: self.operation_limit,
+            });
+        }
+        if let Some((remaining, limit)) = &mut self.import {
+            if *remaining == 0 {
+                return Err(EvidenceError::LimitExceeded {
+                    kind: LimitKind::ImportPropagationSteps,
+                    limit: *limit,
+                });
+            }
+            *remaining -= 1;
+        }
+        self.operation_remaining -= 1;
+        Ok(())
+    }
+}
+
 impl EvidenceLedger {
     /// Creates an empty ledger with the given limits.
     #[must_use]
@@ -366,12 +429,21 @@ impl EvidenceLedger {
     /// If an input has been replaced or is itself flagged, the new version inherits a flag, so
     /// deriving from outdated material stays visible.
     pub fn issue(&mut self, fields: RecordFields) -> Result<(), EvidenceError> {
+        self.issue_with_budget(fields, &mut PropagationBudget::new(self.limits))
+    }
+
+    pub(super) fn issue_with_budget(
+        &mut self,
+        fields: RecordFields,
+        work: &mut PropagationBudget,
+    ) -> Result<(), EvidenceError> {
+        work.begin_operation();
         if self.heads.contains_key(&fields.id) {
             return Err(EvidenceError::DuplicateObject(fields.id));
         }
         self.check_new_version(&fields)?;
         let labels = self.validate_fields(&fields)?;
-        let planned = self.inherited_for_new(&fields)?;
+        let planned = self.inherited_for_new(&fields, work)?;
         self.commit_version(fields, None, None, labels, planned);
         Ok(())
     }
@@ -385,6 +457,22 @@ impl EvidenceLedger {
         predecessor: &VersionId,
         revision: Revision,
     ) -> Result<ReassessmentReport, EvidenceError> {
+        self.revise_with_budget(
+            fields,
+            predecessor,
+            revision,
+            &mut PropagationBudget::new(self.limits),
+        )
+    }
+
+    pub(super) fn revise_with_budget(
+        &mut self,
+        fields: RecordFields,
+        predecessor: &VersionId,
+        revision: Revision,
+        work: &mut PropagationBudget,
+    ) -> Result<ReassessmentReport, EvidenceError> {
+        work.begin_operation();
         let head = self
             .heads
             .get(&fields.id)
@@ -421,26 +509,22 @@ impl EvidenceLedger {
         self.check_new_version(&fields)?;
         let labels = self.validate_fields(&fields)?;
 
-        let mut planned = self.inherited_for_new(&fields)?;
-        let seeds = self
-            .propagating
-            .get(predecessor)
-            .into_iter()
-            .flatten()
-            .map(|dependent| {
-                (
-                    dependent.clone(),
-                    ReassessmentFlag {
-                        replaced: predecessor.clone(),
-                        replacement: fields.version.clone(),
-                        reason: revision.reason,
-                        via: predecessor.clone(),
-                        hops: 1,
-                    },
-                )
-            })
-            .collect();
-        let downstream = self.plan_propagation(seeds, planned.len())?;
+        let mut planned = self.inherited_for_new(&fields, work)?;
+        let mut seeds = Vec::new();
+        for dependent in self.propagating.get(predecessor).into_iter().flatten() {
+            work.charge()?;
+            seeds.push((
+                dependent.clone(),
+                ReassessmentFlag {
+                    replaced: predecessor.clone(),
+                    replacement: fields.version.clone(),
+                    reason: revision.reason,
+                    via: predecessor.clone(),
+                    hops: 1,
+                },
+            ));
+        }
+        let downstream = self.plan_propagation(seeds, planned.len(), work)?;
         let report = ReassessmentReport {
             replaced: predecessor.clone(),
             replacement: fields.version.clone(),
@@ -457,6 +541,15 @@ impl EvidenceLedger {
 
     /// Adds an immutable typed relation between two existing versions.
     pub fn relate(&mut self, relation: Relation) -> Result<(), EvidenceError> {
+        self.relate_with_budget(relation, &mut PropagationBudget::new(self.limits))
+    }
+
+    pub(super) fn relate_with_budget(
+        &mut self,
+        relation: Relation,
+        work: &mut PropagationBudget,
+    ) -> Result<(), EvidenceError> {
+        work.begin_operation();
         if self.relations.contains_key(&relation.id) {
             return Err(EvidenceError::DuplicateRelation(relation.id));
         }
@@ -548,11 +641,11 @@ impl EvidenceLedger {
 
         let planned = if relation.kind.propagates_reassessment() {
             let seeds = self
-                .inherited_from(&relation.upstream)
+                .inherited_from(&relation.upstream, work)?
                 .into_iter()
                 .map(|flag| (relation.dependent.clone(), flag))
                 .collect();
-            self.plan_propagation(seeds, 0)?
+            self.plan_propagation(seeds, 0, work)?
         } else {
             Vec::new()
         };
@@ -577,6 +670,8 @@ impl EvidenceLedger {
             LimitKind::Versions => self.limits.max_versions,
             LimitKind::Relations => self.limits.max_relations,
             LimitKind::Flags => self.limits.max_flags,
+            LimitKind::PropagationSteps => self.limits.max_propagation_steps,
+            LimitKind::ImportPropagationSteps => self.limits.max_import_propagation_steps,
             LimitKind::Inputs => self.limits.max_inputs,
             LimitKind::Attributes => self.limits.max_attributes,
             LimitKind::AccessPolicies => self.limits.max_access_policies,
@@ -714,18 +809,22 @@ impl EvidenceLedger {
 
     /// Flags a dependent of `upstream` inherits: one for each flag on `upstream`, plus one if
     /// `upstream` has already been replaced.
-    fn inherited_from(&self, upstream: &VersionId) -> Vec<ReassessmentFlag> {
-        let mut inherited: Vec<ReassessmentFlag> = self
-            .reassessment_flags(upstream)
-            .iter()
-            .map(|flag| ReassessmentFlag {
+    fn inherited_from(
+        &self,
+        upstream: &VersionId,
+        work: &mut PropagationBudget,
+    ) -> Result<Vec<ReassessmentFlag>, EvidenceError> {
+        let mut inherited = Vec::new();
+        for flag in self.reassessment_flags(upstream) {
+            work.charge()?;
+            inherited.push(ReassessmentFlag {
                 replaced: flag.replaced.clone(),
                 replacement: flag.replacement.clone(),
                 reason: flag.reason,
                 via: upstream.clone(),
                 hops: flag.hops.saturating_add(1),
-            })
-            .collect();
+            });
+        }
         if let Some(replacement) = self.successors.get(upstream)
             && let Some(reason) = self
                 .versions
@@ -733,6 +832,7 @@ impl EvidenceLedger {
                 .and_then(|v| v.revision.as_ref())
                 .map(|r| r.reason)
         {
+            work.charge()?;
             inherited.push(ReassessmentFlag {
                 replaced: upstream.clone(),
                 replacement: replacement.clone(),
@@ -741,21 +841,25 @@ impl EvidenceLedger {
                 hops: 1,
             });
         }
-        inherited
+        Ok(inherited)
     }
 
     /// Flags for a version that is not yet in the graph (it has no dependents to walk).
-    fn inherited_for_new(&self, fields: &RecordFields) -> Result<PlannedFlags, EvidenceError> {
+    fn inherited_for_new(
+        &self,
+        fields: &RecordFields,
+        work: &mut PropagationBudget,
+    ) -> Result<PlannedFlags, EvidenceError> {
         let mut planned: PlannedFlags = Vec::new();
         let mut seen = BTreeSet::new();
         for input in fields.provenance.inputs() {
-            for flag in self.inherited_from(input) {
+            for flag in self.inherited_from(input, work)? {
                 if seen.insert((flag.replaced.clone(), flag.replacement.clone())) {
+                    self.check_flag_capacity(planned.len() + 1)?;
                     planned.push((fields.version.clone(), flag));
                 }
             }
         }
-        self.check_flag_capacity(planned.len())?;
         Ok(planned)
     }
 
@@ -783,6 +887,7 @@ impl EvidenceLedger {
         &self,
         seeds: Vec<(VersionId, ReassessmentFlag)>,
         already_planned: usize,
+        work: &mut PropagationBudget,
     ) -> Result<PlannedFlags, EvidenceError> {
         let mut queue: VecDeque<(VersionId, ReassessmentFlag)> = seeds.into();
         let mut seen: BTreeSet<(VersionId, VersionId, VersionId)> = BTreeSet::new();
@@ -801,6 +906,7 @@ impl EvidenceLedger {
             }
             self.check_flag_capacity(already_planned + planned.len() + 1)?;
             for dependent in self.propagating.get(&node).into_iter().flatten() {
+                work.charge()?;
                 queue.push_back((
                     dependent.clone(),
                     ReassessmentFlag {

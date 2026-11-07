@@ -148,6 +148,8 @@ Default limits (`LedgerLimits`):
 | Versions | 65,536 |
 | Relations | 262,144 |
 | Stored flags | 1,048,576 |
+| Propagation steps per mutation | 262,144 |
+| Propagation steps across one JSON import | 1,048,576 |
 | Inputs per version | 64 |
 | Attributes per version | 64 |
 | Access policies per version | 16 |
@@ -155,6 +157,43 @@ Default limits (`LedgerLimits`):
 | Retained text value | 8,192 UTF-8 bytes |
 
 Exceeding a limit returns `LimitExceeded` without a partial write.
+
+### Propagation work limits
+
+The stored-flag limit bounds retained results. The two work limits additionally bound
+repeated traversal, including dense graphs with many paths to the same dependent. They
+apply to `issue`, `revise` and `relate` while planning, before any ledger mutation:
+
+- One step is charged before copying each inherited flag (including a direct replacement
+  notice), or before queuing each propagating edge candidate, including revision seeds.
+- Duplicate, already flagged and cycle-return candidates still consume steps. They can
+  require work even when they add no stored flags. Inheritance from multiple inputs also
+  charges each candidate before deduplication.
+- A mutation shares one budget across inheritance, seed creation and breadth-first
+  expansion. Budget checks precede the corresponding copies/queue growth. Pending
+  candidates and planned flags are bounded by the charged steps; new stored flags also
+  obey the stored-flag limit. No flag list is cloned in full before checking the budget.
+- Direct API calls get a fresh per-mutation budget. JSON replay resets that budget for
+  each entry and also consumes a shared import budget that cannot reset between entries.
+  The counters are transient planning state, not evidence or part of the JSON schema.
+
+Exhaustion returns `EvidenceError::LimitExceeded` with `LimitKind::PropagationSteps` or
+`LimitKind::ImportPropagationSteps` and the configured limit. Import wraps it in
+`CodecError::Rejected` with the zero-based entry index and returns no partial ledger.
+A refused direct mutation leaves versions, heads, successors, relations, flags and accepted
+entries unchanged. A later operation can still succeed within its own fresh budget.
+
+These are complete-or-refuse controls: success retains every required flag and the existing
+deterministic breadth-first `via`/`hops`; exhaustion never silently truncates propagation.
+Callers may explicitly configure `LedgerLimits` for a larger supported workload. There is
+no automatic retry with raised limits. A ledger built through many individual API calls
+can require a larger aggregate budget to reimport than the default allows.
+
+The budgets count propagation candidates, not elapsed time or total process memory.
+Parsing, validation and non-propagating operations retain their existing byte, record,
+relation and field limits. Import still parses both a typed document and a shape tree;
+the separately tracked double-parse peak-memory follow-up remains open. Cancellation,
+deadlines and application-worker scheduling remain part of future service integration.
 
 ## JSON form
 
@@ -170,7 +209,8 @@ Exceeding a limit returns `LimitExceeded` without a partial write.
 - Every structure must be a JSON object, and every key must be present, including nullable
   ones written as `null`. serde alone would accept positional arrays and treat a missing
   `Option` key as `null`, so the parsed tree is checked for shape before replay.
-- Each entry is replayed through `issue`, `revise` or `relate`, so a file cannot bypass the
+- Each entry is replayed through the same planning/validation paths as `issue`, `revise` or
+  `relate`, with a shared import work budget, so a file cannot bypass the
   promotion, label, ordering, duplicate, time, staleness or limit rules.
 - Labels and flags are derived state. They are recomputed on import, never trusted from the
   file.
@@ -207,7 +247,7 @@ cargo run -p oia-domain --example evidence-ledger --locked -- fixture
 `fixture` regenerates the committed bytes from the builder in
 [`examples/evidence-ledger.rs`](../../crates/oia-domain/examples/evidence-ledger.rs).
 
-The three `evidence_ledger_contract` tests cover:
+The five `evidence_ledger_contract` tests cover:
 
 - the byte-exact fixture round trip, original preservation, unknown reasons and exact flag
   placement;
@@ -215,7 +255,12 @@ The three `evidence_ledger_contract` tests cover:
   cited as support, stale and backdated revisions and origin changes, all without mutation,
   plus flags inherited from a superseded input;
 - strict import: oversize, unknown field, duplicate field, positional array, missing
-  nullable key, unknown code, and a promotion injected into the file.
+  nullable key, unknown code, and a promotion injected into the file;
+- exact work boundaries on a converging, cyclic graph, including refusal before seed
+  allocation and during expansion, full-ledger equality after refusal, preserved original
+  versions and deterministic breadth-first flags on success;
+- budgeted inherited flags on all three mutation paths, fresh direct-operation budgets,
+  and cumulative replay exhaustion on an already flagged relation that adds no flags.
 
 ## Remaining boundary
 
@@ -275,3 +320,49 @@ open.
 
 The desktop app build only warned that the gitignored CesiumJS vendor directory was absent.
 That is unrelated to this change. No UI or hardware path was exercised.
+
+## Work-budget validation (2026-11-05)
+
+Checked on Windows x86_64 (OS build 26200, Intel Core Ultra 7 265F), pinned Rust
+1.99.0, branch `codex/ledger-propagation-budget-20261105` based on `main` at
+`f039c66`, with the work-budget changes described above:
+
+- `cargo test -p oia-domain --test evidence_ledger_contract --locked`: all five passed.
+  The two added tests protect atomic refusal, complete deterministic flags and cumulative
+  accounting; they are not a broad graph test matrix.
+- `cargo fmt --all -- --check` and
+  `cargo clippy --workspace --all-targets --locked -- -D warnings`: passed.
+- `cargo test --workspace --locked`: 229 passed, zero failed or ignored.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 proofs`: passed;
+  290 declarations audited and Lean/Rust cutoff fixture bytes matched. No proof changed,
+  and no dependency-walk correspondence is established.
+- `cargo build -p oia-domain --example evidence-ledger --locked`, followed by the
+  executable's `fixture` command: matched all 10,896 canonical fixture bytes after
+  normalizing checkout CRLF line endings in the reference JSON.
+- `git diff --check`, relative documentation links and code fences: passed.
+
+Two temporary **synthetic** compact JSON stress files exercised the built debug CLI's
+`inspect` command with default limits. They use the committed fixture's first source-record
+shape with library scope, empty attributes/access policies and synthetic IDs; no real
+observations were imported. Each `supports` edge is directed from upstream to dependent.
+Both failures occurred before the CLI could print an accepted ledger:
+
+- **Aggregate replay:** 104 roots each support 100 left nodes; every left node supports
+  all 100 right nodes. Issue all records and edges first, then correct each root once.
+  This is 304 initial records, 20,400 edges, 104 corrections and 20,808 JSON entries
+  (5,398,392 bytes). Each correction needs 10,100 steps, within the per-mutation limit.
+  Entry 20,807 was refused with `ImportPropagationSteps`, limit 1,048,576. One run took
+  2,180 ms wall time including CLI startup, parsing and failure cleanup.
+  SHA-256: `76e8ed69e0be8f7e0b1e40cce8cb8baaec2b3b7ef7851d97a6fdb0457b7e3227`.
+- **Single-mutation fan-out:** 27 roots support a hub; a separate bridge supports
+  100 left nodes, each supporting all 100 right nodes. Correct the roots, then add the
+  hub-to-bridge relation. This is 229 initial records, 10,128 edges, 27 corrections and
+  10,384 JSON entries (2,709,313 bytes). The last relation needs 272,727 steps and was
+  refused at entry 10,383 with `PropagationSteps`, limit 262,144. One run took 1,044 ms.
+  SHA-256: `0589a0978b8f8a9c17b9a44824b9c4f1b24ca17bd9aabc12774814653350123a`.
+
+These are individual local debug runs, not performance guarantees. The temporary stress
+files are not shipped; the compact permanent contract tests reproduce the boundary and
+rollback behavior. The unrelated missing-CesiumJS build warning remains; no UI, hardware,
+hosted workflow or complete A01/A03/A07 integration was exercised. The larger #10 scope
+and the optional import-memory follow-up remain open.

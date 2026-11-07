@@ -9,15 +9,17 @@
 //!    leaves the ledger unchanged.
 //! 3. Import is strict: oversized, unknown, duplicate, positional, incomplete, miscoded and
 //!    rule-violating input is refused rather than repaired.
+//! 4. Dense/cyclic propagation and inherited flags obey work limits without partial writes;
+//!    replay also charges repeated work even when it adds no flags.
 
 use std::collections::BTreeMap;
 use std::error::Error;
 
 use oia_domain::evidence::{
     AttributeName, AttributeValue, Availability, CodecError, EvidenceError, EvidenceLedger,
-    FieldValue, LedgerLimits, MAX_LEDGER_JSON_BYTES, ObjectType, OriginClass, Provenance,
-    RecordFields, Relation, RelationKind, ReviewStatus, Revision, RevisionReason, Scope,
-    UnknownReason,
+    FieldValue, LedgerLimits, LimitKind, MAX_LEDGER_JSON_BYTES, ObjectType, OriginClass,
+    Provenance, RecordFields, Relation, RelationKind, ReviewStatus, Revision, RevisionReason,
+    Scope, UnknownReason,
 };
 use oia_domain::{ActorId, OpaqueId, VersionId};
 
@@ -398,5 +400,226 @@ fn json_import_is_strict() -> TestResult {
             ..
         })
     ));
+    Ok(())
+}
+
+#[test]
+fn dense_cyclic_propagation_refuses_atomically_at_the_work_boundary() -> TestResult {
+    let mut graph = EvidenceLedger::new(LedgerLimits::default());
+    for node in ["root", "a", "b", "c", "d"] {
+        graph.issue(record(
+            node,
+            node,
+            OriginClass::UserTestimony,
+            Provenance::Manual,
+        )?)?;
+    }
+    // Two converging paths to each lower node, a cycle, and a path back to the seed.
+    for (upstream, dependent) in [
+        ("root", "a"),
+        ("root", "b"),
+        ("a", "c"),
+        ("a", "d"),
+        ("b", "c"),
+        ("b", "d"),
+        ("c", "a"),
+        ("d", "root"),
+    ] {
+        graph.relate(relation(
+            &format!("edge:{upstream}:{dependent}"),
+            RelationKind::Supports,
+            dependent,
+            upstream,
+        )?)?;
+    }
+    let json = graph.to_json()?;
+    let revision = Revision {
+        reason: RevisionReason::SourceCorrection,
+        rationale: "Synthetic correction".to_owned(),
+    };
+    let replacement = record(
+        "root",
+        "root:v2",
+        OriginClass::UserTestimony,
+        Provenance::Manual,
+    )?;
+
+    // Zero refuses seed allocation; seven refuses during expansion. Neither may publish any
+    // flags, a new head/successor, or an accepted entry. An unrelated zero-work append still works.
+    for max_propagation_steps in [0, 7] {
+        let limits = LedgerLimits {
+            max_propagation_steps,
+            ..LedgerLimits::default()
+        };
+        let mut ledger = EvidenceLedger::from_json(&json, limits)?;
+        let before = ledger.clone();
+        assert_eq!(
+            ledger.revise(replacement.clone(), &v("root")?, revision.clone()),
+            Err(EvidenceError::LimitExceeded {
+                kind: LimitKind::PropagationSteps,
+                limit: max_propagation_steps,
+            })
+        );
+        assert_eq!(ledger, before);
+        ledger.issue(record(
+            "unrelated",
+            "unrelated",
+            OriginClass::UserTestimony,
+            Provenance::Manual,
+        )?)?;
+    }
+
+    let limits = LedgerLimits {
+        max_propagation_steps: 8,
+        ..LedgerLimits::default()
+    };
+    let mut ledger = EvidenceLedger::from_json(&json, limits)?;
+    let report = ledger.revise(replacement, &v("root")?, revision)?;
+    assert_eq!(report.flagged, [v("a")?, v("b")?, v("c")?, v("d")?]);
+    assert!(ledger.reassessment_flags(&v("root")?).is_empty());
+    for node in ["c", "d"] {
+        let flag = ledger
+            .reassessment_flags(&v(node)?)
+            .first()
+            .ok_or("flag missing")?;
+        assert_eq!(
+            flag.via,
+            v("a")?,
+            "first breadth-first path must stay deterministic"
+        );
+        assert_eq!(flag.hops, 2);
+    }
+    assert_eq!(ledger.version(&v("root")?), graph.version(&v("root")?));
+    assert_eq!(
+        EvidenceLedger::from_json(&ledger.to_json()?, limits)?,
+        ledger
+    );
+    Ok(())
+}
+
+#[test]
+fn inherited_flags_and_noop_replay_consume_work_before_commit() -> TestResult {
+    let limits = LedgerLimits {
+        max_propagation_steps: 1,
+        ..LedgerLimits::default()
+    };
+    let mut ledger = EvidenceLedger::new(limits);
+    for node in ["s1", "s2"] {
+        ledger.issue(record(
+            node,
+            node,
+            OriginClass::UserTestimony,
+            Provenance::Manual,
+        )?)?;
+    }
+    ledger.issue(record(
+        "hub",
+        "hub",
+        OriginClass::AnalyticalInference,
+        derived(&["s1", "s2"])?,
+    )?)?;
+    ledger.issue(record(
+        "leaf",
+        "leaf",
+        OriginClass::AnalyticalInference,
+        Provenance::Manual,
+    )?)?;
+    for node in ["s1", "s2"] {
+        ledger.revise(
+            record(
+                node,
+                &format!("{node}:v2"),
+                OriginClass::UserTestimony,
+                Provenance::Manual,
+            )?,
+            &v(node)?,
+            Revision {
+                reason: RevisionReason::SourceCorrection,
+                rationale: "Synthetic correction".to_owned(),
+            },
+        )?;
+    }
+    assert_eq!(ledger.reassessment_flags(&v("hub")?).len(), 2);
+    let child = record(
+        "child",
+        "child",
+        OriginClass::AnalyticalInference,
+        derived(&["hub"])?,
+    )?;
+    let edge = relation("support", RelationKind::Supports, "child", "hub")?;
+    let before = ledger.clone();
+    let exhausted = EvidenceError::LimitExceeded {
+        kind: LimitKind::PropagationSteps,
+        limit: 1,
+    };
+    assert_eq!(ledger.issue(child.clone()), Err(exhausted.clone()));
+    assert_eq!(ledger, before);
+    assert_eq!(
+        ledger.revise(
+            record(
+                "leaf",
+                "leaf:v2",
+                OriginClass::AnalyticalInference,
+                derived(&["hub"])?
+            )?,
+            &v("leaf")?,
+            Revision {
+                reason: RevisionReason::Revision,
+                rationale: "Synthetic derivation".to_owned()
+            },
+        ),
+        Err(exhausted.clone())
+    );
+    assert_eq!(ledger, before);
+    assert_eq!(
+        ledger.relate(relation("failed", RelationKind::Supports, "leaf", "hub")?),
+        Err(exhausted)
+    );
+    assert_eq!(ledger, before);
+
+    let limits = LedgerLimits {
+        max_propagation_steps: 2,
+        ..LedgerLimits::default()
+    };
+    let mut ledger = EvidenceLedger::from_json(&ledger.to_json()?, limits)?;
+    ledger.issue(child)?;
+    let flags = ledger.reassessment_flags(&v("child")?).to_vec();
+    ledger.relate(edge)?;
+    ledger.relate(relation(
+        "contrast",
+        RelationKind::Contradicts,
+        "child",
+        "hub",
+    )?)?;
+    assert_eq!(
+        ledger.reassessment_flags(&v("child")?),
+        flags,
+        "already flagged candidates still cost work"
+    );
+
+    // Each operation fits the two-step budget. The final no-new-flags relation nevertheless
+    // crosses the seven-step aggregate limit (2 corrections + 2 inheritance + 2 + 2 relations).
+    let json = ledger.to_json()?;
+    let tight = LedgerLimits {
+        max_import_propagation_steps: 7,
+        ..limits
+    };
+    assert_eq!(
+        EvidenceLedger::from_json(&json, tight),
+        Err(CodecError::Rejected {
+            entry: ledger.entries().len() - 1,
+            source: EvidenceError::LimitExceeded {
+                kind: LimitKind::ImportPropagationSteps,
+                limit: 7
+            },
+        })
+    );
+    let exact = LedgerLimits {
+        max_import_propagation_steps: 8,
+        ..limits
+    };
+    let replayed = EvidenceLedger::from_json(&json, exact)?;
+    assert_eq!(replayed.to_json()?, json);
+    assert_eq!(replayed.reassessment_flags(&v("child")?), flags);
     Ok(())
 }

@@ -1,7 +1,11 @@
-//! `oia-store` — Transactional evidence storage, managed blobs, and retention boundary stub (`#9`).
+//! `oia-store` — Canonical evidence-ledger persistence in SQLite WAL mode (#11, ADR 0002).
 //!
-//! Embedded SQLite (`rusqlite` in WAL mode) and managed blob implementation follows in `#11`
-//! per `ADR 0002` (`D02`).
+//! Atomic append-only saves, optimistic revisions, and validated reopen are implemented.
+//! Managed blobs, retention, backup, application authorization and jobs remain unfinished.
+
+mod sqlite;
+
+pub use sqlite::{LedgerStore, StoreError, StoreLimits, StoredLedger};
 
 /// Crate boundary marker for `oia-store` (`docs/architecture.md` §1.2, `#9`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

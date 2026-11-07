@@ -36,3 +36,15 @@ Per the project owner's decision on 2026-11-02 ([#56 comment 6568675966](https:/
 
 - In `#9`: verified that the `crates/oia-store` boundary stub compiles cleanly under workspace lints (`cargo clippy --workspace --all-targets --locked --offline -- -D warnings`).
 - In `#11` (planned): deterministic SQLite + managed blob tests covering durable reopen, atomic batch commits, tombstone-before-unlink ordering, invariant validation on open, backup/restore, and lease-fence recovery.
+
+### First runtime slice (2026-11-05)
+
+[`oia-store::LedgerStore`](../../crates/oia-store/src/sqlite.rs) persists one canonical
+evidence ledger in a SQLite WAL transaction. `rusqlite` is pinned to 0.41.1 with
+bundled SQLite 3.54.1 (`libsqlite3-sys` 0.39.1), avoiding an unconfigured system
+SQLite requirement. This dependency stays in the storage adapter. Schema 1 stores
+the domain operation document as a bounded BLOB with a revision counter; it does
+not yet create case/search/job tables or managed blobs. See the
+[implementation and recovery evidence](../implementation/sqlite-ledger.md).
+The remaining invariants above, including staging, tombstones, backup/restore and
+lease fencing, remain required scope on #11/#14.

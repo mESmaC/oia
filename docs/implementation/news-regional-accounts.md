@@ -27,7 +27,7 @@ This slice does not include live news or feed acquisition (#13, #17), translatio
 - **Purpose passages are not checked textually.** The kernel checks that a purpose's passage exists in the candidate's own record. Whether that passage actually states the purpose, and who it attributes it to, is the analyst's typing decision.
 - **Independence classes are conservative.** Content matching is exact bytes only, so a lightly edited reprint with no lineage edge and a different source still forms its own class (counted as unanchored if it is marked as a reprint). Joining on `source_id` treats two records from one source as one class.
 - **Class derivation is quadratic** in the number of corpus records. The corpus is already bounded by `AssessmentLimits`, and the control callback runs once per record.
-- **Duplicated calendar arithmetic.** The private `days_from_civil` / UTC-second parser in `regional.rs` repeats logic that also exists in `oia-documents` (`lineage.rs`), `oia-query` (`geo_workspace.rs`), and `oia-app`. Consolidating it is tracked as a follow-up on [#12](https://github.com/mESmaC/oia/issues/12).
+- **Shared calendar arithmetic.** `regional.rs` and `verify_corpus` now delegate civil-date and RFC 3339 UTC-second validation to [`oia-time-geo`](shared-time-geo.md) ([#12](https://github.com/mESmaC/oia/issues/12)).
 
 ## Fixture example
 

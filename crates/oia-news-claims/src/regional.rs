@@ -23,8 +23,7 @@ use std::fmt;
 
 use super::{
     AssessmentLimits, ClaimCheckError, CorpusAssessmentInput, LineageRelationKind, ReviewStatus,
-    SourceRecordInput, StopReason, find_passage, find_record, is_valid_rfc3339_utc_second,
-    verify_corpus,
+    SourceRecordInput, StopReason, find_passage, find_record, verify_corpus,
 };
 
 /// Epistemic category of a reported development (`NEWS-02`).
@@ -630,47 +629,12 @@ impl Error for RegionalAccountError {
     }
 }
 
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = (month + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
-}
-
-/// Parses a strict `YYYY-MM-DDTHH:MM:SSZ` instant to Unix seconds, rejecting
-/// out-of-range fields. Leap seconds (`:60`) are rejected.
-fn parse_utc_second(ts: &str) -> Option<i64> {
-    if !is_valid_rfc3339_utc_second(ts) {
-        return None;
-    }
-    let field = |range: std::ops::Range<usize>| ts.get(range)?.parse::<i64>().ok();
-    let year = field(0..4)?;
-    let month = field(5..7)?;
-    let day = field(8..10)?;
-    let hour = field(11..13)?;
-    let minute = field(14..16)?;
-    let second = field(17..19)?;
-    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
-    let days_in_month = match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if leap => 29,
-        2 => 28,
-        _ => return None,
-    };
-    if !(1..=days_in_month).contains(&day) || hour > 23 || minute > 59 || second > 59 {
-        return None;
-    }
-    Some(days_from_civil(year, month, day) * 86_400 + hour * 3_600 + minute * 60 + second)
-}
-
 fn parse_ts(context: &str, value: &str) -> Result<i64, RegionalAccountError> {
-    parse_utc_second(value).ok_or_else(|| RegionalAccountError::InvalidTimestamp {
-        context: context.to_owned(),
-        value: value.to_owned(),
+    oia_time_geo::parse_rfc3339_utc_seconds(value).map_err(|_| {
+        RegionalAccountError::InvalidTimestamp {
+            context: context.to_owned(),
+            value: value.to_owned(),
+        }
     })
 }
 
@@ -855,8 +819,10 @@ fn independence_classes(
 /// earlier-rank stage's reported start. Stages without a reported time are
 /// not compared.
 fn legal_chronology_conflict(stages: &[LegalStageEntry<'_>]) -> bool {
-    let start =
-        |s: &LegalStageEntry<'_>| s.reported_time.and_then(|t| parse_utc_second(t.start_utc));
+    let start = |s: &LegalStageEntry<'_>| {
+        s.reported_time
+            .and_then(|t| oia_time_geo::parse_rfc3339_utc_seconds(t.start_utc).ok())
+    };
     let rank = |s: &LegalStageEntry<'_>| s.category.legal_stage_rank();
     stages.iter().any(|later| {
         stages.iter().any(|earlier| {
@@ -1513,17 +1479,20 @@ pub fn build_regional_account<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::parse_utc_second;
+    use oia_time_geo::parse_rfc3339_utc_seconds;
 
     #[test]
     fn utc_parser_matches_known_instants_and_rejects_invalid_fields() {
-        assert_eq!(parse_utc_second("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(
-            parse_utc_second("2024-03-15T19:12:00Z"),
+            parse_rfc3339_utc_seconds("1970-01-01T00:00:00Z").ok(),
+            Some(0)
+        );
+        assert_eq!(
+            parse_rfc3339_utc_seconds("2024-03-15T19:12:00Z").ok(),
             Some(1_710_529_920)
         );
         assert_eq!(
-            parse_utc_second("2024-02-29T00:00:00Z"),
+            parse_rfc3339_utc_seconds("2024-02-29T00:00:00Z").ok(),
             Some(1_709_164_800)
         );
         for bad in [
@@ -1533,7 +1502,7 @@ mod tests {
             "2024-03-15T23:59:60Z",
             "2024-03-15T19:12:00+00:00",
         ] {
-            assert_eq!(parse_utc_second(bad), None, "{bad}");
+            assert_eq!(parse_rfc3339_utc_seconds(bad).ok(), None, "{bad}");
         }
     }
 }

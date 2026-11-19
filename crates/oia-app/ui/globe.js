@@ -252,7 +252,12 @@ const Globe = (() => {
     const selected = drawn.get(view.selection);
     const canvas = viewer.scene.canvas;
     const ray = viewer.camera.getPickRay(new Cesium.Cartesian2(canvas.clientWidth / 2, canvas.clientHeight / 2));
-    const target = (selected && terrainDisplay.surfacePoint(selected.anchor)) || (ray && viewer.scene.globe.pick(ray, viewer.scene));
+    // Region perspective pivots use a display bounding centre, separate from the
+    // northern-edge tag anchor and never stored as an evidence coordinate.
+    const pivot = selected?.kind === 'region'
+      ? Cesium.Ellipsoid.WGS84.scaleToGeodeticSurface(Cesium.BoundingSphere.fromPoints(selected.points).center) || selected.anchor
+      : selected?.anchor;
+    const target = (pivot && terrainDisplay.surfacePoint(pivot)) || (ray && viewer.scene.globe.pick(ray, viewer.scene));
     if (!target) { showError('Point the camera at the globe or select a plotted record before changing perspective. Terrain may still be loading.'); return; }
     const range = Math.max(500, Math.min(60000000, Cesium.Cartesian3.distance(viewer.camera.positionWC, target)));
     clearTimeout(cameraTimer);
@@ -263,6 +268,7 @@ const Globe = (() => {
     suppressCameraReport = false;
     const height = viewer.camera.positionCartographic.height;
     if (height < view.limits.min_camera_height_m || height > view.limits.max_camera_height_m) setCamera(currentCamera(), false);
+    clearTimeout(cameraTimer); // a synchronous moveEnd may have scheduled the same report
     reportCamera(); viewer.scene.requestRender();
   }
   function zoom(direction) {
@@ -519,6 +525,11 @@ const Globe = (() => {
   }
 
   // ---- Overlays: tags, leaders, bracket ----
+  const heightPlacement = () => `Height: not recorded · drawn on ${terrainDisplay?.surfaceLabel() || 'ellipsoid'}`;
+  function addHeightLabel(tag) {
+    tag.append(node('small', heightPlacement(), 'height-placement'));
+    tag.setAttribute('aria-description', heightPlacement());
+  }
   const SHAPE_WORD = { pin: 'pin', line: 'line', area: 'area', ring: 'range ring' };
   function buildTags(plotted, cameras, notes) {
     const host = $('globe-tags');
@@ -531,6 +542,7 @@ const Globe = (() => {
       tag.append(node('i', `◆ ${a.tag}`), node('b', a.label));
       tag.setAttribute('aria-label', `${a.tag}, analyst annotation, ${SHAPE_WORD[a.shape]}: ${a.label}`);
       tag.onclick = () => select(view.selection === a.id ? null : a.id);
+      addHeightLabel(tag);
       host.append(tag);
       tagEls.set(a.id, tag);
     }
@@ -541,6 +553,7 @@ const Globe = (() => {
       tag.append(node('i', 'CAM'), node('b', `${cam.display_id} · ${cam.manufacturer_label}`));
       tag.setAttribute('aria-label', `${cam.display_id}, mapped ALPR camera, ${cam.manufacturer_label}${cam.synthetic ? ', synthetic fixture' : ''}`);
       tag.onclick = () => select(view.selection === cam.id ? null : cam.id);
+      addHeightLabel(tag);
       host.append(tag);
       tagEls.set(cam.id, tag);
     }
@@ -553,6 +566,7 @@ const Globe = (() => {
       tag.append(node('i', pad2(record.order)), node('b', label));
       tag.setAttribute('aria-label', `${record.label}, ${record.geometry.kind === 'region' ? 'reported region' : record.geometry.kind === 'approximate_centroid' ? 'approximate place centroid' : 'recorded point'}`);
       tag.onclick = () => select(view.selection === record.id ? null : record.id);
+      addHeightLabel(tag);
       host.append(tag);
       tagEls.set(record.id, tag);
     }
@@ -576,11 +590,11 @@ const Globe = (() => {
       if (!inside) { tag.hidden = true; continue; }
       tag.hidden = false;
       tag.setAttribute('aria-pressed', String(view.selection === id));
-      const tx = Math.round(win.x + 26);
+      const w = tag.offsetWidth, h = tag.offsetHeight;
+      const tx = Math.round(Math.max(4, Math.min(win.x + 26, scene.canvas.clientWidth - w - 4)));
       let ty = Math.round(win.y - 36);
       // Tags whose anchors fall within a few pixels of each other (zoomed out) are stacked
       // downwards in display order instead of drawn on top of one another.
-      const w = tag.offsetWidth, h = tag.offsetHeight;
       for (let attempt = 0; attempt < 12; attempt++) {
         const clash = placed.some(p => tx < p.x + p.w + 4 && tx + w + 4 > p.x && ty < p.y + p.h + 4 && ty + h + 4 > p.y);
         if (!clash) break;
@@ -704,6 +718,7 @@ const Globe = (() => {
       card.append(node('span', `${pad2(record.order)} · selected`, 'k'), node('h3', record.label));
       list = [['Kind', record.kind], ...geometryRows(record).filter(r => r[0] !== 'Basis'), ...timeRows(record), ['Source', record.source_label]];
     }
+    list.unshift(['Height', heightPlacement().replace('Height: ', ''), 'warn']);
     for (const [key, value, cls] of list) {
       rows.append(node('dt', key), node('dd', value === null || value === undefined ? '— not recorded' : value, value === null || value === undefined ? 'none' : (cls || '')));
     }
@@ -804,7 +819,7 @@ const Globe = (() => {
     if (drawnDetail.length && a.date) el.append(node('span', ` · zoomed detail is not ${a.date}`, 'warn'));
     if (view.imagery.coastlines) el.append(node('span', ` · + ${view.imagery.coastlines.source.layer} (${view.imagery.coastlines.source.attribution})`));
     el.append(node('span', ` · tiles ${fmt(tiles.loaded)} loaded`));
-    el.append(node('span', ` · Terrain: ${terrainDisplay ? terrainDisplay.summary() : 'renderer not ready'}${view.terrain.selection.enabled ? ` · ${view.terrain.source.attribution}` : ''}`));
+    el.append(node('span', ` · Terrain: ${terrainDisplay ? terrainDisplay.summary() : 'renderer not ready'}${view.terrain.selection.enabled ? ` · ${view.terrain.source.attribution}` : ''}`, view.terrain.selection.enabled && (view.terrain.selection.exaggeration !== 1 || terrainDisplay?.hasFailures()) ? 'warn' : ''));
     if (tiles.failed) el.append(node('span', `, ${fmt(tiles.failed)} failed (gap, not empty scene)`, 'warn'));
     if (tiles.absent) el.append(node('span', `, ${fmt(tiles.absent)} not published by the source`));
     if (tiles.pending) el.append(node('span', `, ${fmt(tiles.pending)} pending`));
@@ -1135,7 +1150,17 @@ const Globe = (() => {
     if (await call('globe_annotate', { draft })) endDraw();
   }
 
+  let lastHeightPlacement = '';
   function renderTerrainStatus() {
+    const placement = heightPlacement();
+    if (placement !== lastHeightPlacement) {
+      lastHeightPlacement = placement;
+      for (const tag of tagEls.values()) {
+        tag.querySelector('.height-placement').textContent = placement;
+        tag.setAttribute('aria-description', placement);
+      }
+      renderCard();
+    }
     $('globe-terrain-status').textContent = terrainDisplay ? `${terrainDisplay.summary()} · Last tile received: ${terrainDisplay.retrievalTime() || 'none this session'}` : 'Renderer not ready; no elevation tiles requested.';
   }
   function renderTerrain() {
@@ -1247,8 +1272,9 @@ const Globe = (() => {
     if (!active || !viewer || rendererState !== 'ready') return false;
     const inCanvas = $('globe-canvas').contains(document.activeElement) || document.activeElement === $('globe-canvas');
     if (!inCanvas) return false;
-    const map = { ArrowLeft: () => pan(-1, 0), ArrowRight: () => pan(1, 0), ArrowUp: () => pan(0, 1), ArrowDown: () => pan(0, -1), '+': () => zoom(1), '=': () => zoom(1), '-': () => zoom(-1), Home: home, '0': world, '1': () => perspective('top_down'), '2': () => perspective('oblique'), '3': () => perspective('horizon') };
+    const map = { ArrowLeft: () => pan(-1, 0), ArrowRight: () => pan(1, 0), ArrowUp: () => pan(0, 1), ArrowDown: () => pan(0, -1), '+': () => zoom(1), '=': () => zoom(1), '-': () => zoom(-1), Home: home, '0': world };
     const plain = !event.ctrlKey && !event.metaKey && !event.altKey;
+    if (plain) for (const preset of view.perspectives) map[preset.key] = () => perspective(preset.id);
     if (plain && draw && draw.stage === 'vertices') Object.assign(map, { v: addVertexAtCrosshair, V: addVertexAtCrosshair, Enter: finishShape, Backspace: undoVertex });
     else if (plain && !draw) Object.assign(map, { a: startDraw, A: startDraw });
     const action = map[event.key];

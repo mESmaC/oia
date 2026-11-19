@@ -1,11 +1,11 @@
 'use strict';
 // Cesium rendering adapter for the Rust-registered Terrarium source. Cesium's heightmap
 // structure decodes the RGB encoding; no evidence height, analysis or geoid conversion
-// is computed here. Only visible tiles are fetched, with no queue or synthetic fallback.
+// is computed here. Only visible tiles are fetched, with no queue. Unavailable root terrain explicitly returns to the ellipsoid.
 const GlobeTerrain = (() => {
   function create(viewer, changed, note) {
     const C = window.Cesium;
-    let current = null, generation = 0, settings = null;
+    let current = null, generation = 0, settings = null, unavailable = null;
     const controllers = new Set();
     const empty = () => ({ loaded: 0, failed: 0, cancelled: 0, pending: 0, deepest: null, lastReceived: null });
     let counts = empty();
@@ -74,23 +74,38 @@ const GlobeTerrain = (() => {
       } catch (error) {
         const cancelled = epoch !== generation || (controller.signal.aborted && controller.signal.reason !== 'deadline');
         if (cancelled) observed.cancelled++;
-        else { observed.failed++; note('terrain', `${level}/${x}/${y}: ${controller.signal.reason === 'deadline' ? '10 s deadline exceeded' : error.message}`); }
+        else {
+          observed.failed++;
+          const reason = `${level}/${x}/${y}: ${controller.signal.reason === 'deadline' ? '10 s deadline exceeded' : error.message}`;
+          note('terrain', reason);
+          // Cesium cannot upsample a failed root. A missing root/first child must not
+          // strand imagery on an unrenderable surface. Keep the requested settings
+          // separate from this explicit display fallback; toggle off/on to retry.
+          if (level <= 1) {
+            unavailable = reason;
+            generation++;
+            for (const active of controllers) active.abort('terrain-unavailable');
+            viewer.scene.verticalExaggeration = 1;
+            viewer.terrainProvider = new C.EllipsoidTerrainProvider();
+          }
+        }
         throw error;
       } finally {
         clearTimeout(timer); clearInterval(navigationTimer); controller.abort('finished'); bitmap?.close(); controllers.delete(controller); observed.pending--;
-        if (epoch === generation) { changed(); viewer.scene.requestRender(); }
+        if (observed === counts) { changed(); viewer.scene.requestRender(); }
       }
     }
 
     function apply(terrain) {
       settings = terrain;
-      viewer.scene.verticalExaggeration = terrain.selection.enabled ? terrain.selection.exaggeration : 1;
+      viewer.scene.verticalExaggeration = terrain.selection.enabled && !unavailable ? terrain.selection.exaggeration : 1;
       viewer.scene.verticalExaggerationRelativeHeight = 0;
       const key = terrain.selection.enabled ? terrain.source.id : 'ellipsoid';
       if (key === current) return;
       current = key; generation++;
       for (const controller of controllers) controller.abort('superseded');
-      counts = empty();
+      counts = empty(); unavailable = null;
+      viewer.scene.verticalExaggeration = terrain.selection.enabled ? terrain.selection.exaggeration : 1;
       if (!terrain.selection.enabled) viewer.terrainProvider = new C.EllipsoidTerrainProvider();
       else {
         const source = terrain.source, epoch = generation, observed = counts;
@@ -113,11 +128,12 @@ const GlobeTerrain = (() => {
 
     function summary() {
       if (!settings?.selection.enabled) return 'off · WGS84 ellipsoid';
+      if (unavailable) return `terrain unavailable · WGS84 ellipsoid · ${counts.failed} failed · ${counts.cancelled} cancelled · ${counts.pending} pending · ${unavailable} · toggle terrain off/on to retry`;
       return `${settings.selection.exaggeration}× display · ${counts.loaded} loaded · ${counts.pending} pending · ${counts.failed} failed (gaps) · ${counts.cancelled} cancelled${counts.deepest === null ? '' : ` · deepest z${counts.deepest}`}`;
     }
 
     function surfacePoint(point) {
-      if (!settings?.selection.enabled) return point;
+      if (!settings?.selection.enabled || unavailable) return point;
       const p = C.Cartographic.fromCartesian(point);
       const height = viewer.scene.globe.getHeight(p);
       if (!Number.isFinite(height)) return undefined;
@@ -125,7 +141,7 @@ const GlobeTerrain = (() => {
       // Screen projection only; the original point remains untouched in GlobeView/drawn.
       return C.Cartesian3.fromRadians(p.longitude, p.latitude, height);
     }
-    return { apply, summary, surfacePoint, retrievalTime: () => counts.lastReceived, hasFailures: () => !!settings?.selection.enabled && counts.failed > 0 };
+    return { apply, summary, surfacePoint, surfaceLabel: () => settings?.selection.enabled && !unavailable ? 'displayed terrain surface' : 'ellipsoid', retrievalTime: () => counts.lastReceived, hasFailures: () => !!settings?.selection.enabled && counts.failed > 0 };
   }
   return { create };
 })();

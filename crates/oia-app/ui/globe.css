@@ -29,9 +29,10 @@
 
 /* Callout tags share the shell's .tag look, positioned in canvas space. */
 .globe-tags { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
-.gtag { position: absolute; left: 0; top: 0; pointer-events: auto; display: inline-flex; align-items: stretch; border: 1px solid var(--line-2); border-radius: 3px; background: var(--glass-2); font: 11px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; color: var(--text); padding: 0; will-change: transform; }
+.gtag { position: absolute; left: 0; top: 0; pointer-events: auto; display: inline-flex; align-items: stretch; flex-wrap: wrap; border: 1px solid var(--line-2); border-radius: 3px; background: var(--glass-2); font: 11px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; color: var(--text); padding: 0; will-change: transform; }
 .gtag i { font-style: normal; padding: 6px 7px; color: var(--accent); border-right: 1px solid var(--line); }
 .gtag b { font-weight: 500; padding: 6px 8px; letter-spacing: .04em; }
+.gtag .height-placement { flex-basis: 100%; padding: 0 8px 6px; color: var(--amber); font: 9px/1.25 var(--mono); letter-spacing: 0; text-transform: none; }
 .gtag:hover { border-color: var(--accent); }
 .gtag[aria-pressed="true"] { border-color: var(--accent); }
 .gtag.region i { color: var(--text-2); }
@@ -81,6 +82,7 @@
 .gcard .k { display: block; color: var(--accent); }
 .gcard h3 { font: 500 15px/1.2 var(--sans); margin: 4px 0 8px; }
 .gcard .rows { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; font: 12px var(--mono); }
+.gcard .rows dd.warn { color: var(--amber); }
 .gcard .rows dt { color: var(--text-2); }
 .gcard .rows dd { text-align: right; overflow-wrap: anywhere; }
 .gcard .rows dd.est { color: var(--amber); }

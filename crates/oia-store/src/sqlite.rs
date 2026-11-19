@@ -138,7 +138,8 @@ impl LedgerStore {
     ///
     /// Unknown databases/schemas are refused before schema or journal-mode changes. Opening
     /// an existing store never repairs or discards malformed evidence. Parent directories
-    /// must exist. Lock waits are limited to two seconds; errors retain SQLite's error code.
+    /// must exist. The busy handler waits up to two seconds; first-open journal-mode races can return
+    /// busy/locked immediately. Callers may retry these typed SQLite errors.
     pub fn open(path: impl AsRef<Path>, limits: StoreLimits) -> Result<Self, StoreError> {
         Self::open_inner(path.as_ref(), limits, true)
     }
@@ -156,7 +157,7 @@ impl LedgerStore {
         if create {
             flags |= OpenFlags::SQLITE_OPEN_CREATE;
         }
-        let connection = Connection::open_with_flags(path, flags)?;
+        let mut connection = Connection::open_with_flags(path, flags)?;
         connection.busy_timeout(Duration::from_secs(2))?;
         // Permit the configured payload plus SQLite row/schema overhead, without an unbounded
         // SQLite allocation for a corrupted record. The public ceiling fits in i32.
@@ -164,7 +165,13 @@ impl LedgerStore {
             i32::try_from(limits.max_ledger_bytes + 4096).map_err(|_| StoreError::InvalidLimits)?;
         connection.set_limit(Limit::SQLITE_LIMIT_LENGTH, sqlite_limit)?;
         connection.execute_batch("PRAGMA trusted_schema = OFF; PRAGMA foreign_keys = ON;")?;
-        check_identity(&connection, create)?;
+        // Pin all identity reads to one snapshot: another creator can otherwise commit
+        // between application_id, user_version, and sqlite_schema autocommit reads.
+        {
+            let preflight = connection.transaction()?;
+            check_identity(&preflight, create)?;
+            preflight.commit()?;
+        }
         let mode: String = connection.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
         if !mode.eq_ignore_ascii_case("wal") {
             return Err(StoreError::InvalidLayout("WAL mode is unavailable"));
@@ -262,11 +269,8 @@ fn check_identity(connection: &Connection, allow_empty: bool) -> Result<bool, St
     let app: i64 = connection.query_row("PRAGMA application_id", [], |r| r.get(0))?;
     let schema: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if app == 0 && schema == 0 && allow_empty {
-        let objects: i64 = connection.query_row(
-            "SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
-            [],
-            |r| r.get(0),
-        )?;
+        let objects: i64 =
+            connection.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0))?;
         if objects == 0 {
             return Ok(true);
         }
@@ -286,9 +290,15 @@ fn check_identity(connection: &Connection, allow_empty: bool) -> Result<bool, St
 }
 
 fn read_snapshot(connection: &Connection, limits: StoreLimits) -> Result<StoredLedger, StoreError> {
-    let mut statement =
-        connection.prepare("SELECT singleton, revision, payload FROM ledger_snapshot")?;
-    let mut rows = statement.query([])?;
+    // Return only the length for an oversized BLOB. Materializing it first could hit
+    // SQLITE_LIMIT_LENGTH before the adapter can report its configured byte budget.
+    let mut statement = connection.prepare(
+        "SELECT singleton, revision, length(payload),
+                CASE WHEN length(payload) <= ?1 THEN payload END
+         FROM ledger_snapshot",
+    )?;
+    let budget = i64::try_from(limits.max_ledger_bytes).map_err(|_| StoreError::InvalidLimits)?;
+    let mut rows = statement.query([budget])?;
     let row = rows
         .next()?
         .ok_or(StoreError::InvalidLayout("missing snapshot"))?;
@@ -299,8 +309,12 @@ fn read_snapshot(connection: &Connection, limits: StoreLimits) -> Result<StoredL
             "invalid snapshot identity or revision",
         ));
     }
+    let length: i64 = row.get(2)?;
+    let length = usize::try_from(length)
+        .map_err(|_| StoreError::InvalidLayout("invalid snapshot payload length"))?;
+    check_size(length, limits)?;
     let bytes = row
-        .get_ref(2)?
+        .get_ref(3)?
         .as_blob()
         .map_err(|_| StoreError::InvalidLayout("snapshot payload is not a blob"))?;
     check_size(bytes.len(), limits)?;

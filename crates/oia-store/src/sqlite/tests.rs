@@ -179,15 +179,26 @@ fn incompatible_corrupt_or_over_budget_store_is_not_repaired() -> TestResult {
     let limits = StoreLimits::default();
     assert!(LedgerStore::open_existing(&path, limits).is_err());
     assert!(!path.exists(), "inspection created a missing store");
-    let connection = Connection::open(&path)?;
-    connection.execute_batch("CREATE TABLE unrelated(value TEXT);")?;
-    drop(connection);
-    let bytes = std::fs::read(&path)?;
-    assert!(matches!(
-        LedgerStore::open(&path, limits),
-        Err(StoreError::ForeignDatabase { .. })
-    ));
-    assert_eq!(std::fs::read(&path)?, bytes);
+    for table in ["unrelated", "sqlitefoo"] {
+        let connection = Connection::open(&path)?;
+        connection.execute_batch(&format!("CREATE TABLE {table}(value TEXT);"))?;
+        drop(connection);
+        let bytes = std::fs::read(&path)?;
+        assert!(matches!(
+            LedgerStore::open(&path, limits),
+            Err(StoreError::ForeignDatabase { application_id: 0 })
+        ));
+        assert_eq!(
+            std::fs::read(&path)?,
+            bytes,
+            "foreign database was modified"
+        );
+        let connection = Connection::open(&path)?;
+        let app: i64 = connection.query_row("PRAGMA application_id", [], |r| r.get(0))?;
+        let schema: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        assert_eq!((app, schema), (0, 0), "foreign database was adopted");
+        connection.execute_batch(&format!("DROP TABLE {table};"))?;
+    }
 
     let path = directory.path().join("ledger.db");
     let mut store = LedgerStore::open(&path, limits)?;
@@ -206,14 +217,18 @@ fn incompatible_corrupt_or_over_budget_store_is_not_repaired() -> TestResult {
     let connection = Connection::open(&path)?;
     connection.pragma_update(None, "user_version", 1)?;
     drop(connection);
-    let smaller = StoreLimits {
-        max_ledger_bytes: 100,
-        ..limits
-    };
-    assert!(matches!(
-        LedgerStore::open_existing(&path, smaller),
-        Err(StoreError::TooLarge { .. }) | Err(StoreError::Database(_))
-    ));
+    let payload_bytes = fixture().len();
+    for budget in [100, payload_bytes / 2, payload_bytes.saturating_sub(10)] {
+        let smaller = StoreLimits {
+            max_ledger_bytes: budget,
+            ..limits
+        };
+        assert!(matches!(
+            LedgerStore::open_existing(&path, smaller),
+            Err(StoreError::TooLarge { bytes, limit })
+                if bytes == payload_bytes && limit == budget
+        ));
+    }
     let connection = Connection::open(&path)?;
     connection.execute(
         "UPDATE ledger_snapshot SET payload = ?1",
@@ -231,5 +246,41 @@ fn incompatible_corrupt_or_over_budget_store_is_not_repaired() -> TestResult {
         payload, b"{}",
         "malformed persisted data was silently replaced"
     );
+    Ok(())
+}
+
+#[test]
+fn concurrent_initialization_uses_consistent_identity() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("concurrent.db");
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+    let mut workers = Vec::new();
+    for _ in 0..4 {
+        let path = path.clone();
+        let barrier = std::sync::Arc::clone(&barrier);
+        workers.push(std::thread::spawn(move || -> Result<u64, StoreError> {
+            barrier.wait();
+            let mut store = LedgerStore::open(path, StoreLimits::default())?;
+            Ok(store.load()?.revision)
+        }));
+    }
+    for worker in workers {
+        match worker
+            .join()
+            .map_err(|_| "initialization worker panicked")?
+        {
+            Ok(revision) => assert_eq!(revision, 0),
+            // Switching a fresh file to WAL can race before the busy handler can wait.
+            // These remain explicit retryable database errors, never foreign identities.
+            Err(StoreError::Database(rusqlite::Error::SqliteFailure(error, _)))
+                if matches!(
+                    error.code,
+                    ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked
+                ) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let mut store = LedgerStore::open_existing(path, StoreLimits::default())?;
+    assert_eq!(store.load()?.revision, 0);
     Ok(())
 }

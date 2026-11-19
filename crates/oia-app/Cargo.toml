@@ -4,12 +4,28 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+default-run = "oia"
+
+[features]
+default = ["desktop"]
+desktop = ["dep:tauri", "dep:tauri-build", "dep:rfd"]
+
+[build-dependencies]
+tauri-build = { version = "=2.7.4", optional = true }
 
 [[bin]]
 name = "oia"
 path = "src/main.rs"
 
 [dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+sha2 = "=0.10.9"
+tempfile = "=3.27.0"
+tauri = { version = "=2.12.5", optional = true }
+rfd = { version = "=0.15.4", optional = true }
+oia-documents = { path = "../oia-documents" }
+oia-png-privacy = { path = "../oia-png-privacy" }
+oia-jpeg-privacy = { path = "../oia-jpeg-privacy" }
 oia-domain = { path = "../oia-domain" }
 oia-time-geo = { path = "../oia-time-geo" }
 oia-store = { path = "../oia-store" }

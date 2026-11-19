@@ -1,18 +1,19 @@
 #!/usr/bin/env sh
-# Build, check, and launch the OIA Rust workspace and CLI/examples.
+# Build, check, and launch the OIA desktop workbench and CLI examples.
 #
-# Runs Cargo against the root 15-crate OIA workspace (`Cargo.toml`) using the
+# Runs Cargo against the root OIA workspace (`Cargo.toml`) using the
 # pinned Rust toolchain (1.99.0), and runs `lake build` in `proofs/` during
 # `check` when the `proofs/` directory exists and `lake` is available on PATH.
 #
-# Usage: scripts/run.sh [build|fmt|lint|test|check|run|search] [-- ARGS...]
+# Usage: scripts/run.sh [build|fmt|lint|test|check|run|inspect|search] [-- ARGS...]
 #   build             Build the entire workspace (`--workspace --all-targets`).
 #   fmt               Check formatting across the workspace.
 #   lint              Run clippy across the workspace (`-D warnings`).
 #   test              Run all workspace tests.
 #   check             Run workspace fmt, clippy, test, and (when `proofs/` exists) `lake build`.
-#   run [ARGS...]     Run `oia-documents` inspect-text: PATH [MAX_INPUT_BYTES] [MAX_PASSAGES].
-#                     Defaults to inspecting README.md when no PATH is given.
+#   run               Launch the OIA desktop workbench (arguments retain the inspect alias).
+#   inspect [ARGS...] Run inspect-text: PATH [MAX_INPUT_BYTES] [MAX_PASSAGES].
+#                     Defaults to README.md when no PATH is given.
 #   search ARGS...    Run `oia-documents` find-text: PATH QUERY [MAX_MATCHES] [MAX_INPUT_BYTES]
 #                     [MAX_PASSAGES]. Zero matches cover only the file read,
 #                     not absence from the source.
@@ -39,11 +40,11 @@ else
     echo "run.sh: rustup not found; using $(command cargo --version) instead of pinned $TOOLCHAIN" >&2
 fi
 
-# The workspace lockfile has no third-party packages, so builds stay offline.
+# First builds may download the locked desktop dependencies. Cargo caches them.
 ws() {
     subcommand=$1
     shift
-    cargo "$subcommand" --manifest-path "$MANIFEST" --locked --offline "$@"
+    cargo "$subcommand" --manifest-path "$MANIFEST" --locked "$@"
 }
 
 action=${1:-run}
@@ -72,6 +73,13 @@ case $action in
         fi
         ;;
     run)
+        if [ $# -eq 0 ]; then
+            ws run -p oia-app --bin oia
+        else
+            ws run --quiet -p oia-documents --example inspect-text -- "$@"
+        fi
+        ;;
+    inspect)
         [ $# -eq 0 ] && set -- "$ROOT/README.md"
         # Exit codes pass through: 0 complete/empty, 2 partial, 1 error.
         ws run --quiet -p oia-documents --example inspect-text -- "$@"
@@ -85,7 +93,7 @@ case $action in
         sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
         ;;
     *)
-        echo "run.sh: unknown command '$action'; use build, fmt, lint, test, check, run, or search" >&2
+        echo "run.sh: unknown command '$action'; use build, fmt, lint, test, check, run, inspect, or search" >&2
         exit 1
         ;;
 esac

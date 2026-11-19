@@ -1,0 +1,6 @@
+{
+  "identifier": "main-window",
+  "description": "Bundled main window only. File dialogs and bounded file operations run in Rust commands; no filesystem, shell or network plugins.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

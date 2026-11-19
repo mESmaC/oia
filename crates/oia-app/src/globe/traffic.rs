@@ -1,12 +1,15 @@
 //! Explicit, session-only Caltrans highway still browsing (GEO-02/04, CAM-01/02).
 //! No pose, capture timestamp, archive, scene absence or evidentiary freshness is inferred.
 use crate::local_tools::{Control, Result, ToolError};
+use oia_ingest::{
+    collection::Error as IngestError,
+    transport::{HttpPolicy, HttpTransport, Request},
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
-    io::Read,
-    sync::Arc,
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -17,59 +20,12 @@ pub const IMAGE_LIMIT: usize = 2 * 1024 * 1024;
 pub const CAMERA_LIMIT: usize = 2_000;
 pub const STATEMENT: &str = "Caltrans highway views, separate from the historical case and satellite/aerial mosaics. Capture time and freshness are unknown; record timestamps describe catalog edits. No calibrated pose, footprint, archive or event-evidence eligibility. Failed acquisition is a coverage gap, never an empty scene. No recording or automatic polling.";
 
-// Provisional provider transport pending the shared oia-ingest transport in #166.
-// The resolver supplies only checked public addresses to the connector, avoiding
-// a separate check followed by an unchecked second DNS lookup.
-fn public_ip(ip: std::net::IpAddr) -> bool {
-    match ip {
-        std::net::IpAddr::V4(v) => {
-            let [a, b, c, _] = v.octets();
-            !v.is_private()
-                && !v.is_loopback()
-                && !v.is_link_local()
-                && a != 0
-                && a < 224
-                && !(a == 100 && (64..=127).contains(&b))
-                && !(a == 192 && b == 0 && (c == 0 || c == 2))
-                && !(a == 192 && b == 88 && c == 99)
-                && !(a == 198 && (b == 18 || b == 19 || (b == 51 && c == 100)))
-                && !(a == 203 && b == 0 && c == 113)
-        }
-        std::net::IpAddr::V6(v) => {
-            let s = v.segments();
-            // Global unicast only; refuse protocol/transition and documentation ranges.
-            s[0] & 0xe000 == 0x2000
-                && s[0] != 0x2002
-                && !(s[0] == 0x2001 && (s[1] < 0x0200 || s[1] == 0x0db8))
-                && !(s[0] == 0x3fff && s[1] < 0x1000)
-        }
-    }
-}
+// Separate bounded camera reservations, using the same ingest transport implementation
+// as public collection. The provider-specific admission rules remain below.
+static HTTP: OnceLock<std::result::Result<Mutex<HttpTransport>, IngestError>> = OnceLock::new();
 
-#[derive(Debug)]
-struct PublicResolver;
-impl reqwest::dns::Resolve for PublicResolver {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        Box::pin(async move {
-            if name.as_str() != "cwwp2.dot.ca.gov" {
-                return Err(std::io::Error::other("Unregistered camera source host.").into());
-            }
-            let addresses: Vec<_> = tokio::net::lookup_host((name.as_str(), 443))
-                .await?
-                .take(33)
-                .collect();
-            if addresses.is_empty()
-                || addresses.len() > 32
-                || addresses.iter().any(|a| !public_ip(a.ip()))
-            {
-                return Err(std::io::Error::other(
-                    "Camera DNS returned a non-public destination or exceeded its address budget.",
-                )
-                .into());
-            }
-            Ok(Box::new(addresses.into_iter()) as reqwest::dns::Addrs)
-        })
-    }
+fn catalog_url(district: u8) -> String {
+    format!("{ORIGIN}/data/d{district}/cctv/cctvStatusD{district:02}.json")
 }
 
 fn error(message: impl ToString) -> ToolError {
@@ -192,7 +148,7 @@ pub fn parse_catalog(bytes: Vec<u8>, district: u8, retrieved_at_ms: u64) -> Resu
                 return None;
             }
             let url = text(&c["imageData"]["static"], "currentImageURL")?;
-            if !image_url(url, district) || !ids.insert(id.clone()) {
+            if !image_url(url, district) {
                 return None;
             }
             Some(Camera {
@@ -206,7 +162,7 @@ pub fn parse_catalog(bytes: Vec<u8>, district: u8, retrieved_at_ms: u64) -> Resu
                 direction_text: text(loc, "direction").map(str::to_owned),
             })
         })();
-        if let Some(camera) = parsed {
+        if let Some(camera) = parsed.filter(|camera| ids.insert(camera.id.clone())) {
             result.cameras.push(camera);
         } else {
             result.invalid += 1;
@@ -235,78 +191,84 @@ pub struct Frame {
     pub original: Arc<Vec<u8>>,
 }
 
-fn download(url: &str, limit: usize, accept: &str, control: &Control) -> Result<Vec<u8>> {
+fn download(url: &str, limit: usize, accept: &'static str, control: &Control) -> Result<Vec<u8>> {
     control.check()?;
-    let client = reqwest::blocking::Client::builder()
-        .dns_resolver(Arc::new(PublicResolver))
-        .https_only(true)
-        .retry(reqwest::retry::never())
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(20))
-        .connect_timeout(Duration::from_secs(8))
-        .no_proxy()
-        .user_agent("OIA/0.1 (explicit Caltrans highway imagery browsing)")
-        .build()
-        .map_err(|_| error("HTTP client could not start."))?;
-    let mut response = client
-        .get(url)
-        .header("Accept", accept)
-        .header("Cache-Control", "no-cache")
-        .send()
-        .map_err(|e| {
-            error(if e.is_timeout() {
-                "Source exceeded the 20-second request deadline."
-            } else {
-                "Source request failed; no substitute was used."
-            })
-        })?;
-    if matches!(response.status().as_u16(), 401 | 403 | 404 | 410) {
-        return Err(ToolError::new(
-            "traffic_restricted",
-            "Source is restricted or unavailable. Further requests to this resource are disabled for this session; no alternate access attempted.",
-        ));
+    let mut transport = HTTP
+        .get_or_init(|| HttpTransport::new().map(Mutex::new))
+        .as_ref()
+        .map_err(|e| ToolError::new(e.code, &e.message))?
+        .try_lock()
+        .map_err(|_| error("A camera request is already finishing."))?;
+    let response = transport
+        .get_with_policy(
+            Request {
+                url,
+                cadence_seconds: 15,
+                etag: None,
+                last_modified: None,
+            },
+            HttpPolicy {
+                accept,
+                expected_content_type: Some(accept),
+                max_bytes: limit,
+                deadline: Duration::from_secs(20),
+                connect_timeout: Duration::from_secs(8),
+                endpoint_budget: CAMERA_LIMIT + 12,
+                no_cache: true,
+            },
+            &|| {
+                control
+                    .check()
+                    .map_err(|e| IngestError::new(e.code, e.message))
+            },
+        )
+        .map_err(|e| ToolError::new(e.code, e.message))?;
+    let refusal = match response.status {
+        401 => Some((
+            "traffic_http_401",
+            "Caltrans returned HTTP 401. This origin is disabled for this session; no retry or alternate access.",
+        )),
+        403 => Some((
+            "traffic_http_403",
+            "Caltrans returned HTTP 403. This origin is disabled for this session; no retry or alternate access.",
+        )),
+        404 => Some((
+            "traffic_http_404",
+            "Caltrans returned HTTP 404. This resource is unavailable and disabled for this session.",
+        )),
+        410 => Some((
+            "traffic_http_410",
+            "Caltrans returned HTTP 410. This resource is gone and disabled for this session.",
+        )),
+        429 => Some((
+            "traffic_http_429",
+            "Caltrans returned HTTP 429. The provider retry interval is enforced; no automatic retry.",
+        )),
+        _ => None,
+    };
+    if let Some((code, message)) = refusal {
+        return Err(ToolError::new(code, message));
     }
-    if !response.status().is_success() {
+    if response.status != 200 {
         return Err(error(format!(
             "Source returned HTTP {}; no substitute was used.",
-            response.status()
+            response.status
         )));
     }
-    let content_type = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    if content_type.split(';').next().map(str::trim) != Some(accept) {
-        return Err(error("Source returned an unexpected media type."));
-    }
-    if response.content_length().is_some_and(|n| n > limit as u64) {
-        return Err(error("Source response exceeds its byte budget."));
-    }
-    let mut bytes = Vec::new();
-    let mut chunk = [0; 16_384];
-    loop {
-        control.check()?;
-        let n = response
-            .read(&mut chunk)
-            .map_err(|_| error("Source body failed or exceeded its request deadline."))?;
-        if n == 0 {
-            break;
-        }
-        if bytes.len() + n > limit {
-            return Err(error("Source response exceeds its byte budget."));
-        }
-        bytes.extend_from_slice(&chunk[..n]);
+    if response.no_store {
+        return Err(error(
+            "Source forbids storage; no catalog or still retained.",
+        ));
     }
     control.check()?;
-    Ok(bytes)
+    Ok(response.body)
 }
 
 pub fn fetch_catalog(district: u8, control: &Control) -> Result<Catalog> {
     if !(1..=12).contains(&district) {
         return Err(error("Choose Caltrans district 1 through 12."));
     }
-    let url = format!("{ORIGIN}/data/d{district}/cctv/cctvStatusD{district:02}.json");
+    let url = catalog_url(district);
     let bytes = download(&url, CATALOG_LIMIT, "application/json", control)?;
     let catalog = parse_catalog(bytes, district, now_ms()?)?;
     control.check()?;
@@ -374,6 +336,7 @@ pub struct TrafficView {
     pub retrieved_at_ms: Option<u64>,
     pub frame: Option<FrameView>,
     pub error: Option<String>,
+    pub error_code: Option<&'static str>,
     pub statement: &'static str,
     pub source_url: &'static str,
     pub terms_url: &'static str,
@@ -393,7 +356,8 @@ pub struct TrafficState {
     last_catalog_request: Option<Instant>,
     last_frame_request: Option<Instant>,
     blocked: BTreeSet<String>,
-    error: Option<String>,
+    origin_blocked: bool,
+    error: Option<ToolError>,
 }
 
 impl TrafficState {
@@ -414,7 +378,8 @@ impl TrafficState {
             catalog_bytes: self.catalog.as_ref().map_or(0, |c| c.original.len()),
             retrieved_at_ms: self.catalog.as_ref().map(|c| c.retrieved_at_ms),
             frame: self.frame.as_ref().map(|f| f.view.clone()),
-            error: self.error.clone(),
+            error: self.error.as_ref().map(|e| e.message.clone()),
+            error_code: self.error.as_ref().map(|e| e.code),
             statement: STATEMENT,
             source_url: "https://cwwp2.dot.ca.gov/documentation/cctv/cctv.htm",
             terms_url: "https://dot.ca.gov/conditions-of-use",
@@ -497,7 +462,12 @@ impl TrafficState {
             control.cancel();
         }
     }
-    fn begin(&mut self, resource: &str) -> Result<(u64, Control)> {
+    fn begin(&mut self, resource: &str, catalog: bool) -> Result<(u64, Control)> {
+        if self.origin_blocked {
+            return Err(error(
+                "Caltrans access is disabled after HTTP 401/403. No retry or alternate access in this session.",
+            ));
+        }
         if self.blocked.len() >= CAMERA_LIMIT + 12 {
             return Err(error(
                 "The session restriction-ledger budget is exhausted; no further camera requests.",
@@ -513,7 +483,7 @@ impl TrafficState {
                 "A camera request is still finishing; wait for its bounded worker.",
             ));
         }
-        let last = if resource.starts_with("district:") {
+        let last = if catalog {
             &mut self.last_catalog_request
         } else {
             &mut self.last_frame_request
@@ -538,17 +508,14 @@ impl TrafficState {
         if !(1..=12).contains(&district) {
             return Err(error("Choose Caltrans district 1 through 12."));
         }
-        self.begin(&format!("district:{district}"))
+        self.begin(&catalog_url(district), true)
     }
     pub fn begin_frame(&mut self) -> Result<(u64, Control, Camera, String, u8)> {
         let catalog = self
             .catalog
             .as_ref()
             .ok_or_else(|| error("Load a district first."))?;
-        if self
-            .blocked
-            .contains(&format!("district:{}", catalog.district))
-        {
+        if self.blocked.contains(&catalog_url(catalog.district)) {
             return Err(error(
                 "This district is disabled after a restricted/unavailable response; its old camera listing cannot authorize further requests.",
             ));
@@ -562,31 +529,41 @@ impl TrafficState {
             .ok_or_else(|| error("Select a camera from the visible traffic layer."))?;
         let sha256 = catalog.sha256.clone();
         let district = catalog.district;
-        let (token, control) = self.begin(&camera.id)?;
+        let (token, control) = self.begin(&camera.image_url, false)?;
         Ok((token, control, camera, sha256, district))
     }
     fn finish<T>(&mut self, token: u64, resource: &str, result: Result<T>) -> Option<T> {
-        self.occupied = false;
         // Record access restrictions even for a cancelled completion, preventing retries.
-        if result
-            .as_ref()
-            .err()
-            .is_some_and(|e| e.code == "traffic_restricted")
-        {
-            self.blocked.insert(resource.to_owned());
+        if let Err(e) = &result {
+            match e.code {
+                "traffic_http_401" | "traffic_http_403" => self.origin_blocked = true,
+                "traffic_http_404" | "traffic_http_410" => {
+                    self.blocked.insert(resource.to_owned());
+                }
+                _ => {}
+            }
         }
+        if token != self.generation {
+            return None;
+        }
+        self.occupied = false;
         let (_, control) = self.active.take().filter(|(t, _)| *t == token)?;
-        control.check().ok()?;
+        if let Err(e) = control.check() {
+            if e.code != "cancelled" {
+                self.error = Some(e);
+            }
+            return None;
+        }
         match result {
             Ok(value) => Some(value),
             Err(e) => {
-                self.error = Some(e.message);
+                self.error = Some(e);
                 None
             }
         }
     }
     pub fn finish_catalog(&mut self, token: u64, district: u8, result: Result<Catalog>) -> bool {
-        if let Some(catalog) = self.finish(token, &format!("district:{district}"), result) {
+        if let Some(catalog) = self.finish(token, &catalog_url(district), result) {
             self.catalog = Some(catalog);
             self.frame = None;
             self.selection = None;
@@ -595,8 +572,8 @@ impl TrafficState {
         }
         false
     }
-    pub fn finish_frame(&mut self, token: u64, camera_id: &str, result: Result<Frame>) {
-        if let Some(mut frame) = self.finish(token, camera_id, result) {
+    pub fn finish_frame(&mut self, token: u64, resource_url: &str, result: Result<Frame>) {
+        if let Some(mut frame) = self.finish(token, resource_url, result) {
             frame.view.same_bytes_as_previous = self
                 .frame
                 .as_ref()
@@ -619,6 +596,7 @@ impl TrafficState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oia_ingest::transport::public_ip;
     #[test]
     fn catalog_preserves_bytes_and_refuses_substitutes() -> Result<()> {
         let row = serde_json::json!({"cctv":{"index":"1","inService":"true","location":{"district":"4","latitude":"37.8","longitude":"-122.2","locationName":"Highway view"},"imageData":{"static":{"currentImageURL":"https://cwwp2.dot.ca.gov/data/d4/cctv/image/cam/cam.jpg"}}}});
@@ -671,11 +649,76 @@ mod tests {
         state.finish_catalog(
             token,
             4,
-            Err(ToolError::new("traffic_restricted", "restricted")),
+            Err(ToolError::new("traffic_http_404", "unavailable")),
         );
-        assert!(state.blocked.contains("district:4"));
+        assert!(state.blocked.contains(&catalog_url(4)));
         state.last_catalog_request = None;
         assert!(state.begin_catalog(4).is_err());
+        Ok(())
+    }
+    #[test]
+    fn url_and_origin_cutoffs_survive_reindexing_and_timeouts_stay_visible() -> Result<()> {
+        let row = |index: &str, file: &str| serde_json::json!({"cctv":{"index":index,"inService":"true","location":{"district":"4","latitude":"37.8","longitude":"-122.2","locationName":"Highway view"},"imageData":{"static":{"currentImageURL":format!("{ORIGIN}/data/d4/cctv/image/cam/{file}.jpg")}}}});
+        let catalog = |rows| {
+            parse_catalog(
+                serde_json::to_vec(&serde_json::json!({"data":rows})).map_err(error)?,
+                4,
+                1,
+            )
+        };
+        let mut invalid = row("1", "shared");
+        invalid["cctv"]["location"]["locationName"] = "".into();
+        let initial = catalog(vec![invalid, row("1", "shared")])?;
+        assert_eq!((initial.cameras.len(), initial.invalid), (1, 1));
+        let mut state = TrafficState {
+            catalog: Some(initial),
+            visible: true,
+            ..TrafficState::default()
+        };
+        state.select(Some("traffic:4:1"));
+        let (token, _, camera, _, _) = state.begin_frame()?;
+        state.finish_frame(
+            token,
+            &camera.image_url,
+            Err(ToolError::new("traffic_http_404", "unavailable")),
+        );
+        state.catalog = Some(catalog(vec![row("2", "shared"), row("3", "different")])?);
+        state.last_frame_request = None;
+        state.select(Some("traffic:4:2"));
+        assert!(
+            state.begin_frame().is_err(),
+            "renamed row restored the same unavailable resource"
+        );
+        state.select(Some("traffic:4:3"));
+        let (token, _, camera, _, _) = state.begin_frame()?;
+        state.finish_frame(
+            token,
+            &camera.image_url,
+            Err(ToolError::new("deadline", "request timed out")),
+        );
+        assert_eq!(state.view().error_code, Some("deadline"));
+        assert_eq!(state.view().error.as_deref(), Some("request timed out"));
+        state.last_frame_request = None;
+        let (token, _, camera, _, _) = state.begin_frame()?;
+        state.cancel();
+        state.finish_frame(
+            token,
+            &camera.image_url,
+            Err(ToolError::new("traffic_http_403", "restricted")),
+        );
+        assert!(
+            state.origin_blocked,
+            "cancel must not discard the observed origin restriction"
+        );
+        assert!(
+            state.view().error.is_none(),
+            "cancelled failure became visible"
+        );
+        state.last_catalog_request = None;
+        state.last_frame_request = None;
+        assert!(state.begin_catalog(3).is_err());
+        state.select(Some("traffic:4:2"));
+        assert!(state.begin_frame().is_err());
         Ok(())
     }
 }

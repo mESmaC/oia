@@ -142,7 +142,7 @@ const Globe = (() => {
     } else card.append(node('p', 'No still requested for this camera. A provider listing does not establish frame availability.', 'note'));
     if (t.error) card.append(node('p', `${t.error}${f ? ' Showing the last successful retrieval, with its original time.' : ''}`, 'note bad'));
     const rows = node('dl', undefined, 'rows'); kv(rows, trafficRows(camera)); card.append(rows);
-    card.append(node('p', 'Capture time and freshness unknown. A provider JPEG may be an unavailable notice; content is not automatically classified. Ground view is separate from the basemap and historical case; no calibrated projection or archive.', 'note'));
+    card.append(node('p', 'Provider JPEG, not a verified scene feed. Capture time and freshness unknown. Even a fresh burned-in timestamp can accompany an unavailable notice; content is not automatically classified. Ground view is separate from the basemap and historical case; no calibrated projection or archive.', 'note'));
   }
 
   // ---- Renderer lifecycle ----

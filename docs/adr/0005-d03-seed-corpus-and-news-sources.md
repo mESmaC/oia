@@ -3,7 +3,7 @@
 Date: 2026-11-02 UTC.
 Status:
 - **Tier 1 (Bundled synthetic evaluation fixtures `A03` and `A06`):** Accepted and implemented as development fixtures (`fixtures/documents/a03/` and `fixtures/news/a06/`).
-- **Tier 2 (Live and scheduled public-record/news source candidates):** **Proposed** direction informed by [initial public-source research](../research/public-information-sources.md); no live provider adapter or runtime enforcement is implemented by this ADR.
+- **Tier 2 (Live and scheduled public-record/news source candidates):** **Proposed** direction informed by [initial public-source research](../research/public-information-sources.md); the original decision did not implement a live adapter. The bounded foreground implementation amendment below selects a session-only subset; broader scheduled/provider integration remains proposed.
 
 Scope: the dependency-independent `D03` decision and `A06` fixture slice of [#20](https://github.com/mESmaC/oia/issues/20), supporting [#17](https://github.com/mESmaC/oia/issues/17), [#19](https://github.com/mESmaC/oia/issues/19), and [#21](https://github.com/mESmaC/oia/issues/21).
 Affected requirements: `DOC-01`, `DOC-02`, `NEWS-01`, `NEWS-02`, `NEWS-03`, `NEWS-04`, `NEWS-05`, `GEO-03`, `INTEL-01`, `INTEL-04`, `REPRO-01`, `REPRO-02`.
@@ -72,3 +72,26 @@ Rather than defining production Rust field or enum spellings owned by `#10` (`oi
 
 - **What is verified now:** `python -I scripts/news/validate_a06.py --self-test` checks the `A06` fixture's internal consistency and expected outcomes (SHA-256 byte integrity, UTF-8 byte-offset and character-offset passage anchors, synthetic banners, `.invalid` URLs, syndication lineage deduplication, `NEWS-02` epistemic categories, reversible `GEO-03` cluster counts, `NEWS-04` assessment states, removed-page non-retraction, `needs_reassessment` flags, and `NEWS-05` volume guards, plus 7 negative mutation checks). Runtime enforcement is not yet implemented.
 - **Follow-up for `#20` and `#21` runtime implementation:** Once `#10`, `#12`, `#13`, `#17`, and `#19` merge, bind `fixtures/news/a06/manifest.json` to the production `oia-domain`, `oia-time-geo`, `oia-ingest`, and `oia-analysis` contracts (mapping `independent_sources` and `independent_lineage_root_id` directly to `independent_root_count` and `independent_supporting_roots` in [document-lineage-and-correction.md §5](../contracts/document-lineage-and-correction.md#5-corroboration-independence-accounting)), complete item-level verification for the first selected regional sources with the `D06` owner, and execute the runtime `A06` acceptance scenario.
+
+## 5. Implementation amendment: foreground public collection (2026-11-05, #166)
+
+This separate amendment records the public-source-first slice requested by the owner;
+its provider choices are submitted for owner review with the implementation PR. It
+preserves Tier 1 and does not mark the broader Tier 2 architecture complete.
+
+- Opening News acquires the publisher-provided NASA and BBC World feeds. Opening
+  Witness acquires historical UFO-report **catalogue metadata** through The National
+  Archives Discovery API. Source URLs, per-use conditions, budgets, validation and
+  actual limitations are in [public collection](../implementation/public-collection.md).
+- A shared Rust registry/transport owns acquisition. User-selected public RSS/Atom
+  feeds can be registered beyond these seeds. The renderer receives inert text;
+  its CSP is not widened for every provider. Local imports and personal testimony
+  capture remain secondary, explicitly separate operations.
+- Exact responses and linked canonical evidence records stay in bounded session
+  memory. Missing/event times, retraction history and independence remain unknown;
+  archive descriptions are never promoted to testimony or observations. No fetched
+  third-party bytes are committed, and no full-text redistribution is implemented.
+- Foreground timers, source cadence, cache/conditional-request and backoff controls
+  do not replace the future durable jobs, storage, authorization, crawling, regional
+  event/lineage workflow or integrated A06/A19 acceptance. The relevant parent issues
+  remain open. NUFORC is unsupported after an ordinary 403, without bypass.

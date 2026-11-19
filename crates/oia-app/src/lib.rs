@@ -6,6 +6,8 @@
 
 use oia_domain::SchemaVersion;
 
+pub mod collection;
+
 #[cfg(feature = "desktop")]
 pub mod desktop;
 pub(crate) mod globe;

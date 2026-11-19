@@ -101,3 +101,24 @@ SOFTWARE.
 - **Conditions:** [Caltrans Conditions of Use](https://dot.ca.gov/conditions-of-use) generally identify Caltrans-created information as public domain, except where indicated; third-party copyrighted material may require separate permission. No blanket licence to redistribute every photograph is asserted. No availability/accuracy warranty or endorsement is implied.
 - **Attribution:** “Caltrans — California Department of Transportation”, visible in the camera inspector/card and registered layer. Source documentation and terms addresses remain inspectable.
 - **Scope:** Explicit Rust acquisition of one district catalog and one selected current JPEG; bounded session-memory originals only. No polling, video, historical archive, recording, export or redistributed image assets. No Caltrans images are committed. Camera poses/freshness are unverified and previews are not event evidence. Broader automated analysis, retention and redistribution need their own source-use assessment.
+
+---
+
+## Runtime public feeds and archival catalogue metadata (#166)
+
+- **NASA:** https://www.nasa.gov/feed/ ? publisher-provided news RSS, attributed to
+  NASA. NASA informational-use guidance: https://www.nasa.gov/nasa-brand-center/images-and-media/.
+  Third-party credits and protected marks remain separate.
+- **BBC News, World:** https://feeds.bbci.co.uk/news/world/rss.xml ? BBC copyright;
+  personal, non-commercial feed reading under https://www.bbc.co.uk/usingthebbc/terms-of-use/#15metadataandrssfeeds.
+  Full articles are not acquired or republished by this workflow.
+- **The National Archives:** https://discovery.nationalarchives.gov.uk/API/help ?
+  public Discovery catalogue descriptions and references under the published
+  https://www.nationalarchives.gov.uk/legal/terms-of-use/. Underlying scans/testimony
+  may have separate rights and are not acquired.
+- **Scope:** runtime-only bounded session responses, with source-specific access,
+  automation, retention and redistribution conditions in the shared source registry
+  and [implementation note](docs/implementation/public-collection.md). No live
+  feed/API response is committed as a fixture or distributed with the source code;
+  no payload export, model processing, endorsement or independent-verification
+  claim is made. User-added feeds retain their own, explicitly unknown reuse rights.
